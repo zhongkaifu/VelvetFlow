@@ -1,13 +1,15 @@
 """Planner utilities and workflow orchestration logic."""
+import copy
 import json
 import os
 from collections import deque
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Any, Dict, List, Mapping, Optional, Union
 
 from openai import OpenAI
 
 from velvetflow.action_registry import get_action_by_id
 from velvetflow.config import OPENAI_MODEL
+from velvetflow.models import ValidationError, Workflow
 from velvetflow.search import HybridActionSearchService
 
 # ===================== 5. Planner 工具定义 =====================
@@ -234,10 +236,10 @@ def ensure_edges_connectivity(
 # ===================== 8. Action 校验与纠偏 =====================
 
 def ensure_registered_actions(
-    workflow: Dict[str, Any],
+    workflow: Union[Workflow, Dict[str, Any]],
     action_registry: List[Dict[str, Any]],
     search_service: Optional[HybridActionSearchService] = None,
-) -> Dict[str, Any]:
+) -> Union[Workflow, Dict[str, Any]]:
     """
     确保所有 action 节点引用的 action_id 都存在于注册表。
 
@@ -247,7 +249,14 @@ def ensure_registered_actions(
     """
 
     actions_by_id = _index_actions_by_id(action_registry)
-    nodes = workflow.get("nodes", []) if isinstance(workflow, dict) else []
+    original_type = Workflow if isinstance(workflow, Workflow) else dict
+    workflow_dict = (
+        workflow.model_dump(by_alias=True)
+        if isinstance(workflow, Workflow)
+        else copy.deepcopy(workflow)
+    )
+
+    nodes = workflow_dict.get("nodes", []) if isinstance(workflow_dict, dict) else []
 
     for node in nodes:
         if node.get("type") != "action":
@@ -280,7 +289,9 @@ def ensure_registered_actions(
                 )
             node["action_id"] = None
 
-    return workflow
+    if original_type is Workflow:
+        return Workflow.model_validate(workflow_dict)
+    return workflow_dict
 
 
 # ===================== 9. edges 为空时用 LLM 接线 =====================
@@ -1324,8 +1335,8 @@ def plan_workflow_with_two_pass(
     action_registry: List[Dict[str, Any]],
     max_rounds: int = 10,
     max_repair_rounds: int = 3,
-) -> Dict[str, Any]:
-    skeleton = plan_workflow_structure_with_llm(
+) -> Workflow:
+    skeleton_raw = plan_workflow_structure_with_llm(
         nl_requirement=nl_requirement,
         search_service=search_service,
         action_registry=action_registry,
@@ -1333,38 +1344,44 @@ def plan_workflow_with_two_pass(
         max_coverage_refine_rounds=2,
     )
     print("\n==== 第一阶段结果：Workflow Skeleton ====\n")
-    print(json.dumps(skeleton, indent=2, ensure_ascii=False))
+    print(json.dumps(skeleton_raw, indent=2, ensure_ascii=False))
 
-    last_good_workflow: Dict[str, Any] = skeleton
+    skeleton = Workflow.model_validate(skeleton_raw)
+    last_good_workflow: Workflow = skeleton
 
     completed_workflow_raw = fill_params_with_llm(
-        workflow_skeleton=skeleton,
+        workflow_skeleton=skeleton.model_dump(by_alias=True),
         action_registry=action_registry,
         model=OPENAI_MODEL,
     )
 
-    if (
-        isinstance(completed_workflow_raw, dict)
-        and isinstance(completed_workflow_raw.get("nodes"), list)
-        and isinstance(completed_workflow_raw.get("edges"), list)
-    ):
+    try:
+        completed_workflow = Workflow.model_validate(completed_workflow_raw)
         completed_workflow = ensure_registered_actions(
-            completed_workflow_raw,
+            completed_workflow,
             action_registry=action_registry,
             search_service=search_service,
         )
-        current_workflow = completed_workflow
-        last_good_workflow = completed_workflow
-    else:
-        print("\n[plan_workflow_with_two_pass] 警告：fill_params_with_llm 返回的结构不包含合法的 nodes/edges，忽略本次结果，继续使用 skeleton。")
+        if isinstance(completed_workflow, Workflow):
+            current_workflow = completed_workflow
+        else:
+            current_workflow = Workflow.model_validate(completed_workflow)
+        last_good_workflow = current_workflow
+    except ValidationError as e:
+        print(
+            "\n[plan_workflow_with_two_pass] 警告：fill_params_with_llm 返回的结构无法通过校验，", e
+        )
         current_workflow = last_good_workflow
 
     for repair_round in range(max_repair_rounds + 1):
         print(f"\n==== 校验 + 自修复轮次 {repair_round} ====\n")
         print("当前 workflow：")
-        print(json.dumps(current_workflow, indent=2, ensure_ascii=False))
+        print(json.dumps(current_workflow.model_dump(by_alias=True), indent=2, ensure_ascii=False))
 
-        errors = validate_completed_workflow(current_workflow, action_registry=action_registry)
+        errors = validate_completed_workflow(
+            current_workflow.model_dump(by_alias=True),
+            action_registry=action_registry,
+        )
 
         if not errors:
             print("\n==== 校验通过，无需进一步修复 ====\n")
@@ -1381,26 +1398,28 @@ def plan_workflow_with_two_pass(
 
         print(f"\n==== 调用 LLM 进行第 {repair_round + 1} 次修复 ====\n")
         repaired_raw = repair_workflow_with_llm(
-            broken_workflow=current_workflow,
+            broken_workflow=current_workflow.model_dump(by_alias=True),
             validation_errors=errors,
             action_registry=action_registry,
             model=OPENAI_MODEL,
         )
 
-        if (
-            isinstance(repaired_raw, dict)
-            and isinstance(repaired_raw.get("nodes"), list)
-            and isinstance(repaired_raw.get("edges"), list)
-        ):
+        try:
+            repaired_workflow = Workflow.model_validate(repaired_raw)
             repaired_workflow = ensure_registered_actions(
-                repaired_raw,
+                repaired_workflow,
                 action_registry=action_registry,
                 search_service=search_service,
             )
-            current_workflow = repaired_workflow
-            last_good_workflow = repaired_workflow
-        else:
-            print("[plan_workflow_with_two_pass] 警告：repair_workflow_with_llm 返回的结构不包含合法的 nodes/edges，本轮修复结果被忽略。")
+            if isinstance(repaired_workflow, Workflow):
+                current_workflow = repaired_workflow
+            else:
+                current_workflow = Workflow.model_validate(repaired_workflow)
+            last_good_workflow = current_workflow
+        except ValidationError:
+            print(
+                "[plan_workflow_with_two_pass] 警告：repair_workflow_with_llm 返回的结构不包含合法的 nodes/edges，本轮修复结果被忽略。"
+            )
 
     return last_good_workflow
 

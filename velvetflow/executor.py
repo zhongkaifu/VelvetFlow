@@ -6,6 +6,7 @@ import re
 from typing import Any, Dict, List, Mapping, Union
 
 from velvetflow.action_registry import get_action_by_id
+from velvetflow.models import Workflow
 
 # ===================== 16. 执行器 =====================
 
@@ -28,17 +29,21 @@ def load_simulation_data(path: str) -> SimulationData:
 
 
 class DynamicActionExecutor:
-    def __init__(self, workflow: Dict[str, Any], simulations: Union[str, Mapping[str, Any], None] = None):
-        if not isinstance(workflow, dict):
-            raise ValueError(f"workflow 必须是 dict，当前类型为 {type(workflow)}")
-        if not isinstance(workflow.get("nodes"), list):
+    def __init__(
+        self, workflow: Workflow, simulations: Union[str, Mapping[str, Any], None] = None
+    ):
+        if not isinstance(workflow, Workflow):
+            raise ValueError(f"workflow 必须是 Workflow 对象，当前类型为 {type(workflow)}")
+
+        workflow_dict = workflow.model_dump(by_alias=True)
+        if not isinstance(workflow_dict.get("nodes"), list):
             raise ValueError("workflow 缺少合法的 'nodes' 列表。")
-        if not isinstance(workflow.get("edges"), list):
+        if not isinstance(workflow_dict.get("edges"), list):
             raise ValueError("workflow 缺少合法的 'edges' 列表。")
 
-        self.workflow = workflow
-        self.nodes = {n["id"]: n for n in workflow["nodes"]}
-        self.edges = workflow["edges"]
+        self.workflow = workflow_dict
+        self.nodes = {n["id"]: n for n in workflow_dict["nodes"]}
+        self.edges = workflow_dict["edges"]
 
         if isinstance(simulations, str):
             self.simulation_data: SimulationData = load_simulation_data(simulations)

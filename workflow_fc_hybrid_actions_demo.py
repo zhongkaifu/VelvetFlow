@@ -82,7 +82,7 @@ def main():
         return
 
     print("\n==== 最终用于执行的 Workflow DSL ====\n")
-    print(json.dumps(workflow, indent=2, ensure_ascii=False))
+    print(json.dumps(workflow.model_dump(by_alias=True), indent=2, ensure_ascii=False))
 
     simulation_path = os.path.join(os.path.dirname(__file__), "velvetflow", "simulation_data.json")
     simulation_data = load_simulation_data(simulation_path)
