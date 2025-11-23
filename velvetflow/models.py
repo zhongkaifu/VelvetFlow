@@ -1,7 +1,7 @@
 """Strongly-typed workflow DSL models."""
 
 from dataclasses import dataclass
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional, TypedDict
 
 from pydantic import (
     BaseModel,
@@ -25,6 +25,23 @@ class ValidationError:
     node_id: Optional[str]
     field: Optional[str]
     message: str
+
+
+class ParamBinding(TypedDict, total=False):
+    """Typed representation of the parameter binding DSL."""
+
+    __from__: str
+    __agg__: Literal["identity", "count_if", "filter_map", "pipeline"]
+    field: str
+    op: str
+    value: Any
+    filter_field: str
+    filter_op: str
+    filter_value: Any
+    map_field: str
+    format: str
+    sep: str
+    steps: List[Dict[str, Any]]
 
 
 class Node(BaseModel):
@@ -103,6 +120,7 @@ class Workflow(BaseModel):
 __all__ = [
     "Edge",
     "Node",
+    "ParamBinding",
     "PydanticValidationError",
     "ValidationError",
     "Workflow",

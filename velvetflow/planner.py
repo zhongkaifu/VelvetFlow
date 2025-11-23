@@ -10,7 +10,13 @@ from openai import OpenAI
 
 from velvetflow.action_registry import get_action_by_id
 from velvetflow.config import OPENAI_MODEL
-from velvetflow.models import Node, PydanticValidationError, ValidationError, Workflow
+from velvetflow.models import (
+    Node,
+    ParamBinding,
+    PydanticValidationError,
+    ValidationError,
+    Workflow,
+)
 from velvetflow.search import HybridActionSearchService
 
 # ===================== 5. Planner 工具定义 =====================
@@ -1080,6 +1086,90 @@ def _schema_path_error(schema: Mapping[str, Any], fields: List[str]) -> Optional
     return None
 
 
+def validate_param_binding(binding: Mapping[str, Any]) -> Optional[str]:
+    """Validate the shape of the parameter binding DSL object."""
+
+    if not isinstance(binding, Mapping):
+        return f"参数绑定必须是对象 (dict)，当前类型为 {type(binding)}"
+
+    if "__from__" not in binding:
+        return "参数绑定缺少必填字段 __from__"
+
+    source = binding.get("__from__")
+    if not isinstance(source, str) or not source:
+        return "__from__ 必须是非空字符串"
+
+    agg = binding.get("__agg__", "identity")
+    allowed_aggs = {"identity", "count_if", "filter_map", "pipeline"}
+    if agg not in allowed_aggs:
+        return f"__agg__ 必须是 {sorted(allowed_aggs)} 之一，收到: {agg}"
+
+    allowed_cmp = {">", ">=", "<", "<=", "=="}
+
+    def _validate_cmp(op_value: Any, path: str) -> Optional[str]:
+        if op_value is None:
+            return None
+        if not isinstance(op_value, str):
+            return f"{path} 必须是字符串"
+        if op_value not in allowed_cmp:
+            return f"{path} 必须是 {sorted(allowed_cmp)} 之一，收到: {op_value}"
+        return None
+
+    if agg == "count_if":
+        field = binding.get("field") or binding.get("filter_field")
+        if not isinstance(field, str) or not field:
+            return "count_if 需要字符串类型的 field 或 filter_field"
+
+        op_err = _validate_cmp(binding.get("op") or binding.get("filter_op"), "count_if.op")
+        if op_err:
+            return op_err
+
+    if agg == "filter_map":
+        filter_field = binding.get("filter_field")
+        map_field = binding.get("map_field")
+        if not isinstance(filter_field, str) or not filter_field:
+            return "filter_map 需要字符串类型的 filter_field"
+        if not isinstance(map_field, str) or not map_field:
+            return "filter_map 需要字符串类型的 map_field"
+
+        cmp_err = _validate_cmp(binding.get("filter_op"), "filter_map.filter_op")
+        if cmp_err:
+            return cmp_err
+
+    if agg == "pipeline":
+        steps = binding.get("steps")
+        if not isinstance(steps, list) or not steps:
+            return "pipeline 需要非空的 steps 数组"
+
+        for idx, step in enumerate(steps):
+            if not isinstance(step, Mapping):
+                return f"pipeline.steps[{idx}] 必须是对象"
+
+            op = step.get("op")
+            if op not in {"filter", "map", "format_join"}:
+                return f"pipeline.steps[{idx}].op 必须是 filter/map/format_join"
+
+            if op in {"filter", "map"}:
+                field = step.get("field")
+                if not isinstance(field, str) or not field:
+                    return f"pipeline.steps[{idx}].field 必须是非空字符串"
+
+            if op == "filter":
+                cmp_err = _validate_cmp(step.get("cmp"), f"pipeline.steps[{idx}].cmp")
+                if cmp_err:
+                    return cmp_err
+
+            if op == "format_join":
+                fmt = step.get("format")
+                sep = step.get("sep")
+                if fmt is not None and not isinstance(fmt, str):
+                    return f"pipeline.steps[{idx}].format 必须是字符串"
+                if sep is not None and not isinstance(sep, str):
+                    return f"pipeline.steps[{idx}].sep 必须是字符串"
+
+    return None
+
+
 def _get_array_item_schema_from_output(
     source_path: str,
     nodes_by_id: Dict[str, Dict[str, Any]],
@@ -1278,6 +1368,20 @@ def validate_completed_workflow(
             def _walk_params_for_from(obj: Any, path_prefix: str = ""):
                 if isinstance(obj, dict):
                     if "__from__" in obj:
+                        schema_err = validate_param_binding(obj)
+                        if schema_err:
+                            errors.append(
+                                ValidationError(
+                                    code="SCHEMA_MISMATCH",
+                                    node_id=nid,
+                                    field=path_prefix or "params",
+                                    message=(
+                                        f"action 节点 '{nid}' 的参数绑定（{path_prefix or '<root>'}）无效：{schema_err}"
+                                    ),
+                                )
+                            )
+                            return
+
                         source_path = obj["__from__"]
                         err = _check_output_path_against_schema(
                             source_path=source_path,
