@@ -19,7 +19,10 @@ PLANNER_TOOLS = [
         "type": "function",
         "function": {
             "name": "search_business_actions",
-            "description": "在海量业务动作库中按自然语言查询可用动作。",
+            "description": (
+                "在海量业务动作库中按自然语言查询可用动作。返回 candidates 列表，"
+                "后续 add_node(type='action') 时 action_id 必须取自最近一次 candidates.id。"
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -52,6 +55,7 @@ PLANNER_TOOLS = [
             "description": (
                 "在工作流中新增一个节点。\n"
                 "- type='action'：请先调用 search_business_actions 选出合适的 action_id。\n"
+                "  action_id 必须是最近一次 search_business_actions 返回的 candidates.id 之一。\n"
                 "- type='condition'：请在 params 中使用结构化条件，例如：\n"
                 "  {\"kind\": \"any_greater_than\", "
                 "\"source\": \"result_of.some_node.items\", "
@@ -551,13 +555,14 @@ def plan_workflow_structure_with_llm(
 ) -> Dict[str, Any]:
     client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
     builder = WorkflowBuilder()
+    last_action_candidates: List[str] = []
 
     system_prompt = (
         "你是一个通用业务工作流编排助手。\n"
         "系统中有一个 Action Registry，包含大量业务动作，你只能通过 search_business_actions 查询。\n"
         "构建方式：\n"
         "1) 使用 set_workflow_meta 设置工作流名称和描述。\n"
-        "2) 当需要业务动作时，用 search_business_actions 查询，并在 add_node 中引用 action_id。\n"
+        "2) 当需要业务动作时，必须先用 search_business_actions 查询候选；add_node(type='action') 的 action_id 必须取自最近一次 candidates.id。\n"
         "3) 使用 add_edge 连接节点形成有向图（DAG），包含必要的条件/分支/循环/并行等。\n"
         "4) 当结构完成时调用 finalize_workflow。\n\n"
         "【非常重要的原则】\n"
@@ -620,11 +625,23 @@ def plan_workflow_structure_with_llm(
             if func_name == "search_business_actions":
                 query = args.get("query", "")
                 top_k = int(args.get("top_k", 5))
-                actions = search_service.search(query=query, top_k=top_k)
+                actions_raw = search_service.search(query=query, top_k=top_k)
+                candidates = [
+                    {
+                        "id": a.get("action_id"),
+                        "name": a.get("name", ""),
+                        "description": a.get("description", ""),
+                        "category": a.get("domain") or "general",
+                    }
+                    for a in actions_raw
+                    if a.get("action_id")
+                ]
+                last_action_candidates = [c["id"] for c in candidates]
                 tool_result = {
                     "status": "ok",
                     "query": query,
-                    "actions": actions,
+                    "actions": actions_raw,
+                    "candidates": candidates,
                 }
 
             elif func_name == "set_workflow_meta":
@@ -632,14 +649,39 @@ def plan_workflow_structure_with_llm(
                 tool_result = {"status": "ok", "type": "meta_set"}
 
             elif func_name == "add_node":
-                builder.add_node(
-                    node_id=args["id"],
-                    node_type=args["type"],
-                    action_id=args.get("action_id"),
-                    display_name=args.get("display_name"),
-                    params=args.get("params") or {},
-                )
-                tool_result = {"status": "ok", "type": "node_added", "node_id": args["id"]}
+                node_type = args["type"]
+                action_id = args.get("action_id")
+
+                if node_type == "action":
+                    if not last_action_candidates:
+                        tool_result = {
+                            "status": "error",
+                            "message": "action 节点必须在调用 search_business_actions 之后创建，请先查询候选动作。",
+                        }
+                    elif action_id not in last_action_candidates:
+                        tool_result = {
+                            "status": "error",
+                            "message": "action_id 必须是最近一次 search_business_actions 返回的 candidates.id 之一。",
+                            "allowed_action_ids": last_action_candidates,
+                        }
+                    else:
+                        builder.add_node(
+                            node_id=args["id"],
+                            node_type=node_type,
+                            action_id=action_id,
+                            display_name=args.get("display_name"),
+                            params=args.get("params") or {},
+                        )
+                        tool_result = {"status": "ok", "type": "node_added", "node_id": args["id"]}
+                else:
+                    builder.add_node(
+                        node_id=args["id"],
+                        node_type=node_type,
+                        action_id=action_id,
+                        display_name=args.get("display_name"),
+                        params=args.get("params") or {},
+                    )
+                    tool_result = {"status": "ok", "type": "node_added", "node_id": args["id"]}
 
             elif func_name == "add_edge":
                 builder.add_edge(
