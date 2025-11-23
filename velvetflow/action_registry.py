@@ -208,6 +208,51 @@ BUSINESS_ACTIONS: List[Dict[str, Any]] = [
         },
         "enabled": True,
     },
+    {
+        "action_id": "common.ask_ai.v1",
+        "name": "AskAI",
+        "domain": "common",
+        "description": (
+            "LLM fallback action when no suitable business tools are available. "
+            "Collects context along dependency paths (upstream tool descriptions, "
+            "inputs, outputs), then uses the LLM to solve the problem and returns "
+            "a structured JSON answer. Always prefer concrete business tools; "
+            "call AskAI only when none are appropriate."
+        ),
+        "tags": ["fallback", "llm", "ask", "context"],
+        "arg_schema": {
+            "type": "object",
+            "properties": {
+                "question": {"type": "string", "description": "The issue to resolve."},
+                "context": {
+                    "type": "object",
+                    "description": "Collected context from upstream nodes, including tools, inputs, and outputs.",
+                    "additionalProperties": True,
+                },
+                "expected_format": {
+                    "type": "string",
+                    "description": "Optional guidance for the JSON result schema.",
+                },
+            },
+            "required": ["question"],
+        },
+        "output_schema": {
+            "type": "object",
+            "properties": {
+                "result": {
+                    "type": "object",
+                    "description": "Structured JSON answer synthesized by the LLM.",
+                    "additionalProperties": True,
+                },
+                "reasoning": {
+                    "type": "string",
+                    "description": "Short explanation of how the answer was derived from the provided context.",
+                },
+            },
+            "required": ["result"],
+        },
+        "enabled": True,
+    },
 ]
 
 
