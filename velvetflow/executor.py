@@ -198,7 +198,12 @@ class DynamicActionExecutor:
                     if not isinstance(current, list):
                         continue
                     field = step.get("field") or step.get("filter_field")
-                    cmp_op = step.get("cmp") or step.get("filter_op") or "=="
+                    cmp_op = (
+                        step.get("cmp")
+                        or step.get("filter_op")
+                        or step.get("operator")
+                        or "=="
+                    )
                     cmp_val = step.get("value") or step.get("filter_value")
                     filtered = []
                     for item in current:
