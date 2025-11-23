@@ -93,8 +93,23 @@ class DynamicActionExecutor:
         for p in rest:
             if isinstance(cur, dict) and p in cur:
                 cur = cur[p]
-            else:
+                continue
+
+            # When the current value is a list of dicts, allow selecting a
+            # sub-field from every element. This prevents parameter resolving
+            # from failing on paths like ``result_of.xxx.data.employee_id``
+            # where ``data`` is a list of objects.
+            if isinstance(cur, list):
+                extracted = []
+                for item in cur:
+                    if isinstance(item, dict) and p in item:
+                        extracted.append(item[p])
+                if extracted:
+                    cur = extracted
+                    continue
                 raise KeyError(p)
+
+            raise KeyError(p)
 
         return cur
 
@@ -117,19 +132,26 @@ class DynamicActionExecutor:
             target = value.get("value") or value.get("filter_value")
             count = 0
             for item in data:
-                if not isinstance(item, dict):
+                # Support both list-of-dicts and list-of-scalars
+                if isinstance(item, dict):
+                    v = item.get(field)
+                else:
+                    v = item
+
+                try:
+                    if op == ">" and v is not None and v > target:
+                        count += 1
+                    elif op == ">=" and v is not None and v >= target:
+                        count += 1
+                    elif op == "<" and v is not None and v < target:
+                        count += 1
+                    elif op == "<=" and v is not None and v <= target:
+                        count += 1
+                    elif op == "==" and v == target:
+                        count += 1
+                except TypeError:
+                    # If comparison fails (e.g., string vs number), skip the item
                     continue
-                v = item.get(field)
-                if op == ">" and v is not None and v > target:
-                    count += 1
-                elif op == ">=" and v is not None and v >= target:
-                    count += 1
-                elif op == "<" and v is not None and v < target:
-                    count += 1
-                elif op == "<=" and v is not None and v <= target:
-                    count += 1
-                elif op == "==" and v == target:
-                    count += 1
             return count
 
         if agg == "filter_map":
