@@ -1,7 +1,30 @@
 """Strongly-typed workflow DSL models."""
-from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
+from dataclasses import dataclass
+from typing import Any, Dict, List, Literal, Optional
+
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError as PydanticValidationError,
+    field_validator,
+    model_validator,
+)
+
+
+@dataclass
+class ValidationError:
+    code: Literal[
+        "MISSING_REQUIRED_PARAM",
+        "UNKNOWN_ACTION_ID",
+        "DISCONNECTED_GRAPH",
+        "INVALID_EDGE",
+        "SCHEMA_MISMATCH",
+    ]
+    node_id: Optional[str]
+    field: Optional[str]
+    message: str
 
 
 class Node(BaseModel):
@@ -80,6 +103,7 @@ class Workflow(BaseModel):
 __all__ = [
     "Edge",
     "Node",
+    "PydanticValidationError",
     "ValidationError",
     "Workflow",
 ]

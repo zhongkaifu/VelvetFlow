@@ -2,6 +2,7 @@
 import copy
 import json
 import os
+from dataclasses import asdict
 from collections import deque
 from typing import Any, Dict, List, Mapping, Optional, Union
 
@@ -9,7 +10,7 @@ from openai import OpenAI
 
 from velvetflow.action_registry import get_action_by_id
 from velvetflow.config import OPENAI_MODEL
-from velvetflow.models import ValidationError, Workflow
+from velvetflow.models import PydanticValidationError, ValidationError, Workflow
 from velvetflow.search import HybridActionSearchService
 
 # ===================== 5. Planner 工具定义 =====================
@@ -1091,8 +1092,8 @@ def _check_array_item_field(
 def validate_completed_workflow(
     workflow: Dict[str, Any],
     action_registry: List[Dict[str, Any]],
-) -> List[str]:
-    errors: List[str] = []
+) -> List[ValidationError]:
+    errors: List[ValidationError] = []
 
     nodes = workflow.get("nodes", [])
     edges = workflow.get("edges", [])
@@ -1106,9 +1107,54 @@ def validate_completed_workflow(
         frm = e.get("from")
         to = e.get("to")
         if frm not in node_ids:
-            errors.append(f"Edge from '{frm}' -> '{to}' 中，from 节点不存在。")
+            errors.append(
+                ValidationError(
+                    code="INVALID_EDGE",
+                    node_id=frm,
+                    field="from",
+                    message=f"Edge from '{frm}' -> '{to}' 中，from 节点不存在。",
+                )
+            )
         if to not in node_ids:
-            errors.append(f"Edge from '{frm}' -> '{to}' 中，to 节点不存在。")
+            errors.append(
+                ValidationError(
+                    code="INVALID_EDGE",
+                    node_id=to,
+                    field="to",
+                    message=f"Edge from '{frm}' -> '{to}' 中，to 节点不存在。",
+                )
+            )
+
+    # ---------- 图连通性校验 ----------
+    start_nodes = [n["id"] for n in nodes if n.get("type") == "start"]
+    reachable: set = set()
+    if nodes and start_nodes:
+        adj: Dict[str, List[str]] = {}
+        for e in edges:
+            frm = e.get("from")
+            to = e.get("to")
+            if frm in node_ids and to in node_ids:
+                adj.setdefault(frm, []).append(to)
+
+        dq = deque(start_nodes)
+        while dq:
+            nid = dq.popleft()
+            if nid in reachable:
+                continue
+            reachable.add(nid)
+            for nxt in adj.get(nid, []):
+                if nxt not in reachable:
+                    dq.append(nxt)
+
+        for nid in node_ids - reachable:
+            errors.append(
+                ValidationError(
+                    code="DISCONNECTED_GRAPH",
+                    node_id=nid,
+                    field=None,
+                    message=f"节点 '{nid}' 无法从 start 节点到达。",
+                )
+            )
 
     # ---------- 节点校验 ----------
     for n in nodes:
@@ -1121,22 +1167,43 @@ def validate_completed_workflow(
         if ntype == "action" and action_id:
             action_def = actions_by_id.get(action_id)
             if not action_def:
-                errors.append(f"节点 '{nid}' 的 action_id '{action_id}' 不在 Action Registry 中。")
+                errors.append(
+                    ValidationError(
+                        code="UNKNOWN_ACTION_ID",
+                        node_id=nid,
+                        field="action_id",
+                        message=f"节点 '{nid}' 的 action_id '{action_id}' 不在 Action Registry 中。",
+                    )
+                )
             else:
                 schema = action_def.get("arg_schema") or {}
                 required_fields = (schema.get("required") or []) if isinstance(schema, dict) else []
 
                 if not isinstance(params, dict) or len(params) == 0:
                     if required_fields:
-                        errors.append(
-                            f"action 节点 '{nid}' 的 params 为空，但 action '{action_id}' 有必填字段: {required_fields}"
-                        )
+                        for field in required_fields:
+                            errors.append(
+                                ValidationError(
+                                    code="MISSING_REQUIRED_PARAM",
+                                    node_id=nid,
+                                    field=field,
+                                    message=(
+                                        f"action 节点 '{nid}' 的 params 为空，但 action '{action_id}' 有必填字段 '{field}'。"
+                                    ),
+                                )
+                            )
                 else:
                     for field in required_fields:
                         if field not in params:
                             errors.append(
-                                f"action 节点 '{nid}' 的 params 缺少必填字段 '{field}' "
-                                f"(action_id='{action_id}')"
+                                ValidationError(
+                                    code="MISSING_REQUIRED_PARAM",
+                                    node_id=nid,
+                                    field=field,
+                                    message=(
+                                        f"action 节点 '{nid}' 的 params 缺少必填字段 '{field}' (action_id='{action_id}')"
+                                    ),
+                                )
                             )
 
             # 绑定 DSL 静态校验
@@ -1151,7 +1218,14 @@ def validate_completed_workflow(
                         )
                         if err:
                             errors.append(
-                                f"action 节点 '{nid}' 的参数绑定（{path_prefix or '<root>'}）无效：{err}"
+                                ValidationError(
+                                    code="SCHEMA_MISMATCH",
+                                    node_id=nid,
+                                    field=path_prefix or "params",
+                                    message=(
+                                        f"action 节点 '{nid}' 的参数绑定（{path_prefix or '<root>'}）无效：{err}"
+                                    ),
+                                )
                             )
 
                         agg = obj.get("__agg__")
@@ -1164,8 +1238,14 @@ def validate_completed_workflow(
                                 )
                                 if item_err:
                                     errors.append(
-                                        f"action 节点 '{nid}' 的参数绑定（{path_prefix or '<root>'}）中 "
-                                        f"count_if.field='{fld}' 无效：{item_err}"
+                                        ValidationError(
+                                            code="SCHEMA_MISMATCH",
+                                            node_id=nid,
+                                            field=f"{path_prefix or 'params'}.field",
+                                            message=(
+                                                f"action 节点 '{nid}' 的参数绑定（{path_prefix or '<root>'}）中 count_if.field='{fld}' 无效：{item_err}"
+                                            ),
+                                        )
                                     )
 
                         if agg == "filter_map":
@@ -1177,8 +1257,14 @@ def validate_completed_workflow(
                                     )
                                     if item_err:
                                         errors.append(
-                                            f"action 节点 '{nid}' 的参数绑定（{path_prefix or '<root>'}）中 "
-                                            f"{agg}.{fld_key}='{fld}' 无效：{item_err}"
+                                            ValidationError(
+                                                code="SCHEMA_MISMATCH",
+                                                node_id=nid,
+                                                field=f"{path_prefix or 'params'}.{fld_key}",
+                                                message=(
+                                                    f"action 节点 '{nid}' 的参数绑定（{path_prefix or '<root>'}）中 {agg}.{fld_key}='{fld}' 无效：{item_err}"
+                                                ),
+                                            )
                                         )
 
                         if agg == "pipeline":
@@ -1193,8 +1279,14 @@ def validate_completed_workflow(
                                     )
                                     if item_err:
                                         errors.append(
-                                            f"action 节点 '{nid}' 的参数绑定（{path_prefix or '<root>'}）中 "
-                                            f"pipeline.steps[{idx}].field='{fld}' 无效：{item_err}"
+                                            ValidationError(
+                                                code="SCHEMA_MISMATCH",
+                                                node_id=nid,
+                                                field=f"{path_prefix or 'params'}.pipeline.steps[{idx}].field",
+                                                message=(
+                                                    f"action 节点 '{nid}' 的参数绑定（{path_prefix or '<root>'}）中 pipeline.steps[{idx}].field='{fld}' 无效：{item_err}"
+                                                ),
+                                            )
                                         )
 
                     for k, v in obj.items():
@@ -1210,17 +1302,38 @@ def validate_completed_workflow(
         # 2) condition 节点
         if ntype == "condition":
             if not isinstance(params, dict) or len(params) == 0:
-                errors.append(f"condition 节点 '{nid}' 的 params 为空，至少需要 kind/source 等字段。")
+                errors.append(
+                    ValidationError(
+                        code="MISSING_REQUIRED_PARAM",
+                        node_id=nid,
+                        field="params",
+                        message=f"condition 节点 '{nid}' 的 params 为空，至少需要 kind/source 等字段。",
+                    )
+                )
             else:
                 kind = params.get("kind")
                 if not kind:
-                    errors.append(f"condition 节点 '{nid}' 缺少 kind 字段。")
+                    errors.append(
+                        ValidationError(
+                            code="MISSING_REQUIRED_PARAM",
+                            node_id=nid,
+                            field="kind",
+                            message=f"condition 节点 '{nid}' 缺少 kind 字段。",
+                        )
+                    )
                 else:
                     if kind == "any_greater_than":
                         for field in ["source", "field", "threshold"]:
                             if field not in params:
                                 errors.append(
-                                    f"condition 节点 '{nid}' (kind=any_greater_than) 缺少字段 '{field}'。"
+                                    ValidationError(
+                                        code="MISSING_REQUIRED_PARAM",
+                                        node_id=nid,
+                                        field=field,
+                                        message=(
+                                            f"condition 节点 '{nid}' (kind=any_greater_than) 缺少字段 '{field}'。"
+                                        ),
+                                    )
                                 )
                         src = params.get("source")
                         fld = params.get("field")
@@ -1228,14 +1341,26 @@ def validate_completed_workflow(
                             item_err = _check_array_item_field(src, fld, nodes_by_id, actions_by_id)
                             if item_err:
                                 errors.append(
-                                    f"condition 节点 '{nid}' 的 field='{fld}' 无效：{item_err}"
+                                    ValidationError(
+                                        code="SCHEMA_MISMATCH",
+                                        node_id=nid,
+                                        field="field",
+                                        message=f"condition 节点 '{nid}' 的 field='{fld}' 无效：{item_err}",
+                                    )
                                 )
 
                     elif kind == "equals":
                         for field in ["source", "value"]:
                             if field not in params:
                                 errors.append(
-                                    f"condition 节点 '{nid}' (kind=equals) 缺少字段 '{field}'。"
+                                    ValidationError(
+                                        code="MISSING_REQUIRED_PARAM",
+                                        node_id=nid,
+                                        field=field,
+                                        message=(
+                                            f"condition 节点 '{nid}' (kind=equals) 缺少字段 '{field}'。"
+                                        ),
+                                    )
                                 )
 
                 source = params.get("source")
@@ -1246,10 +1371,26 @@ def validate_completed_workflow(
                             node_part = rest.split(".", 1)[0]
                             if node_part not in node_ids:
                                 errors.append(
-                                    f"condition 节点 '{nid}' 的 source='{source}' 引用了不存在的节点 ID '{node_part}'。"
+                                    ValidationError(
+                                        code="INVALID_EDGE",
+                                        node_id=nid,
+                                        field="source",
+                                        message=(
+                                            f"condition 节点 '{nid}' 的 source='{source}' 引用了不存在的节点 ID '{node_part}'。"
+                                        ),
+                                    )
                                 )
                         except Exception:
-                            errors.append(f"condition 节点 '{nid}' 的 source='{source}' 格式异常。")
+                            errors.append(
+                                ValidationError(
+                                    code="SCHEMA_MISMATCH",
+                                    node_id=nid,
+                                    field="source",
+                                    message=(
+                                        f"condition 节点 '{nid}' 的 source='{source}' 格式异常。"
+                                    ),
+                                )
+                            )
 
                     schema_err = _check_output_path_against_schema(
                         source_path=source,
@@ -1258,7 +1399,14 @@ def validate_completed_workflow(
                     )
                     if schema_err:
                         errors.append(
-                            f"condition 节点 '{nid}' 的 source='{source}' 与上游 output_schema 不匹配：{schema_err}"
+                            ValidationError(
+                                code="SCHEMA_MISMATCH",
+                                node_id=nid,
+                                field="source",
+                                message=(
+                                    f"condition 节点 '{nid}' 的 source='{source}' 与上游 output_schema 不匹配：{schema_err}"
+                                ),
+                            )
                         )
 
     return errors
@@ -1268,7 +1416,7 @@ def validate_completed_workflow(
 
 def repair_workflow_with_llm(
     broken_workflow: Dict[str, Any],
-    validation_errors: List[str],
+    validation_errors: List[ValidationError],
     action_registry: List[Dict[str, Any]],
     model: str = OPENAI_MODEL,
 ) -> Dict[str, Any]:
@@ -1287,7 +1435,8 @@ def repair_workflow_with_llm(
 
     system_prompt = (
         "你是一个工作流修复助手。\n"
-        "当前有一个 workflow JSON 和一组后端校验错误 validation_errors。\n"
+        "当前有一个 workflow JSON 和一组结构化校验错误 validation_errors。\n"
+        "validation_errors 是 JSON 数组，元素包含 code/node_id/field/message。\n"
         "这些错误来自：\n"
         "- action 参数缺失或不符合 arg_schema\n"
         "- condition 条件不完整\n"
@@ -1336,7 +1485,7 @@ def repair_workflow_with_llm(
 
     user_payload = {
         "workflow": broken_workflow,
-        "validation_errors": validation_errors,
+        "validation_errors": [asdict(e) for e in validation_errors],
         "action_schemas": action_schemas,
     }
 
@@ -1409,7 +1558,7 @@ def plan_workflow_with_two_pass(
         else:
             current_workflow = Workflow.model_validate(completed_workflow)
         last_good_workflow = current_workflow
-    except ValidationError as e:
+    except PydanticValidationError as e:
         print(
             "\n[plan_workflow_with_two_pass] 警告：fill_params_with_llm 返回的结构无法通过校验，", e
         )
@@ -1432,7 +1581,10 @@ def plan_workflow_with_two_pass(
 
         print("\n==== 校验未通过，错误列表 ====")
         for e in errors:
-            print(" -", e)
+            print(
+                " -",
+                f"[code={e.code}] node={e.node_id} field={e.field} message={e.message}",
+            )
 
         if repair_round == max_repair_rounds:
             print("\n==== 已到最大修复轮次，仍有错误，返回最后一个合法结构版本 ====\n")
@@ -1458,7 +1610,7 @@ def plan_workflow_with_two_pass(
             else:
                 current_workflow = Workflow.model_validate(repaired_workflow)
             last_good_workflow = current_workflow
-        except ValidationError:
+        except PydanticValidationError:
             print(
                 "[plan_workflow_with_two_pass] 警告：repair_workflow_with_llm 返回的结构不包含合法的 nodes/edges，本轮修复结果被忽略。"
             )
