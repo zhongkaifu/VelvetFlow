@@ -231,7 +231,59 @@ def ensure_edges_connectivity(
     return edges
 
 
-# ===================== 8. edges 为空时用 LLM 接线 =====================
+# ===================== 8. Action 校验与纠偏 =====================
+
+def ensure_registered_actions(
+    workflow: Dict[str, Any],
+    action_registry: List[Dict[str, Any]],
+    search_service: Optional[HybridActionSearchService] = None,
+) -> Dict[str, Any]:
+    """
+    确保所有 action 节点引用的 action_id 都存在于注册表。
+
+    - 如果 action_id 合法，保持不变；
+    - 如果 action_id 缺失或未注册，尝试用节点 display_name 进行搜索替换；
+    - 如果依然无法匹配，则清空 action_id，避免携带非法 ID 进入后续阶段。
+    """
+
+    actions_by_id = _index_actions_by_id(action_registry)
+    nodes = workflow.get("nodes", []) if isinstance(workflow, dict) else []
+
+    for node in nodes:
+        if node.get("type") != "action":
+            continue
+
+        aid = node.get("action_id")
+        if aid and aid in actions_by_id:
+            continue
+
+        nid = node.get("id", "<unknown>")
+        display_name = node.get("display_name") or ""
+
+        replacement: Optional[str] = None
+        if search_service and display_name:
+            candidates = search_service.search(query=display_name, top_k=1)
+            if candidates:
+                replacement = candidates[0].get("action_id")
+
+        if replacement:
+            print(
+                f"[ActionGuard] 节点 '{nid}' 的 action_id='{aid}' 未注册，"
+                f"已根据 display_name='{display_name}' 替换为 '{replacement}'。"
+            )
+            node["action_id"] = replacement
+        else:
+            if aid:
+                print(
+                    f"[ActionGuard] 节点 '{nid}' 的 action_id='{aid}' 未注册且无法自动替换，"
+                    "已清空该字段以便后续流程重新补齐。"
+                )
+            node["action_id"] = None
+
+    return workflow
+
+
+# ===================== 9. edges 为空时用 LLM 接线 =====================
 
 def synthesize_edges_with_llm(
     nodes: List[Dict[str, Any]],
@@ -305,7 +357,7 @@ def synthesize_edges_with_llm(
         return []
 
 
-# ===================== 9. 需求覆盖校验 + 结构改进 =====================
+# ===================== 10. 需求覆盖校验 + 结构改进 =====================
 
 def check_requirement_coverage_with_llm(
     nl_requirement: str,
@@ -477,11 +529,12 @@ def refine_workflow_structure_with_llm(
     return refined
 
 
-# ===================== 10. 第一阶段：结构规划 LLM =====================
+# ===================== 11. 第一阶段：结构规划 LLM =====================
 
 def plan_workflow_structure_with_llm(
     nl_requirement: str,
     search_service: HybridActionSearchService,
+    action_registry: List[Dict[str, Any]],
     max_rounds: int = 10,
     max_coverage_refine_rounds: int = 2,
 ) -> Dict[str, Any]:
@@ -630,6 +683,9 @@ def plan_workflow_structure_with_llm(
             skeleton["edges"] = auto_edges
 
     skeleton["edges"] = ensure_edges_connectivity(nodes, skeleton["edges"])
+    skeleton = ensure_registered_actions(
+        skeleton, action_registry=action_registry, search_service=search_service
+    )
 
     # ---------- 覆盖度校验 + 结构改进 ----------
     for refine_round in range(max_coverage_refine_rounds + 1):
@@ -668,12 +724,15 @@ def plan_workflow_structure_with_llm(
         refined_nodes = refined.get("nodes", [])
         refined_edges = refined.get("edges", [])
         refined["edges"] = ensure_edges_connectivity(refined_nodes, refined_edges)
+        refined = ensure_registered_actions(
+            refined, action_registry=action_registry, search_service=search_service
+        )
         skeleton = refined
 
     return skeleton
 
 
-# ===================== 11. 第二阶段辅助：节点上下游关系 =====================
+# ===================== 12. 第二阶段辅助：节点上下游关系 =====================
 
 def build_node_relations(workflow_skeleton: Dict[str, Any]) -> Dict[str, Dict[str, List[str]]]:
     nodes = workflow_skeleton.get("nodes", [])
@@ -691,7 +750,7 @@ def build_node_relations(workflow_skeleton: Dict[str, Any]) -> Dict[str, Dict[st
     return relations
 
 
-# ===================== 12. 第二阶段：参数补全 LLM =====================
+# ===================== 13. 第二阶段：参数补全 LLM =====================
 
 def fill_params_with_llm(
     workflow_skeleton: Dict[str, Any],
@@ -809,7 +868,7 @@ def fill_params_with_llm(
     return completed_workflow
 
 
-# ===================== 13. 静态校验工具函数 =====================
+# ===================== 14. 静态校验工具函数 =====================
 
 def _index_actions_by_id(action_registry: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
     return {a["action_id"]: a for a in action_registry}
@@ -949,7 +1008,7 @@ def _check_array_item_field(
     return None
 
 
-# ===================== 14. 后端校验 =====================
+# ===================== 15. 后端校验 =====================
 
 def validate_completed_workflow(
     workflow: Dict[str, Any],
@@ -1127,7 +1186,7 @@ def validate_completed_workflow(
     return errors
 
 
-# ===================== 15. 自修复 LLM =====================
+# ===================== 16. 自修复 LLM =====================
 
 def repair_workflow_with_llm(
     broken_workflow: Dict[str, Any],
@@ -1244,6 +1303,7 @@ def plan_workflow_with_two_pass(
     skeleton = plan_workflow_structure_with_llm(
         nl_requirement=nl_requirement,
         search_service=search_service,
+        action_registry=action_registry,
         max_rounds=max_rounds,
         max_coverage_refine_rounds=2,
     )
@@ -1263,8 +1323,13 @@ def plan_workflow_with_two_pass(
         and isinstance(completed_workflow_raw.get("nodes"), list)
         and isinstance(completed_workflow_raw.get("edges"), list)
     ):
-        current_workflow = completed_workflow_raw
-        last_good_workflow = completed_workflow_raw
+        completed_workflow = ensure_registered_actions(
+            completed_workflow_raw,
+            action_registry=action_registry,
+            search_service=search_service,
+        )
+        current_workflow = completed_workflow
+        last_good_workflow = completed_workflow
     else:
         print("\n[plan_workflow_with_two_pass] 警告：fill_params_with_llm 返回的结构不包含合法的 nodes/edges，忽略本次结果，继续使用 skeleton。")
         current_workflow = last_good_workflow
@@ -1302,8 +1367,13 @@ def plan_workflow_with_two_pass(
             and isinstance(repaired_raw.get("nodes"), list)
             and isinstance(repaired_raw.get("edges"), list)
         ):
-            current_workflow = repaired_raw
-            last_good_workflow = repaired_raw
+            repaired_workflow = ensure_registered_actions(
+                repaired_raw,
+                action_registry=action_registry,
+                search_service=search_service,
+            )
+            current_workflow = repaired_workflow
+            last_good_workflow = repaired_workflow
         else:
             print("[plan_workflow_with_two_pass] 警告：repair_workflow_with_llm 返回的结构不包含合法的 nodes/edges，本轮修复结果被忽略。")
 
