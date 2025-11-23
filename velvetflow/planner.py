@@ -10,7 +10,7 @@ from openai import OpenAI
 
 from velvetflow.action_registry import get_action_by_id
 from velvetflow.config import OPENAI_MODEL
-from velvetflow.models import PydanticValidationError, ValidationError, Workflow
+from velvetflow.models import Node, PydanticValidationError, ValidationError, Workflow
 from velvetflow.search import HybridActionSearchService
 
 # ===================== 5. Planner 工具定义 =====================
@@ -788,6 +788,33 @@ def plan_workflow_structure_with_llm(
 
 # ===================== 12. 第二阶段辅助：节点上下游关系 =====================
 
+
+def get_upstream_nodes(workflow: Workflow, target_node_id: str) -> List[Node]:
+    """沿着 edges 从 target_node_id 反向 DFS/BFS，收集所有上游节点。"""
+
+    node_map = {n.id: n for n in workflow.nodes}
+    if target_node_id not in node_map:
+        return []
+
+    reverse_adj: Dict[str, List[str]] = {}
+    for e in workflow.edges:
+        reverse_adj.setdefault(e.to_node, []).append(e.from_node)
+
+    visited: set[str] = set()
+    dq: deque[str] = deque()
+    dq.append(target_node_id)
+
+    while dq:
+        nid = dq.popleft()
+        for upstream_id in reverse_adj.get(nid, []):
+            if upstream_id in visited:
+                continue
+            visited.add(upstream_id)
+            dq.append(upstream_id)
+
+    return [node_map[uid] for uid in node_map if uid in visited]
+
+
 def build_node_relations(workflow_skeleton: Dict[str, Any]) -> Dict[str, Dict[str, List[str]]]:
     nodes = workflow_skeleton.get("nodes", [])
     edges = workflow_skeleton.get("edges", [])
@@ -802,6 +829,47 @@ def build_node_relations(workflow_skeleton: Dict[str, Any]) -> Dict[str, Dict[st
             relations[frm]["downstream"].append(to)
             relations[to]["upstream"].append(frm)
     return relations
+
+
+def _find_start_nodes_for_params(workflow: Workflow) -> List[str]:
+    starts = [n.id for n in workflow.nodes if n.type == "start"]
+    if starts:
+        return starts
+
+    to_ids = {e.to_node for e in workflow.edges}
+    candidates = [n.id for n in workflow.nodes if n.id not in to_ids]
+    if candidates:
+        return candidates
+
+    return [workflow.nodes[0].id] if workflow.nodes else []
+
+
+def _traverse_order(workflow: Workflow) -> List[str]:
+    """按 start -> downstream 的顺序遍历，保证上游节点先被处理。"""
+
+    adj: Dict[str, List[str]] = {}
+    for e in workflow.edges:
+        adj.setdefault(e.from_node, []).append(e.to_node)
+
+    visited: set[str] = set()
+    order: List[str] = []
+    dq: deque[str] = deque(_find_start_nodes_for_params(workflow))
+
+    while dq:
+        nid = dq.popleft()
+        if nid in visited:
+            continue
+        visited.add(nid)
+        order.append(nid)
+        for nxt in adj.get(nid, []):
+            if nxt not in visited:
+                dq.append(nxt)
+
+    for node in workflow.nodes:
+        if node.id not in visited:
+            order.append(node.id)
+
+    return order
 
 
 # ===================== 13. 第二阶段：参数补全 LLM =====================
@@ -824,100 +892,100 @@ def fill_params_with_llm(
             "output_schema": a.get("output_schema"),
         }
 
-    node_relations = build_node_relations(workflow_skeleton)
-
     system_prompt = (
-        "你是一个工作流参数补全助手。\n"
-        "已有一个工作流 skeleton：节点(id/type/action_id/display_name)和 edges 已确定，"
-        "但很多节点的 params 为空或不完整。\n"
-        "另有 action_schemas（action_id -> arg_schema/output_schema）和 node_relations（每个节点的上下游关系）。\n\n"
+        "你是一个工作流参数补全助手。一次只处理一个节点，请根据给定的 arg_schema 补齐当前节点的 params。\n"
+        "当某个字段需要引用其他节点的输出时，必须使用数据绑定 DSL，并且只能引用提供的 allowed_node_ids 中的节点。\n"
+        "你只能从以下节点中读取上下游结果：result_of.<node_id>.<field>...，其中 node_id 必须来自 allowed_node_ids，field 必须存在于该节点的 output_schema。\n"
+        "start/end 节点可以保持 params 为空。\n"
+        "返回 JSON：{\"id\": <当前节点 id>, \"params\": { ...补全后的参数... }}，不要加代码块标记。\n\n"
         "【重要说明：示例仅为模式，不代表具体业务】\n"
-        "下面所有示例（包括列表字段名、格式模板中的文字等）仅用于说明 DSL 的使用方式，\n"
-        "实际任务中必须根据当前 action 的 output_schema 和业务语义来选取字段名、节点名和字符串内容，\n"
-        "不要在与当前任务无关的场景中硬套“员工/体温/新闻/Nvidia”等具体词汇。\n\n"
-        "【任务】\n"
-        "1. 对 type='action' 且有 action_id 的节点，根据对应 arg_schema 填充 params，\n"
-        "   覆盖所有 required 字段，并给出合理的占位值（可以是示例值，但要语义合理）。\n"
-        "2. 当某个字段的值需要来自上游节点输出时，请使用“数据绑定 DSL”：\n"
-        "   2.1 最简单：从上游直接取值或计数，例如：\n"
-        "       - 直接引用：\n"
-        "         {\"__from__\": \"result_of.some_node.items\", \"__agg__\": \"identity\"}\n"
-        "       - 按条件计数：\n"
-        "         {\n"
-        "           \"__from__\": \"result_of.some_node.items\",\n"
-        "           \"__agg__\": \"count_if\",\n"
-        "           \"field\": \"value\",  // 这里的 value 只是示意字段名\n"
-        "           \"op\": \">\",\n"
-        "           \"value\": 10\n"
-        "         }\n"
-        "   2.2 对于“先过滤再格式化成消息文本”的情况，推荐使用 **pipeline 聚合 DSL**：\n"
-        "       示例（只说明结构，不代表具体业务含义）：\n"
-        "       {\n"
-        "         \"__from__\": \"result_of.list_node.items\",\n"
-        "         \"__agg__\": \"pipeline\",\n"
-        "         \"steps\": [\n"
-        "           {\"op\": \"filter\", \"field\": \"score\", \"cmp\": \">\", \"value\": 0.8},\n"
-        "           {\"op\": \"map\", \"field\": \"id\"},\n"
-        "           {\"op\": \"format_join\", \"format\": \"ID={value} 异常\", \"sep\": \"\\n\"}\n"
-        "         ]\n"
-        "       }\n"
-        "       - filter 步骤：保留满足条件的元素（cmp 支持 >,>=,<,<=,==）。\n"
-        "       - map 步骤：从每个元素中取某个字段组成新的列表。\n"
-        "       - format_join 步骤：对列表中每个元素用 format 中的 {value} 替换，然后用 sep 拼接成一个字符串。\n"
-        "   2.3 为兼容已有写法，也允许使用简化的 filter_map（执行器会自动翻译成 pipeline）：\n"
-        "       {\n"
-        "         \"__from__\": \"result_of.list_node.items\",\n"
-        "         \"__agg__\": \"filter_map\",\n"
-        "         \"filter_field\": \"score\",\n"
-        "         \"filter_op\": \">\",\n"
-        "         \"filter_value\": 0.8,\n"
-        "         \"map_field\": \"id\",\n"
-        "         \"format\": \"ID={value} 异常\"\n"
-        "       }\n\n"
-        "3. 对 type='condition' 的节点，根据 display_name、上下游关系和整体语义，\n"
-        "   使用结构化条件 params，例如（只是模式示例）：\n"
-        "   {\"kind\": \"any_greater_than\", "
-        "\"source\": \"result_of.some_node.items\", "
-        "\"field\": \"score\", \"threshold\": 0.8 }\n"
-        "   或 {\"kind\": \"equals\", "
-        "\"source\": \"result_of.other_node.count\", \"value\": 0 }。\n"
-        "   这里的 some_node / items / score / count 都是示范性的占位名，\n"
-        "   实际需要根据该节点选择的 action 的 output_schema 来决定。\n\n"
-        "4. start/end 节点允许 params 为空 {}。\n"
-        "5. 返回的 JSON 结构必须与输入 workflow_skeleton 相同，只是节点的 params 更完整。\n"
-        "6. 只返回 JSON 对象本身，不要加代码块标记。"
+        "示例（字段名仅示意）：\n"
+        "- 直接引用：{\"__from__\": \"result_of.some_node.items\", \"__agg__\": \"identity\"}\n"
+        "- 条件计数：{\"__from__\": \"result_of.some_node.items\", \"__agg__\": \"count_if\", \"field\": \"value\", \"op\": \">\", \"value\": 10}\n"
+        "- pipeline：{\"__from__\": \"result_of.list_node.items\", \"__agg__\": \"pipeline\", \"steps\": [{\"op\": \"filter\", \"field\": \"score\", \"cmp\": \">\", \"value\": 0.8}, {\"op\": \"map\", \"field\": \"id\"}, {\"op\": \"format_join\", \"format\": \"ID={value} 异常\", \"sep\": \"\\n\"}]}\n"
+        "示例中的节点名/字段名只是格式说明，实际必须使用 payload 中的节点信息和 output_schema。"
     )
 
-    user_payload = {
-        "workflow_skeleton": workflow_skeleton,
-        "node_relations": node_relations,
-        "action_schemas": action_schemas,
+    workflow = Workflow.model_validate(workflow_skeleton)
+    nodes_by_id: Dict[str, Node] = {n.id: n for n in workflow.nodes}
+    filled_params: Dict[str, Dict[str, Any]] = {
+        n.id: copy.deepcopy(n.params) for n in workflow.nodes
     }
 
-    resp = client.chat.completions.create(
-        model=model,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
-        ],
-        temperature=0.1,
-    )
+    for node_id in _traverse_order(workflow):
+        node = nodes_by_id[node_id]
+        upstream_nodes = get_upstream_nodes(workflow, node_id)
+        allowed_node_ids = [n.id for n in upstream_nodes]
 
-    content = resp.choices[0].message.content or ""
-    text = content.strip()
-    if text.startswith("```"):
-        text = text.strip("`")
-        if "\n" in text:
-            first_line, rest = text.split("\n", 1)
-            if first_line.strip().lower().startswith("json"):
-                text = rest
+        upstream_context = []
+        for n in upstream_nodes:
+            action_schema = action_schemas.get(n.action_id, {}) if n.action_id else {}
+            upstream_context.append(
+                {
+                    "id": n.id,
+                    "type": n.type,
+                    "action_id": n.action_id,
+                    "output_schema": action_schema.get("output_schema"),
+                    "params": filled_params.get(n.id, n.params),
+                }
+            )
 
-    try:
-        completed_workflow = json.loads(text)
-    except json.JSONDecodeError:
-        print("[fill_params_with_llm] 无法解析模型返回 JSON，原始内容：")
-        print(content)
-        raise
+        target_action_schema = action_schemas.get(node.action_id, {}) if node.action_id else {}
+        user_payload = {
+            "target_node": {
+                "id": node.id,
+                "type": node.type,
+                "action_id": node.action_id,
+                "display_name": node.display_name,
+                "existing_params": filled_params[node.id],
+            },
+            "arg_schema": target_action_schema.get("arg_schema"),
+            "allowed_node_ids": allowed_node_ids,
+            "allowed_upstream_nodes": upstream_context,
+        }
+
+        resp = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
+            ],
+            temperature=0.1,
+        )
+
+        content = resp.choices[0].message.content or ""
+        text = content.strip()
+        if text.startswith("```"):
+            text = text.strip("`")
+            if "\n" in text:
+                first_line, rest = text.split("\n", 1)
+                if first_line.strip().lower().startswith("json"):
+                    text = rest
+
+        try:
+            node_result = json.loads(text)
+        except json.JSONDecodeError:
+            print("[fill_params_with_llm] 无法解析模型返回 JSON，原始内容：")
+            print(content)
+            raise
+
+        if isinstance(node_result, dict):
+            params = node_result.get("params", {})
+            if isinstance(params, dict):
+                filled_params[node.id] = params
+
+    completed_nodes = []
+    for node in workflow.nodes:
+        data = node.model_dump(by_alias=True)
+        data["params"] = filled_params.get(node.id, node.params)
+        completed_nodes.append(data)
+
+    completed_workflow = {
+        "workflow_name": workflow.workflow_name,
+        "description": workflow.description,
+        "nodes": completed_nodes,
+        "edges": [e.model_dump(by_alias=True) for e in workflow.edges],
+    }
 
     return completed_workflow
 
