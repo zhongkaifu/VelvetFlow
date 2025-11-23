@@ -2,7 +2,7 @@
 import json
 import os
 from collections import deque
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Mapping, Optional
 
 from openai import OpenAI
 
@@ -922,13 +922,38 @@ def _check_output_path_against_schema(
     if not rest_path:
         return None
 
-    first_field = rest_path[0]
-    props = (output_schema.get("properties") or {}) if isinstance(output_schema, dict) else {}
-    if first_field not in props:
-        return (
-            f"路径 '{source_path}' 引用字段 '{first_field}'，但 action_id='{action_id}' 的 "
-            f"output_schema.properties 中不存在该字段。"
-        )
+    err = _schema_path_error(output_schema, rest_path)
+    if err:
+        return f"路径 '{source_path}' 无效：{err}"
+
+    return None
+
+
+def _schema_path_error(schema: Mapping[str, Any], fields: List[str]) -> Optional[str]:
+    """Check whether a dotted field path exists in a JSON schema."""
+
+    if not isinstance(schema, Mapping):
+        return "output_schema 不是对象，无法校验字段路径。"
+
+    current: Mapping[str, Any] = schema
+    idx = 0
+    while idx < len(fields):
+        name = fields[idx]
+        typ = current.get("type")
+
+        if typ == "array":
+            current = current.get("items") or {}
+            continue
+
+        if typ == "object":
+            props = current.get("properties") or {}
+            if name not in props:
+                return f"字段 '{name}' 不存在，已知字段有: {list(props.keys())}"
+            current = props[name]
+            idx += 1
+            continue
+
+        return f"字段路径 '{'.'.join(fields)}' 与 schema 类型 '{typ}' 不匹配（期望 object/array）。"
 
     return None
 
