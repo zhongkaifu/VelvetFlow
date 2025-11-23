@@ -118,6 +118,7 @@ class DynamicActionExecutor:
             return value
 
         src_path = value["__from__"]
+        self._validate_result_reference(src_path)
         data = self._get_from_context(context, src_path)
         agg = value.get("__agg__", "identity")
 
@@ -252,6 +253,71 @@ class DynamicActionExecutor:
             return current
 
         return value
+
+    def _validate_result_reference(self, src_path: str) -> None:
+        """Ensure __from__ references point to valid node outputs.
+
+        The format we validate is ``result_of.<node_id>[.<field>...]``. We only
+        check references to other nodes' outputs; other context lookups are
+        allowed to pass through.
+        """
+
+        if not isinstance(src_path, str) or not src_path.startswith("result_of."):
+            return
+
+        parts = src_path.split(".")
+        if len(parts) < 2:
+            raise ValueError(f"__from__ 路径 '{src_path}' 不是合法的 result_of 引用")
+
+        node_id = parts[1]
+        node = self.nodes.get(node_id)
+        if not node:
+            raise ValueError(f"__from__ 引用的节点 '{node_id}' 不存在")
+
+        if node.get("type") != "action":
+            raise ValueError(f"__from__ 只能引用 action 节点输出，当前节点 '{node_id}' 类型为 {node.get('type')}")
+
+        action_id = node.get("action_id")
+        action = get_action_by_id(action_id) if action_id else None
+        if not action:
+            raise ValueError(f"__from__ 引用的节点 '{node_id}' 缺少合法的 action_id")
+
+        output_schema = action.get("output_schema")
+        field_path = parts[2:]
+        if not field_path:
+            return
+
+        if not self._schema_has_path(output_schema, field_path):
+            raise ValueError(
+                f"__from__ 路径 '{src_path}' 引用了 action '{action_id}' 输出中不存在的字段"
+            )
+
+    def _schema_has_path(self, schema: Mapping[str, Any], fields: List[str]) -> bool:
+        if not isinstance(schema, Mapping):
+            return False
+
+        current: Mapping[str, Any] = schema
+        idx = 0
+        while idx < len(fields):
+            name = fields[idx]
+            typ = current.get("type")
+
+            if typ == "array":
+                current = current.get("items") or {}
+                # array 本身不消费字段名，继续在 items 上检查同一个字段
+                continue
+
+            if typ == "object":
+                props = current.get("properties") or {}
+                if name not in props:
+                    return False
+                current = props[name]
+                idx += 1
+                continue
+
+            return False
+
+        return True
 
     def _resolve_params(self, params: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
         resolved = {}
