@@ -112,9 +112,9 @@ class DynamicActionExecutor:
         if agg == "count_if":
             if not isinstance(data, list):
                 return 0
-            field = value.get("field")
-            op = value.get("op", "==")
-            target = value.get("value")
+            field = value.get("field") or value.get("filter_field")
+            op = value.get("op") or value.get("filter_op") or "=="
+            target = value.get("value") or value.get("filter_value")
             count = 0
             for item in data:
                 if not isinstance(item, dict):
@@ -175,9 +175,9 @@ class DynamicActionExecutor:
                 if op == "filter":
                     if not isinstance(current, list):
                         continue
-                    field = step.get("field")
-                    cmp_op = step.get("cmp", "==")
-                    cmp_val = step.get("value")
+                    field = step.get("field") or step.get("filter_field")
+                    cmp_op = step.get("cmp") or step.get("filter_op") or "=="
+                    cmp_val = step.get("value") or step.get("filter_value")
                     filtered = []
                     for item in current:
                         if not isinstance(item, dict):
@@ -231,10 +231,12 @@ class DynamicActionExecutor:
         for k, v in params.items():
             if isinstance(v, dict) and "__from__" in v:
                 try:
-                    resolved[k] = self._resolve_param_value(v, context)
+                    resolved_value = self._resolve_param_value(v, context)
                 except Exception as e:
                     print(f"  [param-resolver] 解析参数 {k} 失败: {e}，使用原值")
-                resolved[k] = v
+                    resolved[k] = v
+                else:
+                    resolved[k] = resolved_value
             else:
                 resolved[k] = v
         return resolved
