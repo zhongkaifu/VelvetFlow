@@ -1,0 +1,27 @@
+{
+  "hr.get_today_temperatures.v1": {
+    "result": {
+      "data": [
+        {"employee_id": "E001", "temperature": 36.8},
+        {"employee_id": "E002", "temperature": 38.2},
+        {"employee_id": "E003", "temperature": 37.0}
+      ]
+    }
+  },
+  "hr.update_employee_health_profile.v1": {
+    "defaults": {
+      "employee_id": "unknown",
+      "last_temperature": 36.5,
+      "status": "normal"
+    },
+    "result": {
+      "data": [
+        {
+          "employee_id": "{{employee_id}}",
+          "last_temperature": "{{last_temperature}}",
+          "status": "{{status}}"
+        }
+      ]
+    }
+  }
+}
