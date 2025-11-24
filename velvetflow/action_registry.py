@@ -1,7 +1,16 @@
 """Action registry definitions for VelvetFlow."""
 from typing import Any, Dict, List, Optional
 
-BUSINESS_ACTIONS: List[Dict[str, Any]] = [
+
+def _with_security_defaults(action: Dict[str, Any]) -> Dict[str, Any]:
+    """Ensure all actions carry the security metadata fields."""
+
+    action.setdefault("requires_approval", False)
+    action.setdefault("allowed_roles", [])
+    return action
+
+
+_BUSINESS_ACTIONS_RAW: List[Dict[str, Any]] = [
     {
         "action_id": "hr.notify_human.v1",
         "name": "Notify HR about an event",
@@ -116,6 +125,8 @@ BUSINESS_ACTIONS: List[Dict[str, Any]] = [
             "required": ["data"],
         },
         "enabled": True,
+        "requires_approval": True,
+        "allowed_roles": ["hr_manager"],
     },
     {
         "action_id": "ops.create_incident.v1",
@@ -140,6 +151,8 @@ BUSINESS_ACTIONS: List[Dict[str, Any]] = [
             },
         },
         "enabled": True,
+        "requires_approval": True,
+        "allowed_roles": ["ops_manager", "admin"],
     },
     {
         "action_id": "ops.notify_oncall.v1",
@@ -253,6 +266,10 @@ BUSINESS_ACTIONS: List[Dict[str, Any]] = [
         },
         "enabled": True,
     },
+]
+
+BUSINESS_ACTIONS: List[Dict[str, Any]] = [
+    _with_security_defaults(dict(action)) for action in _BUSINESS_ACTIONS_RAW
 ]
 
 

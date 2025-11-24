@@ -380,6 +380,52 @@ def synthesize_edges_with_llm(
         return []
 
 
+# ===================== 10. 安全约束检查 =====================
+
+
+def _has_approval_node(nodes: List[Dict[str, Any]]) -> bool:
+    """Heuristically detect whether an approval node already exists."""
+
+    for node in nodes:
+        if node.get("type") != "action":
+            continue
+
+        display_name = (node.get("display_name") or "").lower()
+        action_id = (node.get("action_id") or "").lower()
+        if "审批" in (node.get("display_name") or ""):
+            return True
+        if "approve" in display_name or "approval" in display_name:
+            return True
+        if "approve" in action_id or "approval" in action_id:
+            return True
+
+    return False
+
+
+def detect_missing_approval_nodes(
+    workflow: Dict[str, Any], action_registry: List[Dict[str, Any]]
+) -> List[str]:
+    """Identify approval-requiring actions that lack an approval step in the workflow."""
+
+    nodes = workflow.get("nodes", []) or []
+    actions_by_id = _index_actions_by_id(action_registry)
+
+    approvals_needed: List[str] = []
+    for node in nodes:
+        if node.get("type") != "action":
+            continue
+
+        action_def = actions_by_id.get(node.get("action_id"))
+        if action_def and action_def.get("requires_approval"):
+            approvals_needed.append(node.get("action_id") or node.get("display_name") or node.get("id"))
+
+    if not approvals_needed or _has_approval_node(nodes):
+        return []
+
+    target_text = "、".join(approvals_needed)
+    return [f"动作 {target_text} 需要审批，但当前流程没有任何审批节点，请补充一个“审批”节点。"]
+
+
 # ===================== 10. 需求覆盖校验 + 结构改进 =====================
 
 def check_requirement_coverage_with_llm(
@@ -756,6 +802,13 @@ def plan_workflow_structure_with_llm(
             workflow=skeleton,
             model=OPENAI_MODEL,
         )
+        approval_missing = detect_missing_approval_nodes(
+            workflow=skeleton, action_registry=action_registry
+        )
+        if approval_missing:
+            coverage.setdefault("missing_points", [])
+            coverage["missing_points"].extend(approval_missing)
+            coverage["is_covered"] = False
         log_event("coverage_check", {"round": refine_round, "coverage": coverage})
         print("覆盖度检查结果：", json.dumps(coverage, ensure_ascii=False, indent=2))
 

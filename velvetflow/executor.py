@@ -32,7 +32,10 @@ def load_simulation_data(path: str) -> SimulationData:
 
 class DynamicActionExecutor:
     def __init__(
-        self, workflow: Workflow, simulations: Union[str, Mapping[str, Any], None] = None
+        self,
+        workflow: Workflow,
+        simulations: Union[str, Mapping[str, Any], None] = None,
+        user_role: str = "user",
     ):
         if not isinstance(workflow, Workflow):
             raise ValueError(f"workflow 必须是 Workflow 对象，当前类型为 {type(workflow)}")
@@ -48,6 +51,7 @@ class DynamicActionExecutor:
         self.node_models = {n.id: n for n in workflow.nodes}
         self.nodes = {n["id"]: n for n in workflow_dict["nodes"]}
         self.edges = workflow_dict["edges"]
+        self.user_role = user_role
 
         if isinstance(simulations, str):
             self.simulation_data: SimulationData = load_simulation_data(simulations)
@@ -227,6 +231,7 @@ class DynamicActionExecutor:
         print("\n==== 执行工作流 ====")
         print("名称：", self.workflow_dict.get("workflow_name"))
         print("描述：", self.workflow_dict.get("description", ""))
+        print("模拟用户角色：", self.user_role)
         print("================================\n")
 
         start_nodes = self.find_start_nodes()
@@ -274,9 +279,27 @@ class DynamicActionExecutor:
                     print(f"  [WARN] 未在 Registry 中找到 action_id={action_id}")
                     result = {"status": "no_action_impl"}
                 else:
-                    print(f"  -> 执行业务动作: {action['name']} (domain={action['domain']})")
-                    print(f"  -> 描述: {action['description']}")
-                    result = self._simulate_action(action_id, resolved_params)
+                    allowed_roles = action.get("allowed_roles") or []
+                    if allowed_roles and self.user_role not in allowed_roles:
+                        print(
+                            "  [FORBIDDEN] 当前角色 '",
+                            self.user_role,
+                            "' 无权执行该动作，允许角色：",
+                            allowed_roles,
+                            sep="",
+                        )
+                        result = {
+                            "status": "forbidden",
+                            "reason": "role_not_allowed",
+                            "required_roles": allowed_roles,
+                            "actor_role": self.user_role,
+                        }
+                    else:
+                        print(
+                            f"  -> 执行业务动作: {action['name']} (domain={action['domain']})"
+                        )
+                        print(f"  -> 描述: {action['description']}")
+                        result = self._simulate_action(action_id, resolved_params)
 
                 results[nid] = result
                 log_event(
