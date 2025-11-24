@@ -1646,6 +1646,34 @@ def validate_completed_workflow(
                                     )
                                 )
 
+                    elif kind == "contains":
+                        for field in ["source", "field", "value"]:
+                            if field not in params:
+                                errors.append(
+                                    ValidationError(
+                                        code="MISSING_REQUIRED_PARAM",
+                                        node_id=nid,
+                                        field=field,
+                                        message=(
+                                            f"condition 节点 '{nid}' (kind=contains) 缺少字段 '{field}'。"
+                                        ),
+                                    )
+                                )
+
+                        src = params.get("source")
+                        fld = params.get("field")
+                        if isinstance(src, str) and isinstance(fld, str):
+                            item_err = _check_array_item_field(src, fld, nodes_by_id, actions_by_id)
+                            if item_err:
+                                errors.append(
+                                    ValidationError(
+                                        code="SCHEMA_MISMATCH",
+                                        node_id=nid,
+                                        field="field",
+                                        message=f"condition 节点 '{nid}' 的 field='{fld}' 无效：{item_err}",
+                                    )
+                                )
+
                 source = params.get("source")
                 source_path: Optional[str] = None
                 if isinstance(source, dict) and "__from__" in source:
@@ -1727,7 +1755,9 @@ def validate_completed_workflow(
                                 )
                             )
 
-                    if kind == "any_greater_than" and isinstance(params.get("field"), str):
+                    if kind in {"any_greater_than", "contains"} and isinstance(
+                        params.get("field"), str
+                    ):
                         item_err = _check_array_item_field(
                             source_path, params["field"], nodes_by_id, actions_by_id
                         )
