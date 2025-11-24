@@ -285,7 +285,14 @@ def ensure_registered_actions(
     nodes = workflow_dict.get("nodes", []) if isinstance(workflow_dict, dict) else []
 
     for node in nodes:
-        if node.get("type") != "action":
+        ntype = node.get("type")
+        if ntype != "action":
+            if node.get("action_id") is not None:
+                nid = node.get("id", "<unknown>")
+                log_warn(
+                    f"[ActionGuard] 控制节点 '{nid}' 的 action_id 将被清空（type='{ntype}' 不需要 action_id）。"
+                )
+                node["action_id"] = None
             continue
 
         aid = node.get("action_id")
