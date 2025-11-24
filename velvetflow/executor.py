@@ -7,7 +7,16 @@ from typing import Any, Dict, List, Mapping, Set, Union
 
 from velvetflow.bindings import BindingContext, eval_node_params
 from velvetflow.action_registry import get_action_by_id
-from velvetflow.logging_utils import log_event
+from velvetflow.logging_utils import (
+    log_debug,
+    log_event,
+    log_info,
+    log_json,
+    log_kv,
+    log_section,
+    log_success,
+    log_warn,
+)
 from velvetflow.models import Node, ValidationError, Workflow
 
 # ===================== 16. 执行器 =====================
@@ -101,7 +110,7 @@ class DynamicActionExecutor:
                     queue.append(nxt)
 
         if len(ordered) != len(nodes):
-            print("可能是 LLM 生成了有环的工作流")
+            log_warn("可能是 LLM 生成了有环的工作流")
             raise ValueError(
                 ValidationError(
                     code="CYCLE_DETECTED",
@@ -206,7 +215,7 @@ class DynamicActionExecutor:
         params = node.get("params") or {}
         kind = params.get("kind")
         if not kind:
-            print("  [condition] 未指定 kind，默认 False")
+            log_warn("[condition] 未指定 kind，默认 False")
             return False
 
         if kind == "any_greater_than":
@@ -216,10 +225,12 @@ class DynamicActionExecutor:
             try:
                 data = self._resolve_condition_source(source, ctx)
             except Exception as e:
-                print(f"  [condition:any_greater_than] source 路径 '{source}' 无法从 context 读取: {e}，返回 False")
+                log_warn(
+                    f"[condition:any_greater_than] source 路径 '{source}' 无法从 context 读取: {e}，返回 False"
+                )
                 return False
             if not isinstance(data, list):
-                print("  [condition:any_greater_than] source 不是 list，返回 False")
+                log_warn("[condition:any_greater_than] source 不是 list，返回 False")
                 return False
             return any((item.get(field, 0) > threshold) for item in data if isinstance(item, dict))
 
@@ -229,25 +240,25 @@ class DynamicActionExecutor:
             try:
                 data = self._resolve_condition_source(source, ctx)
             except Exception as e:
-                print(f"  [condition:equals] source 路径 '{source}' 无法从 context 读取: {e}，返回 False")
+                log_warn(
+                    f"[condition:equals] source 路径 '{source}' 无法从 context 读取: {e}，返回 False"
+                )
                 return False
             return data == value
 
-        print(f"  [condition] 未知 kind={kind}，默认 False")
+        log_warn(f"[condition] 未知 kind={kind}，默认 False")
         return False
 
     def run_workflow(self):
         sorted_nodes = self._topological_sort(self.workflow)
 
-        print("\n==== 执行工作流 ====")
-        print("名称：", self.workflow_dict.get("workflow_name"))
-        print("描述：", self.workflow_dict.get("description", ""))
-        print("模拟用户角色：", self.user_role)
-        print("================================\n")
+        log_section("执行工作流", self.workflow_dict.get("workflow_name", ""))
+        log_kv("描述", self.workflow_dict.get("description", ""))
+        log_kv("模拟用户角色", self.user_role)
 
         start_nodes = self.find_start_nodes()
         if not start_nodes and sorted_nodes:
-            print("未找到 start 节点，将从任意一个节点开始（仅 demo）。")
+            log_warn("未找到 start 节点，将从任意一个节点开始（仅 demo）。")
             start_nodes = [sorted_nodes[0].id]
 
         visited: Set[str] = set()
@@ -277,27 +288,23 @@ class DynamicActionExecutor:
                     "params": params,
                 },
             )
-            print(f"[Node {nid}] type={ntype}, display_name={display_name}, action_id={action_id}")
+            log_info(f"[Node {nid}] type={ntype}, display_name={display_name}, action_id={action_id}")
             if params:
-                print("  raw params =", json.dumps(params, ensure_ascii=False))
+                log_json("raw params", params)
 
             if ntype == "action" and action_id:
                 resolved_params = eval_node_params(node_model, binding_ctx)
-                print("  resolved params =", json.dumps(resolved_params, ensure_ascii=False))
+                log_json("resolved params", resolved_params)
 
                 action = get_action_by_id(action_id)
                 if not action:
-                    print(f"  [WARN] 未在 Registry 中找到 action_id={action_id}")
+                    log_warn(f"未在 Registry 中找到 action_id={action_id}")
                     result = {"status": "no_action_impl"}
                 else:
                     allowed_roles = action.get("allowed_roles") or []
                     if allowed_roles and self.user_role not in allowed_roles:
-                        print(
-                            "  [FORBIDDEN] 当前角色 '",
-                            self.user_role,
-                            "' 无权执行该动作，允许角色：",
-                            allowed_roles,
-                            sep="",
+                        log_warn(
+                            f"[FORBIDDEN] 当前角色 '{self.user_role}' 无权执行该动作，允许角色：{allowed_roles}"
                         )
                         result = {
                             "status": "forbidden",
@@ -306,10 +313,10 @@ class DynamicActionExecutor:
                             "actor_role": self.user_role,
                         }
                     else:
-                        print(
-                            f"  -> 执行业务动作: {action['name']} (domain={action['domain']})"
+                        log_info(
+                            f"-> 执行业务动作: {action['name']} (domain={action['domain']})"
                         )
-                        print(f"  -> 描述: {action['description']}")
+                        log_debug(f"-> 描述: {action['description']}")
                         result = self._simulate_action(action_id, resolved_params)
 
                 results[nid] = result
@@ -326,7 +333,7 @@ class DynamicActionExecutor:
 
             elif ntype == "condition":
                 cond_value = self._eval_condition(node, binding_ctx)
-                print(f"  [condition] 结果: {cond_value}")
+                log_info(f"[condition] 结果: {cond_value}")
                 next_ids = self.next_nodes(nid, cond_value=cond_value)
                 for nxt in next_ids:
                     if nxt not in visited:
@@ -357,7 +364,7 @@ class DynamicActionExecutor:
                 },
             )
 
-        print("\n==== 执行结束 ====\n")
+        log_success("执行结束")
 
     def run(self):
         self.run_workflow()
