@@ -249,22 +249,54 @@ class DynamicActionExecutor:
                 return len(data) > 0
             return True
 
+        def _extract_values(val: Any, field: Optional[str]) -> List[Any]:
+            if val is None:
+                return []
+
+            # If the source is already a list, normalize each element.
+            if isinstance(val, list):
+                extracted: List[Any] = []
+                for item in val:
+                    if field and isinstance(item, dict):
+                        extracted.append(item.get(field))
+                    else:
+                        extracted.append(item)
+                return extracted
+
+            # For dict sources, allow pulling a specific field.
+            if field and isinstance(val, dict):
+                return [val.get(field)]
+
+            # Fallback to treating the value itself as the comparable payload.
+            return [val]
+
         if kind == "any_greater_than":
             field = params.get("field")
             threshold = params.get("threshold")
-            if not isinstance(data, list):
-                log_warn("[condition:any_greater_than] source 不是 list，返回 False")
-                return False
-            return any((item.get(field, 0) > threshold) for item in data if isinstance(item, dict))
+            values = _extract_values(data, field)
+
+            def _is_gt(v: Any) -> bool:
+                try:
+                    return v is not None and v > threshold
+                except Exception:
+                    return False
+
+            return any(_is_gt(v) for v in values)
 
         if kind == "all_less_than":
             field = params.get("field")
             threshold = params.get("threshold")
-            if not isinstance(data, list):
-                log_warn("[condition:all_less_than] source 不是 list，返回 False")
+            values = [v for v in _extract_values(data, field) if v is not None]
+            if not values:
                 return False
-            filtered = [item for item in data if isinstance(item, dict) and field in item]
-            return bool(filtered) and all((item.get(field, 0) < threshold) for item in filtered)
+
+            def _is_lt(v: Any) -> bool:
+                try:
+                    return v < threshold
+                except Exception:
+                    return False
+
+            return all(_is_lt(v) for v in values)
 
         if kind == "equals":
             value = params.get("value")
