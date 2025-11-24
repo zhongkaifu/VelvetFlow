@@ -78,7 +78,8 @@ PLANNER_TOOLS = [
                 "\"source\": \"result_of.some_node.items\", "
                 "\"field\": \"value\", \"threshold\": 10 }\n"
                 "或 {\"kind\": \"equals\", "
-                "\"source\": \"result_of.some_node.count\", \"value\": 0 }"
+                "\"source\": \"result_of.some_node.count\", \"value\": 0 }，也可以使用 between/not_equals/multi_band 等枚举。\n"
+                "- type='loop'：params 需要提供 loop_kind(for_each/while)、source/condition、item_alias、body_subgraph(nodes/edges/entry/exit) 等。"
             ),
             "parameters": {
                 "type": "object",
@@ -284,7 +285,14 @@ def ensure_registered_actions(
     nodes = workflow_dict.get("nodes", []) if isinstance(workflow_dict, dict) else []
 
     for node in nodes:
-        if node.get("type") != "action":
+        ntype = node.get("type")
+        if ntype != "action":
+            if node.get("action_id") is not None:
+                nid = node.get("id", "<unknown>")
+                log_warn(
+                    f"[ActionGuard] 控制节点 '{nid}' 的 action_id 将被清空（type='{ntype}' 不需要 action_id）。"
+                )
+                node["action_id"] = None
             continue
 
         aid = node.get("action_id")
@@ -1039,12 +1047,24 @@ def fill_params_with_llm(
                 if first_line.strip().lower().startswith("json"):
                     text = rest
 
+        decoder = json.JSONDecoder()
+        node_result: Any
         try:
-            node_result = json.loads(text)
+            node_result, _ = decoder.raw_decode(text)
         except json.JSONDecodeError:
-            log_error("[fill_params_with_llm] 无法解析模型返回 JSON")
-            log_debug(content)
-            raise
+            # 某些模型可能在 JSON 前后附带额外文本，尝试截取第一个 JSON 对象以提升鲁棒性。
+            first_curly = text.find("{")
+            if first_curly >= 0:
+                try:
+                    node_result, _ = decoder.raw_decode(text[first_curly:])
+                except json.JSONDecodeError:
+                    log_error("[fill_params_with_llm] 无法解析模型返回 JSON")
+                    log_debug(content)
+                    raise
+            else:
+                log_error("[fill_params_with_llm] 无法解析模型返回 JSON")
+                log_debug(content)
+                raise
 
         if isinstance(node_result, dict):
             params = node_result.get("params", {})
@@ -1107,6 +1127,13 @@ def _check_output_path_against_schema(
 
     node = nodes_by_id[node_id]
     action_id = node.get("action_id")
+    node_type = node.get("type")
+
+    # 控制节点（如 condition / loop）没有 action_id，也没有可用的 output_schema。
+    # 在这种情况下跳过 schema 校验，允许下游继续引用其动态结果。
+    if not action_id and node_type in {"condition", "loop", "start", "end"}:
+        return None
+
     if not action_id:
         return f"路径 '{source_path}' 引用的节点 '{node_id}' 没有 action_id，无法从 output_schema 校验。"
 
@@ -1592,32 +1619,57 @@ def validate_completed_workflow(
                         )
                     )
                 else:
-                    if kind == "list_not_empty":
-                        if "source" not in params:
+                    allowed_kinds = {
+                        "list_not_empty",
+                        "any_greater_than",
+                        "equals",
+                        "contains",
+                        "not_equals",
+                        "greater_than",
+                        "less_than",
+                        "between",
+                        "all_less_than",
+                        "is_empty",
+                        "not_empty",
+                        "multi_band",
+                    }
+                    if kind not in allowed_kinds:
+                        errors.append(
+                            ValidationError(
+                                code="SCHEMA_MISMATCH",
+                                node_id=nid,
+                                field="kind",
+                                message=f"condition 节点 '{nid}' 的 kind='{kind}' 未被支持。",
+                            )
+                        )
+                    required_fields_map = {
+                        "list_not_empty": ["source"],
+                        "any_greater_than": ["source", "field", "threshold"],
+                        "all_less_than": ["source", "field", "threshold"],
+                        "equals": ["source", "value"],
+                        "not_equals": ["source", "value"],
+                        "greater_than": ["source", "threshold"],
+                        "less_than": ["source", "threshold"],
+                        "between": ["source", "min", "max"],
+                        "contains": ["source", "field", "value"],
+                        "multi_band": ["source", "bands"],
+                        "is_empty": ["source"],
+                        "not_empty": ["source"],
+                    }
+                    for field in required_fields_map.get(kind, []):
+                        if field not in params:
                             errors.append(
                                 ValidationError(
                                     code="MISSING_REQUIRED_PARAM",
                                     node_id=nid,
-                                    field="source",
+                                    field=field,
                                     message=(
-                                        f"condition 节点 '{nid}' (kind=list_not_empty) 缺少字段 'source'。"
+                                        f"condition 节点 '{nid}' (kind={kind}) 缺少字段 '{field}'。"
                                     ),
                                 )
                             )
 
-                    elif kind == "any_greater_than":
-                        for field in ["source", "field", "threshold"]:
-                            if field not in params:
-                                errors.append(
-                                    ValidationError(
-                                        code="MISSING_REQUIRED_PARAM",
-                                        node_id=nid,
-                                        field=field,
-                                        message=(
-                                            f"condition 节点 '{nid}' (kind=any_greater_than) 缺少字段 '{field}'。"
-                                        ),
-                                    )
-                                )
+                    if kind in {"any_greater_than", "all_less_than", "contains"}:
                         src = params.get("source")
                         fld = params.get("field")
                         if isinstance(src, str) and isinstance(fld, str):
@@ -1632,48 +1684,123 @@ def validate_completed_workflow(
                                     )
                                 )
 
-                    elif kind == "equals":
-                        for field in ["source", "value"]:
-                            if field not in params:
+                source = params.get("source")
+                source_path: Optional[str] = None
+                if isinstance(source, dict) and "__from__" in source:
+                    binding_err = validate_param_binding(source)
+                    if binding_err:
+                        errors.append(
+                            ValidationError(
+                                code="SCHEMA_MISMATCH",
+                                node_id=nid,
+                                field="source",
+                                message=(
+                                    f"condition 节点 '{nid}' 的 source 绑定无效：{binding_err}"
+                                ),
+                            )
+                        )
+                    else:
+                        source_path = source.get("__from__")
+                elif isinstance(source, str):
+                    source_path = source
+
+                if isinstance(source_path, str):
+                    if source_path.startswith("result_of."):
+                        try:
+                            rest = source_path[len("result_of."):]
+                            node_part = rest.split(".", 1)[0]
+                            if node_part not in node_ids:
                                 errors.append(
                                     ValidationError(
-                                        code="MISSING_REQUIRED_PARAM",
+                                        code="INVALID_EDGE",
                                         node_id=nid,
-                                        field=field,
+                                        field="source",
                                         message=(
-                                            f"condition 节点 '{nid}' (kind=equals) 缺少字段 '{field}'。"
+                                            f"condition 节点 '{nid}' 的 source='{source_path}' 引用了不存在的节点 ID '{node_part}'。"
                                         ),
                                     )
                                 )
-
-                    elif kind == "contains":
-                        for field in ["source", "field", "value"]:
-                            if field not in params:
-                                errors.append(
-                                    ValidationError(
-                                        code="MISSING_REQUIRED_PARAM",
-                                        node_id=nid,
-                                        field=field,
-                                        message=(
-                                            f"condition 节点 '{nid}' (kind=contains) 缺少字段 '{field}'。"
-                                        ),
-                                    )
+                        except Exception:
+                            errors.append(
+                                ValidationError(
+                                    code="SCHEMA_MISMATCH",
+                                    node_id=nid,
+                                    field="source",
+                                    message=(
+                                        f"condition 节点 '{nid}' 的 source='{source_path}' 格式异常。"
+                                    ),
                                 )
+                            )
 
-                        src = params.get("source")
-                        fld = params.get("field")
-                        if isinstance(src, str) and isinstance(fld, str):
-                            item_err = _check_array_item_field(src, fld, nodes_by_id, actions_by_id)
-                            if item_err:
-                                errors.append(
-                                    ValidationError(
-                                        code="SCHEMA_MISMATCH",
-                                        node_id=nid,
-                                        field="field",
-                                        message=f"condition 节点 '{nid}' 的 field='{fld}' 无效：{item_err}",
-                                    )
+                    schema_err = _check_output_path_against_schema(
+                        source_path=source_path,
+                        nodes_by_id=nodes_by_id,
+                        actions_by_id=actions_by_id,
+                    )
+                    if schema_err:
+                        errors.append(
+                            ValidationError(
+                                code="SCHEMA_MISMATCH",
+                                node_id=nid,
+                                field="source",
+                                message=(
+                                    f"condition 节点 '{nid}' 的 source='{source_path}' 与上游 output_schema 不匹配：{schema_err}"
+                                ),
+                            )
+                        )
+
+                    if kind == "list_not_empty" and source_path:
+                        arr_schema = _get_array_item_schema_from_output(
+                            source_path, nodes_by_id, actions_by_id
+                        )
+                        if arr_schema is None:
+                            errors.append(
+                                ValidationError(
+                                    code="SCHEMA_MISMATCH",
+                                    node_id=nid,
+                                    field="source",
+                                    message=(
+                                        f"condition 节点 '{nid}' 的 source='{source_path}' 未指向数组类型字段，无法进行 list_not_empty 判断。"
+                                    ),
                                 )
+                            )
 
+                    if kind in {"any_greater_than", "contains", "all_less_than"} and isinstance(
+                        params.get("field"), str
+                    ):
+                        item_err = _check_array_item_field(
+                            source_path, params["field"], nodes_by_id, actions_by_id
+                        )
+                        if item_err:
+                            errors.append(
+                                ValidationError(
+                                    code="SCHEMA_MISMATCH",
+                                    node_id=nid,
+                                    field="field",
+                                    message=f"condition 节点 '{nid}' 的 field='{params['field']}' 无效：{item_err}",
+                                )
+                            )
+
+        if ntype == "loop":
+            loop_kind = params.get("loop_kind")
+            if loop_kind not in {"for_each", "while"}:
+                errors.append(
+                    ValidationError(
+                        code="MISSING_REQUIRED_PARAM",
+                        node_id=nid,
+                        field="loop_kind",
+                        message=f"loop 节点 '{nid}' 需要有效的 loop_kind (for_each/while)。",
+                    )
+                )
+            if "body_subgraph" not in params:
+                errors.append(
+                    ValidationError(
+                        code="MISSING_REQUIRED_PARAM",
+                        node_id=nid,
+                        field="body_subgraph",
+                        message=f"loop 节点 '{nid}' 需要提供 body_subgraph。",
+                    )
+                )
                 source = params.get("source")
                 source_path: Optional[str] = None
                 if isinstance(source, dict) and "__from__" in source:

@@ -8,10 +8,20 @@ from velvetflow.models import Node, Workflow
 
 
 class BindingContext:
-    def __init__(self, workflow: Workflow, results: Dict[str, Any]):
+    def __init__(
+        self,
+        workflow: Workflow,
+        results: Dict[str, Any],
+        *,
+        extra_nodes: Optional[Mapping[str, Node]] = None,
+        loop_ctx: Optional[Dict[str, Any]] = None,
+    ):
         self.workflow = workflow
         self.results = results  # node_id -> result object
+        self.loop_ctx = loop_ctx or {}
         self._nodes = {n.id: n for n in workflow.nodes}
+        if extra_nodes:
+            self._nodes.update(extra_nodes)
 
     def resolve_binding(self, binding: dict) -> Any:
         """解析 __from__, __agg__, pipeline 等绑定 DSL。"""
@@ -233,10 +243,9 @@ class BindingContext:
         if not node:
             raise ValueError(f"__from__ 引用的节点 '{node_id}' 不存在")
 
-        if node.type != "action":
-            raise ValueError(
-                f"__from__ 只能引用 action 节点输出，当前节点 '{node_id}' 类型为 {node.type}"
-            )
+        # 控制节点（condition/loop 等）也允许被引用，缺少 action_id 时跳过 schema 校验
+        if node.type != "action" or not node.action_id:
+            return
 
         action_id = node.action_id
         action = get_action_by_id(action_id) if action_id else None
@@ -263,13 +272,34 @@ class BindingContext:
                 f"__from__ 路径 '{src_path}' 引用了 action '{action_id}' 输出中不存在的字段"
             )
 
+    def get_value(self, path: str) -> Any:
+        """Public helper for resolving arbitrary context paths.
+
+        condition 节点等控制流会直接把 source 作为字符串传入，这里复用
+        _get_from_context 的逻辑，让调用方不需要了解内部实现细节。
+        """
+
+        return self._get_from_context(path)
+
     def _get_from_context(self, path: str):
         if not path:
             raise KeyError("空路径")
 
         parts = path.split(".")
 
-        if parts[0] == "result_of" and len(parts) >= 2:
+        if parts[0] == "loop":
+            cur: Any = self.loop_ctx
+            for p in parts[1:]:
+                if isinstance(cur, dict) and p in cur:
+                    cur = cur[p]
+                    continue
+                raise KeyError(p)
+            return cur
+
+        if parts[0] in self.loop_ctx:
+            cur = self.loop_ctx[parts[0]]
+            rest = parts[1:]
+        elif parts[0] == "result_of" and len(parts) >= 2:
             first_key = parts[1]
             if first_key not in self.results:
                 raise KeyError(f"result_of.{first_key}")

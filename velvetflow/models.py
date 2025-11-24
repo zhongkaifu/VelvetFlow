@@ -19,7 +19,6 @@ class ValidationError:
         "MISSING_REQUIRED_PARAM",
         "UNKNOWN_ACTION_ID",
         "DISCONNECTED_GRAPH",
-        "CYCLE_DETECTED",
         "INVALID_EDGE",
         "SCHEMA_MISMATCH",
     ]
@@ -80,16 +79,6 @@ class Edge(BaseModel):
     from_node: str = Field(..., alias="from")
     to_node: str = Field(..., alias="to")
     condition: Optional[str] = Field(default=None)
-
-    @field_validator("condition")
-    @classmethod
-    def validate_condition(cls, value: Optional[str]) -> Optional[str]:
-        if value is None:
-            return value
-        allowed = {"true", "false"}
-        if value not in allowed:
-            raise ValueError(f"edge.condition 只能是 {allowed} 或 None")
-        return value
 
 
 class Workflow(BaseModel):
