@@ -32,7 +32,14 @@ class ParamBinding(TypedDict, total=False):
     """Typed representation of the parameter binding DSL."""
 
     __from__: str
-    __agg__: Literal["identity", "count_if", "filter_map", "pipeline"]
+    __agg__: Literal[
+        "identity",
+        "count",
+        "count_if",
+        "filter_map",
+        "format_join",
+        "pipeline",
+    ]
     field: str
     op: str
     value: Any

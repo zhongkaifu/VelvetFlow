@@ -43,6 +43,13 @@ class BindingContext:
         if agg == "identity":
             return data
 
+        if agg == "count":
+            if isinstance(data, list):
+                return len(data)
+            if isinstance(data, Mapping):
+                return len(data)
+            return 0 if data is None else 1
+
         if agg == "count_if":
             if not isinstance(data, list):
                 return 0
@@ -74,6 +81,19 @@ class BindingContext:
                     # If comparison fails (e.g., string vs number), skip the item
                     continue
             return count
+
+        if agg == "format_join":
+            fmt = binding.get("format", "{value}")
+            sep = binding.get("sep", "\n")
+            field = binding.get("field")
+
+            if not isinstance(data, list):
+                return _render(data, fmt, field)
+
+            rendered: List[str] = []
+            for item in data:
+                rendered.append(_render(item, fmt, field))
+            return sep.join(rendered)
 
         if agg == "filter_map":
             filter_field = binding.get("filter_field")
