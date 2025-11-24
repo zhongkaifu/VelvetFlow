@@ -1127,6 +1127,13 @@ def _check_output_path_against_schema(
 
     node = nodes_by_id[node_id]
     action_id = node.get("action_id")
+    node_type = node.get("type")
+
+    # 控制节点（如 condition / loop）没有 action_id，也没有可用的 output_schema。
+    # 在这种情况下跳过 schema 校验，允许下游继续引用其动态结果。
+    if not action_id and node_type in {"condition", "loop", "start", "end"}:
+        return None
+
     if not action_id:
         return f"路径 '{source_path}' 引用的节点 '{node_id}' 没有 action_id，无法从 output_schema 校验。"
 
