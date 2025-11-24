@@ -1,6 +1,6 @@
 """Parameter binding resolution for workflow execution."""
 
-from typing import Any, Dict, List, Mapping
+from typing import Any, Dict, List, Mapping, Optional
 
 from velvetflow.action_registry import get_action_by_id
 from velvetflow.logging_utils import log_warn
@@ -127,6 +127,22 @@ class _SafeDict(dict):
     def resolve_binding(self, binding: dict) -> Any:
         """解析 __from__, __agg__, pipeline 等绑定 DSL。"""
 
+        def _render(val: Any, fmt: str, field: Optional[str] = None) -> str:
+            if isinstance(val, Mapping):
+                selected = val.get(field) if field else val
+                data: Mapping[str, Any] = _SafeDict(val)
+                data.setdefault("value", selected)
+            else:
+                selected = val
+                data = _SafeDict({"value": selected})
+            try:
+                return fmt.format_map(data)
+            except Exception:
+                try:
+                    return fmt.replace("{value}", str(selected))
+                except Exception:
+                    return str(selected)
+
         if not isinstance(binding, dict) or "__from__" not in binding:
             return binding
 
@@ -178,28 +194,33 @@ class _SafeDict(dict):
             fmt = binding.get("format", "{value}")
             sep = binding.get("sep", "\n")
 
-            pipeline_value = {
-                "__from__": src_path,
-                "__agg__": "pipeline",
-                "steps": [
-                    {
-                        "op": "filter",
-                        "field": filter_field,
-                        "cmp": filter_op,
-                        "value": filter_value,
-                    },
-                    {
-                        "op": "map",
-                        "field": map_field,
-                    },
-                    {
-                        "op": "format_join",
-                        "format": fmt,
-                        "sep": sep,
-                    },
-                ],
-            }
-            return self.resolve_binding(pipeline_value)
+            if not isinstance(data, list):
+                return _render(data, fmt)
+
+            lines: List[str] = []
+            for item in data:
+                if not isinstance(item, Mapping):
+                    continue
+                v = item.get(filter_field)
+                passed = False
+                if filter_op == ">" and v is not None and v > filter_value:
+                    passed = True
+                elif filter_op == ">=" and v is not None and v >= filter_value:
+                    passed = True
+                elif filter_op == "<" and v is not None and v < filter_value:
+                    passed = True
+                elif filter_op == "<=" and v is not None and v <= filter_value:
+                    passed = True
+                elif filter_op == "==" and v == filter_value:
+                    passed = True
+                elif filter_op == "!=" and v != filter_value:
+                    passed = True
+                elif filter_op in (None, "", "always"):
+                    passed = True
+                if passed:
+                    lines.append(_render(item, fmt, map_field))
+
+            return sep.join(lines)
 
         if agg == "pipeline":
             steps = binding.get("steps") or []
@@ -245,47 +266,16 @@ class _SafeDict(dict):
                             filtered.append(item)
                     current = filtered
 
-                elif op == "map":
-                    if not isinstance(current, list):
-                        continue
-                    field = step.get("field")
-                    mapped = []
-                    for item in current:
-                        if isinstance(item, Mapping):
-                            value = item.get(field)
-                            if isinstance(value, Mapping):
-                                mapped.append(value)
-                            else:
-                                enriched = dict(item)
-                                enriched["value"] = value
-                                mapped.append(enriched)
-                        else:
-                            mapped.append(item)
-                    current = mapped
-
                 elif op == "format_join":
                     fmt = step.get("format", "{value}")
                     sep = step.get("sep", "\n")
-                    
-                    def render(val: Any) -> str:
-                        if isinstance(val, Mapping):
-                            data: Mapping[str, Any] = _SafeDict(val)
-                        else:
-                            data = _SafeDict({"value": val})
-                        data.setdefault("value", val)
-                        try:
-                            return fmt.format_map(data)
-                        except Exception:
-                            try:
-                                return fmt.replace("{value}", str(val))
-                            except Exception:
-                                return str(val)
+                    field = step.get("field")
 
                     if not isinstance(current, list):
-                        return render(current)
+                        return _render(current, fmt, field)
                     lines: List[str] = []
                     for v in current:
-                        lines.append(render(v))
+                        lines.append(_render(v, fmt, field))
                     return sep.join(lines)
 
             return current

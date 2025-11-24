@@ -977,7 +977,7 @@ def fill_params_with_llm(
         "示例（字段名仅示意）：\n"
         "- 直接引用：{\"__from__\": \"result_of.some_node.items\", \"__agg__\": \"identity\"}\n"
         "- 条件计数：{\"__from__\": \"result_of.some_node.items\", \"__agg__\": \"count_if\", \"field\": \"value\", \"op\": \">\", \"value\": 10}\n"
-        "- pipeline：{\"__from__\": \"result_of.list_node.items\", \"__agg__\": \"pipeline\", \"steps\": [{\"op\": \"filter\", \"field\": \"score\", \"cmp\": \">\", \"value\": 0.8}, {\"op\": \"map\", \"field\": \"id\"}, {\"op\": \"format_join\", \"format\": \"ID={value} 异常\", \"sep\": \"\\n\"}]}\n"
+        "- pipeline：{\"__from__\": \"result_of.list_node.items\", \"__agg__\": \"pipeline\", \"steps\": [{\"op\": \"filter\", \"field\": \"score\", \"cmp\": \">\", \"value\": 0.8}, {\"op\": \"format_join\", \"field\": \"id\", \"format\": \"ID={value} 异常\", \"sep\": \"\\n\"}]}\n"
         "示例中的节点名/字段名只是格式说明，实际必须使用 payload 中的节点信息和 output_schema。"
     )
 
@@ -1215,15 +1215,14 @@ def validate_param_binding(binding: Mapping[str, Any]) -> Optional[str]:
                 return f"pipeline.steps[{idx}] 必须是对象"
 
             op = step.get("op")
-            if op not in {"filter", "map", "format_join"}:
-                return f"pipeline.steps[{idx}].op 必须是 filter/map/format_join"
+            if op not in {"filter", "format_join"}:
+                return f"pipeline.steps[{idx}].op 必须是 filter/format_join"
 
-            if op in {"filter", "map"}:
+            if op == "filter":
                 field = step.get("field")
                 if not isinstance(field, str) or not field:
                     return f"pipeline.steps[{idx}].field 必须是非空字符串"
 
-            if op == "filter":
                 cmp_err = _validate_cmp(step.get("cmp"), f"pipeline.steps[{idx}].cmp")
                 if cmp_err:
                     return cmp_err
@@ -1231,6 +1230,9 @@ def validate_param_binding(binding: Mapping[str, Any]) -> Optional[str]:
             if op == "format_join":
                 fmt = step.get("format")
                 sep = step.get("sep")
+                field = step.get("field")
+                if field is not None and (not isinstance(field, str) or not field):
+                    return f"pipeline.steps[{idx}].field 必须是非空字符串"
                 if fmt is not None and not isinstance(fmt, str):
                     return f"pipeline.steps[{idx}].format 必须是字符串"
                 if sep is not None and not isinstance(sep, str):
