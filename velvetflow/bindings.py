@@ -3,6 +3,7 @@
 from typing import Any, Dict, List, Mapping
 
 from velvetflow.action_registry import get_action_by_id
+from velvetflow.logging_utils import log_warn
 from velvetflow.models import Node, Workflow
 
 
@@ -272,7 +273,7 @@ def eval_node_params(node: Node, ctx: BindingContext) -> Dict[str, Any]:
             try:
                 resolved_value = ctx.resolve_binding(v)
             except Exception as e:
-                print(f"  [param-resolver] 解析参数 {k} 失败: {e}，使用原值")
+                log_warn(f"[param-resolver] 解析参数 {k} 失败: {e}，使用原值")
                 resolved[k] = v
             else:
                 resolved[k] = resolved_value

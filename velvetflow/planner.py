@@ -10,7 +10,16 @@ from openai import OpenAI
 
 from velvetflow.action_registry import get_action_by_id
 from velvetflow.config import OPENAI_MODEL
-from velvetflow.logging_utils import log_event
+from velvetflow.logging_utils import (
+    log_debug,
+    log_error,
+    log_event,
+    log_info,
+    log_json,
+    log_section,
+    log_success,
+    log_warn,
+)
 from velvetflow.models import (
     Node,
     ParamBinding,
@@ -144,12 +153,16 @@ class WorkflowBuilder:
         if description:
             self.description = description or ""
 
-    def add_node(self, node_id: str, node_type: str,
-                 action_id: Optional[str],
-                 display_name: Optional[str],
-                 params: Optional[Dict[str, Any]]):
+    def add_node(
+        self,
+        node_id: str,
+        node_type: str,
+        action_id: Optional[str],
+        display_name: Optional[str],
+        params: Optional[Dict[str, Any]],
+    ):
         if node_id in self.nodes:
-            print(f"[Builder] 节点 {node_id} 已存在，将覆盖。")
+            log_warn(f"[Builder] 节点 {node_id} 已存在，将覆盖。")
         self.nodes[node_id] = {
             "id": node_id,
             "type": node_type,
@@ -288,14 +301,14 @@ def ensure_registered_actions(
                 replacement = candidates[0].get("action_id")
 
         if replacement:
-            print(
+            log_info(
                 f"[ActionGuard] 节点 '{nid}' 的 action_id='{aid}' 未注册，"
                 f"已根据 display_name='{display_name}' 替换为 '{replacement}'。"
             )
             node["action_id"] = replacement
         else:
             if aid:
-                print(
+                log_warn(
                     f"[ActionGuard] 节点 '{nid}' 的 action_id='{aid}' 未注册且无法自动替换，"
                     "已清空该字段以便后续流程重新补齐。"
                 )
@@ -375,8 +388,9 @@ def synthesize_edges_with_llm(
                 raise ValueError("edge 缺少 from/to")
         return edges
     except Exception as e:
-        print("[synthesize_edges_with_llm] 无法解析/使用 LLM 返回的 edges，错误：", e)
-        print("原始内容：", content)
+        log_error("[synthesize_edges_with_llm] 无法解析/使用 LLM 返回的 edges")
+        log_debug(f"错误详情: {e}")
+        log_debug(f"原始内容：{content}")
         return []
 
 
@@ -500,8 +514,8 @@ def check_requirement_coverage_with_llm(
     try:
         result = json.loads(text)
     except json.JSONDecodeError:
-        print("[check_requirement_coverage_with_llm] 无法解析 JSON，原始内容：")
-        print(content)
+        log_error("[check_requirement_coverage_with_llm] 无法解析 JSON，改用回退结果")
+        log_debug(content)
         result = {
             "is_covered": False,
             "missing_points": ["LLM 覆盖度检查解析失败"],
@@ -587,12 +601,12 @@ def refine_workflow_structure_with_llm(
     try:
         refined = json.loads(text)
     except json.JSONDecodeError:
-        print("[refine_workflow_structure_with_llm] 无法解析 JSON，原始内容：")
-        print(content)
+        log_error("[refine_workflow_structure_with_llm] 无法解析 JSON，使用当前结构回退")
+        log_debug(content)
         return current_workflow
 
     if not isinstance(refined, dict) or not isinstance(refined.get("nodes"), list) or not isinstance(refined.get("edges"), list):
-        print("[refine_workflow_structure_with_llm] LLM 返回的结构不完整，回退到 current_workflow。")
+        log_warn("[refine_workflow_structure_with_llm] LLM 返回的结构不完整，回退到 current_workflow。")
         return current_workflow
 
     return refined
@@ -645,7 +659,7 @@ def plan_workflow_structure_with_llm(
 
     # ---------- 结构规划（多轮 tool-calling） ----------
     for round_idx in range(max_rounds):
-        print(f"\n===== 结构规划 Round {round_idx + 1} =====")
+        log_section(f"结构规划 Round {round_idx + 1}")
         resp = client.chat.completions.create(
             model=OPENAI_MODEL,
             messages=messages,
@@ -661,7 +675,7 @@ def plan_workflow_structure_with_llm(
         })
 
         if not msg.tool_calls:
-            print("[Planner] 本轮没有 tool_calls，提前结束。")
+            log_warn("[Planner] 本轮没有 tool_calls，提前结束。")
             break
 
         for tc in msg.tool_calls:
@@ -671,10 +685,10 @@ def plan_workflow_structure_with_llm(
             try:
                 args = json.loads(raw_args) if raw_args else {}
             except json.JSONDecodeError:
-                print(f"[Error] 解析工具参数失败: {raw_args}")
+                log_error(f"[Error] 解析工具参数失败: {raw_args}")
                 args = {}
 
-            print(f"[Planner] 调用工具: {func_name}({args})")
+            log_info(f"[Planner] 调用工具: {func_name}({args})")
 
             if func_name == "search_business_actions":
                 query = args.get("query", "")
@@ -759,7 +773,7 @@ def plan_workflow_structure_with_llm(
             })
 
         if finalized:
-            print("[Planner] 收到 finalize_workflow，结束结构规划。")
+            log_success("[Planner] 收到 finalize_workflow，结束结构规划。")
             break
 
     # ---------- 接线 + 连通性补全 ----------
@@ -768,13 +782,13 @@ def plan_workflow_structure_with_llm(
     edges = skeleton.get("edges", [])
 
     if not edges:
-        print("\n[Planner] 第一阶段没有生成任何 edges，调用 LLM 进行自动接线...")
+        log_warn("[Planner] 第一阶段没有生成任何 edges，调用 LLM 进行自动接线...")
         auto_edges = synthesize_edges_with_llm(nodes=nodes, nl_requirement=nl_requirement)
         if auto_edges:
-            print(f"[Planner] LLM 自动生成了 {len(auto_edges)} 条 edges。")
+            log_info(f"[Planner] LLM 自动生成了 {len(auto_edges)} 条 edges。")
             skeleton["edges"] = auto_edges
         else:
-            print("[Planner] LLM 自动接线失败，使用保底线性串联方式生成 edges。")
+            log_warn("[Planner] LLM 自动接线失败，使用保底线性串联方式生成 edges。")
             start_nodes = [n for n in nodes if n.get("type") == "start"]
             end_nodes = [n for n in nodes if n.get("type") == "end"]
             middle_nodes = [n for n in nodes if n.get("type") not in ("start", "end")]
@@ -796,7 +810,7 @@ def plan_workflow_structure_with_llm(
 
     # ---------- 覆盖度校验 + 结构改进 ----------
     for refine_round in range(max_coverage_refine_rounds + 1):
-        print(f"\n==== 覆盖度校验轮次 {refine_round} ====\n")
+        log_section(f"覆盖度校验轮次 {refine_round}")
         coverage = check_requirement_coverage_with_llm(
             nl_requirement=nl_requirement,
             workflow=skeleton,
@@ -810,24 +824,24 @@ def plan_workflow_structure_with_llm(
             coverage["missing_points"].extend(approval_missing)
             coverage["is_covered"] = False
         log_event("coverage_check", {"round": refine_round, "coverage": coverage})
-        print("覆盖度检查结果：", json.dumps(coverage, ensure_ascii=False, indent=2))
+        log_json("覆盖度检查结果", coverage)
 
         if coverage.get("is_covered", False):
-            print("✅ 当前结构已经被判定为“完全覆盖”用户需求。")
+            log_success("当前结构已经被判定为“完全覆盖”用户需求。")
             break
 
         missing_points = coverage.get("missing_points", []) or []
         if not missing_points:
-            print("⚠️ 覆盖度检查认为不完整，但 missing_points 为空，不再尝试结构改进。")
+            log_warn("覆盖度检查认为不完整，但 missing_points 为空，不再尝试结构改进。")
             break
 
         if refine_round == max_coverage_refine_rounds:
-            print("⚠️ 已达到最大结构改进轮次，仍认为不完全覆盖，保留当前结构继续后续阶段。")
+            log_warn("已达到最大结构改进轮次，仍认为不完全覆盖，保留当前结构继续后续阶段。")
             break
 
-        print("🔧 检测到未覆盖的需求点，将调用 LLM 对工作流结构进行增量改进：")
+        log_info("🔧 检测到未覆盖的需求点，将调用 LLM 对工作流结构进行增量改进：")
         for mp in missing_points:
-            print(" -", mp)
+            log_debug(f" - {mp}")
 
         refined = refine_workflow_structure_with_llm(
             nl_requirement=nl_requirement,
@@ -1026,8 +1040,8 @@ def fill_params_with_llm(
         try:
             node_result = json.loads(text)
         except json.JSONDecodeError:
-            print("[fill_params_with_llm] 无法解析模型返回 JSON，原始内容：")
-            print(content)
+            log_error("[fill_params_with_llm] 无法解析模型返回 JSON")
+            log_debug(content)
             raise
 
         if isinstance(node_result, dict):
@@ -1770,8 +1784,8 @@ def repair_workflow_with_llm(
     try:
         repaired_workflow = json.loads(text)
     except json.JSONDecodeError:
-        print("[repair_workflow_with_llm] 无法解析模型返回 JSON，原始内容：")
-        print(content)
+        log_error("[repair_workflow_with_llm] 无法解析模型返回 JSON")
+        log_debug(content)
         raise
 
     return repaired_workflow
@@ -1794,8 +1808,8 @@ def plan_workflow_with_two_pass(
         max_rounds=max_rounds,
         max_coverage_refine_rounds=2,
     )
-    print("\n==== 第一阶段结果：Workflow Skeleton ====\n")
-    print(json.dumps(skeleton_raw, indent=2, ensure_ascii=False))
+    log_section("第一阶段结果：Workflow Skeleton")
+    log_json("Workflow Skeleton", skeleton_raw)
 
     skeleton = Workflow.model_validate(skeleton_raw)
     log_event("plan_structure_done", {"workflow": skeleton.model_dump()})
@@ -1820,15 +1834,14 @@ def plan_workflow_with_two_pass(
             current_workflow = Workflow.model_validate(completed_workflow)
         last_good_workflow = current_workflow
     except PydanticValidationError as e:
-        print(
-            "\n[plan_workflow_with_two_pass] 警告：fill_params_with_llm 返回的结构无法通过校验，", e
+        log_warn(
+            f"[plan_workflow_with_two_pass] 警告：fill_params_with_llm 返回的结构无法通过校验，{e}"
         )
         current_workflow = last_good_workflow
 
     for repair_round in range(max_repair_rounds + 1):
-        print(f"\n==== 校验 + 自修复轮次 {repair_round} ====\n")
-        print("当前 workflow：")
-        print(json.dumps(current_workflow.model_dump(by_alias=True), indent=2, ensure_ascii=False))
+        log_section(f"校验 + 自修复轮次 {repair_round}")
+        log_json("当前 workflow", current_workflow.model_dump(by_alias=True))
 
         errors = validate_completed_workflow(
             current_workflow.model_dump(by_alias=True),
@@ -1836,22 +1849,21 @@ def plan_workflow_with_two_pass(
         )
 
         if not errors:
-            print("\n==== 校验通过，无需进一步修复 ====\n")
+            log_success("校验通过，无需进一步修复")
             last_good_workflow = current_workflow
             return current_workflow
 
-        print("\n==== 校验未通过，错误列表 ====")
+        log_warn("校验未通过，错误列表：")
         for e in errors:
-            print(
-                " -",
-                f"[code={e.code}] node={e.node_id} field={e.field} message={e.message}",
+            log_error(
+                f"[code={e.code}] node={e.node_id} field={e.field} message={e.message}"
             )
 
         if repair_round == max_repair_rounds:
-            print("\n==== 已到最大修复轮次，仍有错误，返回最后一个合法结构版本 ====\n")
+            log_warn("已到最大修复轮次，仍有错误，返回最后一个合法结构版本")
             return last_good_workflow
 
-        print(f"\n==== 调用 LLM 进行第 {repair_round + 1} 次修复 ====\n")
+        log_info(f"调用 LLM 进行第 {repair_round + 1} 次修复")
         repaired_raw = repair_workflow_with_llm(
             broken_workflow=current_workflow.model_dump(by_alias=True),
             validation_errors=errors,
@@ -1872,7 +1884,7 @@ def plan_workflow_with_two_pass(
                 current_workflow = Workflow.model_validate(repaired_workflow)
             last_good_workflow = current_workflow
         except PydanticValidationError:
-            print(
+            log_warn(
                 "[plan_workflow_with_two_pass] 警告：repair_workflow_with_llm 返回的结构不包含合法的 nodes/edges，本轮修复结果被忽略。"
             )
 
