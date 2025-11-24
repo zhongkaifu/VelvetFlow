@@ -28,9 +28,9 @@ VelvetFlow (repo root)
 ### 动作注册表（Action Registry）
 - 定义在 `velvetflow/action_registry.py`，包含 HR/OPS/CRM 等示例动作及它们的参数/输出 JSON Schema。支持通过 `get_action_by_id` 查询，供规划/校验/执行阶段使用。【F:velvetflow/action_registry.py†L1-L212】【F:velvetflow/action_registry.py†L214-L236】
 
-### 混合检索与本地向量库
-- `velvetflow/search.py` 提供简化版 BM25 (`FakeElasticsearch`) 与向量库 (`VectorClient`)，并使用词袋 embedding (`embed_text_local`) 构建全局词表。【F:velvetflow/search.py†L1-L119】【F:velvetflow/search.py†L121-L160】
-- `HybridActionSearchService` 将 BM25 与向量相似度按权重融合，返回按得分排序的候选动作，用于 LLM tool-calling 期间的动作选择。【F:velvetflow/search.py†L162-L253】
+### 混合检索与向量库
+- `velvetflow/search.py` 提供简化版 BM25 (`FakeElasticsearch`) 与内存向量库 (`VectorClient`)，并使用 OpenAI `text-embedding-3-small` 生成业务动作与查询的真实向量。【F:velvetflow/search.py†L1-L119】【F:velvetflow/search.py†L121-L167】
+- `HybridActionSearchService` 将 BM25 与向量相似度按权重融合，返回按得分排序的候选动作，用于 LLM tool-calling 期间的动作选择。【F:velvetflow/search.py†L169-L260】
 
 ### 两阶段 LLM 规划流程
 - **结构规划**：`plan_workflow_structure_with_llm` 使用 OpenAI function-calling 工具（搜索动作、设置元数据、增添节点/边、最终确认）迭代生成工作流骨架；若缺少边则调用二次 LLM 接线或线性串联补全，并校验动作合法性与连通性。【F:velvetflow/planner.py†L113-L255】【F:velvetflow/planner.py†L256-L344】
@@ -85,7 +85,7 @@ python workflow_fc_hybrid_actions_demo.py
 
 ## 开发与测试样例
 - **替换动作库**：编辑 `velvetflow/action_registry.py`，添加/禁用动作并提供对应 `arg_schema`/`output_schema`，即可让检索与规划使用新的动作集合。【F:velvetflow/action_registry.py†L1-L212】
-- **调整检索策略**：在 `workflow_fc_hybrid_actions_demo.py` 的 `build_default_search_service` 中修改融合系数 `alpha` 或改写 `embed_text_local` 以适配自定义向量模型。【F:workflow_fc_hybrid_actions_demo.py†L17-L39】
+- **调整检索策略**：在 `workflow_fc_hybrid_actions_demo.py` 的 `build_default_search_service` 中修改融合系数 `alpha`，或替换 `DEFAULT_EMBEDDING_MODEL`/`embed_text_openai` 以适配自定义向量模型。【F:workflow_fc_hybrid_actions_demo.py†L17-L40】
 - **自定义模型**：修改 `velvetflow/config.py` 中的 `OPENAI_MODEL` 即可切换模型。【F:velvetflow/config.py†L1-L4】
 - **模拟数据扩展**：在 `velvetflow/simulation_data.json` 增加动作 ID、默认值及模板，执行器会自动渲染并返回结构化结果。【F:velvetflow/simulation_data.json†L1-L23】
 

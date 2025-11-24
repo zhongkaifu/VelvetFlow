@@ -19,18 +19,17 @@ from velvetflow.action_registry import BUSINESS_ACTIONS
 from velvetflow.executor import DynamicActionExecutor, load_simulation_data
 from velvetflow.planner import plan_workflow_with_two_pass
 from velvetflow.search import (
-    GLOBAL_VOCAB,
+    DEFAULT_EMBEDDING_MODEL,
     FakeElasticsearch,
     HybridActionSearchService,
     VectorClient,
-    embed_text_local,
+    embed_text_openai,
 )
 
 
 def build_default_search_service() -> HybridActionSearchService:
     fake_es = FakeElasticsearch(BUSINESS_ACTIONS)
-    dim = len(GLOBAL_VOCAB)
-    vec_client = VectorClient(dim=dim)
+    vec_client = VectorClient(dim=None)
 
     for action in BUSINESS_ACTIONS:
         text = (
@@ -42,13 +41,13 @@ def build_default_search_service() -> HybridActionSearchService:
             + " "
             + " ".join(action.get("tags", []) or [])
         )
-        emb = embed_text_local(text)
+        emb = embed_text_openai(text, model=DEFAULT_EMBEDDING_MODEL)
         vec_client.upsert(action["action_id"], emb)
 
     return HybridActionSearchService(
         es=fake_es,
         vector_client=vec_client,
-        embed_fn=embed_text_local,
+        embed_fn=lambda q: embed_text_openai(q, model=DEFAULT_EMBEDDING_MODEL),
         alpha=0.6,
     )
 
