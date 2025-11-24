@@ -59,7 +59,9 @@ VelvetFlow (repo root)
 ## DSL 速查
 - **工作流**：`{ "workflow_name": str, "description": str, "nodes": [ ... ], "edges": [ {"from": str, "to": str, "condition": "true"|"false"|null} ] }`。
 - **节点**：`type` 可为 `start/end/action/condition/loop/parallel`；`action` 节点需 `action_id` 与 `params`；`condition` 节点 `params` 需 `kind` 与 `source` 等字段。
-- **参数绑定**：`{"__from__": "result_of.node.field", "__agg__": "identity"}`；`count_if` 支持 `field/op/value`；`filter_map` 会被自动转换为 `pipeline`；`pipeline` 步骤支持 `filter`、`map`、`format_join`。
+- **条件节点**：支持 `list_not_empty`（上游列表非空判定）、`any_greater_than`（列表元素某字段大于阈值）、`equals` 等结构化参数。
+- **参数绑定**：`{"__from__": "result_of.node.field", "__agg__": "identity"}`；`count_if` 支持 `field/op/value`（含 `!=`）；`filter_map` 会被自动转换为 `pipeline`；`pipeline` 步骤支持 `filter`、`map`、`format_join`。
+  - `filter_map` 是一个便利写法，等价于 `pipeline` 中依次执行 `filter` → `map` → `format_join`；`map` 则是 `pipeline` 的单步操作，用于提取字段并保留列表形态，两者并非重复。
 
 ## 环境搭建
 1. **准备依赖**

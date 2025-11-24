@@ -1173,7 +1173,7 @@ def validate_param_binding(binding: Mapping[str, Any]) -> Optional[str]:
     if agg not in allowed_aggs:
         return f"__agg__ 必须是 {sorted(allowed_aggs)} 之一，收到: {agg}"
 
-    allowed_cmp = {">", ">=", "<", "<=", "=="}
+    allowed_cmp = {">", ">=", "<", "<=", "==", "!="}
 
     def _validate_cmp(op_value: Any, path: str) -> Optional[str]:
         if op_value is None:
@@ -1563,7 +1563,20 @@ def validate_completed_workflow(
                         )
                     )
                 else:
-                    if kind == "any_greater_than":
+                    if kind == "list_not_empty":
+                        if "source" not in params:
+                            errors.append(
+                                ValidationError(
+                                    code="MISSING_REQUIRED_PARAM",
+                                    node_id=nid,
+                                    field="source",
+                                    message=(
+                                        f"condition 节点 '{nid}' (kind=list_not_empty) 缺少字段 'source'。"
+                                    ),
+                                )
+                            )
+
+                    elif kind == "any_greater_than":
                         for field in ["source", "field", "threshold"]:
                             if field not in params:
                                 errors.append(
@@ -1668,6 +1681,22 @@ def validate_completed_workflow(
                                 ),
                             )
                         )
+
+                    if kind == "list_not_empty" and source_path:
+                        arr_schema = _get_array_item_schema_from_output(
+                            source_path, nodes_by_id, actions_by_id
+                        )
+                        if arr_schema is None:
+                            errors.append(
+                                ValidationError(
+                                    code="SCHEMA_MISMATCH",
+                                    node_id=nid,
+                                    field="source",
+                                    message=(
+                                        f"condition 节点 '{nid}' 的 source='{source_path}' 未指向数组类型字段，无法进行 list_not_empty 判断。"
+                                    ),
+                                )
+                            )
 
                     if kind == "any_greater_than" and isinstance(params.get("field"), str):
                         item_err = _check_array_item_field(

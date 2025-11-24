@@ -218,6 +218,22 @@ class DynamicActionExecutor:
             log_warn("[condition] 未指定 kind，默认 False")
             return False
 
+        if kind == "list_not_empty":
+            source = params.get("source")
+            try:
+                data = self._resolve_condition_source(source, ctx)
+            except Exception as e:
+                log_warn(
+                    f"[condition:list_not_empty] source 路径 '{source}' 无法从 context 读取: {e}，返回 False"
+                )
+                return False
+
+            if not isinstance(data, list):
+                log_warn("[condition:list_not_empty] source 不是 list，返回 False")
+                return False
+
+            return len(data) > 0
+
         if kind == "any_greater_than":
             source = params["source"]
             field = params["field"]
