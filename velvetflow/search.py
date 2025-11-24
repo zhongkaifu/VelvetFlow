@@ -2,6 +2,7 @@
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
+from openai import OpenAI
 
 from velvetflow.action_registry import BUSINESS_ACTIONS, get_action_by_id
 
@@ -75,12 +76,14 @@ class VectorClient:
     内存版向量库：用于演示向量相似度。
     """
 
-    def __init__(self, dim: int):
+    def __init__(self, dim: Optional[int]):
         self.dim = dim
         self._store: Dict[str, np.ndarray] = {}
 
     def upsert(self, action_id: str, embedding: List[float]):
         v = np.array(embedding, dtype=np.float32)
+        if self.dim is None:
+            self.dim = v.shape[0]
         if v.shape[0] != self.dim:
             raise ValueError(f"向量维度不匹配: expected {self.dim}, got {v.shape[0]}")
         self._store[action_id] = v
@@ -89,6 +92,8 @@ class VectorClient:
         if not self._store:
             return []
         q = np.array(query_emb, dtype=np.float32)
+        if self.dim and q.shape[0] != self.dim:
+            raise ValueError(f"查询向量维度不匹配: expected {self.dim}, got {q.shape[0]}")
         results: List[Tuple[str, float]] = []
         for aid, emb in self._store.items():
             num = float(np.dot(q, emb))
@@ -131,6 +136,25 @@ def embed_text_local(text: str) -> List[float]:
             vec[idx] += 1.0
     vec = vec / (len(tokens) + 1e-8)
     return vec.tolist()
+
+
+DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"
+_openai_client: Optional[OpenAI] = None
+
+
+def get_openai_client() -> OpenAI:
+    global _openai_client
+    if _openai_client is None:
+        _openai_client = OpenAI()
+    return _openai_client
+
+
+def embed_text_openai(text: str, model: str = DEFAULT_EMBEDDING_MODEL) -> List[float]:
+    client = get_openai_client()
+    response = client.embeddings.create(model=model, input=text or "")
+    if not response.data:
+        raise ValueError("未从 OpenAI 获取到有效的 embedding 结果")
+    return list(response.data[0].embedding)
 
 
 class HybridActionSearchService:
