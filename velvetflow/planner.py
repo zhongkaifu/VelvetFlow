@@ -10,6 +10,7 @@ from openai import OpenAI
 
 from velvetflow.action_registry import get_action_by_id
 from velvetflow.config import OPENAI_MODEL
+from velvetflow.logging_utils import log_event
 from velvetflow.models import (
     Node,
     ParamBinding,
@@ -755,6 +756,7 @@ def plan_workflow_structure_with_llm(
             workflow=skeleton,
             model=OPENAI_MODEL,
         )
+        log_event("coverage_check", {"round": refine_round, "coverage": coverage})
         print("覆盖度检查结果：", json.dumps(coverage, ensure_ascii=False, indent=2))
 
         if coverage.get("is_covered", False):
@@ -1710,6 +1712,7 @@ def plan_workflow_with_two_pass(
     print(json.dumps(skeleton_raw, indent=2, ensure_ascii=False))
 
     skeleton = Workflow.model_validate(skeleton_raw)
+    log_event("plan_structure_done", {"workflow": skeleton.model_dump()})
     last_good_workflow: Workflow = skeleton
 
     completed_workflow_raw = fill_params_with_llm(

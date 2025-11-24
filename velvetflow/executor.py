@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Mapping, Set, Union
 
 from velvetflow.bindings import BindingContext, eval_node_params
 from velvetflow.action_registry import get_action_by_id
+from velvetflow.logging_utils import log_event
 from velvetflow.models import Node, ValidationError, Workflow
 
 # ===================== 16. 执行器 =====================
@@ -250,6 +251,16 @@ class DynamicActionExecutor:
             display_name = node.get("display_name") or action_id or ntype
             params = node.get("params", {})
 
+            log_event(
+                "node_start",
+                {
+                    "node_id": nid,
+                    "type": ntype,
+                    "display_name": display_name,
+                    "action_id": action_id,
+                    "params": params,
+                },
+            )
             print(f"[Node {nid}] type={ntype}, display_name={display_name}, action_id={action_id}")
             if params:
                 print("  raw params =", json.dumps(params, ensure_ascii=False))
@@ -268,6 +279,16 @@ class DynamicActionExecutor:
                     result = self._simulate_action(action_id, resolved_params)
 
                 results[nid] = result
+                log_event(
+                    "node_end",
+                    {
+                        "node_id": nid,
+                        "type": ntype,
+                        "action_id": action_id,
+                        "resolved_params": resolved_params,
+                        "result": result,
+                    },
+                )
 
             elif ntype == "condition":
                 cond_value = self._eval_condition(node, binding_ctx)
@@ -276,12 +297,31 @@ class DynamicActionExecutor:
                 for nxt in next_ids:
                     if nxt not in visited:
                         reachable.add(nxt)
+                log_event(
+                    "node_end",
+                    {
+                        "node_id": nid,
+                        "type": ntype,
+                        "condition_result": cond_value,
+                        "next_nodes": next_ids,
+                    },
+                )
                 continue
 
             next_ids = self.next_nodes(nid)
             for nxt in next_ids:
                 if nxt not in visited:
                     reachable.add(nxt)
+
+            log_event(
+                "node_end",
+                {
+                    "node_id": nid,
+                    "type": ntype,
+                    "next_nodes": next_ids,
+                    "result": results.get(nid),
+                },
+            )
 
         print("\n==== 执行结束 ====\n")
 
