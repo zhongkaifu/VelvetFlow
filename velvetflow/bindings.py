@@ -297,7 +297,10 @@ class BindingContext:
                 raise KeyError(p)
             return cur
 
-        if parts[0] == "result_of" and len(parts) >= 2:
+        if parts[0] in self.loop_ctx:
+            cur = self.loop_ctx[parts[0]]
+            rest = parts[1:]
+        elif parts[0] == "result_of" and len(parts) >= 2:
             first_key = parts[1]
             if first_key not in self.results:
                 raise KeyError(f"result_of.{first_key}")

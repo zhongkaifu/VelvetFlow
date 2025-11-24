@@ -386,6 +386,9 @@ class DynamicActionExecutor:
                     log_warn("[loop] 达到 max_iterations 上限，提前结束循环")
                     break
                 loop_ctx = {"index": idx, "item": item, "size": size, "accumulator": accumulator}
+                item_alias = params.get("item_alias")
+                if isinstance(item_alias, str) and item_alias:
+                    loop_ctx[item_alias] = item
                 loop_binding = BindingContext(
                     self.workflow, binding_ctx.results, extra_nodes=extra_node_models, loop_ctx=loop_ctx
                 )
