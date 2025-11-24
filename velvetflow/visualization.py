@@ -26,12 +26,42 @@ PANEL_BORDER: RGB = (180, 180, 180)
 
 
 def _load_font(size: int = 16) -> ImageFont.FreeTypeFont:
-    """Load a Unicode-capable font; fall back to Pillow's default if unavailable."""
+    """Load a Unicode-capable font with common CJK fallbacks."""
 
-    try:
-        return ImageFont.truetype("DejaVuSans.ttf", size=size)
-    except Exception:
-        return ImageFont.load_default()
+    font_dir_candidates = [
+        Path(ImageFont.__file__).resolve().parent / "fonts",
+        Path("/usr/share/fonts"),
+        Path("/usr/local/share/fonts"),
+        Path.home() / ".fonts",
+    ]
+    font_name_candidates = [
+        "NotoSansCJK-Regular.ttc",
+        "NotoSansSC-Regular.otf",
+        "NotoSans-Regular.ttf",
+        "SourceHanSansCN-Regular.otf",
+        "SourceHanSans-Regular.otf",
+        "WenQuanYiMicroHei.ttf",
+        "SimHei.ttf",
+        "ArialUnicode.ttf",
+        "DejaVuSans.ttf",
+    ]
+
+    for directory in font_dir_candidates:
+        for name in font_name_candidates:
+            candidate = directory / name
+            if candidate.exists():
+                try:
+                    return ImageFont.truetype(str(candidate), size=size)
+                except Exception:
+                    continue
+
+    for name in font_name_candidates:
+        try:
+            return ImageFont.truetype(name, size=size)
+        except Exception:
+            continue
+
+    return ImageFont.load_default()
 
 
 class _ImageCanvas:
@@ -126,6 +156,35 @@ def _topological_levels(workflow: Workflow) -> Dict[str, int]:
     return level
 
 
+def _median_position(neighbors: List[str], order: List[str]) -> float:
+    if not neighbors:
+        return float("inf")
+    positions = sorted(order.index(n) for n in neighbors if n in order)
+    if not positions:
+        return float("inf")
+    mid = len(positions) // 2
+    if len(positions) % 2 == 1:
+        return float(positions[mid])
+    return (positions[mid - 1] + positions[mid]) / 2
+
+
+def _refine_order(
+    nodes_by_level: Dict[int, List[str]],
+    predecessors: Dict[str, List[str]],
+    successors: Dict[str, List[str]],
+    max_level: int,
+) -> Dict[int, List[str]]:
+    order = {lvl: list(nodes) for lvl, nodes in nodes_by_level.items()}
+    for _ in range(3):
+        for lvl in range(1, max_level + 1):
+            prev_order = order.get(lvl - 1, [])
+            order[lvl] = sorted(order.get(lvl, []), key=lambda n: _median_position(predecessors[n], prev_order))
+        for lvl in range(max_level - 1, -1, -1):
+            next_order = order.get(lvl + 1, [])
+            order[lvl] = sorted(order.get(lvl, []), key=lambda n: _median_position(successors[n], next_order))
+    return order
+
+
 def _layout_graph(
     workflow: Workflow,
     node_size: Tuple[int, int],
@@ -136,17 +195,33 @@ def _layout_graph(
     levels = _topological_levels(workflow)
     max_level = max(levels.values()) if levels else 0
     nodes_by_level: Dict[int, List[str]] = {}
+    predecessors: Dict[str, List[str]] = {n.id: [] for n in workflow.nodes}
+    successors: Dict[str, List[str]] = {n.id: [] for n in workflow.nodes}
+    for edge in workflow.edges:
+        nodes_by_level.setdefault(levels[edge.from_node], []).append(edge.from_node)
+        nodes_by_level.setdefault(levels[edge.to_node], []).append(edge.to_node)
+        successors[edge.from_node].append(edge.to_node)
+        predecessors[edge.to_node].append(edge.from_node)
     for nid, lvl in levels.items():
         nodes_by_level.setdefault(lvl, []).append(nid)
 
+    for lvl, nodes in list(nodes_by_level.items()):
+        seen = []
+        for nid in nodes:
+            if nid not in seen:
+                seen.append(nid)
+        nodes_by_level[lvl] = seen
+
+    ordered_levels = _refine_order(nodes_by_level, predecessors, successors, max_level)
+
     node_width, node_height = node_size
-    max_nodes_in_level = max((len(v) for v in nodes_by_level.values()), default=1)
+    max_nodes_in_level = max((len(v) for v in ordered_levels.values()), default=1)
     width = padding * 2 + (max_level + 1) * node_width + max_level * level_gap
     height = padding * 2 + max_nodes_in_level * node_height + max(0, max_nodes_in_level - 1) * node_gap
 
     positions: Dict[str, Tuple[int, int]] = {}
     for lvl in range(max_level + 1):
-        level_nodes = nodes_by_level.get(lvl, [])
+        level_nodes = ordered_levels.get(lvl, [])
         for idx, nid in enumerate(level_nodes):
             x = padding + lvl * (node_width + level_gap)
             y = padding + idx * (node_height + node_gap)
@@ -156,7 +231,7 @@ def _layout_graph(
         "positions": positions,
         "width": width,
         "height": height,
-        "nodes_by_level": nodes_by_level,
+        "nodes_by_level": ordered_levels,
     }
 
 
@@ -178,7 +253,14 @@ def _draw_graph(
         start_y = start_pos[1] + node_height // 2 + offset_y
         end_x = end_pos[0] + offset_x
         end_y = end_pos[1] + node_height // 2 + offset_y
-        canvas.draw_arrow(start_x, start_y, end_x, end_y, EDGE_COLOR)
+
+        mid_x = (start_x + end_x) // 2
+        jitter = (hash((edge.from_node, edge.to_node)) % 7 - 3) * 6
+        mid_x += jitter
+
+        canvas.draw_line(start_x, start_y, mid_x, start_y, EDGE_COLOR)
+        canvas.draw_line(mid_x, start_y, mid_x, end_y, EDGE_COLOR)
+        canvas.draw_arrow(mid_x, end_y, end_x, end_y, EDGE_COLOR)
 
     for node in workflow.nodes:
         x, y = positions[node.id]
