@@ -273,6 +273,15 @@ class BindingContext:
                 f"__from__ 路径 '{src_path}' 引用了 action '{action_id}' 输出中不存在的字段"
             )
 
+    def get_value(self, path: str) -> Any:
+        """Public helper for resolving arbitrary context paths.
+
+        condition 节点等控制流会直接把 source 作为字符串传入，这里复用
+        _get_from_context 的逻辑，让调用方不需要了解内部实现细节。
+        """
+
+        return self._get_from_context(path)
+
     def _get_from_context(self, path: str):
         if not path:
             raise KeyError("空路径")
