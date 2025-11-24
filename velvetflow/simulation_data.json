@@ -1,6 +1,7 @@
 {
   "hr.get_today_temperatures.v1": {
     "result": {
+      "date": "{{date}}",
       "data": [
         {"employee_id": "E001", "temperature": 36.8},
         {"employee_id": "E002", "temperature": 38.2},

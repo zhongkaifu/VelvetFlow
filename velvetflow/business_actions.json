@@ -105,6 +105,9 @@
     "output_schema": {
       "type": "object",
       "properties": {
+        "date": {
+          "type": "string"
+        },
         "data": {
           "type": "array",
           "items": {
@@ -125,6 +128,7 @@
         }
       },
       "required": [
+        "date",
         "data"
       ]
     },
