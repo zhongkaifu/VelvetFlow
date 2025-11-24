@@ -443,6 +443,14 @@ def _topological_levels(workflow: Workflow) -> Dict[str, int]:
             indegree[nxt] -= 1
             if indegree[nxt] == 0:
                 queue.append(nxt)
+
+    # Ensure every node gets a level assignment even if the graph contains cycles
+    # or is otherwise not fully reducible by Kahn's algorithm. This prevents later
+    # lookups (e.g., for positions) from failing when encountering nodes that never
+    # reached indegree == 0.
+    for node in workflow.nodes:
+        if node.id not in level:
+            level[node.id] = 0
     return level
 
 
