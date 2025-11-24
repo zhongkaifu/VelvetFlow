@@ -1040,12 +1040,24 @@ def fill_params_with_llm(
                 if first_line.strip().lower().startswith("json"):
                     text = rest
 
+        decoder = json.JSONDecoder()
+        node_result: Any
         try:
-            node_result = json.loads(text)
+            node_result, _ = decoder.raw_decode(text)
         except json.JSONDecodeError:
-            log_error("[fill_params_with_llm] 无法解析模型返回 JSON")
-            log_debug(content)
-            raise
+            # 某些模型可能在 JSON 前后附带额外文本，尝试截取第一个 JSON 对象以提升鲁棒性。
+            first_curly = text.find("{")
+            if first_curly >= 0:
+                try:
+                    node_result, _ = decoder.raw_decode(text[first_curly:])
+                except json.JSONDecodeError:
+                    log_error("[fill_params_with_llm] 无法解析模型返回 JSON")
+                    log_debug(content)
+                    raise
+            else:
+                log_error("[fill_params_with_llm] 无法解析模型返回 JSON")
+                log_debug(content)
+                raise
 
         if isinstance(node_result, dict):
             params = node_result.get("params", {})
