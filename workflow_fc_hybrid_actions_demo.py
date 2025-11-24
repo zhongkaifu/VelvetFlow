@@ -18,6 +18,7 @@ import os
 from velvetflow.action_registry import BUSINESS_ACTIONS
 from velvetflow.executor import DynamicActionExecutor, load_simulation_data
 from velvetflow.planner import plan_workflow_with_two_pass
+from velvetflow.visualization import render_workflow_dag
 from velvetflow.search import (
     DEFAULT_EMBEDDING_MODEL,
     FakeElasticsearch,
@@ -82,6 +83,13 @@ def main():
 
     print("\n==== 最终用于执行的 Workflow DSL ====\n")
     print(json.dumps(workflow.model_dump(by_alias=True), indent=2, ensure_ascii=False))
+
+    try:
+        dag_path = os.path.join(os.getcwd(), "workflow_dag.jpg")
+        saved_path = render_workflow_dag(workflow, output_path=dag_path)
+        print(f"\n已将最终工作流 DAG 保存为 JPEG：{saved_path}")
+    except Exception as e:
+        print(f"\n[warning] 工作流 DAG 绘制失败：{e}")
 
     simulation_path = os.path.join(os.path.dirname(__file__), "velvetflow", "simulation_data.json")
     simulation_data = load_simulation_data(simulation_path)
