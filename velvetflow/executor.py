@@ -262,6 +262,52 @@ class DynamicActionExecutor:
                 return False
             return data == value
 
+        if kind == "contains":
+            source = params.get("source")
+            field = params.get("field")
+            value = params.get("value")
+
+            try:
+                data = self._resolve_condition_source(source, ctx)
+            except Exception as e:
+                log_warn(
+                    f"[condition:contains] source 路径 '{source}' 无法从 context 读取: {e}，返回 False"
+                )
+                return False
+
+            def _match_target(target: Any) -> bool:
+                if target is None:
+                    return False
+                target_str = target if isinstance(target, str) else str(target)
+                return str(value) in target_str
+
+            # 列表：按字段（或元素自身）逐个判断
+            if isinstance(data, list):
+                if field is None:
+                    log_warn("[condition:contains] 未提供 field，且 source 是列表，返回 False")
+                    return False
+                for item in data:
+                    if isinstance(item, dict):
+                        if _match_target(item.get(field)):
+                            return True
+                    elif _match_target(item):
+                        return True
+                return False
+
+            # 字典：按字段取值
+            if isinstance(data, dict):
+                if field is None:
+                    log_warn("[condition:contains] 未提供 field，且 source 是字典，返回 False")
+                    return False
+                return _match_target(data.get(field))
+
+            # 其他：直接匹配字符串
+            if isinstance(data, str):
+                return _match_target(data)
+
+            log_warn("[condition:contains] source 不是列表/字典/字符串，返回 False")
+            return False
+
         log_warn(f"[condition] 未知 kind={kind}，默认 False")
         return False
 

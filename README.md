@@ -59,7 +59,7 @@ VelvetFlow (repo root)
 ## DSL 速查
 - **工作流**：`{ "workflow_name": str, "description": str, "nodes": [ ... ], "edges": [ {"from": str, "to": str, "condition": "true"|"false"|null} ] }`。
 - **节点**：`type` 可为 `start/end/action/condition/loop/parallel`；`action` 节点需 `action_id` 与 `params`；`condition` 节点 `params` 需 `kind` 与 `source` 等字段。
-- **条件节点**：支持 `list_not_empty`（上游列表非空判定）、`any_greater_than`（列表元素某字段大于阈值）、`equals` 等结构化参数。
+- **条件节点**：支持 `list_not_empty`（上游列表非空判定）、`any_greater_than`（列表元素某字段大于阈值）、`equals`、`contains` 等结构化参数。
 - **参数绑定**：`{"__from__": "result_of.node.field", "__agg__": "identity"}`；`count` 返回列表/对象长度；`count_if` 支持 `field/op/value`（含 `!=`）；`format_join` 可直接格式化并拼接列表；`filter_map` 会在内部走过滤与格式化；`pipeline` 步骤支持 `filter`、`format_join`，其中 `format_join` 可直接指定要取的字段。
 
 #### `__agg__` 详解
