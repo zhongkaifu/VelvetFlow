@@ -1113,11 +1113,25 @@ def _check_output_path_against_schema(
         return f"路径 '{source_path}' 引用的节点 '{node_id}' 的 action_id='{action_id}' 不在 Action Registry 中。"
 
     output_schema = action_def.get("output_schema")
-    if not isinstance(output_schema, dict):
-        return f"action_id='{action_id}' 没有定义 output_schema，无法校验路径 '{source_path}'。"
+    arg_schema = action_def.get("arg_schema")
 
     if not rest_path:
         return None
+
+    if rest_path[0] == "params":
+        arg_fields = rest_path[1:]
+        if not arg_fields:
+            return None
+        if not isinstance(arg_schema, Mapping):
+            return f"路径 '{source_path}' 无效：action_id='{action_id}' 缺少 arg_schema，无法校验 params 字段。"
+
+        err = _schema_path_error(arg_schema, arg_fields)
+        if err:
+            return f"路径 '{source_path}' 无效：{err}"
+        return None
+
+    if not isinstance(output_schema, dict):
+        return f"action_id='{action_id}' 没有定义 output_schema，无法校验路径 '{source_path}'。"
 
     err = _schema_path_error(output_schema, rest_path)
     if err:

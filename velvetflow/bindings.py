@@ -224,8 +224,18 @@ class BindingContext:
             raise ValueError(f"__from__ 引用的节点 '{node_id}' 缺少合法的 action_id")
 
         output_schema = action.get("output_schema")
+        arg_schema = action.get("arg_schema")
         field_path = parts[2:]
         if not field_path:
+            return
+
+        if field_path[0] == "params":
+            arg_fields = field_path[1:]
+            # 如果引用的是上游的输入参数，使用 arg_schema 进行校验（若缺失则跳过校验）
+            if arg_fields and arg_schema and not self._schema_has_path(arg_schema, arg_fields):
+                raise ValueError(
+                    f"__from__ 路径 '{src_path}' 引用了 action '{action_id}' 输入中不存在的字段"
+                )
             return
 
         if not self._schema_has_path(output_schema, field_path):
