@@ -308,17 +308,27 @@ class DynamicActionExecutor:
 
         if kind == "greater_than":
             threshold = params.get("threshold")
-            try:
-                return data is not None and data > threshold
-            except Exception:
-                return False
+            values = _extract_values(data, params.get("field"))
+
+            def _is_gt(v: Any) -> bool:
+                try:
+                    return v is not None and v > threshold
+                except Exception:
+                    return False
+
+            return any(_is_gt(v) for v in values)
 
         if kind == "less_than":
             threshold = params.get("threshold")
-            try:
-                return data is not None and data < threshold
-            except Exception:
-                return False
+            values = _extract_values(data, params.get("field"))
+
+            def _is_lt(v: Any) -> bool:
+                try:
+                    return v is not None and v < threshold
+                except Exception:
+                    return False
+
+            return any(_is_lt(v) for v in values)
 
         if kind == "between":
             min_v = params.get("min")
