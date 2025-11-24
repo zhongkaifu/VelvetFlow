@@ -19,7 +19,6 @@ class ValidationError:
         "MISSING_REQUIRED_PARAM",
         "UNKNOWN_ACTION_ID",
         "DISCONNECTED_GRAPH",
-        "CYCLE_DETECTED",
         "INVALID_EDGE",
         "SCHEMA_MISMATCH",
     ]

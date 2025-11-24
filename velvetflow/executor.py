@@ -111,15 +111,8 @@ class DynamicActionExecutor:
                     queue.append(nxt)
 
         if len(ordered) != len(nodes):
-            log_warn("可能是 LLM 生成了有环的工作流")
-            raise ValueError(
-                ValidationError(
-                    code="CYCLE_DETECTED",
-                    node_id=None,
-                    field=None,
-                    message="工作流中存在环，无法拓扑排序。",
-                )
-            )
+            log_warn("检测到工作流包含环（例如 loop 子图），按声明顺序执行。")
+            ordered = [n.id for n in nodes]
 
         edges_dump = [e.model_dump(by_alias=True) for e in edges]
         nodes_dump = {n.id: n.model_dump(by_alias=True) for n in nodes}
