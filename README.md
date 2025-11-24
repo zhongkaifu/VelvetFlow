@@ -60,7 +60,18 @@ VelvetFlow (repo root)
 - **工作流**：`{ "workflow_name": str, "description": str, "nodes": [ ... ], "edges": [ {"from": str, "to": str, "condition": "true"|"false"|null} ] }`。
 - **节点**：`type` 可为 `start/end/action/condition/loop/parallel`；`action` 节点需 `action_id` 与 `params`；`condition` 节点 `params` 需 `kind` 与 `source` 等字段。
 - **条件节点**：支持 `list_not_empty`（上游列表非空判定）、`any_greater_than`（列表元素某字段大于阈值）、`equals` 等结构化参数。
-- **参数绑定**：`{"__from__": "result_of.node.field", "__agg__": "identity"}`；`count_if` 支持 `field/op/value`（含 `!=`）；`filter_map` 会在内部走过滤与格式化；`pipeline` 步骤支持 `filter`、`format_join`，其中 `format_join` 可直接指定要取的字段。
+- **参数绑定**：`{"__from__": "result_of.node.field", "__agg__": "identity"}`；`count` 返回列表/对象长度；`count_if` 支持 `field/op/value`（含 `!=`）；`format_join` 可直接格式化并拼接列表；`filter_map` 会在内部走过滤与格式化；`pipeline` 步骤支持 `filter`、`format_join`，其中 `format_join` 可直接指定要取的字段。
+
+#### `__agg__` 详解
+- **作用**：`__agg__` 与 `__from__` 组合使用，描述如何从上游节点结果提取或加工数据以填充下游参数，默认取值为 `identity`（不做转换）。
+- **可选取值与行为**：
+  - `identity`：直接返回 `__from__` 引用的数据。
+  - `count`：返回列表或对象的长度，非可计算长度时返回 0。
+  - `count_if`：对列表按条件计数，可结合 `field`/`op`/`value` 或 `filter_field`/`filter_op`/`filter_value` 指定比较字段与目标值，非列表返回 0。
+  - `format_join`：对列表元素按字段/模板格式化并用分隔符拼接，非列表时直接格式化单值。
+  - `filter_map`：对列表先按条件过滤，再用模板格式化字段并拼接，非列表直接格式化单值。
+  - `pipeline`：按步骤链式处理数据，支持 `filter`（与 `count_if` 类似的过滤逻辑）与 `format_join` 等步骤组合。
+- **类型约束**：`__agg__` 的取值受 Schema 限定为 `identity`、`count`、`count_if`、`format_join`、`filter_map`、`pipeline` 之一，以保证 DSL 可解析性。
 
 ## 环境搭建
 1. **准备依赖**

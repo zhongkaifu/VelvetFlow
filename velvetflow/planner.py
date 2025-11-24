@@ -976,7 +976,9 @@ def fill_params_with_llm(
         "【重要说明：示例仅为模式，不代表具体业务】\n"
         "示例（字段名仅示意）：\n"
         "- 直接引用：{\"__from__\": \"result_of.some_node.items\", \"__agg__\": \"identity\"}\n"
+        "- 列表计数：{\"__from__\": \"result_of.some_node.items\", \"__agg__\": \"count\"}\n"
         "- 条件计数：{\"__from__\": \"result_of.some_node.items\", \"__agg__\": \"count_if\", \"field\": \"value\", \"op\": \">\", \"value\": 10}\n"
+        "- 直接格式化并拼接：{\"__from__\": \"result_of.some_node.items\", \"__agg__\": \"format_join\", \"format\": \"{name}: {score}\", \"sep\": \"\\n\"}\n"
         "- pipeline：{\"__from__\": \"result_of.list_node.items\", \"__agg__\": \"pipeline\", \"steps\": [{\"op\": \"filter\", \"field\": \"score\", \"cmp\": \">\", \"value\": 0.8}, {\"op\": \"format_join\", \"field\": \"id\", \"format\": \"ID={value} 异常\", \"sep\": \"\\n\"}]}\n"
         "示例中的节点名/字段名只是格式说明，实际必须使用 payload 中的节点信息和 output_schema。"
     )
@@ -1183,7 +1185,7 @@ def validate_param_binding(binding: Mapping[str, Any]) -> Optional[str]:
         return "__from__ 必须是非空字符串"
 
     agg = binding.get("__agg__", "identity")
-    allowed_aggs = {"identity", "count_if", "filter_map", "pipeline"}
+    allowed_aggs = {"identity", "count", "count_if", "filter_map", "format_join", "pipeline"}
     if agg not in allowed_aggs:
         return f"__agg__ 必须是 {sorted(allowed_aggs)} 之一，收到: {agg}"
 
@@ -1218,6 +1220,17 @@ def validate_param_binding(binding: Mapping[str, Any]) -> Optional[str]:
         cmp_err = _validate_cmp(binding.get("filter_op"), "filter_map.filter_op")
         if cmp_err:
             return cmp_err
+
+    if agg == "format_join":
+        fmt = binding.get("format")
+        sep = binding.get("sep")
+        field = binding.get("field")
+        if field is not None and (not isinstance(field, str) or not field):
+            return "format_join 需要字符串类型的 field（如提供）"
+        if fmt is not None and not isinstance(fmt, str):
+            return "format_join 需要字符串类型的 format"
+        if sep is not None and not isinstance(sep, str):
+            return "format_join 需要字符串类型的 sep"
 
     if agg == "pipeline":
         steps = binding.get("steps")
