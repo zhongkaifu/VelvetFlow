@@ -113,9 +113,16 @@ class BindingContext:
                     continue
                 raise KeyError(p)
 
-            raise KeyError(p)
+                raise KeyError(p)
 
         return cur
+
+
+class _SafeDict(dict):
+    """A dict that leaves unknown placeholders intact during formatting."""
+
+    def __missing__(self, key: str) -> str:
+        return "{" + key + "}"
 
     def resolve_binding(self, binding: dict) -> Any:
         """解析 __from__, __agg__, pipeline 等绑定 DSL。"""
@@ -244,8 +251,14 @@ class BindingContext:
                     field = step.get("field")
                     mapped = []
                     for item in current:
-                        if isinstance(item, dict):
-                            mapped.append(item.get(field))
+                        if isinstance(item, Mapping):
+                            value = item.get(field)
+                            if isinstance(value, Mapping):
+                                mapped.append(value)
+                            else:
+                                enriched = dict(item)
+                                enriched["value"] = value
+                                mapped.append(enriched)
                         else:
                             mapped.append(item)
                     current = mapped
@@ -253,11 +266,26 @@ class BindingContext:
                 elif op == "format_join":
                     fmt = step.get("format", "{value}")
                     sep = step.get("sep", "\n")
+                    
+                    def render(val: Any) -> str:
+                        if isinstance(val, Mapping):
+                            data: Mapping[str, Any] = _SafeDict(val)
+                        else:
+                            data = _SafeDict({"value": val})
+                        data.setdefault("value", val)
+                        try:
+                            return fmt.format_map(data)
+                        except Exception:
+                            try:
+                                return fmt.replace("{value}", str(val))
+                            except Exception:
+                                return str(val)
+
                     if not isinstance(current, list):
-                        return fmt.replace("{value}", str(current))
+                        return render(current)
                     lines: List[str] = []
                     for v in current:
-                        lines.append(fmt.replace("{value}", str(v)))
+                        lines.append(render(v))
                     return sep.join(lines)
 
             return current
