@@ -335,7 +335,9 @@ class DynamicActionExecutor:
                         log_debug(f"-> 描述: {action['description']}")
                         result = self._simulate_action(action_id, resolved_params)
 
-                results[nid] = result
+                payload = result.copy() if isinstance(result, dict) else {"value": result}
+                payload["params"] = resolved_params
+                results[nid] = payload
                 log_event(
                     "node_end",
                     {
