@@ -191,6 +191,17 @@ class DynamicActionExecutor:
 
         return copy.deepcopy(self._render_template(template, params_for_render))
 
+    def _resolve_condition_source(self, source: Any, ctx: BindingContext) -> Any:
+        """Resolve condition source which may be a binding dict or a path string."""
+
+        if isinstance(source, dict) and "__from__" in source:
+            return ctx.resolve_binding(source)
+
+        if isinstance(source, str):
+            return ctx.get_value(source)
+
+        return source
+
     def _eval_condition(self, node: Dict[str, Any], ctx: BindingContext) -> bool:
         params = node.get("params") or {}
         kind = params.get("kind")
@@ -203,7 +214,7 @@ class DynamicActionExecutor:
             field = params["field"]
             threshold = params["threshold"]
             try:
-                data = ctx.get_value(source)
+                data = self._resolve_condition_source(source, ctx)
             except Exception as e:
                 print(f"  [condition:any_greater_than] source 路径 '{source}' 无法从 context 读取: {e}，返回 False")
                 return False
@@ -216,7 +227,7 @@ class DynamicActionExecutor:
             source = params["source"]
             value = params["value"]
             try:
-                data = ctx.get_value(source)
+                data = self._resolve_condition_source(source, ctx)
             except Exception as e:
                 print(f"  [condition:equals] source 路径 '{source}' 无法从 context 读取: {e}，返回 False")
                 return False
