@@ -3,11 +3,11 @@ import copy
 import json
 import os
 import re
-from typing import Any, Dict, List, Mapping, Union
+from typing import Any, Dict, List, Mapping, Set, Union
 
 from velvetflow.bindings import BindingContext, eval_node_params
 from velvetflow.action_registry import get_action_by_id
-from velvetflow.models import Workflow
+from velvetflow.models import Node, ValidationError, Workflow
 
 # ===================== 16. 执行器 =====================
 
@@ -64,6 +64,72 @@ class DynamicActionExecutor:
             to_ids = {e["to"] for e in self.edges}
             starts = list(all_ids - to_ids)
         return starts
+
+    def _topological_sort(self, workflow: Workflow) -> List[Node]:
+        nodes = workflow.nodes
+        edges = workflow.edges
+
+        indegree: Dict[str, int] = {n.id: 0 for n in nodes}
+        adjacency: Dict[str, List[str]] = {n.id: [] for n in nodes}
+        for e in edges:
+            indegree[e.to_node] += 1
+            adjacency[e.from_node].append(e.to_node)
+
+        queue: List[str] = [nid for nid, deg in indegree.items() if deg == 0]
+        if not queue and nodes:
+            raise ValueError(
+                ValidationError(
+                    code="DISCONNECTED_GRAPH",
+                    node_id=None,
+                    field=None,
+                    message="未找到入度为 0 的节点，无法确定拓扑起点。",
+                )
+            )
+
+        ordered: List[str] = []
+        while queue:
+            nid = queue.pop(0)
+            ordered.append(nid)
+            for nxt in adjacency.get(nid, []):
+                indegree[nxt] -= 1
+                if indegree[nxt] == 0:
+                    queue.append(nxt)
+
+        if len(ordered) != len(nodes):
+            print("可能是 LLM 生成了有环的工作流")
+            raise ValueError(
+                ValidationError(
+                    code="CYCLE_DETECTED",
+                    node_id=None,
+                    field=None,
+                    message="工作流中存在环，无法拓扑排序。",
+                )
+            )
+
+        start_nodes = self.find_start_nodes()
+        reachable: Set[str] = set()
+        if start_nodes:
+            queue = list(start_nodes)
+            while queue:
+                nid = queue.pop(0)
+                if nid in reachable:
+                    continue
+                reachable.add(nid)
+                for nxt in adjacency.get(nid, []):
+                    if nxt not in reachable:
+                        queue.append(nxt)
+
+        if nodes and (not start_nodes or len(reachable) != len(nodes)):
+            raise ValueError(
+                ValidationError(
+                    code="DISCONNECTED_GRAPH",
+                    node_id=None,
+                    field=None,
+                    message="存在无法从 start 节点到达的节点。",
+                )
+            )
+
+        return [self.node_models[nid] for nid in ordered]
 
     def next_nodes(self, nid: str, cond_value: bool = True) -> List[str]:
         res = []
@@ -154,25 +220,27 @@ class DynamicActionExecutor:
         print(f"  [condition] 未知 kind={kind}，默认 False")
         return False
 
-    def run(self):
+    def run_workflow(self):
+        sorted_nodes = self._topological_sort(self.workflow)
+
         print("\n==== 执行工作流 ====")
         print("名称：", self.workflow_dict.get("workflow_name"))
         print("描述：", self.workflow_dict.get("description", ""))
         print("================================\n")
 
         start_nodes = self.find_start_nodes()
-        if not start_nodes:
+        if not start_nodes and sorted_nodes:
             print("未找到 start 节点，将从任意一个节点开始（仅 demo）。")
-            start_nodes = [next(iter(self.nodes))]
+            start_nodes = [sorted_nodes[0].id]
 
-        visited = set()
-        queue = list(start_nodes)
+        visited: Set[str] = set()
+        reachable: Set[str] = set(start_nodes)
         results: Dict[str, Any] = {}
         binding_ctx = BindingContext(self.workflow, results)
 
-        while queue:
-            nid = queue.pop(0)
-            if nid in visited:
+        for node_model in sorted_nodes:
+            nid = node_model.id
+            if nid in visited or (reachable and nid not in reachable):
                 continue
             visited.add(nid)
 
@@ -187,7 +255,7 @@ class DynamicActionExecutor:
                 print("  raw params =", json.dumps(params, ensure_ascii=False))
 
             if ntype == "action" and action_id:
-                resolved_params = eval_node_params(self.node_models[nid], binding_ctx)
+                resolved_params = eval_node_params(node_model, binding_ctx)
                 print("  resolved params =", json.dumps(resolved_params, ensure_ascii=False))
 
                 action = get_action_by_id(action_id)
@@ -207,14 +275,17 @@ class DynamicActionExecutor:
                 next_ids = self.next_nodes(nid, cond_value=cond_value)
                 for nxt in next_ids:
                     if nxt not in visited:
-                        queue.append(nxt)
+                        reachable.add(nxt)
                 continue
 
             next_ids = self.next_nodes(nid)
             for nxt in next_ids:
                 if nxt not in visited:
-                    queue.append(nxt)
+                    reachable.add(nxt)
 
         print("\n==== 执行结束 ====\n")
+
+    def run(self):
+        self.run_workflow()
 
 
