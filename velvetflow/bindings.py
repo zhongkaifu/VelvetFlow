@@ -243,10 +243,9 @@ class BindingContext:
         if not node:
             raise ValueError(f"__from__ 引用的节点 '{node_id}' 不存在")
 
-        if node.type != "action":
-            raise ValueError(
-                f"__from__ 只能引用 action 节点输出，当前节点 '{node_id}' 类型为 {node.type}"
-            )
+        # 控制节点（condition/loop 等）也允许被引用，缺少 action_id 时跳过 schema 校验
+        if node.type != "action" or not node.action_id:
+            return
 
         action_id = node.action_id
         action = get_action_by_id(action_id) if action_id else None
