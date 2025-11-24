@@ -3,7 +3,7 @@ import copy
 import json
 import os
 import re
-from typing import Any, Dict, List, Mapping, Set, Union
+from typing import Any, Dict, List, Mapping, Optional, Set, Union
 
 from velvetflow.bindings import BindingContext, eval_node_params
 from velvetflow.action_registry import get_action_by_id
@@ -71,11 +71,11 @@ class DynamicActionExecutor:
         else:
             raise ValueError("simulations 必须是 None、字典或 JSON 文件路径")
 
-    def find_start_nodes(self) -> List[str]:
-        starts = [nid for nid, n in self.nodes.items() if n.get("type") == "start"]
+    def _find_start_nodes(self, nodes: Mapping[str, Dict[str, Any]], edges: List[Dict[str, Any]]) -> List[str]:
+        starts = [nid for nid, n in nodes.items() if n.get("type") == "start"]
         if not starts:
-            all_ids = set(self.nodes.keys())
-            to_ids = {e["to"] for e in self.edges}
+            all_ids = set(nodes.keys())
+            to_ids = {e["to"] for e in edges}
             starts = list(all_ids - to_ids)
         return starts
 
@@ -85,6 +85,7 @@ class DynamicActionExecutor:
 
         indegree: Dict[str, int] = {n.id: 0 for n in nodes}
         adjacency: Dict[str, List[str]] = {n.id: [] for n in nodes}
+        node_lookup: Dict[str, Node] = {n.id: n for n in nodes}
         for e in edges:
             indegree[e.to_node] += 1
             adjacency[e.from_node].append(e.to_node)
@@ -120,7 +121,9 @@ class DynamicActionExecutor:
                 )
             )
 
-        start_nodes = self.find_start_nodes()
+        edges_dump = [e.model_dump(by_alias=True) for e in edges]
+        nodes_dump = {n.id: n.model_dump(by_alias=True) for n in nodes}
+        start_nodes = self._find_start_nodes(nodes_dump, edges_dump)
         reachable: Set[str] = set()
         if start_nodes:
             queue = list(start_nodes)
@@ -143,22 +146,27 @@ class DynamicActionExecutor:
                 )
             )
 
-        return [self.node_models[nid] for nid in ordered]
+        return [node_lookup[nid] for nid in ordered]
 
-    def next_nodes(self, nid: str, cond_value: bool = True) -> List[str]:
-        res = []
-        for e in self.edges:
-            if e["from"] != nid:
+    def _next_nodes(self, edges: List[Dict[str, Any]], nid: str, cond_value: Any = None) -> List[str]:
+        res: List[str] = []
+        cond_label: Optional[str]
+        if isinstance(cond_value, bool):
+            cond_label = "true" if cond_value else "false"
+        elif cond_value is None:
+            cond_label = None
+        else:
+            cond_label = str(cond_value)
+
+        for e in edges:
+            if e.get("from") != nid:
                 continue
             cond = e.get("condition")
             if cond is None:
-                res.append(e["to"])
-            else:
-                if cond == "true" and cond_value:
-                    res.append(e["to"])
-                elif cond == "false" and not cond_value:
-                    res.append(e["to"])
-        return res
+                res.append(e.get("to"))
+            elif cond_label is not None and cond == cond_label:
+                res.append(e.get("to"))
+        return [r for r in res if r]
 
     def _render_template(self, value: Any, params: Mapping[str, Any]) -> Any:
         if isinstance(value, str):
@@ -211,69 +219,93 @@ class DynamicActionExecutor:
 
         return source
 
-    def _eval_condition(self, node: Dict[str, Any], ctx: BindingContext) -> bool:
+    def _eval_condition(self, node: Dict[str, Any], ctx: BindingContext) -> Any:
         params = node.get("params") or {}
         kind = params.get("kind")
         if not kind:
             log_warn("[condition] 未指定 kind，默认 False")
             return False
 
-        if kind == "list_not_empty":
+        def _safe_get_source() -> Any:
             source = params.get("source")
             try:
-                data = self._resolve_condition_source(source, ctx)
+                return self._resolve_condition_source(source, ctx)
             except Exception as e:
-                log_warn(
-                    f"[condition:list_not_empty] source 路径 '{source}' 无法从 context 读取: {e}，返回 False"
-                )
-                return False
+                log_warn(f"[condition:{kind}] source 路径 '{source}' 无法从 context 读取: {e}，返回 False")
+                return None
 
+        data = _safe_get_source()
+
+        if kind == "list_not_empty":
             if not isinstance(data, list):
                 log_warn("[condition:list_not_empty] source 不是 list，返回 False")
                 return False
-
             return len(data) > 0
 
-        if kind == "any_greater_than":
-            source = params["source"]
-            field = params["field"]
-            threshold = params["threshold"]
-            try:
-                data = self._resolve_condition_source(source, ctx)
-            except Exception as e:
-                log_warn(
-                    f"[condition:any_greater_than] source 路径 '{source}' 无法从 context 读取: {e}，返回 False"
-                )
+        if kind == "is_empty":
+            if data is None:
+                return True
+            if isinstance(data, (list, dict, str)):
+                return len(data) == 0
+            return False
+
+        if kind == "not_empty":
+            if data is None:
                 return False
+            if isinstance(data, (list, dict, str)):
+                return len(data) > 0
+            return True
+
+        if kind == "any_greater_than":
+            field = params.get("field")
+            threshold = params.get("threshold")
             if not isinstance(data, list):
                 log_warn("[condition:any_greater_than] source 不是 list，返回 False")
                 return False
             return any((item.get(field, 0) > threshold) for item in data if isinstance(item, dict))
 
-        if kind == "equals":
-            source = params["source"]
-            value = params["value"]
-            try:
-                data = self._resolve_condition_source(source, ctx)
-            except Exception as e:
-                log_warn(
-                    f"[condition:equals] source 路径 '{source}' 无法从 context 读取: {e}，返回 False"
-                )
+        if kind == "all_less_than":
+            field = params.get("field")
+            threshold = params.get("threshold")
+            if not isinstance(data, list):
+                log_warn("[condition:all_less_than] source 不是 list，返回 False")
                 return False
+            filtered = [item for item in data if isinstance(item, dict) and field in item]
+            return bool(filtered) and all((item.get(field, 0) < threshold) for item in filtered)
+
+        if kind == "equals":
+            value = params.get("value")
             return data == value
 
+        if kind == "not_equals":
+            value = params.get("value")
+            return data != value
+
+        if kind == "greater_than":
+            threshold = params.get("threshold")
+            try:
+                return data is not None and data > threshold
+            except Exception:
+                return False
+
+        if kind == "less_than":
+            threshold = params.get("threshold")
+            try:
+                return data is not None and data < threshold
+            except Exception:
+                return False
+
+        if kind == "between":
+            min_v = params.get("min")
+            max_v = params.get("max")
+            try:
+                return data is not None and data >= min_v and data <= max_v
+            except Exception:
+                return False
+
         if kind == "contains":
-            source = params.get("source")
             field = params.get("field")
             value = params.get("value")
-
-            try:
-                data = self._resolve_condition_source(source, ctx)
-            except Exception as e:
-                log_warn(
-                    f"[condition:contains] source 路径 '{source}' 无法从 context 读取: {e}，返回 False"
-                )
-                return False
 
             def _match_target(target: Any) -> bool:
                 if target is None:
@@ -281,7 +313,6 @@ class DynamicActionExecutor:
                 target_str = target if isinstance(target, str) else str(target)
                 return str(value) in target_str
 
-            # 列表：按字段（或元素自身）逐个判断
             if isinstance(data, list):
                 if field is None:
                     log_warn("[condition:contains] 未提供 field，且 source 是列表，返回 False")
@@ -294,39 +325,167 @@ class DynamicActionExecutor:
                         return True
                 return False
 
-            # 字典：按字段取值
             if isinstance(data, dict):
                 if field is None:
                     log_warn("[condition:contains] 未提供 field，且 source 是字典，返回 False")
                     return False
                 return _match_target(data.get(field))
 
-            # 其他：直接匹配字符串
             if isinstance(data, str):
                 return _match_target(data)
 
             log_warn("[condition:contains] source 不是列表/字典/字符串，返回 False")
             return False
 
+        if kind == "multi_band":
+            bands = params.get("bands") or []
+            if data is None or not bands:
+                return None
+            try:
+                value = float(data)
+            except Exception:
+                return None
+            for band in bands:
+                label = band.get("label")
+                max_v = band.get("max")
+                try:
+                    if max_v is not None and value <= max_v:
+                        return label
+                except Exception:
+                    continue
+            return bands[-1].get("label") if isinstance(bands[-1], dict) else None
+
         log_warn(f"[condition] 未知 kind={kind}，默认 False")
         return False
 
-    def run_workflow(self):
-        sorted_nodes = self._topological_sort(self.workflow)
+    def _execute_loop_node(self, node: Dict[str, Any], binding_ctx: BindingContext) -> Dict[str, Any]:
+        params = node.get("params") or {}
+        loop_kind = params.get("loop_kind", "for_each")
+        body_graph = params.get("body_subgraph") or {}
+        body_nodes = body_graph.get("nodes") or []
+        body_edges = body_graph.get("edges") or []
+        entry = body_graph.get("entry")
+        exit_node = body_graph.get("exit")
 
-        log_section("执行工作流", self.workflow_dict.get("workflow_name", ""))
-        log_kv("描述", self.workflow_dict.get("description", ""))
+        extra_node_models: Dict[str, Node] = {}
+        try:
+            sub_wf = Workflow.model_validate(
+                {"workflow_name": "loop_body", "nodes": body_nodes, "edges": body_edges}
+            )
+            extra_node_models = {n.id: n for n in sub_wf.nodes}
+        except Exception:
+            extra_node_models = {}
+
+        accumulator = params.get("accumulator") or {}
+        max_iterations = params.get("max_iterations") or 100
+        iterations: List[Dict[str, Any]] = []
+
+        if loop_kind == "for_each":
+            source = params.get("source")
+            data = self._resolve_condition_source(source, binding_ctx)
+            if not isinstance(data, list):
+                log_warn("[loop] for_each 的 source 不是 list，跳过执行")
+                return {"status": "skipped", "reason": "source_not_list"}
+
+            size = len(data)
+            for idx, item in enumerate(data):
+                if idx >= max_iterations:
+                    log_warn("[loop] 达到 max_iterations 上限，提前结束循环")
+                    break
+                loop_ctx = {"index": idx, "item": item, "size": size, "accumulator": accumulator}
+                loop_binding = BindingContext(
+                    self.workflow, binding_ctx.results, extra_nodes=extra_node_models, loop_ctx=loop_ctx
+                )
+                self._execute_graph(
+                    {
+                        "workflow_name": f"{node.get('id')}_iter_{idx}",
+                        "description": body_graph.get("description", ""),
+                        "nodes": body_nodes,
+                        "edges": body_edges,
+                    },
+                    loop_binding,
+                    start_nodes=[entry] if entry else None,
+                )
+
+                iter_result: Dict[str, Any] = {"index": idx, "item": item}
+                if exit_node and exit_node in binding_ctx.results:
+                    iter_result["exit_result"] = binding_ctx.results.get(exit_node)
+                iterations.append(iter_result)
+
+            return {
+                "status": "loop_completed",
+                "loop_kind": loop_kind,
+                "iterations": iterations,
+                "accumulator": accumulator,
+            }
+
+        if loop_kind == "while":
+            cond_def = params.get("condition") or {}
+            iteration = 0
+            while iteration < max_iterations:
+                cond_value = self._eval_condition({"params": cond_def}, binding_ctx)
+                if not cond_value:
+                    break
+                loop_ctx = {
+                    "index": iteration,
+                    "size": max_iterations,
+                    "accumulator": accumulator,
+                }
+                loop_binding = BindingContext(
+                    self.workflow, binding_ctx.results, extra_nodes=extra_node_models, loop_ctx=loop_ctx
+                )
+                self._execute_graph(
+                    {
+                        "workflow_name": f"{node.get('id')}_while_{iteration}",
+                        "description": body_graph.get("description", ""),
+                        "nodes": body_nodes,
+                        "edges": body_edges,
+                    },
+                    loop_binding,
+                    start_nodes=[entry] if entry else None,
+                )
+
+                iter_result: Dict[str, Any] = {"index": iteration}
+                if exit_node and exit_node in binding_ctx.results:
+                    iter_result["exit_result"] = binding_ctx.results.get(exit_node)
+                iterations.append(iter_result)
+                iteration += 1
+
+            return {
+                "status": "loop_completed",
+                "loop_kind": loop_kind,
+                "iterations": iterations,
+                "accumulator": accumulator,
+            }
+
+        log_warn(f"[loop] 未知 loop_kind={loop_kind}，跳过执行")
+        return {"status": "skipped", "reason": "unknown_loop_kind"}
+
+    def _execute_graph(
+        self,
+        workflow_dict: Dict[str, Any],
+        binding_ctx: BindingContext,
+        start_nodes: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        workflow = Workflow.model_validate(workflow_dict)
+        nodes_data = {n["id"]: n for n in workflow.model_dump(by_alias=True)["nodes"]}
+        edges = workflow.model_dump(by_alias=True)["edges"]
+        sorted_nodes = self._topological_sort(workflow)
+
+        graph_label = workflow_dict.get("workflow_name", "")
+        log_section("执行工作流", graph_label)
+        log_kv("描述", workflow_dict.get("description", ""))
         log_kv("模拟用户角色", self.user_role)
 
-        start_nodes = self.find_start_nodes()
+        if start_nodes is None:
+            start_nodes = self._find_start_nodes(nodes_data, edges)
         if not start_nodes and sorted_nodes:
             log_warn("未找到 start 节点，将从任意一个节点开始（仅 demo）。")
             start_nodes = [sorted_nodes[0].id]
 
         visited: Set[str] = set()
         reachable: Set[str] = set(start_nodes)
-        results: Dict[str, Any] = {}
-        binding_ctx = BindingContext(self.workflow, results)
+        results = binding_ctx.results
 
         for node_model in sorted_nodes:
             nid = node_model.id
@@ -334,7 +493,7 @@ class DynamicActionExecutor:
                 continue
             visited.add(nid)
 
-            node = self.nodes[nid]
+            node = nodes_data[nid]
             ntype = node.get("type")
             action_id = node.get("action_id")
             display_name = node.get("display_name") or action_id or ntype
@@ -398,7 +557,8 @@ class DynamicActionExecutor:
             elif ntype == "condition":
                 cond_value = self._eval_condition(node, binding_ctx)
                 log_info(f"[condition] 结果: {cond_value}")
-                next_ids = self.next_nodes(nid, cond_value=cond_value)
+                results[nid] = {"condition_result": cond_value}
+                next_ids = self._next_nodes(edges, nid, cond_value=cond_value)
                 for nxt in next_ids:
                     if nxt not in visited:
                         reachable.add(nxt)
@@ -413,7 +573,33 @@ class DynamicActionExecutor:
                 )
                 continue
 
-            next_ids = self.next_nodes(nid)
+            elif ntype == "loop":
+                loop_result = self._execute_loop_node(node, binding_ctx)
+                results[nid] = loop_result
+                log_event(
+                    "node_end",
+                    {
+                        "node_id": nid,
+                        "type": ntype,
+                        "result": loop_result,
+                    },
+                )
+                next_ids = self._next_nodes(edges, nid)
+                for nxt in next_ids:
+                    if nxt not in visited:
+                        reachable.add(nxt)
+                log_event(
+                    "node_end",
+                    {
+                        "node_id": nid,
+                        "type": ntype,
+                        "next_nodes": next_ids,
+                        "result": results.get(nid),
+                    },
+                )
+                continue
+
+            next_ids = self._next_nodes(edges, nid)
             for nxt in next_ids:
                 if nxt not in visited:
                     reachable.add(nxt)
@@ -429,6 +615,11 @@ class DynamicActionExecutor:
             )
 
         log_success("执行结束")
+        return results
+
+    def run_workflow(self):
+        binding_ctx = BindingContext(self.workflow, {})
+        self._execute_graph(self.workflow_dict, binding_ctx)
 
     def run(self):
         self.run_workflow()

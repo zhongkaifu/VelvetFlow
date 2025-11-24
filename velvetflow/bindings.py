@@ -8,10 +8,20 @@ from velvetflow.models import Node, Workflow
 
 
 class BindingContext:
-    def __init__(self, workflow: Workflow, results: Dict[str, Any]):
+    def __init__(
+        self,
+        workflow: Workflow,
+        results: Dict[str, Any],
+        *,
+        extra_nodes: Optional[Mapping[str, Node]] = None,
+        loop_ctx: Optional[Dict[str, Any]] = None,
+    ):
         self.workflow = workflow
         self.results = results  # node_id -> result object
+        self.loop_ctx = loop_ctx or {}
         self._nodes = {n.id: n for n in workflow.nodes}
+        if extra_nodes:
+            self._nodes.update(extra_nodes)
 
     def resolve_binding(self, binding: dict) -> Any:
         """解析 __from__, __agg__, pipeline 等绑定 DSL。"""
@@ -268,6 +278,15 @@ class BindingContext:
             raise KeyError("空路径")
 
         parts = path.split(".")
+
+        if parts[0] == "loop":
+            cur: Any = self.loop_ctx
+            for p in parts[1:]:
+                if isinstance(cur, dict) and p in cur:
+                    cur = cur[p]
+                    continue
+                raise KeyError(p)
+            return cur
 
         if parts[0] == "result_of" and len(parts) >= 2:
             first_key = parts[1]
