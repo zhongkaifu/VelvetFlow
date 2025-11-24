@@ -1591,10 +1591,29 @@ def validate_completed_workflow(
                                 )
 
                 source = params.get("source")
-                if isinstance(source, str):
-                    if source.startswith("result_of."):
+                source_path: Optional[str] = None
+                if isinstance(source, dict) and "__from__" in source:
+                    binding_err = validate_param_binding(source)
+                    if binding_err:
+                        errors.append(
+                            ValidationError(
+                                code="SCHEMA_MISMATCH",
+                                node_id=nid,
+                                field="source",
+                                message=(
+                                    f"condition 节点 '{nid}' 的 source 绑定无效：{binding_err}"
+                                ),
+                            )
+                        )
+                    else:
+                        source_path = source.get("__from__")
+                elif isinstance(source, str):
+                    source_path = source
+
+                if isinstance(source_path, str):
+                    if source_path.startswith("result_of."):
                         try:
-                            rest = source[len("result_of."):]
+                            rest = source_path[len("result_of."):]
                             node_part = rest.split(".", 1)[0]
                             if node_part not in node_ids:
                                 errors.append(
@@ -1603,7 +1622,7 @@ def validate_completed_workflow(
                                         node_id=nid,
                                         field="source",
                                         message=(
-                                            f"condition 节点 '{nid}' 的 source='{source}' 引用了不存在的节点 ID '{node_part}'。"
+                                            f"condition 节点 '{nid}' 的 source='{source_path}' 引用了不存在的节点 ID '{node_part}'。"
                                         ),
                                     )
                                 )
@@ -1614,13 +1633,13 @@ def validate_completed_workflow(
                                     node_id=nid,
                                     field="source",
                                     message=(
-                                        f"condition 节点 '{nid}' 的 source='{source}' 格式异常。"
+                                        f"condition 节点 '{nid}' 的 source='{source_path}' 格式异常。"
                                     ),
                                 )
                             )
 
                     schema_err = _check_output_path_against_schema(
-                        source_path=source,
+                        source_path=source_path,
                         nodes_by_id=nodes_by_id,
                         actions_by_id=actions_by_id,
                     )
@@ -1631,10 +1650,24 @@ def validate_completed_workflow(
                                 node_id=nid,
                                 field="source",
                                 message=(
-                                    f"condition 节点 '{nid}' 的 source='{source}' 与上游 output_schema 不匹配：{schema_err}"
+                                    f"condition 节点 '{nid}' 的 source='{source_path}' 与上游 output_schema 不匹配：{schema_err}"
                                 ),
                             )
                         )
+
+                    if kind == "any_greater_than" and isinstance(params.get("field"), str):
+                        item_err = _check_array_item_field(
+                            source_path, params["field"], nodes_by_id, actions_by_id
+                        )
+                        if item_err:
+                            errors.append(
+                                ValidationError(
+                                    code="SCHEMA_MISMATCH",
+                                    node_id=nid,
+                                    field="field",
+                                    message=f"condition 节点 '{nid}' 的 field='{params['field']}' 无效：{item_err}",
+                                )
+                            )
 
     return errors
 
