@@ -5,6 +5,7 @@ import os
 import re
 from typing import Any, Dict, List, Mapping, Union
 
+from velvetflow.bindings import BindingContext, eval_node_params
 from velvetflow.action_registry import get_action_by_id
 from velvetflow.models import Workflow
 
@@ -41,7 +42,9 @@ class DynamicActionExecutor:
         if not isinstance(workflow_dict.get("edges"), list):
             raise ValueError("workflow 缺少合法的 'edges' 列表。")
 
-        self.workflow = workflow_dict
+        self.workflow = workflow
+        self.workflow_dict = workflow_dict
+        self.node_models = {n.id: n for n in workflow.nodes}
         self.nodes = {n["id"]: n for n in workflow_dict["nodes"]}
         self.edges = workflow_dict["edges"]
 
@@ -76,268 +79,6 @@ class DynamicActionExecutor:
                 elif cond == "false" and not cond_value:
                     res.append(e["to"])
         return res
-
-    def _get_from_context(self, context: Dict[str, Any], path: str):
-        if not path:
-            raise KeyError("空路径")
-
-        parts = path.split(".")
-
-        if parts[0] == "result_of" and len(parts) >= 2:
-            first_key = f"result_of.{parts[1]}"
-            if first_key not in context:
-                raise KeyError(first_key)
-            cur: Any = context[first_key]
-            rest = parts[2:]
-        else:
-            if parts[0] not in context:
-                raise KeyError(parts[0])
-            cur = context[parts[0]]
-            rest = parts[1:]
-
-        for p in rest:
-            if isinstance(cur, dict) and p in cur:
-                cur = cur[p]
-                continue
-
-            # When the current value is a list of dicts, allow selecting a
-            # sub-field from every element. This prevents parameter resolving
-            # from failing on paths like ``result_of.xxx.data.employee_id``
-            # where ``data`` is a list of objects.
-            if isinstance(cur, list):
-                extracted = []
-                for item in cur:
-                    if isinstance(item, dict) and p in item:
-                        extracted.append(item[p])
-                if extracted:
-                    cur = extracted
-                    continue
-                raise KeyError(p)
-
-            raise KeyError(p)
-
-        return cur
-
-    def _resolve_param_value(self, value: Any, context: Dict[str, Any]) -> Any:
-        if not isinstance(value, dict) or "__from__" not in value:
-            return value
-
-        src_path = value["__from__"]
-        self._validate_result_reference(src_path)
-        data = self._get_from_context(context, src_path)
-        agg = value.get("__agg__", "identity")
-
-        if agg == "identity":
-            return data
-
-        if agg == "count_if":
-            if not isinstance(data, list):
-                return 0
-            field = value.get("field") or value.get("filter_field")
-            op = value.get("op") or value.get("filter_op") or "=="
-            target = value.get("value") or value.get("filter_value")
-            count = 0
-            for item in data:
-                # Support both list-of-dicts and list-of-scalars
-                if isinstance(item, dict):
-                    v = item.get(field)
-                else:
-                    v = item
-
-                try:
-                    if op == ">" and v is not None and v > target:
-                        count += 1
-                    elif op == ">=" and v is not None and v >= target:
-                        count += 1
-                    elif op == "<" and v is not None and v < target:
-                        count += 1
-                    elif op == "<=" and v is not None and v <= target:
-                        count += 1
-                    elif op == "==" and v == target:
-                        count += 1
-                except TypeError:
-                    # If comparison fails (e.g., string vs number), skip the item
-                    continue
-            return count
-
-        if agg == "filter_map":
-            filter_field = value.get("filter_field")
-            filter_op = value.get("filter_op", "==")
-            filter_value = value.get("filter_value")
-            map_field = value.get("map_field")
-            fmt = value.get("format", "{value}")
-            sep = value.get("sep", "\n")
-
-            pipeline_value = {
-                "__from__": src_path,
-                "__agg__": "pipeline",
-                "steps": [
-                    {
-                        "op": "filter",
-                        "field": filter_field,
-                        "cmp": filter_op,
-                        "value": filter_value,
-                    },
-                    {
-                        "op": "map",
-                        "field": map_field,
-                    },
-                    {
-                        "op": "format_join",
-                        "format": fmt,
-                        "sep": sep,
-                    },
-                ],
-            }
-            return self._resolve_param_value(pipeline_value, context)
-
-        if agg == "pipeline":
-            steps = value.get("steps") or []
-            current = data
-
-            for step in steps:
-                if not isinstance(step, dict):
-                    continue
-                op = step.get("op")
-
-                if op == "filter":
-                    if not isinstance(current, list):
-                        continue
-                    field = step.get("field") or step.get("filter_field")
-                    cmp_op = (
-                        step.get("cmp")
-                        or step.get("filter_op")
-                        or step.get("operator")
-                        or "=="
-                    )
-                    cmp_val = step.get("value") or step.get("filter_value")
-                    filtered = []
-                    for item in current:
-                        if not isinstance(item, dict):
-                            continue
-                        v = item.get(field)
-                        passed = False
-                        if cmp_op == ">" and v is not None and v > cmp_val:
-                            passed = True
-                        elif cmp_op == ">=" and v is not None and v >= cmp_val:
-                            passed = True
-                        elif cmp_op == "<" and v is not None and v < cmp_val:
-                            passed = True
-                        elif cmp_op == "<=" and v is not None and v <= cmp_val:
-                            passed = True
-                        elif cmp_op == "==" and v == cmp_val:
-                            passed = True
-                        elif cmp_op in (None, "", "always"):
-                            passed = True
-                        if passed:
-                            filtered.append(item)
-                    current = filtered
-
-                elif op == "map":
-                    if not isinstance(current, list):
-                        continue
-                    field = step.get("field")
-                    mapped = []
-                    for item in current:
-                        if isinstance(item, dict):
-                            mapped.append(item.get(field))
-                        else:
-                            mapped.append(item)
-                    current = mapped
-
-                elif op == "format_join":
-                    fmt = step.get("format", "{value}")
-                    sep = step.get("sep", "\n")
-                    if not isinstance(current, list):
-                        return fmt.replace("{value}", str(current))
-                    lines: List[str] = []
-                    for v in current:
-                        lines.append(fmt.replace("{value}", str(v)))
-                    return sep.join(lines)
-
-            return current
-
-        return value
-
-    def _validate_result_reference(self, src_path: str) -> None:
-        """Ensure __from__ references point to valid node outputs.
-
-        The format we validate is ``result_of.<node_id>[.<field>...]``. We only
-        check references to other nodes' outputs; other context lookups are
-        allowed to pass through.
-        """
-
-        if not isinstance(src_path, str) or not src_path.startswith("result_of."):
-            return
-
-        parts = src_path.split(".")
-        if len(parts) < 2:
-            raise ValueError(f"__from__ 路径 '{src_path}' 不是合法的 result_of 引用")
-
-        node_id = parts[1]
-        node = self.nodes.get(node_id)
-        if not node:
-            raise ValueError(f"__from__ 引用的节点 '{node_id}' 不存在")
-
-        if node.get("type") != "action":
-            raise ValueError(f"__from__ 只能引用 action 节点输出，当前节点 '{node_id}' 类型为 {node.get('type')}")
-
-        action_id = node.get("action_id")
-        action = get_action_by_id(action_id) if action_id else None
-        if not action:
-            raise ValueError(f"__from__ 引用的节点 '{node_id}' 缺少合法的 action_id")
-
-        output_schema = action.get("output_schema")
-        field_path = parts[2:]
-        if not field_path:
-            return
-
-        if not self._schema_has_path(output_schema, field_path):
-            raise ValueError(
-                f"__from__ 路径 '{src_path}' 引用了 action '{action_id}' 输出中不存在的字段"
-            )
-
-    def _schema_has_path(self, schema: Mapping[str, Any], fields: List[str]) -> bool:
-        if not isinstance(schema, Mapping):
-            return False
-
-        current: Mapping[str, Any] = schema
-        idx = 0
-        while idx < len(fields):
-            name = fields[idx]
-            typ = current.get("type")
-
-            if typ == "array":
-                current = current.get("items") or {}
-                # array 本身不消费字段名，继续在 items 上检查同一个字段
-                continue
-
-            if typ == "object":
-                props = current.get("properties") or {}
-                if name not in props:
-                    return False
-                current = props[name]
-                idx += 1
-                continue
-
-            return False
-
-        return True
-
-    def _resolve_params(self, params: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
-        resolved = {}
-        for k, v in params.items():
-            if isinstance(v, dict) and "__from__" in v:
-                try:
-                    resolved_value = self._resolve_param_value(v, context)
-                except Exception as e:
-                    print(f"  [param-resolver] 解析参数 {k} 失败: {e}，使用原值")
-                    resolved[k] = v
-                else:
-                    resolved[k] = resolved_value
-            else:
-                resolved[k] = v
-        return resolved
 
     def _render_template(self, value: Any, params: Mapping[str, Any]) -> Any:
         if isinstance(value, str):
@@ -379,7 +120,7 @@ class DynamicActionExecutor:
 
         return copy.deepcopy(self._render_template(template, params_for_render))
 
-    def _eval_condition(self, node: Dict[str, Any], context: Dict[str, Any]) -> bool:
+    def _eval_condition(self, node: Dict[str, Any], ctx: BindingContext) -> bool:
         params = node.get("params") or {}
         kind = params.get("kind")
         if not kind:
@@ -391,7 +132,7 @@ class DynamicActionExecutor:
             field = params["field"]
             threshold = params["threshold"]
             try:
-                data = self._get_from_context(context, source)
+                data = ctx.get_value(source)
             except Exception as e:
                 print(f"  [condition:any_greater_than] source 路径 '{source}' 无法从 context 读取: {e}，返回 False")
                 return False
@@ -404,7 +145,7 @@ class DynamicActionExecutor:
             source = params["source"]
             value = params["value"]
             try:
-                data = self._get_from_context(context, source)
+                data = ctx.get_value(source)
             except Exception as e:
                 print(f"  [condition:equals] source 路径 '{source}' 无法从 context 读取: {e}，返回 False")
                 return False
@@ -415,8 +156,8 @@ class DynamicActionExecutor:
 
     def run(self):
         print("\n==== 执行工作流 ====")
-        print("名称：", self.workflow.get("workflow_name"))
-        print("描述：", self.workflow.get("description", ""))
+        print("名称：", self.workflow_dict.get("workflow_name"))
+        print("描述：", self.workflow_dict.get("description", ""))
         print("================================\n")
 
         start_nodes = self.find_start_nodes()
@@ -426,7 +167,8 @@ class DynamicActionExecutor:
 
         visited = set()
         queue = list(start_nodes)
-        context: Dict[str, Any] = {}
+        results: Dict[str, Any] = {}
+        binding_ctx = BindingContext(self.workflow, results)
 
         while queue:
             nid = queue.pop(0)
@@ -445,7 +187,7 @@ class DynamicActionExecutor:
                 print("  raw params =", json.dumps(params, ensure_ascii=False))
 
             if ntype == "action" and action_id:
-                resolved_params = self._resolve_params(params, context)
+                resolved_params = eval_node_params(self.node_models[nid], binding_ctx)
                 print("  resolved params =", json.dumps(resolved_params, ensure_ascii=False))
 
                 action = get_action_by_id(action_id)
@@ -457,10 +199,10 @@ class DynamicActionExecutor:
                     print(f"  -> 描述: {action['description']}")
                     result = self._simulate_action(action_id, resolved_params)
 
-                context[f"result_of.{nid}"] = result
+                results[nid] = result
 
             elif ntype == "condition":
-                cond_value = self._eval_condition(node, context)
+                cond_value = self._eval_condition(node, binding_ctx)
                 print(f"  [condition] 结果: {cond_value}")
                 next_ids = self.next_nodes(nid, cond_value=cond_value)
                 for nxt in next_ids:
