@@ -156,6 +156,8 @@ class BindingContext:
                         count += 1
                     elif op == "==" and v == target:
                         count += 1
+                    elif op == "!=" and v != target:
+                        count += 1
                 except TypeError:
                     # If comparison fails (e.g., string vs number), skip the item
                     continue
@@ -227,6 +229,8 @@ class BindingContext:
                         elif cmp_op == "<=" and v is not None and v <= cmp_val:
                             passed = True
                         elif cmp_op == "==" and v == cmp_val:
+                            passed = True
+                        elif cmp_op == "!=" and v != cmp_val:
                             passed = True
                         elif cmp_op in (None, "", "always"):
                             passed = True
