@@ -1,8 +1,7 @@
 """Utilities to render a workflow DAG as a JPEG image without external dependencies."""
 
 import math
-import subprocess
-import tempfile
+import io
 from pathlib import Path
 from typing import Dict, List, Tuple
 
@@ -516,93 +515,23 @@ class _ImageCanvas:
             cursor_x += 4  # 3px glyph + 1px spacing
 
 
-JPEG_ENCODER_SOURCE = r"""
-#include <stdio.h>
-#include <stdlib.h>
-#include <jpeglib.h>
-
-int main(int argc, char** argv) {
-    if (argc < 5) {
-        fprintf(stderr, "Usage: %s <width> <height> <quality> <output_file>\n", argv[0]);
-        return 1;
-    }
-    int width = atoi(argv[1]);
-    int height = atoi(argv[2]);
-    int quality = atoi(argv[3]);
-    const char* output = argv[4];
-
-    size_t expected = (size_t)width * height * 3;
-    unsigned char* buffer = (unsigned char*)malloc(expected);
-    if (!buffer) {
-        fprintf(stderr, "Failed to allocate buffer\n");
-        return 1;
-    }
-    size_t read = fread(buffer, 1, expected, stdin);
-    if (read != expected) {
-        fprintf(stderr, "Expected %zu bytes but read %zu\n", expected, read);
-        free(buffer);
-        return 1;
-    }
-
-    struct jpeg_compress_struct cinfo;
-    struct jpeg_error_mgr jerr;
-
-    FILE* outfile = fopen(output, "wb");
-    if (!outfile) {
-        fprintf(stderr, "Could not open output file %s\n", output);
-        free(buffer);
-        return 1;
-    }
-
-    cinfo.err = jpeg_std_error(&jerr);
-    jpeg_create_compress(&cinfo);
-    jpeg_stdio_dest(&cinfo, outfile);
-
-    cinfo.image_width = width;
-    cinfo.image_height = height;
-    cinfo.input_components = 3;
-    cinfo.in_color_space = JCS_RGB;
-    jpeg_set_defaults(&cinfo);
-    jpeg_set_quality(&cinfo, quality, TRUE);
-
-    jpeg_start_compress(&cinfo, TRUE);
-
-    JSAMPROW row_pointer[1];
-    int row_stride = width * 3;
-    while (cinfo.next_scanline < cinfo.image_height) {
-        row_pointer[0] = &buffer[cinfo.next_scanline * row_stride];
-        jpeg_write_scanlines(&cinfo, row_pointer, 1);
-    }
-
-    jpeg_finish_compress(&cinfo);
-    fclose(outfile);
-    jpeg_destroy_compress(&cinfo);
-    free(buffer);
-    return 0;
-}
-"""
-
-
-def _ensure_encoder_binary() -> Path:
-    temp_dir = Path(tempfile.gettempdir())
-    source_path = temp_dir / "rgb_to_jpeg.c"
-    binary_path = temp_dir / "rgb_to_jpeg"
-    if not binary_path.exists():
-        source_path.write_text(JPEG_ENCODER_SOURCE)
-        subprocess.run(["gcc", str(source_path), "-o", str(binary_path), "-ljpeg"], check=True)
-    return binary_path
-
-
 def _save_jpeg(buffer: bytearray, width: int, height: int, output_path: str, quality: int = 90) -> str:
-    encoder = _ensure_encoder_binary()
+    try:
+        from PIL import Image
+    except ImportError as exc:  # pragma: no cover - dependency check
+        raise RuntimeError(
+            "Saving workflow DAG as JPEG requires the optional Pillow dependency (pip install pillow)."
+        ) from exc
+
     output = Path(output_path)
     if output.parent:
         output.parent.mkdir(parents=True, exist_ok=True)
-    subprocess.run(
-        [str(encoder), str(width), str(height), str(quality), str(output)],
-        input=bytes(buffer),
-        check=True,
-    )
+
+    img = Image.frombytes("RGB", (width, height), bytes(buffer))
+    with io.BytesIO() as stream:
+        img.save(stream, format="JPEG", quality=quality, optimize=True)
+        output.write_bytes(stream.getvalue())
+
     return str(output)
 
 

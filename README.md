@@ -78,7 +78,7 @@ VelvetFlow (repo root)
    ```bash
    python -m venv .venv
    source .venv/bin/activate
-   pip install --upgrade openai numpy
+   pip install --upgrade openai numpy pillow
    ```
 2. **设置凭证**
    ```bash
