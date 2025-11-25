@@ -622,7 +622,7 @@ class DynamicActionExecutor:
                     return result
                 for item in data:
                     if isinstance(item, dict):
-                        if _match_target(item.get(field)):
+                        if _match_target(self._get_field_value(item, field)):
                             result = True
                             condition = {
                                 "check": "value in item[field]",
@@ -663,7 +663,7 @@ class DynamicActionExecutor:
                     }
                     _log_condition_debug(field, data, condition, params)
                     return result
-                result = _match_target(data.get(field))
+                result = _match_target(self._get_field_value(data, field))
                 condition = {
                     "check": "value in data[field]",
                     "value": value,
