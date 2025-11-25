@@ -16,7 +16,7 @@ workflow 结构和参数的两阶段推理，然后在必要时向 LLM 提供错
 返回值统一为 `Workflow` 对象，调用方无需关心 LLM 返回的原始 JSON 格式。
 """
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Mapping, Optional
 
 from velvetflow.config import OPENAI_MODEL
 from velvetflow.logging_utils import (
@@ -67,6 +67,155 @@ def _find_unregistered_action_nodes(
                 "action_id": action_id or "",
             })
     return invalid
+
+
+def _schema_default_value(field_schema: Mapping[str, Any]) -> Any:
+    """Return a predictable placeholder value for a JSON schema field."""
+
+    if not isinstance(field_schema, Mapping):
+        return None
+
+    if "default" in field_schema:
+        return field_schema.get("default")
+
+    schema_type = field_schema.get("type")
+    if isinstance(schema_type, list):
+        schema_type = schema_type[0] if schema_type else None
+
+    if schema_type == "string":
+        return ""
+    if schema_type == "integer":
+        return 0
+    if schema_type == "number":
+        return 0
+    if schema_type == "boolean":
+        return False
+    if schema_type == "array":
+        return []
+    if schema_type == "object":
+        return {}
+
+    enum_values = field_schema.get("enum")
+    if isinstance(enum_values, list) and enum_values:
+        return enum_values[0]
+
+    return None
+
+
+def _coerce_value_to_schema_type(value: Any, field_schema: Mapping[str, Any]) -> Optional[Any]:
+    """Coerce a value into the basic JSON schema type when possible."""
+
+    if not isinstance(field_schema, Mapping):
+        return None
+
+    schema_type = field_schema.get("type")
+    if isinstance(schema_type, list):
+        schema_type = schema_type[0] if schema_type else None
+
+    if schema_type == "string" and not isinstance(value, str):
+        return str(value)
+
+    if schema_type == "integer":
+        if isinstance(value, bool):
+            return int(value)
+        if not isinstance(value, int):
+            try:
+                return int(value)
+            except Exception:  # noqa: BLE001
+                return None
+
+    if schema_type == "number":
+        if isinstance(value, bool):
+            return float(value)
+        if not isinstance(value, (int, float)):
+            try:
+                return float(value)
+            except Exception:  # noqa: BLE001
+                return None
+
+    if schema_type == "boolean" and not isinstance(value, bool):
+        if isinstance(value, str):
+            lowered = value.lower()
+            if lowered in {"true", "false"}:
+                return lowered == "true"
+        return bool(value)
+
+    if schema_type == "array" and not isinstance(value, list):
+        return [value]
+
+    if schema_type == "object" and not isinstance(value, Mapping):
+        return {"value": value}
+
+    return None
+
+
+def _apply_local_repairs_for_missing_params(
+    current_workflow: Workflow,
+    validation_errors: List[ValidationError],
+    action_registry: List[Dict[str, Any]],
+) -> Optional[Workflow]:
+    """Handle predictable missing/typing issues before invoking the LLM.
+
+    当补参结果存在缺失的必填字段或简单的类型问题时，尝试根据 arg_schema
+    填充占位符或类型矫正，以减少进入 LLM 自修复的次数。
+    """
+
+    actions_by_id = _index_actions_by_id(action_registry)
+    workflow_dict = current_workflow.model_dump(by_alias=True)
+    nodes: List[Dict[str, Any]] = [
+        n for n in workflow_dict.get("nodes", []) if isinstance(n, Mapping)
+    ]
+    nodes_by_id: Dict[str, Dict[str, Any]] = {n.get("id"): n for n in nodes}
+
+    changed = False
+
+    for err in validation_errors:
+        if err.code != "MISSING_REQUIRED_PARAM" or not err.node_id:
+            continue
+
+        node = nodes_by_id.get(err.node_id)
+        if not node or node.get("type") != "action":
+            continue
+
+        action_id = node.get("action_id")
+        action_def = actions_by_id.get(action_id)
+        if not action_def:
+            continue
+
+        arg_schema = action_def.get("arg_schema") or {}
+        properties = arg_schema.get("properties") if isinstance(arg_schema, Mapping) else None
+        if not isinstance(properties, Mapping):
+            continue
+
+        field_schema = properties.get(err.field) if err.field else None
+        if not field_schema:
+            continue
+
+        params = node.get("params")
+        if not isinstance(params, dict):
+            params = {}
+            node["params"] = params
+            changed = True
+
+        if err.field and err.field not in params:
+            params[err.field] = _schema_default_value(field_schema)
+            changed = True
+            continue
+
+        if err.field and err.field in params:
+            coerced = _coerce_value_to_schema_type(params[err.field], field_schema)
+            if coerced is not None and coerced != params[err.field]:
+                params[err.field] = coerced
+                changed = True
+
+    if not changed:
+        return None
+
+    try:
+        return Workflow.model_validate(workflow_dict)
+    except Exception as exc:  # noqa: BLE001
+        log_warn(f"[AutoRepair] 本地修正失败：{exc}")
+        return None
 
 
 def _ensure_actions_registered_or_repair(
@@ -279,6 +428,33 @@ def plan_workflow_with_two_pass(
             log_error(
                 f"[code={e.code}] node={e.node_id} field={e.field} message={e.message}"
             )
+
+        locally_repaired = _apply_local_repairs_for_missing_params(
+            current_workflow=current_workflow,
+            validation_errors=errors,
+            action_registry=action_registry,
+        )
+        if locally_repaired is not None:
+            log_info(
+                "[AutoRepair] 检测到可预测的缺失字段/类型问题，已在本地修正并重新校验。"
+            )
+            current_workflow = locally_repaired
+            last_good_workflow = current_workflow
+
+            errors = validate_completed_workflow(
+                current_workflow.model_dump(by_alias=True),
+                action_registry=action_registry,
+            )
+
+            if not errors:
+                log_success("本地修正后校验通过，无需调用 LLM 继续修复。")
+                return current_workflow
+
+            log_warn("本地修正后仍有错误，将继续进入 LLM 修复流程：")
+            for e in errors:
+                log_error(
+                    f"[code={e.code}] node={e.node_id} field={e.field} message={e.message}"
+                )
 
         if repair_round == max_repair_rounds:
             log_warn("已到最大修复轮次，仍有错误，返回最后一个合法结构版本")
