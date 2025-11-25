@@ -108,10 +108,18 @@ def _schema_path_error(schema: Mapping[str, Any], fields: List[str]) -> Optional
     if not isinstance(schema, Mapping):
         return "output_schema 不是对象，无法校验字段路径。"
 
+    # 字段列表可能已经按点拆分，也可能仍然包含带点的路径（例如来自 params.field）。
+    normalized_fields: List[str] = []
+    for f in fields:
+        if isinstance(f, str):
+            normalized_fields.extend(part for part in f.split(".") if part)
+        else:
+            normalized_fields.append(f)
+
     current: Mapping[str, Any] = schema
     idx = 0
-    while idx < len(fields):
-        name = fields[idx]
+    while idx < len(normalized_fields):
+        name = normalized_fields[idx]
         typ = current.get("type")
 
         if typ == "array":
@@ -126,10 +134,10 @@ def _schema_path_error(schema: Mapping[str, Any], fields: List[str]) -> Optional
             idx += 1
             continue
 
-        if idx == len(fields) - 1:
+        if idx == len(normalized_fields) - 1:
             return None
 
-        return f"字段路径 '{'.'.join(fields)}' 与 schema 类型 '{typ}' 不匹配（期望 object/array）。"
+        return f"字段路径 '{'.'.join(normalized_fields)}' 与 schema 类型 '{typ}' 不匹配（期望 object/array）。"
 
     return None
 
