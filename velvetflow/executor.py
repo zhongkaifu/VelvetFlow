@@ -71,6 +71,35 @@ class DynamicActionExecutor:
         else:
             raise ValueError("simulations 必须是 None、字典或 JSON 文件路径")
 
+        self._validate_registered_actions()
+
+    def _validate_registered_actions(self) -> None:
+        """提前阻断未注册的业务动作，避免执行阶段才发现问题。
+
+        任何 action 节点缺失 action_id，或 action_id 不存在于 Registry，都会直接抛出
+        ValueError，提醒调用方在构建 workflow 阶段修复或补全动作注册。
+        """
+
+        unknown: List[str] = []
+        for node in self.workflow_dict.get("nodes", []):
+            if node.get("type") != "action":
+                continue
+
+            nid = node.get("id") or "<unknown>"
+            aid = node.get("action_id") or "<missing>"
+            if not node.get("action_id"):
+                unknown.append(f"{nid}: 缺少 action_id")
+                continue
+
+            if not get_action_by_id(aid):
+                unknown.append(f"{nid}: action_id='{aid}' 未注册")
+
+        if unknown:
+            details = "; ".join(unknown)
+            raise ValueError(
+                "workflow 中存在未注册或缺失的 action_id，请在构建阶段修复: " + details
+            )
+
     def _find_start_nodes(self, nodes: Mapping[str, Dict[str, Any]], edges: List[Dict[str, Any]]) -> List[str]:
         starts = [nid for nid, n in nodes.items() if n.get("type") == "start"]
         if not starts:
