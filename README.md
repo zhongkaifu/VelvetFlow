@@ -1,81 +1,42 @@
 # VelvetFlow
 
-VelvetFlow 是一个可复用的 LLM 驱动工作流规划与执行演示项目。它通过混合检索、两阶段 LLM 规划、静态校验与可模拟执行器，展示了如何从自然语言需求自动构建可运行的业务工作流。本文档覆盖项目背景、需求分析、总体/详细设计、核心流程、技术要点、示例、环境搭建与测试运行方法，旨在让读者仅凭本文件即可重新实现全部功能。
+VelvetFlow 是一个可复用的 LLM 驱动工作流规划与执行演示项目。项目包含混合检索、两阶段 LLM 规划（结构 + 补参）、静态校验与自修复、参数绑定 DSL、可模拟执行器与 DAG 可视化，帮助从自然语言需求自动构建并运行业务流程。
 
-## 背景与需求
-- **目标**：从自然语言描述生成可执行的业务工作流，包括节点规划、连线、参数补全、校验与执行。适用于通用业务（HR/OPS/CRM 等）动作库示例。
-- **核心需求**
-  - 提供业务动作注册表，可供检索与执行模拟使用。
-  - 支持基于文本/向量的混合检索，帮助 LLM 选择合适的业务动作。
-  - 通过两阶段 LLM 规划：先生成结构，再补全参数，并在必要时自动修复。
-  - 支持结果绑定 DSL，允许节点参数引用上游输出并进行聚合/过滤/格式化。
-  - 提供可模拟的执行器，按 DAG 顺序解析参数、执行动作并打印上下文。
-
-## 模块总体设计
+## 项目结构
 ```
 VelvetFlow (repo root)
 ├── velvetflow/
-│   ├── action_registry.py   # 业务动作定义与查询
-│   ├── search.py            # 混合检索 (BM25 + 向量) 及嵌入
-│   ├── planner.py           # 两阶段 LLM 规划、覆盖度检查、自修复、校验
-│   ├── executor.py          # 动态执行器与参数绑定 DSL 解析
-│   ├── config.py            # OpenAI 模型配置
-│   └── simulation_data.json # 动作模拟返回模板
-└── workflow_fc_hybrid_actions_demo.py # 端到端示例入口
+│   ├── action_registry.py       # 从 business_actions.json 读取动作，附加安全元数据
+│   ├── bindings.py              # 参数绑定 DSL 解析/校验
+│   ├── business_actions.json    # HR/OPS/CRM 等示例动作库
+│   ├── config.py                # 默认 OpenAI 模型配置
+│   ├── executor.py              # 动态执行器，支持条件/循环/聚合导出
+│   ├── logging_utils.py         # 终端友好日志 & 事件日志
+│   ├── loop_dsl.py              # loop 节点 exports 输出 Schema 辅助
+│   ├── models.py                # Workflow/Node/Edge 强类型模型与校验
+│   ├── planner/                 # 结构规划、补参、校验与自修复模块
+│   ├── search.py                # Fake ES + 内存向量库的混合检索服务
+│   ├── simulation_data.json     # 执行动作的模拟返回模板
+│   └── visualization.py         # 将 workflow 渲染为 JPEG DAG
+├── workflow_fc_hybrid_actions_demo.py # 端到端生成 + 可视化示例入口
+├── execute_workflow.py                 # 从已保存 JSON 执行 workflow
+└── LICENSE
 ```
 
-## 详细设计与技术要点
-### 动作注册表（Action Registry）
-- 定义在 `velvetflow/action_registry.py`，包含 HR/OPS/CRM 等示例动作及它们的参数/输出 JSON Schema。支持通过 `get_action_by_id` 查询，供规划/校验/执行阶段使用。【F:velvetflow/action_registry.py†L1-L212】【F:velvetflow/action_registry.py†L214-L236】
+## 核心能力
+- **业务动作注册表**：`action_registry.py` 从 `business_actions.json` 载入动作，自动补齐 `requires_approval` / `allowed_roles` 安全字段，并提供 `get_action_by_id` 查询。
+- **混合检索**：`search.py` 提供 `FakeElasticsearch`（基于关键词计分）、`VectorClient`（余弦相似度）以及 `embed_text_openai`。`HybridActionSearchService` 将 BM25 与向量分数归一化后加权融合，返回动作候选。
+- **工作流规划 Orchestrator**：`planner/orchestrator.py` 实现两阶段 `plan_workflow_with_two_pass`：
+  - 调用 `planner/structure.py` 使用 OpenAI tool-calling 规划结构，并通过覆盖度检查、自动补边/修补循环 exports、审批节点检查等提升连通性与完备性。
+  - 使用 `planner/params.py` 补全必填参数（含参数绑定示例），若失败则进入 `planner/repair.py` 与 `planner/action_guard.py` 的 LLM 自修复与动作校验。
+  - `planner/validation.py` 做最终静态校验（必填字段、节点连通性、Schema 对齐）；失败则多轮调用修复直到通过或达到上限。
+- **DSL 模型与校验**：`models.py` 定义 Node/Edge/Workflow，并校验节点类型、边引用合法性、loop 子图 Schema 等；提供 `ValidationError` 以在修复阶段统一描述错误。
+- **参数绑定 DSL**：`bindings.py` 支持 `__from__` 引用上游结果，`__agg__` 支持 `identity/count/count_if/format_join/filter_map/pipeline`，并校验引用路径是否存在于动作输出/输入或 loop exports。
+- **执行器**：`executor.py` 的 `DynamicActionExecutor` 会先校验 action_id 是否在注册表中，再执行拓扑排序确保连通；支持 condition 节点（如 list_not_empty/equals/contains/greater_than/between 等）与 loop 节点（body_subgraph + exports.items/aggregates 收集迭代与聚合结果），并结合 `simulation_data.json` 模拟动作返回。日志输出使用 `logging_utils.py`。
+- **可视化**：`visualization.py` 提供 `render_workflow_dag`，支持 Unicode 字体回退，将 Workflow 渲染为 JPEG DAG。
 
-### 混合检索与向量库
-- `velvetflow/search.py` 提供简化版 BM25 (`FakeElasticsearch`) 与内存向量库 (`VectorClient`)，并使用 OpenAI `text-embedding-3-small` 生成业务动作与查询的真实向量。【F:velvetflow/search.py†L1-L119】【F:velvetflow/search.py†L121-L167】
-- `HybridActionSearchService` 将 BM25 与向量相似度按权重融合，返回按得分排序的候选动作，用于 LLM tool-calling 期间的动作选择。【F:velvetflow/search.py†L169-L260】
-
-### 两阶段 LLM 规划流程
-- **结构规划**：`plan_workflow_structure_with_llm` 使用 OpenAI function-calling 工具（搜索动作、设置元数据、增添节点/边、最终确认）迭代生成工作流骨架；若缺少边则调用二次 LLM 接线或线性串联补全，并校验动作合法性与连通性。【F:velvetflow/planner.py†L113-L255】【F:velvetflow/planner.py†L256-L344】
-- **覆盖度检查与结构改进**：规划后通过 LLM 检查需求覆盖度，若存在缺失则调用增量改进接口补充节点/边，循环直至覆盖或达到最大轮次。【F:velvetflow/planner.py†L346-L417】
-- **参数补全**：`fill_params_with_llm` 根据动作的 `arg_schema`、上下游关系与绑定 DSL 例子补全必填参数，允许引用上游输出并生成结构化条件节点参数。【F:velvetflow/planner.py†L765-L964】
-- **静态校验与自修复**：`validate_completed_workflow`（同文件后半部分）检查必填字段、路径合法性与 Schema 对齐；`repair_workflow_with_llm` 在尽量不改结构的前提下修复参数/路径/字段名；`plan_workflow_with_two_pass` 负责 orchestrate 两阶段规划 + 校验 + 多轮自修复并返回最终可执行 DSL。【F:velvetflow/planner.py†L965-L1291】【F:velvetflow/planner.py†L1293-L1420】
-
-### 参数绑定 DSL 与执行器
-- 执行器 `DynamicActionExecutor` 支持从上游上下文读取 `result_of.<node_id>[.<field>...]`，解析聚合（`identity`、`count_if`、`filter_map`->`pipeline`、`pipeline`），并将解析后的参数传入动作模拟结果生成器 `_simulate_action`。条件节点支持 `any_greater_than`、`equals` 等结构化 params。【F:velvetflow/executor.py†L1-L210】【F:velvetflow/executor.py†L212-L420】
-- 运行时会按 DAG 顺序遍历节点、解析参数、打印执行信息并将结果写入上下文；模拟数据来源于 `simulation_data.json`，可通过模板占位符 `{{field}}` 与默认值渲染输出。【F:velvetflow/executor.py†L422-L499】【F:velvetflow/simulation_data.json†L1-L23】
-
-### 配置与模型
-- `velvetflow/config.py` 用于集中管理 OpenAI 模型名称（默认 `gpt-4.1-mini`），可按需修改。【F:velvetflow/config.py†L1-L4】
-
-### 端到端示例入口
-- `workflow_fc_hybrid_actions_demo.py` 构建混合检索服务、读取用户需求（或默认需求）、调用 `plan_workflow_with_two_pass` 生成/修复/补参工作流，再使用 `DynamicActionExecutor` 结合 `simulation_data.json` 进行模拟运行。需提前设置环境变量 `OPENAI_API_KEY` 并安装依赖（`openai`、`numpy`）。【F:workflow_fc_hybrid_actions_demo.py†L1-L73】【F:workflow_fc_hybrid_actions_demo.py†L75-L96】
-
-## 核心流程图（文字版）
-1. **输入需求** → 用户自然语言描述。
-2. **结构规划** → LLM tool-calling 搜索动作、添加节点/边 → 无边时自动接线 → 连通性补全 + 动作合法性检查。
-3. **覆盖度校验** → LLM 判断需求覆盖度，若缺失则调用结构改进 LLM。
-4. **参数补全** → LLM 根据 Schema/上下游关系生成必填参数与绑定 DSL。
-5. **静态校验 & 自修复** → 本地规则校验；如有错误，LLM 按最小改动策略修复。
-6. **执行** → 加载模拟数据 → 解析参数/条件 → 按 DAG 运行节点并输出上下文。
-
-## DSL 速查
-- **工作流**：`{ "workflow_name": str, "description": str, "nodes": [ ... ], "edges": [ {"from": str, "to": str, "condition": "true"|"false"|null} ] }`。
-- **节点**：`type` 可为 `start/end/action/condition/loop/parallel`；`action` 节点需 `action_id` 与 `params`；`condition` 节点 `params` 需 `kind` 与 `source` 等字段。
-- **条件节点**：支持 `list_not_empty`（上游列表非空判定）、`any_greater_than`（列表元素某字段大于阈值）、`equals`、`contains` 等结构化参数。
-- **参数绑定**：`{"__from__": "result_of.node.field", "__agg__": "identity"}`；`count` 返回列表/对象长度；`count_if` 支持 `field/op/value`（含 `!=`）；`format_join` 可直接格式化并拼接列表；`filter_map` 会在内部走过滤与格式化；`pipeline` 步骤支持 `filter`、`format_join`，其中 `format_join` 可直接指定要取的字段。
-- **循环 exports 提取列表**：`exports.items` 可通过 `list_field` 指定要展开的列表字段（例如动作输出中的 `data`），框架会把列表中的每个元素变成 `items` 里的独立记录；若 `from_node` 直接返回列表也会自动展开。字段名仍按单个元素的键填写，例如 `employee_id`、`temperature`。
-
-#### `__agg__` 详解
-- **作用**：`__agg__` 与 `__from__` 组合使用，描述如何从上游节点结果提取或加工数据以填充下游参数，默认取值为 `identity`（不做转换）。
-- **可选取值与行为**：
-  - `identity`：直接返回 `__from__` 引用的数据。
-  - `count`：返回列表或对象的长度，非可计算长度时返回 0。
-  - `count_if`：对列表按条件计数，可结合 `field`/`op`/`value` 或 `filter_field`/`filter_op`/`filter_value` 指定比较字段与目标值，非列表返回 0。
-  - `format_join`：对列表元素按字段/模板格式化并用分隔符拼接，非列表时直接格式化单值。
-  - `filter_map`：对列表先按条件过滤，再用模板格式化字段并拼接，非列表直接格式化单值。
-  - `pipeline`：按步骤链式处理数据，支持 `filter`（与 `count_if` 类似的过滤逻辑）与 `format_join` 等步骤组合。
-- **类型约束**：`__agg__` 的取值受 Schema 限定为 `identity`、`count`、`count_if`、`format_join`、`filter_map`、`pipeline` 之一，以保证 DSL 可解析性。
-
-## 环境搭建
-1. **准备依赖**
+## 使用方法
+1. **安装依赖**
    ```bash
    python -m venv .venv
    source .venv/bin/activate
@@ -85,36 +46,51 @@ VelvetFlow (repo root)
    ```bash
    export OPENAI_API_KEY="<your_api_key>"
    ```
-3. **可选：检查代码语法**
+3. **运行端到端示例**
    ```bash
-   python -m compileall velvetflow
+   python workflow_fc_hybrid_actions_demo.py
    ```
+   - 按提示输入自然语言需求（或直接回车使用默认示例），程序将构建混合检索服务、两阶段规划工作流，并打印最终 DSL。
+   - 结果会持久化到 `workflow_output.json`，并生成 `workflow_dag.jpg`。
+4. **从已保存 JSON 执行工作流**
+   ```bash
+   python execute_workflow.py --workflow-json workflow_output.json
+   ```
+   - 执行器会解析绑定 DSL、运行条件/循环节点，并使用 `velvetflow/simulation_data.json` 生成模拟结果。
 
-## 运行示例
-1) 构建并持久化工作流
-```bash
-python workflow_fc_hybrid_actions_demo.py
+## 工作流构建流程（含 LLM 标注）
+下面的流程图展示从自然语言需求到最终 Workflow DSL 的关键步骤，并对需要调用 LLM 的环节进行了突出标注，节点内含输入/输出数据结构：
+
+```mermaid
+flowchart TD
+    A["用户需求输入\n输入: nl_requirement:str"] --> B
+    B["构建混合检索服务\n输入: BUSINESS_ACTIONS\n输出: HybridActionSearchService (BM25+向量索引)"] --> C
+    C{{"LLM: 结构规划 (plan_workflow_structure_with_llm)\n输入: nl_requirement + action_registry\n输出: workflow_skeleton: dict{nodes,edges,entry,exit}"}} --> D
+    D["Pydantic 校验 & ensure_registered_actions\n输入: workflow_skeleton\n输出: skeleton: Workflow"] --> E
+    E{{"LLM: 参数补全 (fill_params_with_llm)\n输入: skeleton.model_dump(by_alias=True) + action_registry\n输出: completed_workflow_raw: dict 含 params/exports/bindings"}} --> F
+    F{{"LLM: 自修复 (_repair_with_llm_and_fallback，可多轮)\n输入: validation_errors + 当前 workflow dict\n输出: repaired_workflow: dict"}} --> G
+    D -->|补参异常/缺字段| F
+    E -->|校验失败| F
+    F --> G
+    G["最终校验 (validate_completed_workflow)\n输出: 完整 Workflow 模型"] --> H["持久化与可视化\n输出: workflow_output.json + workflow_dag.jpg"]
+
+    classDef llm fill:#fff6e6,stroke:#e67e22,stroke-width:2px;
+    class C,E,F llm;
 ```
-- 按提示输入自然语言需求，或直接回车使用默认案例；程序将打印生成的工作流 DSL，并在仓库根目录生成 `workflow_output.json`（持久化的 DSL）及 `workflow_dag.jpg`（流程拓扑）。
 
-2) 从已保存的 JSON 读取并执行工作流
-```bash
-python execute_workflow.py --workflow-json workflow_output.json
-```
-- 可多次复用同一个 JSON，结合 `velvetflow/simulation_data.json` 进行模拟执行。
+LLM 相关节点说明：
+- **结构规划**：基于自然语言需求与动作 schema，生成 `nodes/edges/entry/exit` 的骨架，必要时触发覆盖度补充与 loop exports 生成。
+- **参数补全**：为每个 action/condition/loop 节点填充必需的 `params`、`exports` 与绑定表达式，模型由 `velvetflow.config.OPENAI_MODEL` 控制。
+- **自修复**：当校验失败或补参异常时，使用当前 workflow 字典与 `ValidationError` 列表提示模型修复，直到通过或达到 `max_repair_rounds`。
 
-## 开发与测试样例
-- **替换动作库**：编辑 `velvetflow/action_registry.py`，添加/禁用动作并提供对应 `arg_schema`/`output_schema`，即可让检索与规划使用新的动作集合。【F:velvetflow/action_registry.py†L1-L212】
-- **调整检索策略**：在 `workflow_fc_hybrid_actions_demo.py` 的 `build_default_search_service` 中修改融合系数 `alpha`，或替换 `DEFAULT_EMBEDDING_MODEL`/`embed_text_openai` 以适配自定义向量模型。【F:workflow_fc_hybrid_actions_demo.py†L17-L40】
-- **自定义模型**：修改 `velvetflow/config.py` 中的 `OPENAI_MODEL` 即可切换模型。【F:velvetflow/config.py†L1-L4】
-- **模拟数据扩展**：在 `velvetflow/simulation_data.json` 增加动作 ID、默认值及模板，执行器会自动渲染并返回结构化结果。【F:velvetflow/simulation_data.json†L1-L23】
+## 自定义与扩展
+- **扩展动作库**：编辑 `velvetflow/business_actions.json` 增加/调整动作，`action_registry.py` 会自动加载并附加安全字段。
+- **调优检索**：在 `workflow_fc_hybrid_actions_demo.py` 的 `build_default_search_service` 调整 `alpha` 或替换 `DEFAULT_EMBEDDING_MODEL`/`embed_text_openai` 以适配自定义向量模型。
+- **更换模型**：`velvetflow/config.py` 中的 `OPENAI_MODEL` 控制规划/补参阶段使用的 OpenAI Chat 模型。
+- **定制执行行为**：修改 `velvetflow/simulation_data.json` 模板以覆盖动作返回；如需调整条件/循环聚合规则，可在 `executor.py` 与 `bindings.py` 中扩展。
 
-## 重新实现指引
-- 按上述模块职责实现：
-  1) 定义动作注册表与 Schema；
-  2) 提供 BM25/向量混合检索接口；
-  3) 构建两阶段 LLM 规划（结构→参数）并加入覆盖度检查、自修复与静态校验；
-  4) 实现参数绑定 DSL（含聚合/管道）与条件节点求值；
-  5) 通过模拟数据或真实 API 执行动作并维护上下文。
-- 遵循 DSL 结构与函数接口，即可从自然语言需求到可执行工作流的完整链路。
-
+## 测试（可选）
+- 仅进行语法检查可运行：
+  ```bash
+  python -m compileall velvetflow
+  ```
