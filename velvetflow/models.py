@@ -21,6 +21,7 @@ class ValidationError:
         "DISCONNECTED_GRAPH",
         "INVALID_EDGE",
         "SCHEMA_MISMATCH",
+        "INVALID_SCHEMA",
     ]
     node_id: Optional[str]
     field: Optional[str]
