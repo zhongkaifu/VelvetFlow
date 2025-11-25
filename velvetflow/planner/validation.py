@@ -204,7 +204,16 @@ def _get_array_item_schema_from_output(
     node = nodes_by_id.get(node_id)
     node_type = node.get("type") if node else None
     if node_type == "loop":
-        schema = build_loop_output_schema(node.get("params") or {}) or {}
+        loop_params = node.get("params") or {}
+        if first_field == "items":
+            items_spec = (loop_params.get("exports") or {}).get("items")
+            items_schema = _get_loop_items_schema_from_exports(
+                items_spec, node, nodes_by_id, actions_by_id
+            )
+            if items_schema:
+                return items_schema
+
+        schema = build_loop_output_schema(loop_params) or {}
         props = schema.get("properties") or {}
         return (props.get(first_field) or {}).get("items") if first_field in props else None
 
@@ -276,6 +285,48 @@ def _suggest_numeric_subfield(schema: Mapping[str, Any], prefix: str = "") -> Op
                 return candidate
 
     return None
+
+
+def _get_loop_items_schema_from_exports(
+    items_spec: Any,
+    loop_node: Mapping[str, Any],
+    nodes_by_id: Mapping[str, Mapping[str, Any]],
+    actions_by_id: Mapping[str, Mapping[str, Any]],
+) -> Optional[Mapping[str, Any]]:
+    """Derive the loop items array schema using the referenced action's output schema."""
+
+    if not isinstance(items_spec, Mapping):
+        return None
+
+    from_node_id = items_spec.get("from_node")
+    fields = items_spec.get("fields")
+    if not isinstance(from_node_id, str) or not isinstance(fields, list):
+        return None
+
+    body_nodes = (
+        (loop_node.get("params") or {}).get("body_subgraph") or {}
+    ).get("nodes", [])
+    src_node = next(
+        (n for n in body_nodes if isinstance(n, Mapping) and n.get("id") == from_node_id),
+        None,
+    )
+
+    action_def = None
+    if isinstance(src_node, Mapping):
+        action_id = src_node.get("action_id")
+        if isinstance(action_id, str):
+            action_def = actions_by_id.get(action_id)
+
+    output_schema = (action_def or {}).get("output_schema") if action_def else None
+
+    item_props: Dict[str, Any] = {}
+    for fld in fields:
+        if not isinstance(fld, str):
+            continue
+        field_schema = _get_field_schema(output_schema, fld) if output_schema else None
+        item_props[fld] = field_schema or {}
+
+    return {"type": "object", "properties": item_props} if item_props else None
 
 
 def _check_array_item_field(
