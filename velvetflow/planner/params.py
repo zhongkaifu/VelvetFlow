@@ -77,6 +77,7 @@ def fill_params_with_llm(
         "你是一个工作流参数补全助手。一次只处理一个节点，请根据给定的 arg_schema 补齐当前节点的 params。\n"
         "当某个字段需要引用其他节点的输出时，必须使用数据绑定 DSL，并且只能引用提供的 allowed_node_ids 中的节点。\n"
         "你只能从以下节点中读取上下游结果：result_of.<node_id>.<field>...，其中 node_id 必须来自 allowed_node_ids，field 必须存在于该节点的 output_schema。\n"
+        "当引用循环节点时，只能使用 loop 节点的 exports（如 result_of.<loop_id>.items / result_of.<loop_id>.aggregates.xxx），禁止直接引用 loop body 的节点。\n"
         "start/end 节点可以保持 params 为空。\n"
         "返回 JSON：{\"id\": <当前节点 id>, \"params\": { ...补全后的参数... }}，不要加代码块标记。\n\n"
         "【重要说明：示例仅为模式，不代表具体业务】\n"

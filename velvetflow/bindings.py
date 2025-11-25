@@ -3,6 +3,7 @@
 from typing import Any, Dict, List, Mapping, Optional
 
 from velvetflow.action_registry import get_action_by_id
+from velvetflow.loop_dsl import build_loop_output_schema
 from velvetflow.logging_utils import log_warn
 from velvetflow.models import Node, Workflow
 
@@ -216,13 +217,16 @@ class BindingContext:
                 # array 本身不消费字段名，继续在 items 上检查同一个字段
                 continue
 
-            if typ == "object":
+            if typ == "object" or typ is None:
                 props = current.get("properties") or {}
                 if name not in props:
                     return False
                 current = props[name]
                 idx += 1
                 continue
+
+            if idx == len(fields) - 1:
+                return True
 
             return False
 
@@ -243,7 +247,19 @@ class BindingContext:
         if not node:
             raise ValueError(f"__from__ 引用的节点 '{node_id}' 不存在")
 
-        # 控制节点（condition/loop 等）也允许被引用，缺少 action_id 时跳过 schema 校验
+        # loop 节点有虚拟 output_schema（exports）
+        if node.type == "loop":
+            loop_schema = build_loop_output_schema(node.params or {})
+            if not loop_schema:
+                raise ValueError(f"__from__ 引用的 loop 节点 '{node_id}' 未定义 exports")
+            field_path = parts[2:]
+            if not self._schema_has_path(loop_schema, field_path):
+                raise ValueError(
+                    f"__from__ 路径 '{src_path}' 引用了 loop '{node_id}' 输出中不存在的字段"
+                )
+            return
+
+        # 控制节点（condition/start/end 等）也允许被引用，缺少 action_id 时跳过 schema 校验
         if node.type != "action" or not node.action_id:
             return
 

@@ -274,6 +274,120 @@ class DynamicActionExecutor:
             return next(iter(collected.values()))
         return collected
 
+    def _extract_export_values(self, source: Any, field: Optional[str]) -> List[Any]:
+        if isinstance(source, list):
+            values: List[Any] = []
+            for item in source:
+                if field and isinstance(item, Mapping):
+                    values.append(item.get(field))
+                else:
+                    values.append(item)
+            return values
+
+        if isinstance(source, Mapping):
+            return [source.get(field)] if field else [source]
+
+        return [source]
+
+    def _apply_loop_exports(
+        self,
+        items_spec: Optional[Mapping[str, Any]],
+        aggregates_spec: Optional[List[Mapping[str, Any]]],
+        results: Mapping[str, Any],
+        items_output: List[Dict[str, Any]],
+        aggregates_output: Dict[str, Any],
+        avg_state: Dict[str, Dict[str, float]],
+    ) -> None:
+        if isinstance(items_spec, Mapping):
+            from_node = items_spec.get("from_node")
+            fields = items_spec.get("fields") if isinstance(items_spec.get("fields"), list) else []
+            if isinstance(from_node, str):
+                source_res = results.get(from_node)
+                if isinstance(source_res, Mapping):
+                    record = {f: source_res.get(f) for f in fields if isinstance(f, str)}
+                else:
+                    record = {f: None for f in fields if isinstance(f, str)}
+                items_output.append(record)
+
+        if not isinstance(aggregates_spec, list):
+            return
+
+        for agg in aggregates_spec:
+            if not isinstance(agg, Mapping):
+                continue
+            name = agg.get("name")
+            expr = agg.get("expr") or {}
+            from_node = agg.get("from_node")
+            if not isinstance(name, str) or not isinstance(from_node, str):
+                continue
+
+            kind = expr.get("kind")
+            field = expr.get("field") if isinstance(expr, Mapping) else None
+            values = self._extract_export_values(results.get(from_node), field if isinstance(field, str) else None)
+
+            if kind == "count_if":
+                op = expr.get("op", "==")
+                target = expr.get("value")
+                count = aggregates_output.get(name, 0) or 0
+
+                def _match(v: Any) -> bool:
+                    try:
+                        if op == ">" and v is not None:
+                            return v > target
+                        if op == ">=" and v is not None:
+                            return v >= target
+                        if op == "<" and v is not None:
+                            return v < target
+                        if op == "<=" and v is not None:
+                            return v <= target
+                        if op == "!=":
+                            return v != target
+                        return v == target
+                    except Exception:
+                        return False
+
+                for v in values:
+                    if _match(v):
+                        count += 1
+                aggregates_output[name] = count
+                continue
+
+            numeric_values: List[float] = []
+            for v in values:
+                try:
+                    if v is None:
+                        continue
+                    numeric_values.append(float(v))
+                except Exception:
+                    continue
+
+            if not numeric_values and kind not in {"max", "min"}:
+                continue
+
+            if kind == "max":
+                current = aggregates_output.get(name)
+                max_val = current
+                for v in numeric_values:
+                    if max_val is None or v > max_val:
+                        max_val = v
+                aggregates_output[name] = max_val
+            elif kind == "min":
+                current = aggregates_output.get(name)
+                min_val = current
+                for v in numeric_values:
+                    if min_val is None or v < min_val:
+                        min_val = v
+                aggregates_output[name] = min_val
+            elif kind == "sum":
+                base = aggregates_output.get(name, 0)
+                aggregates_output[name] = base + sum(numeric_values)
+            elif kind == "avg":
+                state = avg_state.setdefault(name, {"sum": 0.0, "count": 0})
+                state["sum"] += sum(numeric_values)
+                state["count"] += len(numeric_values)
+                if state["count"] > 0:
+                    aggregates_output[name] = state["sum"] / state["count"]
+
     def _eval_condition(self, node: Dict[str, Any], ctx: BindingContext) -> Any:
         params = node.get("params") or {}
         kind = params.get("kind")
@@ -632,6 +746,12 @@ class DynamicActionExecutor:
         accumulator = params.get("accumulator") or {}
         max_iterations = params.get("max_iterations") or 100
         iterations: List[Dict[str, Any]] = []
+        exports = params.get("exports") if isinstance(params, Mapping) else {}
+        items_spec = exports.get("items") if isinstance(exports, Mapping) else None
+        aggregates_spec = exports.get("aggregates") if isinstance(exports, Mapping) else None
+        export_items: List[Dict[str, Any]] = []
+        aggregates_output: Dict[str, Any] = {}
+        avg_state: Dict[str, Dict[str, float]] = {}
 
         if loop_kind == "for_each":
             source = params.get("source")
@@ -669,11 +789,22 @@ class DynamicActionExecutor:
                     iter_result["exit_result"] = exit_result
                 iterations.append(iter_result)
 
+                self._apply_loop_exports(
+                    items_spec,
+                    aggregates_spec if isinstance(aggregates_spec, list) else None,
+                    binding_ctx.results,
+                    export_items,
+                    aggregates_output,
+                    avg_state,
+                )
+
             return {
                 "status": "loop_completed",
                 "loop_kind": loop_kind,
                 "iterations": iterations,
                 "accumulator": accumulator,
+                "items": export_items,
+                "aggregates": aggregates_output,
             }
 
         if loop_kind == "while":
@@ -709,11 +840,22 @@ class DynamicActionExecutor:
                 iterations.append(iter_result)
                 iteration += 1
 
+                self._apply_loop_exports(
+                    items_spec,
+                    aggregates_spec if isinstance(aggregates_spec, list) else None,
+                    binding_ctx.results,
+                    export_items,
+                    aggregates_output,
+                    avg_state,
+                )
+
             return {
                 "status": "loop_completed",
                 "loop_kind": loop_kind,
                 "iterations": iterations,
                 "accumulator": accumulator,
+                "items": export_items,
+                "aggregates": aggregates_output,
             }
 
         log_warn(f"[loop] 未知 loop_kind={loop_kind}，跳过执行")

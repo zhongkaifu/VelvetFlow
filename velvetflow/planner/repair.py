@@ -161,7 +161,7 @@ def repair_workflow_with_llm(
         "   - 确保 kind/source/field/value 等必填字段齐全且类型正确；\n"
         "   - source 可以是字符串路径，也可以是 {\"__from__\": ...} 对象；\n"
         "   - 当 source 指向数组输出时，field 需要存在于元素 schema 中。\n\n"
-        "4. loop 节点：确保 loop_kind（for_each/while）和 source 字段合法；\n"
+        "4. loop 节点：确保 loop_kind（for_each/while）和 source 字段合法，并使用 exports 暴露 body 结果，下游只能引用 result_of.<loop_id>.items / aggregates。\n"
         "5. parallel 节点：branches 必须是非空数组。\n\n"
         "6. 参数绑定 DSL 修复（__from__ 及其聚合逻辑）：\n"
         "   - 对于 {\"__from__\": \"result_of.xxx.data\", \"__agg__\": \"...\", ...}：\n"
