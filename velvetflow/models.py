@@ -79,6 +79,7 @@ class Edge(BaseModel):
     from_node: str = Field(..., alias="from")
     to_node: str = Field(..., alias="to")
     condition: Optional[str] = Field(default=None)
+    note: Optional[str] = Field(default=None, description="Optional human-readable note")
 
 
 class Workflow(BaseModel):
@@ -111,6 +112,44 @@ class Workflow(BaseModel):
                 )
             if e.from_node == e.to_node:
                 raise ValueError("边的 from/to 不能指向同一个节点")
+        return self
+
+    @model_validator(mode="after")
+    def validate_loop_body_subgraphs(self):
+        """Validate nested loop body subgraphs at build time.
+
+        This catches schema issues (e.g., unexpected fields on edges/nodes) before
+        runtime execution by re-validating each loop body as an independent
+        workflow.
+        """
+
+        for node in self.nodes:
+            if node.type != "loop":
+                continue
+
+            body_graph = node.params.get("body_subgraph") if isinstance(node.params, dict) else None
+            if not isinstance(body_graph, dict):
+                continue
+
+            # Minimal shape check before attempting validation
+            body_nodes = body_graph.get("nodes")
+            body_edges = body_graph.get("edges")
+            if not isinstance(body_nodes, list) or not isinstance(body_edges, list):
+                continue
+
+            try:
+                Workflow.model_validate(
+                    {
+                        "workflow_name": f"{node.id}_loop_body",
+                        "nodes": body_nodes,
+                        "edges": body_edges,
+                    }
+                )
+            except Exception as exc:
+                raise ValueError(
+                    f"loop 节点 '{node.id}' 的 body_subgraph 校验失败: {exc}"
+                ) from exc
+
         return self
 
 
