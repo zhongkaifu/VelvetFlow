@@ -166,11 +166,6 @@
     },
     "output_schema": {
       "type": "object",
-      "properties": {
-        "data": {
-          "type": "array",
-          "items": {
-            "type": "object",
             "properties": {
               "employee_id": {
                 "type": "string"
@@ -186,18 +181,8 @@
               "employee_id",
               "last_temperature"
             ]
-          }
-        }
-      },
-      "required": [
-        "data"
-      ]
     },
-    "enabled": true,
-    "requires_approval": true,
-    "allowed_roles": [
-      "hr_manager"
-    ]
+    "enabled": true
   },
   {
     "action_id": "ops.create_incident.v1",
@@ -237,12 +222,7 @@
         }
       }
     },
-    "enabled": true,
-    "requires_approval": true,
-    "allowed_roles": [
-      "ops_manager",
-      "admin"
-    ]
+    "enabled": true
   },
   {
     "action_id": "ops.notify_oncall.v1",
