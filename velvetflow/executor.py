@@ -274,18 +274,30 @@ class DynamicActionExecutor:
             return next(iter(collected.values()))
         return collected
 
+    def _get_field_value(self, obj: Any, field: Optional[str]) -> Any:
+        if field is None or field == "":
+            return obj
+
+        if not isinstance(obj, Mapping):
+            return None
+
+        parts = field.split(".")
+        current: Any = obj
+        for p in parts:
+            if not isinstance(current, Mapping):
+                return None
+            current = current.get(p)
+        return current
+
     def _extract_export_values(self, source: Any, field: Optional[str]) -> List[Any]:
         if isinstance(source, list):
             values: List[Any] = []
             for item in source:
-                if field and isinstance(item, Mapping):
-                    values.append(item.get(field))
-                else:
-                    values.append(item)
+                values.append(self._get_field_value(item, field) if field else item)
             return values
 
         if isinstance(source, Mapping):
-            return [source.get(field)] if field else [source]
+            return [self._get_field_value(source, field)] if field else [source]
 
         return [source]
 
@@ -304,7 +316,7 @@ class DynamicActionExecutor:
             if isinstance(from_node, str):
                 source_res = results.get(from_node)
                 if isinstance(source_res, Mapping):
-                    record = {f: source_res.get(f) for f in fields if isinstance(f, str)}
+                    record = {f: self._get_field_value(source_res, f) for f in fields if isinstance(f, str)}
                 else:
                     record = {f: None for f in fields if isinstance(f, str)}
                 items_output.append(record)
@@ -461,15 +473,15 @@ class DynamicActionExecutor:
             if isinstance(val, list):
                 extracted: List[Any] = []
                 for item in val:
-                    if field and isinstance(item, dict):
-                        extracted.append(item.get(field))
+                    if field:
+                        extracted.append(self._get_field_value(item, field))
                     else:
                         extracted.append(item)
                 return extracted
 
             # For dict sources, allow pulling a specific field.
-            if field and isinstance(val, dict):
-                return [val.get(field)]
+            if isinstance(val, dict):
+                return [self._get_field_value(val, field)] if field else [val]
 
             # Fallback to treating the value itself as the comparable payload.
             return [val]
