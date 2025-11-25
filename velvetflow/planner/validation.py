@@ -771,7 +771,9 @@ def validate_completed_workflow(
                                     message=f"loop 节点 '{nid}' 的 exports.items.from_node 必须引用 body_subgraph 中的节点。",
                                 )
                             )
-                        if not isinstance(fields, list) or not all(isinstance(f, str) for f in fields):
+                        if not isinstance(fields, list) or not fields or not all(
+                            isinstance(f, str) for f in fields
+                        ):
                             errors.append(
                                 ValidationError(
                                     code="SCHEMA_MISMATCH",
