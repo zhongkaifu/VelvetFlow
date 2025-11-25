@@ -330,23 +330,25 @@ class DynamicActionExecutor:
 
             if isinstance(from_node, str):
                 source_res = results.get(from_node)
+                handled_items = False
 
                 if isinstance(source_res, Mapping) and list_field:
                     list_data = self._get_field_value(source_res, list_field)
                     if isinstance(list_data, list):
                         for element in list_data:
                             items_output.append(_build_record(element))
-                        return
+                        handled_items = True
 
-                if isinstance(source_res, list):
+                if not handled_items and isinstance(source_res, list):
                     for element in source_res:
                         items_output.append(_build_record(element))
-                    return
+                    handled_items = True
 
-                if isinstance(source_res, Mapping):
-                    items_output.append(_build_record(source_res))
-                else:
-                    items_output.append(_build_record(None))
+                if not handled_items:
+                    if isinstance(source_res, Mapping):
+                        items_output.append(_build_record(source_res))
+                    else:
+                        items_output.append(_build_record(None))
 
         if not isinstance(aggregates_spec, list):
             return
