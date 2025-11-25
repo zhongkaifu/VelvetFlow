@@ -356,6 +356,16 @@ def eval_node_params(node: Node, ctx: BindingContext) -> Dict[str, Any]:
                 resolved[k] = v
             else:
                 resolved[k] = resolved_value
+        elif isinstance(v, str):
+            head = v.split(".", 1)[0]
+            if head in ctx.loop_ctx or v.startswith("loop."):
+                try:
+                    resolved[k] = ctx.get_value(v)
+                    continue
+                except Exception as e:
+                    log_warn(f"[param-resolver] 路径字符串 {v} 解析失败: {e}，使用原值")
+
+            resolved[k] = v
         else:
             resolved[k] = v
     return resolved
