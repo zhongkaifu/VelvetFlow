@@ -1,6 +1,7 @@
 """Utilities to render a workflow DAG as a JPEG image with Unicode text support."""
 
 import math
+import os
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -26,13 +27,28 @@ PANEL_BORDER: RGB = (180, 180, 180)
 
 
 def _load_font(size: int = 16) -> ImageFont.FreeTypeFont:
-    """Load a Unicode-capable font with common CJK fallbacks."""
+    """Load a Unicode-capable font with common CJK fallbacks.
+
+    The search covers Linux, macOS, and Windows font directories and also honors
+    the ``VELVETFLOW_FONT`` environment variable for manual overrides.
+    """
+
+    env_font = os.getenv("VELVETFLOW_FONT")
+    if env_font:
+        try:
+            return ImageFont.truetype(env_font, size=size)
+        except Exception:
+            pass
 
     font_dir_candidates = [
         Path(ImageFont.__file__).resolve().parent / "fonts",
         Path("/usr/share/fonts"),
         Path("/usr/local/share/fonts"),
         Path.home() / ".fonts",
+        Path.home() / ".local/share/fonts",
+        Path("/System/Library/Fonts"),
+        Path("/Library/Fonts"),
+        Path("C:/Windows/Fonts"),
     ]
     font_name_candidates = [
         "NotoSansCJK-Regular.ttc",
@@ -42,7 +58,11 @@ def _load_font(size: int = 16) -> ImageFont.FreeTypeFont:
         "SourceHanSans-Regular.otf",
         "WenQuanYiMicroHei.ttf",
         "SimHei.ttf",
+        "SimSun.ttc",
+        "msyh.ttc",
+        "msyh.ttf",
         "ArialUnicode.ttf",
+        "MicrosoftYaHei.ttf",
         "DejaVuSans.ttf",
     ]
 
@@ -246,6 +266,12 @@ def _draw_graph(
     offset_x, offset_y = offset
     positions: Dict[str, Tuple[int, int]] = layout["positions"]  # type: ignore[assignment]
 
+    incoming: Dict[str, List[str]] = {n.id: [] for n in workflow.nodes}
+    outgoing: Dict[str, List[str]] = {n.id: [] for n in workflow.nodes}
+    for edge in workflow.edges:
+        incoming[edge.to_node].append(edge.from_node)
+        outgoing[edge.from_node].append(edge.to_node)
+
     for edge in workflow.edges:
         start_pos = positions[edge.from_node]
         end_pos = positions[edge.to_node]
@@ -280,6 +306,24 @@ def _draw_graph(
                 max_width=node_width - 20,
                 font=canvas.font_small,
             )
+        inputs = incoming.get(node.id) or []
+        outputs = outgoing.get(node.id) or []
+        canvas.draw_text_block(
+            base_x + 10,
+            base_y + node_height - 36,
+            "输入: " + (", ".join(inputs) if inputs else "-"),
+            TEXT_COLOR,
+            max_width=node_width - 20,
+            font=canvas.font_small,
+        )
+        canvas.draw_text_block(
+            base_x + 10,
+            base_y + node_height - 18,
+            "输出: " + (", ".join(outputs) if outputs else "-"),
+            TEXT_COLOR,
+            max_width=node_width - 20,
+            font=canvas.font_small,
+        )
 
 
 def _extract_loop_body(loop_node: Node) -> Optional[Workflow]:
@@ -315,7 +359,7 @@ def _save_jpeg(image: Image.Image, output_path: str, quality: int = 90) -> str:
 def render_workflow_dag(workflow: Workflow, output_path: str = "workflow_dag.jpg") -> str:
     """Render the final workflow DAG to a JPEG file and return the saved path."""
 
-    main_node_size = (200, 80)
+    main_node_size = (200, 110)
     main_layout = _layout_graph(workflow, main_node_size, level_gap=170, node_gap=36, padding=50)
 
     loop_panels = []
@@ -325,7 +369,7 @@ def render_workflow_dag(workflow: Workflow, output_path: str = "workflow_dag.jpg
         body_workflow = _extract_loop_body(node)
         if not body_workflow:
             continue
-        body_node_size = (170, 70)
+        body_node_size = (170, 100)
         body_layout = _layout_graph(body_workflow, body_node_size, level_gap=130, node_gap=28, padding=40)
         panel_title = f"循环子图：{node.display_name or node.id}"
         loop_panels.append(
