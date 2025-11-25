@@ -13,6 +13,7 @@ from velvetflow.logging_utils import (
     log_warn,
 )
 from velvetflow.models import PydanticValidationError, ValidationError, Workflow
+from velvetflow.loop_dsl import iter_workflow_and_loop_body_nodes
 from velvetflow.planner.action_guard import ensure_registered_actions
 from velvetflow.planner.params import fill_params_with_llm
 from velvetflow.planner.repair import (
@@ -34,7 +35,7 @@ def _find_unregistered_action_nodes(
     actions_by_id: Dict[str, Dict[str, Any]],
 ) -> List[Dict[str, str]]:
     invalid: List[Dict[str, str]] = []
-    for node in workflow_dict.get("nodes", []):
+    for node in iter_workflow_and_loop_body_nodes(workflow_dict):
         if node.get("type") != "action":
             continue
         action_id = node.get("action_id")

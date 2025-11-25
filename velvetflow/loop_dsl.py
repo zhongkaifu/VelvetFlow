@@ -1,5 +1,5 @@
 """Shared helpers for loop DSL schema and validation."""
-from typing import Any, Dict, Mapping, Optional
+from typing import Any, Dict, Iterable, Mapping, Optional
 
 
 def build_loop_output_schema(loop_params: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
@@ -63,4 +63,27 @@ def index_loop_body_nodes(workflow: Mapping[str, Any]) -> Dict[str, str]:
     return body_to_loop
 
 
-__all__ = ["build_loop_output_schema", "index_loop_body_nodes"]
+def iter_workflow_and_loop_body_nodes(workflow: Mapping[str, Any]) -> Iterable[Mapping[str, Any]]:
+    """Yield all nodes in a workflow, including nested loop body nodes."""
+
+    def _iter_nodes(nodes: Iterable[Any]) -> Iterable[Mapping[str, Any]]:
+        for node in nodes or []:
+            if not isinstance(node, Mapping):
+                continue
+            yield node
+            if node.get("type") == "loop":
+                params = node.get("params") or {}
+                body = params.get("body_subgraph") or {}
+                body_nodes = body.get("nodes") or []
+                if isinstance(body_nodes, list):
+                    yield from _iter_nodes(body_nodes)
+
+    nodes = workflow.get("nodes") if isinstance(workflow, Mapping) else []
+    yield from _iter_nodes(nodes or [])
+
+
+__all__ = [
+    "build_loop_output_schema",
+    "index_loop_body_nodes",
+    "iter_workflow_and_loop_body_nodes",
+]
