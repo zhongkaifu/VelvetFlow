@@ -429,12 +429,19 @@ class DynamicActionExecutor:
                 if state["count"] > 0:
                     aggregates_output[name] = state["sum"] / state["count"]
 
-    def _eval_condition(self, node: Dict[str, Any], ctx: BindingContext) -> Any:
+    def _eval_condition(
+        self, node: Dict[str, Any], ctx: BindingContext, *, include_debug: bool = False
+    ) -> Any:
         params = node.get("params") or {}
         kind = params.get("kind")
         if not kind:
             log_warn("[condition] 未指定 kind，默认 False")
-            return False
+            return False if not include_debug else (False, {"resolved_value": None, "values": None})
+
+        def _return(result: Any, resolved_value: Any, values: Optional[list] = None) -> Any:
+            if include_debug:
+                return result, {"resolved_value": resolved_value, "values": values}
+            return result
 
         def _log_condition_debug(
             field: Optional[str], resolved_value: Any, condition: Any, structure: Any
@@ -456,7 +463,9 @@ class DynamicActionExecutor:
             try:
                 return self._resolve_condition_source(source, ctx)
             except Exception as e:
-                log_warn(f"[condition:{kind}] source 路径 '{source}' 无法从 context 读取: {e}，返回 False")
+                log_warn(
+                    f"[condition:{kind}] source 路径 '{source}' 无法从 context 读取: {e}，返回 False"
+                )
                 return None
 
         data = _safe_get_source()
@@ -470,7 +479,7 @@ class DynamicActionExecutor:
             else:
                 result = len(data) > 0
             _log_condition_debug(None, data, condition, params)
-            return result
+            return _return(result, data)
 
         if kind == "is_empty":
             condition = {"check": "value is None or len(value) == 0"}
@@ -481,7 +490,7 @@ class DynamicActionExecutor:
             else:
                 result = False
             _log_condition_debug(None, data, condition, params)
-            return result
+            return _return(result, data)
 
         if kind == "not_empty":
             condition = {"check": "value is not None and (len(value) > 0 if sized else True)"}
@@ -492,7 +501,7 @@ class DynamicActionExecutor:
             else:
                 result = True
             _log_condition_debug(None, data, condition, params)
-            return result
+            return _return(result, data)
 
         def _extract_values(val: Any, field: Optional[str]) -> List[Any]:
             if val is None:
@@ -533,7 +542,7 @@ class DynamicActionExecutor:
                 "values": values,
             }
             _log_condition_debug(field, data, condition, params)
-            return result
+            return _return(result, data, values)
 
         if kind == "all_less_than":
             field = params.get("field")
@@ -547,7 +556,7 @@ class DynamicActionExecutor:
                     "reason": "no_values",
                 }
                 _log_condition_debug(field, data, condition, params)
-                return False
+                return _return(False, data, values)
 
             def _is_lt(v: Any) -> bool:
                 try:
@@ -562,21 +571,21 @@ class DynamicActionExecutor:
                 "values": values,
             }
             _log_condition_debug(field, data, condition, params)
-            return result
+            return _return(result, data, values)
 
         if kind == "equals":
             value = params.get("value")
             result = data == value
             condition = {"check": "value == target", "target": value}
             _log_condition_debug(None, data, condition, params)
-            return result
+            return _return(result, data)
 
         if kind == "not_equals":
             value = params.get("value")
             result = data != value
             condition = {"check": "value != target", "target": value}
             _log_condition_debug(None, data, condition, params)
-            return result
+            return _return(result, data)
 
         if kind == "greater_than":
             threshold = params.get("threshold")
@@ -595,7 +604,7 @@ class DynamicActionExecutor:
                 "values": values,
             }
             _log_condition_debug(params.get("field"), data, condition, params)
-            return result
+            return _return(result, data, values)
 
         if kind == "less_than":
             threshold = params.get("threshold")
@@ -614,158 +623,194 @@ class DynamicActionExecutor:
                 "values": values,
             }
             _log_condition_debug(params.get("field"), data, condition, params)
-            return result
+            return _return(result, data, values)
 
         if kind == "between":
             min_v = params.get("min")
             max_v = params.get("max")
-            try:
-                result = data is not None and data >= min_v and data <= max_v
-            except Exception:
-                result = False
-            condition = {"check": "min <= value <= max", "min": min_v, "max": max_v}
-            _log_condition_debug(None, data, condition, params)
-            return result
+            values = [v for v in _extract_values(data, params.get("field")) if v is not None]
+
+            def _in_range(v: Any) -> bool:
+                try:
+                    return v >= min_v and v <= max_v
+                except Exception:
+                    return False
+
+            result = any(_in_range(v) for v in values)
+            condition = {
+                "check": "any(min <= value <= max)",
+                "min": min_v,
+                "max": max_v,
+                "values": values,
+            }
+            _log_condition_debug(params.get("field"), data, condition, params)
+            return _return(result, data, values)
 
         if kind == "contains":
+            target = params.get("value")
             field = params.get("field")
-            value = params.get("value")
-
-            def _match_target(target: Any) -> bool:
-                if target is None:
-                    return False
-                target_str = target if isinstance(target, str) else str(target)
-                return str(value) in target_str
-
             if isinstance(data, list):
-                if field is None:
-                    log_warn("[condition:contains] 未提供 field，且 source 是列表，返回 False")
-                    result = False
-                    condition = {
-                        "check": "value in item[field]",
-                        "value": value,
-                        "mode": "list",
-                        "reason": "missing_field",
-                    }
-                    _log_condition_debug(field, data, condition, params)
-                    return result
-                for item in data:
-                    if isinstance(item, dict):
-                        if _match_target(self._get_field_value(item, field)):
-                            result = True
-                            condition = {
-                                "check": "value in item[field]",
-                                "value": value,
-                                "mode": "list",
-                                "matched_item": item,
-                            }
-                            _log_condition_debug(field, data, condition, params)
-                            return result
-                    elif _match_target(item):
-                        result = True
+                if field:
+                    try:
+                        values = [self._get_field_value(item, field) for item in data]
+                        result = target in values
                         condition = {
-                            "check": "value in item",
-                            "value": value,
-                            "mode": "list",
-                            "matched_item": item,
+                            "check": "target in list[field]",
+                            "target": target,
+                            "values": values,
                         }
                         _log_condition_debug(field, data, condition, params)
-                        return result
-                result = False
+                        return _return(result, data, values)
+                    except Exception:
+                        log_warn("[condition:contains] 从列表元素提取 field 失败，返回 False")
+                        condition = {
+                            "check": "target in list[field]",
+                            "target": target,
+                            "reason": "field_extraction_failed",
+                        }
+                        _log_condition_debug(field, data, condition, params)
+                        return _return(False, data)
+
+                log_warn("[condition:contains] 未提供 field，且 source 是列表，返回 False")
                 condition = {
-                    "check": "value in list items",
-                    "value": value,
-                    "mode": "list",
+                    "check": "target in list (no field)",
+                    "target": target,
+                    "reason": "missing_field",
                 }
                 _log_condition_debug(field, data, condition, params)
-                return result
+                return _return(False, data)
 
             if isinstance(data, dict):
-                if field is None:
-                    log_warn("[condition:contains] 未提供 field，且 source 是字典，返回 False")
-                    result = False
-                    condition = {
-                        "check": "value in data[field]",
-                        "value": value,
-                        "mode": "dict",
-                        "reason": "missing_field",
-                    }
-                    _log_condition_debug(field, data, condition, params)
-                    return result
-                result = _match_target(self._get_field_value(data, field))
+                if field:
+                    try:
+                        v = self._get_field_value(data, field)
+                        result = target in v if isinstance(v, (list, str)) else False
+                        condition = {
+                            "check": "target in dict[field]",
+                            "target": target,
+                            "value": v,
+                        }
+                        _log_condition_debug(field, data, condition, params)
+                        return _return(result, data)
+                    except Exception:
+                        log_warn("[condition:contains] 从字典提取 field 失败，返回 False")
+                        condition = {
+                            "check": "target in dict[field]",
+                            "target": target,
+                            "reason": "field_extraction_failed",
+                        }
+                        _log_condition_debug(field, data, condition, params)
+                        return _return(False, data)
+
+                log_warn("[condition:contains] 未提供 field，且 source 是字典，返回 False")
                 condition = {
-                    "check": "value in data[field]",
-                    "value": value,
-                    "mode": "dict",
+                    "check": "target in dict (no field)",
+                    "target": target,
+                    "reason": "missing_field",
                 }
                 _log_condition_debug(field, data, condition, params)
-                return result
+                return _return(False, data)
 
             if isinstance(data, str):
-                result = _match_target(data)
-                condition = {
-                    "check": "value in string",
-                    "value": value,
-                    "mode": "string",
-                }
-                _log_condition_debug(field, data, condition, params)
-                return result
+                result = target in data
+                condition = {"check": "target in string", "target": target}
+                _log_condition_debug(None, data, condition, params)
+                return _return(result, data)
 
             log_warn("[condition:contains] source 不是列表/字典/字符串，返回 False")
             condition = {
-                "check": "value in target",
-                "value": value,
-                "reason": "unsupported_source",
+                "check": "unsupported source type",
+                "target": target,
+                "reason": f"source_type_{type(data)}",
             }
             _log_condition_debug(field, data, condition, params)
-            return False
+            return _return(False, data)
 
-        if kind == "multi_band":
-            bands = params.get("bands") or []
-            if data is None or not bands:
-                condition = {
-                    "check": "multi_band mapping",
-                    "bands": bands,
-                    "reason": "missing_data_or_bands",
-                }
+        if kind == "regex_match":
+            pattern = params.get("pattern")
+            if pattern is None:
+                log_warn("[condition:regex_match] 未提供 pattern，返回 False")
+                condition = {"check": "regex match", "reason": "missing_pattern"}
                 _log_condition_debug(None, data, condition, params)
-                return None
+                return _return(False, data)
             try:
-                value = float(data)
+                import re
+
+                matched = False
+                if isinstance(data, str):
+                    matched = re.search(pattern, data) is not None
+                elif isinstance(data, list):
+                    matched = any(isinstance(v, str) and re.search(pattern, v) for v in data)
+                condition = {"check": "regex match", "pattern": pattern, "matched": matched}
+                _log_condition_debug(None, data, condition, params)
+                return _return(matched, data)
             except Exception:
                 condition = {
-                    "check": "multi_band mapping",
-                    "bands": bands,
-                    "reason": "value_not_numeric",
+                    "check": "regex match",
+                    "pattern": pattern,
+                    "reason": "exception",
                 }
                 _log_condition_debug(None, data, condition, params)
-                return None
+                log_warn(f"[condition:regex_match] 处理正则 '{pattern}' 时发生异常")
+                return _return(False, data)
+
+        if kind == "max_in_range":
+            field = params.get("field")
+            min_v = params.get("min")
+            max_v = params.get("max")
+            values = _extract_values(data, field)
+            matched_bands: List[Any] = []
+            try:
+                bands = sorted(
+                    [b for b in params.get("bands", []) if isinstance(b, dict)],
+                    key=lambda x: x.get("max"),
+                )
+            except Exception:
+                bands = []
             for band in bands:
-                label = band.get("label")
-                max_v = band.get("max")
                 try:
-                    if max_v is not None and value <= max_v:
-                        result = label
+                    if all(k in band for k in ("label", "min", "max")):
+                        in_range = any(band["min"] <= v <= band["max"] for v in values)
+                        matched_bands.append((band, in_range))
+                except Exception:
+                    continue
+
+            if matched_bands:
+                for band, in_range in matched_bands:
+                    if in_range:
+                        result = band.get("label")
                         condition = {
                             "check": "value <= band.max",
                             "bands": bands,
                             "matched_band": band,
                         }
                         _log_condition_debug(None, data, condition, params)
-                        return result
+                        return _return(result, data, values)
+                try:
+                    result = bands[-1].get("label") if isinstance(bands[-1], dict) else None
                 except Exception:
-                    continue
-            result = bands[-1].get("label") if isinstance(bands[-1], dict) else None
+                    result = None
+                condition = {
+                    "check": "fallback_last_band",
+                    "bands": bands,
+                }
+                _log_condition_debug(None, data, condition, params)
+                return _return(result, data, values)
+
+            log_warn("[condition:max_in_range] 未提供合法的 bands，返回 False")
             condition = {
-                "check": "fallback_last_band",
-                "bands": bands,
+                "check": "value in range",
+                "field": field,
+                "min": min_v,
+                "max": max_v,
+                "values": values,
+                "reason": "invalid_bands",
             }
-            _log_condition_debug(None, data, condition, params)
-            return result
+            _log_condition_debug(field, data, condition, params)
+            return _return(False, data, values)
 
         log_warn(f"[condition] 未知 kind={kind}，默认 False")
-        return False
-
+        return _return(False, data)
     def _execute_loop_node(self, node: Dict[str, Any], binding_ctx: BindingContext) -> Dict[str, Any]:
         params = node.get("params") or {}
         loop_kind = params.get("loop_kind", "for_each")
@@ -996,9 +1041,24 @@ class DynamicActionExecutor:
                 )
 
             elif ntype == "condition":
-                cond_value = self._eval_condition(node, binding_ctx)
+                cond_eval = self._eval_condition(node, binding_ctx, include_debug=True)
+                if isinstance(cond_eval, tuple) and len(cond_eval) == 2:
+                    cond_value, cond_debug = cond_eval
+                else:
+                    cond_value, cond_debug = cond_eval, None
                 log_info(f"[condition] 结果: {cond_value}")
-                results[nid] = {"condition_result": cond_value}
+                payload: Dict[str, Any] = {"condition_result": cond_value}
+                if isinstance(cond_debug, Mapping):
+                    resolved_value = cond_debug.get("resolved_value")
+                    if resolved_value is not None:
+                        payload["resolved_value"] = resolved_value
+                        if isinstance(resolved_value, Mapping):
+                            for k, v in resolved_value.items():
+                                payload.setdefault(k, v)
+                    values = cond_debug.get("values")
+                    if values is not None:
+                        payload["evaluated_values"] = values
+                results[nid] = payload
                 next_ids = self._next_nodes(edges, nid, cond_value=cond_value)
                 for nxt in next_ids:
                     if nxt not in visited:
