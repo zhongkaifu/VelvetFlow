@@ -114,6 +114,53 @@ def _fallback_loop_exports(
     }
 
 
+def _ensure_loop_items_fields(
+    *,
+    exports: Mapping[str, Any],
+    loop_node: Mapping[str, Any],
+    action_schemas: Mapping[str, Mapping[str, Any]],
+) -> Dict[str, Any]:
+    """Ensure items.fields is a non-empty list.
+
+    If the original exports already contains non-empty fields, it will be
+    returned unchanged. Otherwise, we try to infer several representative
+    fields from the referenced body node's output schema; fall back to a
+    single "status" field if nothing is available.
+    """
+
+    items_spec = exports.get("items")
+    if not isinstance(items_spec, Mapping):
+        return dict(exports)
+
+    fields = items_spec.get("fields") if isinstance(items_spec.get("fields"), list) else []
+    normalized_fields = [f for f in fields if isinstance(f, str)]
+    if normalized_fields:
+        return exports
+
+    params = loop_node.get("params") if isinstance(loop_node.get("params"), Mapping) else {}
+    body = params.get("body_subgraph") if isinstance(params, Mapping) else {}
+    body_nodes = [bn for bn in body.get("nodes", []) or [] if isinstance(bn, Mapping)]
+    target_id = items_spec.get("from_node") if isinstance(items_spec.get("from_node"), str) else None
+    target_node = next((bn for bn in body_nodes if bn.get("id") == target_id), None)
+
+    fallback_fields: list[str] = []
+    if isinstance(target_node, Mapping):
+        action_id = target_node.get("action_id") if isinstance(target_node.get("action_id"), str) else None
+        schema = action_schemas.get(action_id, {}) if isinstance(action_id, str) else {}
+        props = schema.get("output_schema", {}).get("properties") if isinstance(schema.get("output_schema"), Mapping) else None
+        if isinstance(props, Mapping):
+            fallback_fields = [k for k in props.keys() if isinstance(k, str)]
+
+    if not fallback_fields:
+        fallback_fields = ["status"]
+
+    new_items = dict(items_spec)
+    new_items["fields"] = fallback_fields[:4]
+    new_exports = dict(exports)
+    new_exports["items"] = new_items
+    return new_exports
+
+
 def _synthesize_loop_exports_with_llm(
     *,
     client: OpenAI,
@@ -200,7 +247,14 @@ def _ensure_loop_exports_with_llm(
         params = node.get("params") if isinstance(node.get("params"), Mapping) else {}
         exports = params.get("exports") if isinstance(params, Mapping) else None
         if isinstance(exports, Mapping) and exports:
-            new_nodes.append(node)
+            ensured_exports = _ensure_loop_items_fields(
+                exports=exports, loop_node=node, action_schemas=action_schemas
+            )
+            new_params = dict(params)
+            new_params["exports"] = ensured_exports
+            new_node = dict(node)
+            new_node["params"] = new_params
+            new_nodes.append(new_node)
             continue
 
         synthesized = _synthesize_loop_exports_with_llm(
@@ -218,8 +272,11 @@ def _ensure_loop_exports_with_llm(
         else:
             log_info(f"[Planner] LLM 已为 loop 节点 {node.get('id')} 生成 exports。")
 
+        ensured_exports = _ensure_loop_items_fields(
+            exports=synthesized, loop_node=node, action_schemas=action_schemas
+        )
         new_params = dict(params)
-        new_params["exports"] = synthesized
+        new_params["exports"] = ensured_exports
         new_node = dict(node)
         new_node["params"] = new_params
         new_nodes.append(new_node)
