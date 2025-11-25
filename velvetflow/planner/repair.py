@@ -168,6 +168,7 @@ def repair_workflow_with_llm(
         "       - 检查 __from__ 路径是否合法、与 output_schema 对齐；\n"
         "       - 检查 count_if/filter_map/pipeline 中的 field/filter_field/map_field 是否存在于数组元素 schema 中；\n"
         "   - 当错误涉及这些字段时，优先只改字段名（根据元素 schema 的 properties），保持聚合逻辑不变。\n\n"
+        "   - 常见错误：loop.exports.items.fields 只有包装字段，但条件需要访问内部子字段，请将 field 改成 <字段>.<子字段>。\n\n"
         "7. 修改范围尽量最小化：\n"
         "   - 当有多种修复方式时，优先选择改动最小、语义最接近原意的方案（如只改一个字段名，而不是重写整个 params）。\n\n"
         "8. 输出要求：\n"
