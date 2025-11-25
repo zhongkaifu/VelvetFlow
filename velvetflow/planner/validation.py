@@ -567,6 +567,7 @@ def validate_completed_workflow(
                         "all_less_than",
                         "is_empty",
                         "not_empty",
+                        "is_not_empty",
                         "multi_band",
                     }
                     if kind not in allowed_kinds:
@@ -591,6 +592,7 @@ def validate_completed_workflow(
                         "multi_band": ["source", "bands"],
                         "is_empty": ["source"],
                         "not_empty": ["source"],
+                        "is_not_empty": ["source"],
                     }
                     for field in required_fields_map.get(kind, []):
                         if field not in params:

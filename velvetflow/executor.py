@@ -492,7 +492,7 @@ class DynamicActionExecutor:
             _log_condition_debug(None, data, condition, params)
             return _return(result, data)
 
-        if kind == "not_empty":
+        if kind in {"not_empty", "is_not_empty"}:
             condition = {"check": "value is not None and (len(value) > 0 if sized else True)"}
             if data is None:
                 result = False
