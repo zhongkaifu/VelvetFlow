@@ -1,4 +1,20 @@
-"""Top-level orchestrator for the two-pass planner."""
+"""Top-level orchestrator for the two-pass planner.
+
+本模块聚合了结构规划、参数补全与错误修复三个阶段，主要通过 LLM 进行
+workflow 结构和参数的两阶段推理，然后在必要时向 LLM 提供错误上下文进行
+自修复。为了降低调用方的认知负担，核心入口 `plan_workflow_with_two_pass`
+会处理：
+
+* 骨架阶段：根据自然语言需求触发 LLM 生成节点/边的初稿，并保证 Action
+  Registry 覆盖。
+* 参数阶段：在约定的 prompt 语境下补全每个 action 的参数，并校验返回
+  结构符合 `Workflow` Pydantic 模型。
+* 修复阶段：当校验失败时，将 ValidationError 列表和上一次合法结构回传给
+  LLM，请求其输出完全序列化的 workflow 字典；若多轮修复仍失败则返回最后
+  一次通过校验的版本。
+
+返回值统一为 `Workflow` 对象，调用方无需关心 LLM 返回的原始 JSON 格式。
+"""
 
 from typing import Any, Dict, List
 
@@ -26,7 +42,11 @@ from velvetflow.planner.validation import validate_completed_workflow
 from velvetflow.search import HybridActionSearchService
 
 
-def _index_actions_by_id(action_registry: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+def _index_actions_by_id(
+    action_registry: List[Dict[str, Any]]
+) -> Dict[str, Dict[str, Any]]:
+    """Build a quick lookup table for action metadata keyed by `action_id`."""
+
     return {a["action_id"]: a for a in action_registry}
 
 
@@ -34,6 +54,8 @@ def _find_unregistered_action_nodes(
     workflow_dict: Dict[str, Any],
     actions_by_id: Dict[str, Dict[str, Any]],
 ) -> List[Dict[str, str]]:
+    """Find workflow nodes whose `action_id` is missing or not registered."""
+
     invalid: List[Dict[str, str]] = []
     for node in iter_workflow_and_loop_body_nodes(workflow_dict):
         if node.get("type") != "action":
@@ -53,6 +75,14 @@ def _ensure_actions_registered_or_repair(
     search_service: HybridActionSearchService,
     reason: str,
 ) -> Workflow:
+    """Ensure all action nodes reference a registered action, otherwise trigger repair.
+
+    如果 Workflow 中的 action 节点缺失或引用未注册的 `action_id`，该函数会
+    生成对应的 `ValidationError`，并将错误上下文、Action Registry 以及调用
+    原因传递给 LLM 进行自动修复。LLM 需要返回一个完整的 workflow JSON
+    （包含 nodes/edges），随后再由 Pydantic 转为 `Workflow` 实例。
+    """
+
     guarded = ensure_registered_actions(
         workflow,
         action_registry=action_registry,
@@ -100,6 +130,42 @@ def plan_workflow_with_two_pass(
     max_rounds: int = 10,
     max_repair_rounds: int = 3,
 ) -> Workflow:
+    """Plan a workflow in two passes with structured validation and LLM repair.
+
+    参数
+    ----
+    nl_requirement:
+        面向 LLM 的自然语言需求描述，必须明确业务目标、主要输入/输出。
+    search_service:
+        用于辅助 LLM 选择与需求匹配的业务 Action 的检索服务。
+    action_registry:
+        已注册的业务动作列表，传入的每个元素应包含唯一的 `action_id`。
+    max_rounds:
+        结构规划阶段允许的 LLM 迭代轮次，决定覆盖率/连通性纠错次数。
+    max_repair_rounds:
+        参数补全后进入校验 + 自修复的最大轮次，超过后返回最后通过校验的
+        版本。
+
+    返回
+    ----
+    Workflow
+        通过 Pydantic 校验、所有 action_id 均注册的最终 Workflow 对象。
+
+    LLM 返回格式约定
+    ----------------
+    * 结构规划与参数补全阶段均要求 LLM 返回可被 `Workflow` 解析的 JSON 对象，
+      至少包含 `nodes` 与 `edges` 数组。
+    * 修复阶段会附带 `validation_errors`，LLM 需直接输出修正后的完整 JSON，
+      不需要包含额外解释文本。
+
+    边界条件
+    --------
+    * 如果结构规划或补参阶段抛出异常/校验失败，会在保留最近一次合法
+      Workflow 的前提下，使用 LLM 自修复。
+    * 当达到 `max_repair_rounds` 仍存在错误时，返回最近一次通过校验的版本，
+      保证调用方始终获得一个合法的 `Workflow` 实例。
+    """
+
     skeleton_raw = plan_workflow_structure_with_llm(
         nl_requirement=nl_requirement,
         search_service=search_service,

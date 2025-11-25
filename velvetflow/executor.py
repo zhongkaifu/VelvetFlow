@@ -40,6 +40,26 @@ def load_simulation_data(path: str) -> SimulationData:
 
 
 class DynamicActionExecutor:
+    """Execute a validated Workflow with optional simulation data.
+
+    该执行器假定传入的 `Workflow` 已经过 Planner 层校验与修复，所有 action_id
+    均可在 Action Registry 中找到。核心职责是在拓扑排序的顺序下依次解析
+    参数绑定、调用动作（或根据 `simulation_data` 直接返回模拟结果），并将每个
+    节点的输出存入 `BindingContext`。外部调用者不需要理解内部的绑定协议，
+    只需关注最终 `run()` 返回的 `results` 映射：键为节点 id，值为动作执行
+    （或模拟）返回的任意 JSON 兼容对象。
+
+    参数
+    ----
+    workflow:
+        已通过 Pydantic 校验的工作流对象，需包含 `nodes` 与 `edges`。
+    simulations:
+        * `None`：正常执行真实动作；
+        * `Mapping`：以 action_id 为键的模拟结果；
+        * `str`：指向包含上述结构的 JSON 文件路径，便于在离线环境重放。
+    user_role:
+        当前调用者身份，在绑定/权限控制逻辑中传递给 `BindingContext`。
+    """
     def __init__(
         self,
         workflow: Workflow,
@@ -101,6 +121,13 @@ class DynamicActionExecutor:
             )
 
     def _find_start_nodes(self, nodes: Mapping[str, Dict[str, Any]], edges: List[Dict[str, Any]]) -> List[str]:
+        """Locate start nodes or infer them by missing inbound edges.
+
+        优先使用显式标记为 `type == "start"` 的节点；若不存在，则以“未作为
+        `to` 端出现的节点”作为潜在起点。返回的是节点 id 列表，调用者需要
+        自行处理空列表场景。
+        """
+
         starts = [nid for nid, n in nodes.items() if n.get("type") == "start"]
         if not starts:
             all_ids = set(nodes.keys())
@@ -109,6 +136,13 @@ class DynamicActionExecutor:
         return starts
 
     def _topological_sort(self, workflow: Workflow) -> List[Node]:
+        """Return execution order while validating reachability constraints.
+
+        * 若存在环（例如 loop 子图），会回退为声明顺序并提示警告；
+        * 若没有入度为 0 的节点，抛出 `DISCONNECTED_GRAPH`；
+        * 若部分节点无法从起点到达，同样抛出 `DISCONNECTED_GRAPH`。
+        """
+
         nodes = workflow.nodes
         edges = workflow.edges
 
@@ -209,6 +243,14 @@ class DynamicActionExecutor:
         return value
 
     def _simulate_action(self, action_id: str, resolved_params: Dict[str, Any]) -> Dict[str, Any]:
+        """Return deterministic simulation payload for a given action.
+
+        如果传入的 `simulation_data` 包含对应 action_id 的配置，会优先根据
+        `result` 模板渲染输出；否则返回标记为 `status="simulated"` 的占位结果。
+        该返回结构会直接写入 `BindingContext.results`，保持与真实执行结果的键
+        兼容性。
+        """
+
         payload = self.simulation_data.get(action_id)
         if not isinstance(payload, dict):
             return {
@@ -248,7 +290,9 @@ class DynamicActionExecutor:
 
         The loop "exit" configuration may be a single node id or a list of node ids.
         This helper safely gathers the corresponding results from the binding context
-        without assuming hashability of the configuration value.
+        without assuming hashability of the configuration value. When only one node id
+        is provided, the raw result value is returned to keep the downstream prompt
+        contract consistent with planner 的约定；否则返回 `{node_id: result}` 映射。
         """
 
         if not exit_node_def:
