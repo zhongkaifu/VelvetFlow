@@ -212,6 +212,39 @@ class DynamicActionExecutor:
 
         return source
 
+    def _collect_exit_results(
+        self, exit_node_def: Any, binding_ctx: BindingContext
+    ) -> Optional[Union[Any, Dict[str, Any]]]:
+        """Normalize exit node definitions and collect available results.
+
+        The loop "exit" configuration may be a single node id or a list of node ids.
+        This helper safely gathers the corresponding results from the binding context
+        without assuming hashability of the configuration value.
+        """
+
+        if not exit_node_def:
+            return None
+
+        if isinstance(exit_node_def, str):
+            node_ids = [exit_node_def]
+        elif isinstance(exit_node_def, list):
+            node_ids = [nid for nid in exit_node_def if isinstance(nid, str)]
+            if not node_ids:
+                return None
+        else:
+            log_warn(f"[loop] exit 节点定义类型不支持: {type(exit_node_def)}")
+            return None
+
+        collected = {
+            nid: binding_ctx.results.get(nid) for nid in node_ids if nid in binding_ctx.results
+        }
+        if not collected:
+            return None
+
+        if len(collected) == 1 and isinstance(exit_node_def, str):
+            return next(iter(collected.values()))
+        return collected
+
     def _eval_condition(self, node: Dict[str, Any], ctx: BindingContext) -> Any:
         params = node.get("params") or {}
         kind = params.get("kind")
@@ -446,8 +479,9 @@ class DynamicActionExecutor:
                 )
 
                 iter_result: Dict[str, Any] = {"index": idx, "item": item}
-                if exit_node and exit_node in binding_ctx.results:
-                    iter_result["exit_result"] = binding_ctx.results.get(exit_node)
+                exit_result = self._collect_exit_results(exit_node, binding_ctx)
+                if exit_result is not None:
+                    iter_result["exit_result"] = exit_result
                 iterations.append(iter_result)
 
             return {
@@ -484,8 +518,9 @@ class DynamicActionExecutor:
                 )
 
                 iter_result: Dict[str, Any] = {"index": iteration}
-                if exit_node and exit_node in binding_ctx.results:
-                    iter_result["exit_result"] = binding_ctx.results.get(exit_node)
+                exit_result = self._collect_exit_results(exit_node, binding_ctx)
+                if exit_result is not None:
+                    iter_result["exit_result"] = exit_result
                 iterations.append(iter_result)
                 iteration += 1
 
