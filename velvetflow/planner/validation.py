@@ -211,6 +211,65 @@ def _get_array_item_schema_from_output(
     return (schema.get(first_field) or {}).get("items")
 
 
+def _get_field_schema(schema: Mapping[str, Any], field: str) -> Optional[Mapping[str, Any]]:
+    """Return the schema of a dotted field path inside an object/array schema."""
+
+    if not isinstance(schema, Mapping) or not isinstance(field, str):
+        return None
+
+    current: Mapping[str, Any] = schema
+    parts = field.split(".")
+
+    for part in parts:
+        if not isinstance(current, Mapping):
+            return None
+
+        current_type = current.get("type")
+        if current_type == "array":
+            current = current.get("items") or {}
+            current_type = current.get("type") if isinstance(current, Mapping) else None
+
+        if current_type in {"object", None}:
+            props = current.get("properties") or {}
+            current = props.get(part)
+            if current is None:
+                return None
+            continue
+
+        if part == parts[-1]:
+            return current
+
+        return None
+
+    return current
+
+
+def _suggest_numeric_subfield(schema: Mapping[str, Any], prefix: str = "") -> Optional[str]:
+    """Find a numeric leaf field path within a schema to help auto-repair."""
+
+    if not isinstance(schema, Mapping):
+        return None
+
+    typ = schema.get("type")
+    if typ in {"number", "integer"}:
+        return prefix or ""
+
+    if typ == "array":
+        return _suggest_numeric_subfield(schema.get("items") or {}, prefix)
+
+    if typ == "object" or typ is None:
+        props = schema.get("properties") or {}
+        for name, subschema in props.items():
+            candidate = _suggest_numeric_subfield(
+                subschema,
+                f"{prefix}.{name}" if prefix else name,
+            )
+            if candidate:
+                return candidate
+
+    return None
+
+
 def _check_array_item_field(
     source: str,
     field: str,
@@ -548,6 +607,33 @@ def validate_completed_workflow(
                                         node_id=nid,
                                         field="field",
                                         message=f"condition 节点 '{nid}' 的 field='{fld}' 无效：{item_err}",
+                                    )
+                                )
+
+                        # 数值比较需要 field 指向基础数值字段，否则后续执行会失败。
+                        if kind in {"any_greater_than", "all_less_than"} and isinstance(fld, str):
+                            item_schema = _get_array_item_schema_from_output(
+                                source_path, nodes_by_id, actions_by_id, loop_body_parents
+                            )
+                            field_schema = (
+                                _get_field_schema(item_schema, fld) if item_schema else None
+                            )
+                            field_type = field_schema.get("type") if isinstance(field_schema, Mapping) else None
+                            numeric_types = {"number", "integer"}
+                            if field_schema and field_type not in numeric_types:
+                                suggestion = _suggest_numeric_subfield(field_schema, fld)
+                                hint = (
+                                    f"，可改为 '{suggestion}'" if suggestion else ""
+                                )
+                                errors.append(
+                                    ValidationError(
+                                        code="SCHEMA_MISMATCH",
+                                        node_id=nid,
+                                        field="field",
+                                        message=(
+                                            f"condition 节点 '{nid}' 的 field='{fld}' 指向非数值类型"
+                                            f"（type={field_type}），无法用于大小比较{hint}。"
+                                        ),
                                     )
                                 )
 
