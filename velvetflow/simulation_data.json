@@ -16,13 +16,9 @@
       "status": "normal"
     },
     "result": {
-      "data": [
-        {
-          "employee_id": "{{employee_id}}",
-          "last_temperature": "{{last_temperature}}",
-          "status": "{{status}}"
-        }
-      ]
+      "employee_id": "{{employee_id}}",
+      "last_temperature": "{{last_temperature}}",
+      "status": "{{status}}"
     }
   }
 }
