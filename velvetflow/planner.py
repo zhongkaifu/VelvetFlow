@@ -1901,6 +1901,57 @@ def validate_completed_workflow(
     return errors
 
 
+def _convert_pydantic_errors(
+    workflow_raw: Any, error: PydanticValidationError
+) -> List[ValidationError]:
+    """Map Pydantic validation errors to generic ValidationError objects."""
+
+    nodes = []
+    if isinstance(workflow_raw, dict):
+        nodes = workflow_raw.get("nodes") or []
+
+    def _node_id_from_index(index: int) -> Optional[str]:
+        if 0 <= index < len(nodes):
+            node = nodes[index]
+            if isinstance(node, dict):
+                return node.get("id")
+            if isinstance(node, Node):
+                return node.id
+        return None
+
+    validation_errors: List[ValidationError] = []
+    for err in error.errors():
+        loc = err.get("loc", ()) or ()
+        msg = err.get("msg", "")
+
+        node_id: Optional[str] = None
+        field: Optional[str] = None
+
+        if loc:
+            if loc[0] == "nodes" and len(loc) >= 2 and isinstance(loc[1], int):
+                node_id = _node_id_from_index(loc[1])
+                if len(loc) >= 3:
+                    field = str(loc[2])
+            elif loc[0] == "edges" and len(loc) >= 2 and isinstance(loc[1], int):
+                if len(loc) >= 3 and isinstance(loc[-1], str):
+                    field = str(loc[-1])
+                else:
+                    field = "edges"
+            else:
+                field = ".".join(str(part) for part in loc)
+
+        validation_errors.append(
+            ValidationError(
+                code="INVALID_SCHEMA",
+                node_id=node_id,
+                field=field,
+                message=msg,
+            )
+        )
+
+    return validation_errors
+
+
 # ===================== 16. 自修复 LLM =====================
 
 def repair_workflow_with_llm(
@@ -1932,6 +1983,7 @@ def repair_workflow_with_llm(
         "- source/__from__ 路径引用了不存在的节点\n"
         "- source/__from__ 路径与上游 action 的 output_schema 不匹配\n"
         "- source/__from__ 指向的数组元素 schema 中不存在某个字段\n\n"
+        "- workflow 结构不符合 DSL schema（例如节点 type 非法）\n\n"
         "总体目标：在“尽量不改变工作流整体结构”的前提下，修复这些错误，使 workflow 通过静态校验。\n\n"
         "具体要求（很重要，请严格遵守）：\n"
         "1. 结构保持稳定：\n"
@@ -2052,7 +2104,36 @@ def plan_workflow_with_two_pass(
         log_warn(
             f"[plan_workflow_with_two_pass] 警告：fill_params_with_llm 返回的结构无法通过校验，{e}"
         )
-        current_workflow = last_good_workflow
+
+        validation_errors = _convert_pydantic_errors(completed_workflow_raw, e)
+        if validation_errors:
+            log_info("[plan_workflow_with_two_pass] 提交校验错误给 LLM 进行修复")
+            repaired_raw = repair_workflow_with_llm(
+                broken_workflow=completed_workflow_raw,
+                validation_errors=validation_errors,
+                action_registry=action_registry,
+                model=OPENAI_MODEL,
+            )
+
+            try:
+                repaired_workflow = Workflow.model_validate(repaired_raw)
+                repaired_workflow = ensure_registered_actions(
+                    repaired_workflow,
+                    action_registry=action_registry,
+                    search_service=search_service,
+                )
+                if isinstance(repaired_workflow, Workflow):
+                    current_workflow = repaired_workflow
+                else:
+                    current_workflow = Workflow.model_validate(repaired_workflow)
+                last_good_workflow = current_workflow
+            except PydanticValidationError as repair_err:
+                log_warn(
+                    f"[plan_workflow_with_two_pass] 修复后结构仍未通过校验，将回退到最后的合法结构，{repair_err}"
+                )
+                current_workflow = last_good_workflow
+        else:
+            current_workflow = last_good_workflow
 
     for repair_round in range(max_repair_rounds + 1):
         log_section(f"校验 + 自修复轮次 {repair_round}")
