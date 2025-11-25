@@ -82,6 +82,20 @@ class Edge(BaseModel):
     condition: Optional[str] = Field(default=None)
     note: Optional[str] = Field(default=None, description="Optional human-readable note")
 
+    @field_validator("condition", mode="before")
+    @classmethod
+    def coerce_bool_condition(cls, value: Any) -> Any:
+        """Normalize boolean conditions into string form for validation.
+
+        LLM 或手写 DSL 可能会将条件边标记为布尔值 true/false。由于 Edge
+        的类型定义要求字符串/None，这里在校验前将布尔值转换为 "true"/"false"，
+        以避免不必要的类型错误。
+        """
+
+        if isinstance(value, bool):
+            return "true" if value else "false"
+        return value
+
 
 class Workflow(BaseModel):
     """Complete workflow definition used across planner and executor."""
