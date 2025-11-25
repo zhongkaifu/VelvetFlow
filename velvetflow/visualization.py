@@ -375,6 +375,8 @@ def _layout_graph(
         "width": width,
         "height": height,
         "nodes_by_level": ordered_levels,
+        "levels": levels,
+        "padding": padding,
     }
 
 
@@ -388,8 +390,12 @@ def _draw_graph(
     node_width, node_height = node_size
     offset_x, offset_y = offset
     positions: Dict[str, Tuple[int, int]] = layout["positions"]  # type: ignore[assignment]
+    levels: Dict[str, int] = layout.get("levels", {})  # type: ignore[assignment]
+    padding: int = layout.get("padding", 50)  # type: ignore[assignment]
 
     incoming, outgoing = _build_edge_maps(workflow)
+
+    flyover_lanes: Dict[Tuple[int, int], int] = {}
 
     for edge in workflow.edges:
         start_pos = positions[edge.from_node]
@@ -399,13 +405,34 @@ def _draw_graph(
         end_x = end_pos[0] + offset_x
         end_y = end_pos[1] + node_height // 2 + offset_y
 
-        mid_x = (start_x + end_x) // 2
-        jitter = (hash((edge.from_node, edge.to_node)) % 7 - 3) * 6
-        mid_x += jitter
+        level_from = levels.get(edge.from_node, 0)
+        level_to = levels.get(edge.to_node, 0)
 
-        canvas.draw_line(start_x, start_y, mid_x, start_y, EDGE_COLOR)
-        canvas.draw_line(mid_x, start_y, mid_x, end_y, EDGE_COLOR)
-        canvas.draw_arrow(mid_x, end_y, end_x, end_y, EDGE_COLOR)
+        if abs(level_to - level_from) <= 1:
+            mid_x = (start_x + end_x) // 2
+            jitter = (hash((edge.from_node, edge.to_node)) % 7 - 3) * 4
+            corridor_margin = 12
+            mid_x = max(min(mid_x + jitter, end_x - corridor_margin), start_x + corridor_margin)
+
+            canvas.draw_line(start_x, start_y, mid_x, start_y, EDGE_COLOR)
+            canvas.draw_line(mid_x, start_y, mid_x, end_y, EDGE_COLOR)
+            canvas.draw_arrow(mid_x, end_y, end_x, end_y, EDGE_COLOR)
+        else:
+            lane_idx = flyover_lanes.get((level_from, level_to), 0)
+            flyover_lanes[(level_from, level_to)] = lane_idx + 1
+
+            base_y = max(12, padding // 3)
+            lane_spacing = 18
+            lane_y = min(base_y + lane_idx * lane_spacing, padding - 10)
+
+            escape_x = start_x + 12
+            approach_x = end_x - 12
+
+            canvas.draw_line(start_x, start_y, escape_x, start_y, EDGE_COLOR)
+            canvas.draw_line(escape_x, start_y, escape_x, lane_y + offset_y, EDGE_COLOR)
+            canvas.draw_line(escape_x, lane_y + offset_y, approach_x, lane_y + offset_y, EDGE_COLOR)
+            canvas.draw_line(approach_x, lane_y + offset_y, approach_x, end_y, EDGE_COLOR)
+            canvas.draw_arrow(approach_x, end_y, end_x, end_y, EDGE_COLOR)
 
     for node in workflow.nodes:
         x, y = positions[node.id]
