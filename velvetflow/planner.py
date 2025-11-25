@@ -1954,6 +1954,59 @@ def _convert_pydantic_errors(
 
 # ===================== 16. 自修复 LLM =====================
 
+
+def _make_failure_validation_error(message: str) -> ValidationError:
+    return ValidationError(
+        code="INVALID_SCHEMA", node_id=None, field=None, message=message
+    )
+
+
+def _repair_with_llm_and_fallback(
+    *,
+    broken_workflow: Dict[str, Any],
+    validation_errors: List[ValidationError],
+    action_registry: List[Dict[str, Any]],
+    search_service: HybridActionSearchService,
+    reason: str,
+) -> Workflow:
+    log_info(f"[AutoRepair] {reason}，将错误上下文提交给 LLM 尝试修复。")
+    try:
+        repaired_raw = repair_workflow_with_llm(
+            broken_workflow=broken_workflow,
+            validation_errors=validation_errors,
+            action_registry=action_registry,
+            model=OPENAI_MODEL,
+        )
+        repaired = Workflow.model_validate(repaired_raw)
+        repaired = ensure_registered_actions(
+            repaired,
+            action_registry=action_registry,
+            search_service=search_service,
+        )
+        if not isinstance(repaired, Workflow):
+            repaired = Workflow.model_validate(repaired)
+        log_success("[AutoRepair] LLM 修复成功，继续构建 workflow。")
+        return repaired
+    except Exception as err:  # noqa: BLE001
+        log_warn(f"[AutoRepair] LLM 修复失败：{err}")
+        try:
+            fallback = Workflow.model_validate(broken_workflow)
+            fallback = ensure_registered_actions(
+                fallback,
+                action_registry=action_registry,
+                search_service=search_service,
+            )
+            if not isinstance(fallback, Workflow):
+                fallback = Workflow.model_validate(fallback)
+            log_warn("[AutoRepair] 使用未修复的结构作为回退，继续后续流程。")
+            return fallback
+        except Exception as inner_err:  # noqa: BLE001
+            log_error(
+                f"[AutoRepair] 回退到原始结构失败，将返回空的 fallback workflow：{inner_err}"
+            )
+            return Workflow(workflow_name="fallback_workflow", nodes=[], edges=[])
+
+
 def repair_workflow_with_llm(
     broken_workflow: Dict[str, Any],
     validation_errors: List[ValidationError],
@@ -2078,62 +2131,75 @@ def plan_workflow_with_two_pass(
     log_section("第一阶段结果：Workflow Skeleton")
     log_json("Workflow Skeleton", skeleton_raw)
 
-    skeleton = Workflow.model_validate(skeleton_raw)
-    log_event("plan_structure_done", {"workflow": skeleton.model_dump()})
-    last_good_workflow: Workflow = skeleton
-
-    completed_workflow_raw = fill_params_with_llm(
-        workflow_skeleton=skeleton.model_dump(by_alias=True),
-        action_registry=action_registry,
-        model=OPENAI_MODEL,
-    )
-
     try:
-        completed_workflow = Workflow.model_validate(completed_workflow_raw)
-        completed_workflow = ensure_registered_actions(
-            completed_workflow,
-            action_registry=action_registry,
-            search_service=search_service,
-        )
-        if isinstance(completed_workflow, Workflow):
-            current_workflow = completed_workflow
-        else:
-            current_workflow = Workflow.model_validate(completed_workflow)
-        last_good_workflow = current_workflow
+        skeleton = Workflow.model_validate(skeleton_raw)
     except PydanticValidationError as e:
         log_warn(
-            f"[plan_workflow_with_two_pass] 警告：fill_params_with_llm 返回的结构无法通过校验，{e}"
+            "[plan_workflow_with_two_pass] 结构规划阶段校验失败，将错误交给 LLM 修复后继续。"
         )
-
-        validation_errors = _convert_pydantic_errors(completed_workflow_raw, e)
-        if validation_errors:
-            log_info("[plan_workflow_with_two_pass] 提交校验错误给 LLM 进行修复")
-            repaired_raw = repair_workflow_with_llm(
-                broken_workflow=completed_workflow_raw,
-                validation_errors=validation_errors,
+        validation_errors = _convert_pydantic_errors(skeleton_raw, e)
+        if not validation_errors:
+            validation_errors = [_make_failure_validation_error(str(e))]
+        skeleton = _repair_with_llm_and_fallback(
+            broken_workflow=skeleton_raw if isinstance(skeleton_raw, dict) else {},
+            validation_errors=validation_errors,
+            action_registry=action_registry,
+            search_service=search_service,
+            reason="结构规划阶段校验失败",
+        )
+    log_event("plan_structure_done", {"workflow": skeleton.model_dump()})
+    last_good_workflow: Workflow = skeleton
+    try:
+        completed_workflow_raw = fill_params_with_llm(
+            workflow_skeleton=skeleton.model_dump(by_alias=True),
+            action_registry=action_registry,
+            model=OPENAI_MODEL,
+        )
+    except Exception as err:  # noqa: BLE001
+        log_warn(
+            f"[plan_workflow_with_two_pass] 参数补全阶段发生异常，将错误交给 LLM 自修复：{err}"
+        )
+        current_workflow = _repair_with_llm_and_fallback(
+            broken_workflow=skeleton.model_dump(by_alias=True),
+            validation_errors=[
+                _make_failure_validation_error(f"参数补全阶段失败：{err}")
+            ],
+            action_registry=action_registry,
+            search_service=search_service,
+            reason="参数补全异常，尝试直接基于 skeleton 修复",
+        )
+        last_good_workflow = current_workflow
+        completed_workflow_raw = current_workflow.model_dump(by_alias=True)
+    else:
+        try:
+            completed_workflow = Workflow.model_validate(completed_workflow_raw)
+            completed_workflow = ensure_registered_actions(
+                completed_workflow,
                 action_registry=action_registry,
-                model=OPENAI_MODEL,
+                search_service=search_service,
+            )
+            if isinstance(completed_workflow, Workflow):
+                current_workflow = completed_workflow
+            else:
+                current_workflow = Workflow.model_validate(completed_workflow)
+            last_good_workflow = current_workflow
+        except PydanticValidationError as e:
+            log_warn(
+                f"[plan_workflow_with_two_pass] 警告：fill_params_with_llm 返回的结构无法通过校验，{e}"
             )
 
-            try:
-                repaired_workflow = Workflow.model_validate(repaired_raw)
-                repaired_workflow = ensure_registered_actions(
-                    repaired_workflow,
+            validation_errors = _convert_pydantic_errors(completed_workflow_raw, e)
+            if validation_errors:
+                current_workflow = _repair_with_llm_and_fallback(
+                    broken_workflow=completed_workflow_raw,
+                    validation_errors=validation_errors,
                     action_registry=action_registry,
                     search_service=search_service,
+                    reason="补参结果校验失败",
                 )
-                if isinstance(repaired_workflow, Workflow):
-                    current_workflow = repaired_workflow
-                else:
-                    current_workflow = Workflow.model_validate(repaired_workflow)
                 last_good_workflow = current_workflow
-            except PydanticValidationError as repair_err:
-                log_warn(
-                    f"[plan_workflow_with_two_pass] 修复后结构仍未通过校验，将回退到最后的合法结构，{repair_err}"
-                )
+            else:
                 current_workflow = last_good_workflow
-        else:
-            current_workflow = last_good_workflow
 
     for repair_round in range(max_repair_rounds + 1):
         log_section(f"校验 + 自修复轮次 {repair_round}")
@@ -2160,29 +2226,14 @@ def plan_workflow_with_two_pass(
             return last_good_workflow
 
         log_info(f"调用 LLM 进行第 {repair_round + 1} 次修复")
-        repaired_raw = repair_workflow_with_llm(
+        current_workflow = _repair_with_llm_and_fallback(
             broken_workflow=current_workflow.model_dump(by_alias=True),
             validation_errors=errors,
             action_registry=action_registry,
-            model=OPENAI_MODEL,
+            search_service=search_service,
+            reason=f"修复轮次 {repair_round + 1}",
         )
-
-        try:
-            repaired_workflow = Workflow.model_validate(repaired_raw)
-            repaired_workflow = ensure_registered_actions(
-                repaired_workflow,
-                action_registry=action_registry,
-                search_service=search_service,
-            )
-            if isinstance(repaired_workflow, Workflow):
-                current_workflow = repaired_workflow
-            else:
-                current_workflow = Workflow.model_validate(repaired_workflow)
-            last_good_workflow = current_workflow
-        except PydanticValidationError:
-            log_warn(
-                "[plan_workflow_with_two_pass] 警告：repair_workflow_with_llm 返回的结构不包含合法的 nodes/edges，本轮修复结果被忽略。"
-            )
+        last_good_workflow = current_workflow
 
     return last_good_workflow
 
