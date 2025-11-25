@@ -278,15 +278,23 @@ class DynamicActionExecutor:
         if field is None or field == "":
             return obj
 
-        if not isinstance(obj, Mapping):
-            return None
-
         parts = field.split(".")
         current: Any = obj
         for p in parts:
-            if not isinstance(current, Mapping):
+            if isinstance(current, list):
+                if p.isdigit():
+                    try:
+                        current = current[int(p)]
+                        continue
+                    except Exception:
+                        return None
                 return None
-            current = current.get(p)
+
+            if isinstance(current, Mapping):
+                current = current.get(p)
+                continue
+
+            return None
         return current
 
     def _extract_export_values(self, source: Any, field: Optional[str]) -> List[Any]:
@@ -313,13 +321,32 @@ class DynamicActionExecutor:
         if isinstance(items_spec, Mapping):
             from_node = items_spec.get("from_node")
             fields = items_spec.get("fields") if isinstance(items_spec.get("fields"), list) else []
+            list_field = items_spec.get("list_field") if isinstance(items_spec.get("list_field"), str) else None
+
+            def _build_record(obj: Any) -> Dict[str, Any]:
+                if isinstance(obj, Mapping):
+                    return {f: self._get_field_value(obj, f) for f in fields if isinstance(f, str)}
+                return {f: None for f in fields if isinstance(f, str)}
+
             if isinstance(from_node, str):
                 source_res = results.get(from_node)
+
+                if isinstance(source_res, Mapping) and list_field:
+                    list_data = self._get_field_value(source_res, list_field)
+                    if isinstance(list_data, list):
+                        for element in list_data:
+                            items_output.append(_build_record(element))
+                        return
+
+                if isinstance(source_res, list):
+                    for element in source_res:
+                        items_output.append(_build_record(element))
+                    return
+
                 if isinstance(source_res, Mapping):
-                    record = {f: self._get_field_value(source_res, f) for f in fields if isinstance(f, str)}
+                    items_output.append(_build_record(source_res))
                 else:
-                    record = {f: None for f in fields if isinstance(f, str)}
-                items_output.append(record)
+                    items_output.append(_build_record(None))
 
         if not isinstance(aggregates_spec, list):
             return

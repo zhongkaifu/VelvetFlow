@@ -61,6 +61,7 @@ VelvetFlow (repo root)
 - **节点**：`type` 可为 `start/end/action/condition/loop/parallel`；`action` 节点需 `action_id` 与 `params`；`condition` 节点 `params` 需 `kind` 与 `source` 等字段。
 - **条件节点**：支持 `list_not_empty`（上游列表非空判定）、`any_greater_than`（列表元素某字段大于阈值）、`equals`、`contains` 等结构化参数。
 - **参数绑定**：`{"__from__": "result_of.node.field", "__agg__": "identity"}`；`count` 返回列表/对象长度；`count_if` 支持 `field/op/value`（含 `!=`）；`format_join` 可直接格式化并拼接列表；`filter_map` 会在内部走过滤与格式化；`pipeline` 步骤支持 `filter`、`format_join`，其中 `format_join` 可直接指定要取的字段。
+- **循环 exports 提取列表**：`exports.items` 可通过 `list_field` 指定要展开的列表字段（例如动作输出中的 `data`），框架会把列表中的每个元素变成 `items` 里的独立记录；若 `from_node` 直接返回列表也会自动展开。字段名仍按单个元素的键填写，例如 `employee_id`、`temperature`。
 
 #### `__agg__` 详解
 - **作用**：`__agg__` 与 `__from__` 组合使用，描述如何从上游节点结果提取或加工数据以填充下游参数，默认取值为 `identity`（不做转换）。
