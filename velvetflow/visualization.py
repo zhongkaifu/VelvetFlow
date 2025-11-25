@@ -93,6 +93,68 @@ class _ImageCanvas:
         self.font_regular = _load_font(16)
         self.font_small = _load_font(14)
 
+    def _text_width(self, text: str, font: ImageFont.FreeTypeFont) -> int:
+        bbox = self.draw.textbbox((0, 0), text, font=font)
+        return bbox[2] - bbox[0]
+
+    def _wrap_text(self, text: str, font: ImageFont.FreeTypeFont, max_width: int, line_spacing: int = 4) -> List[str]:
+        if not text:
+            return []
+
+        lines: List[str] = []
+        line = ""
+        for ch in str(text):
+            candidate = line + ch
+            if self._text_width(candidate, font) <= max_width:
+                line = candidate
+                continue
+            if line:
+                lines.append(line)
+                line = ch
+            else:
+                lines.append(candidate)
+                line = ""
+        if line:
+            lines.append(line)
+        return lines
+
+    def _ellipsize_text(self, text: str, font: ImageFont.FreeTypeFont, max_width: int) -> str:
+        ellipsis = "..."
+        if self._text_width(text, font) <= max_width:
+            return text
+        if self._text_width(ellipsis, font) > max_width:
+            return ""
+
+        trimmed = text
+        while trimmed and self._text_width(trimmed + ellipsis, font) > max_width:
+            trimmed = trimmed[:-1]
+        return trimmed + ellipsis if trimmed else ellipsis
+
+    def measure_text_block(
+        self,
+        text: str,
+        max_width: int,
+        font: Optional[ImageFont.FreeTypeFont] = None,
+        line_spacing: int = 4,
+        max_height: Optional[int] = None,
+    ) -> int:
+        if not text:
+            return 0
+        font = font or self.font_regular
+        lines = self._wrap_text(str(text), font, max_width, line_spacing=line_spacing)
+
+        if max_height is not None:
+            line_unit = font.size + line_spacing
+            max_lines = max(0, int((max_height + line_spacing) // line_unit))
+            if not max_lines:
+                return 0
+            lines = lines[:max_lines]
+
+        if not lines:
+            return 0
+
+        return len(lines) * font.size + (len(lines) - 1) * line_spacing
+
     def draw_rect(self, x: int, y: int, w: int, h: int, color: RGB, fill: bool = True, thickness: int = 2):
         self.draw.rectangle(
             [x, y, x + w, y + h],
@@ -127,30 +189,37 @@ class _ImageCanvas:
         max_width: int,
         font: Optional[ImageFont.FreeTypeFont] = None,
         line_spacing: int = 4,
-    ):
+        max_height: Optional[int] = None,
+    ) -> int:
         if not text:
-            return
+            return 0
         font = font or self.font_regular
+        lines = self._wrap_text(str(text), font, max_width, line_spacing=line_spacing)
+
+        truncated = False
+        if max_height is not None:
+            line_unit = font.size + line_spacing
+            max_lines = max(0, int((max_height + line_spacing) // line_unit))
+            if not max_lines:
+                return 0
+            if len(lines) > max_lines:
+                truncated = True
+                lines = lines[:max_lines]
+            height = len(lines) * font.size + (len(lines) - 1) * line_spacing
+        else:
+            height = len(lines) * font.size + (len(lines) - 1) * line_spacing
+
+        if truncated and lines:
+            lines[-1] = self._ellipsize_text(lines[-1], font, max_width)
+
         cursor_y = y
-        line = ""
-        for ch in str(text):
-            candidate = line + ch
-            bbox = self.draw.textbbox((0, 0), candidate, font=font)
-            text_width = bbox[2] - bbox[0]
-            if text_width <= max_width:
-                line = candidate
-                continue
-            if line:
-                self.draw.text((x, cursor_y), line, font=font, fill=color)
-                cursor_y += font.size + line_spacing
-                line = ch
-            else:
-                # Even a single character exceeds the width; draw it and move on.
-                self.draw.text((x, cursor_y), candidate, font=font, fill=color)
-                cursor_y += font.size + line_spacing
-                line = ""
-        if line:
+        for idx, line in enumerate(lines):
             self.draw.text((x, cursor_y), line, font=font, fill=color)
+            cursor_y += font.size
+            if idx != len(lines) - 1:
+                cursor_y += line_spacing
+
+        return height
 
 
 def _topological_levels(workflow: Workflow) -> Dict[str, int]:
@@ -203,6 +272,60 @@ def _refine_order(
             next_order = order.get(lvl + 1, [])
             order[lvl] = sorted(order.get(lvl, []), key=lambda n: _median_position(successors[n], next_order))
     return order
+
+
+def _build_edge_maps(workflow: Workflow) -> Tuple[Dict[str, List[str]], Dict[str, List[str]]]:
+    incoming: Dict[str, List[str]] = {n.id: [] for n in workflow.nodes}
+    outgoing: Dict[str, List[str]] = {n.id: [] for n in workflow.nodes}
+    for edge in workflow.edges:
+        incoming[edge.to_node].append(edge.from_node)
+        outgoing[edge.from_node].append(edge.to_node)
+    return incoming, outgoing
+
+
+def _compute_uniform_node_height(
+    workflow: Workflow,
+    canvas: _ImageCanvas,
+    node_width: int,
+    min_height: int,
+) -> int:
+    if not workflow.nodes:
+        return min_height
+
+    incoming, outgoing = _build_edge_maps(workflow)
+    content_width = node_width - 20
+    top_padding = 8
+    bottom_padding = 8
+    spacing_after_title = 6
+    spacing_before_io = 12
+    io_spacing = 6
+
+    heights: List[int] = []
+    for node in workflow.nodes:
+        label = f"{node.id} ({node.type})"
+        detail = node.display_name or node.action_id or ""
+        inputs_text = "输入: " + (", ".join(incoming[node.id]) if incoming[node.id] else "-")
+        outputs_text = "输出: " + (", ".join(outgoing[node.id]) if outgoing[node.id] else "-")
+
+        label_height = canvas.measure_text_block(label, max_width=content_width, font=canvas.font_regular)
+        detail_height = canvas.measure_text_block(detail, max_width=content_width, font=canvas.font_small)
+        inputs_height = canvas.measure_text_block(inputs_text, max_width=content_width, font=canvas.font_small)
+        outputs_height = canvas.measure_text_block(outputs_text, max_width=content_width, font=canvas.font_small)
+
+        total_height = (
+            top_padding
+            + label_height
+            + (spacing_after_title if detail else 0)
+            + detail_height
+            + spacing_before_io
+            + inputs_height
+            + io_spacing
+            + outputs_height
+            + bottom_padding
+        )
+        heights.append(total_height)
+
+    return max(min_height, max(heights))
 
 
 def _layout_graph(
@@ -266,11 +389,7 @@ def _draw_graph(
     offset_x, offset_y = offset
     positions: Dict[str, Tuple[int, int]] = layout["positions"]  # type: ignore[assignment]
 
-    incoming: Dict[str, List[str]] = {n.id: [] for n in workflow.nodes}
-    outgoing: Dict[str, List[str]] = {n.id: [] for n in workflow.nodes}
-    for edge in workflow.edges:
-        incoming[edge.to_node].append(edge.from_node)
-        outgoing[edge.from_node].append(edge.to_node)
+    incoming, outgoing = _build_edge_maps(workflow)
 
     for edge in workflow.edges:
         start_pos = positions[edge.from_node]
@@ -294,34 +413,66 @@ def _draw_graph(
         base_y = y + offset_y
         color = NODE_COLORS.get(node.type, (120, 120, 120))
         canvas.draw_rect(base_x, base_y, node_width, node_height, color, fill=True, thickness=3)
+        content_width = node_width - 20
         label = f"{node.id} ({node.type})"
-        canvas.draw_text_block(base_x + 10, base_y + 8, label, TEXT_COLOR, max_width=node_width - 20)
-        detail = node.display_name or node.action_id
-        if detail:
-            canvas.draw_text_block(
-                base_x + 10,
-                base_y + 32,
-                str(detail),
-                TEXT_COLOR,
-                max_width=node_width - 20,
-                font=canvas.font_small,
-            )
+        detail = node.display_name or node.action_id or ""
         inputs = incoming.get(node.id) or []
         outputs = outgoing.get(node.id) or []
+
+        inputs_text = "输入: " + (", ".join(inputs) if inputs else "-")
+        outputs_text = "输出: " + (", ".join(outputs) if outputs else "-")
+
+        inputs_height = canvas.measure_text_block(inputs_text, max_width=content_width, font=canvas.font_small)
+        outputs_height = canvas.measure_text_block(outputs_text, max_width=content_width, font=canvas.font_small)
+
+        bottom_padding = 8
+        io_spacing = 6
+        bottom_block_height = inputs_height + io_spacing + outputs_height + bottom_padding
+
+        cursor_y = base_y + 8
+        available_height = node_height - bottom_block_height - (cursor_y - base_y)
+
+        title_height = canvas.draw_text_block(
+            base_x + 10,
+            cursor_y,
+            label,
+            TEXT_COLOR,
+            max_width=content_width,
+            font=canvas.font_regular,
+            max_height=available_height,
+        )
+        cursor_y += title_height
+
+        if detail:
+            cursor_y += 6
+            detail_space = node_height - bottom_block_height - (cursor_y - base_y)
+            if detail_space > 0:
+                detail_height = canvas.draw_text_block(
+                    base_x + 10,
+                    cursor_y,
+                    str(detail),
+                    TEXT_COLOR,
+                    max_width=content_width,
+                    font=canvas.font_small,
+                    max_height=detail_space,
+                )
+                cursor_y += detail_height
+
+        inputs_y = base_y + node_height - bottom_block_height
         canvas.draw_text_block(
             base_x + 10,
-            base_y + node_height - 36,
-            "输入: " + (", ".join(inputs) if inputs else "-"),
+            inputs_y,
+            inputs_text,
             TEXT_COLOR,
-            max_width=node_width - 20,
+            max_width=content_width,
             font=canvas.font_small,
         )
         canvas.draw_text_block(
             base_x + 10,
-            base_y + node_height - 18,
-            "输出: " + (", ".join(outputs) if outputs else "-"),
+            inputs_y + inputs_height + io_spacing,
+            outputs_text,
             TEXT_COLOR,
-            max_width=node_width - 20,
+            max_width=content_width,
             font=canvas.font_small,
         )
 
@@ -359,7 +510,10 @@ def _save_jpeg(image: Image.Image, output_path: str, quality: int = 90) -> str:
 def render_workflow_dag(workflow: Workflow, output_path: str = "workflow_dag.jpg") -> str:
     """Render the final workflow DAG to a JPEG file and return the saved path."""
 
-    main_node_size = (200, 110)
+    probe_canvas = _ImageCanvas(10, 10)
+    main_node_width = 200
+    main_node_height = _compute_uniform_node_height(workflow, probe_canvas, main_node_width, min_height=110)
+    main_node_size = (main_node_width, main_node_height)
     main_layout = _layout_graph(workflow, main_node_size, level_gap=170, node_gap=36, padding=50)
 
     loop_panels = []
@@ -369,7 +523,9 @@ def render_workflow_dag(workflow: Workflow, output_path: str = "workflow_dag.jpg
         body_workflow = _extract_loop_body(node)
         if not body_workflow:
             continue
-        body_node_size = (170, 100)
+        body_node_width = 170
+        body_node_height = _compute_uniform_node_height(body_workflow, probe_canvas, body_node_width, min_height=100)
+        body_node_size = (body_node_width, body_node_height)
         body_layout = _layout_graph(body_workflow, body_node_size, level_gap=130, node_gap=28, padding=40)
         panel_title = f"循环子图：{node.display_name or node.id}"
         loop_panels.append(
