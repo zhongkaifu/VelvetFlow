@@ -4,6 +4,7 @@ import copy
 from typing import Any, Dict, List, Optional, Union
 
 from velvetflow.logging_utils import log_info, log_warn
+from velvetflow.loop_dsl import iter_workflow_and_loop_body_nodes
 from velvetflow.models import Workflow
 from velvetflow.search import HybridActionSearchService
 
@@ -33,7 +34,11 @@ def ensure_registered_actions(
         else copy.deepcopy(workflow)
     )
 
-    nodes = workflow_dict.get("nodes", []) if isinstance(workflow_dict, dict) else []
+    nodes = (
+        iter_workflow_and_loop_body_nodes(workflow_dict)
+        if isinstance(workflow_dict, dict)
+        else []
+    )
 
     for node in nodes:
         ntype = node.get("type")
