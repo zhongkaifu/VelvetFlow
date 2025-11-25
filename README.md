@@ -91,10 +91,17 @@ VelvetFlow (repo root)
    ```
 
 ## 运行示例
+1) 构建并持久化工作流
 ```bash
 python workflow_fc_hybrid_actions_demo.py
 ```
-- 按提示输入自然语言需求，或直接回车使用默认案例；程序将打印生成的工作流 DSL 与模拟执行日志，并在仓库根目录生成 `workflow_dag.jpg` 展示最终的工作流拓扑。
+- 按提示输入自然语言需求，或直接回车使用默认案例；程序将打印生成的工作流 DSL，并在仓库根目录生成 `workflow_output.json`（持久化的 DSL）及 `workflow_dag.jpg`（流程拓扑）。
+
+2) 从已保存的 JSON 读取并执行工作流
+```bash
+python execute_workflow.py --workflow-json workflow_output.json
+```
+- 可多次复用同一个 JSON，结合 `velvetflow/simulation_data.json` 进行模拟执行。
 
 ## 开发与测试样例
 - **替换动作库**：编辑 `velvetflow/action_registry.py`，添加/禁用动作并提供对应 `arg_schema`/`output_schema`，即可让检索与规划使用新的动作集合。【F:velvetflow/action_registry.py†L1-L212】
