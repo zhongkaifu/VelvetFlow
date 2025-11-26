@@ -15,10 +15,7 @@ from pathlib import Path
 from typing import Any, Iterable, List, Mapping
 
 from velvetflow.models import PydanticValidationError, ValidationError, Workflow
-from velvetflow.planner.validation import (
-    precheck_loop_body_graphs,
-    validate_completed_workflow,
-)
+from velvetflow.verification import precheck_loop_body_graphs, validate_completed_workflow
 
 
 def _convert_pydantic_errors(

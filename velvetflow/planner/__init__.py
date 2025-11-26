@@ -4,7 +4,7 @@ from velvetflow.planner.tools import PLANNER_TOOLS
 from velvetflow.planner.orchestrator import plan_workflow_with_two_pass
 from velvetflow.planner.structure import plan_workflow_structure_with_llm
 from velvetflow.planner.params import fill_params_with_llm
-from velvetflow.planner.validation import (
+from velvetflow.verification import (
     precheck_loop_body_graphs,
     validate_completed_workflow,
     validate_param_binding,

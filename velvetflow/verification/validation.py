@@ -1,4 +1,4 @@
-"""Static validation helpers for planner workflows."""
+"""Static validation helpers for VelvetFlow workflows."""
 
 from collections import deque
 from typing import Any, Dict, List, Mapping, Optional
@@ -94,8 +94,6 @@ def precheck_loop_body_graphs(workflow_raw: Mapping[str, Any] | Any) -> List[Val
                 )
 
     return errors
-from velvetflow.models import ValidationError, Workflow
-from velvetflow.planner.action_guard import _index_actions_by_id
 
 
 def _index_nodes_by_id(workflow: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
