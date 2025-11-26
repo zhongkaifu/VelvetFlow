@@ -104,4 +104,131 @@ PLANNER_TOOLS = [
     },
 ]
 
-__all__ = ["PLANNER_TOOLS"]
+PARAM_COMPLETION_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "update_node_params",
+            "description": "更新指定节点的 params（用于参数补全阶段）。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "node_id": {"type": "string"},
+                    "params": {"type": "object", "additionalProperties": True},
+                },
+                "required": ["node_id", "params"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "submit_workflow",
+            "description": "当所有节点参数都已补全时调用，提交最终 workflow。",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        },
+    },
+]
+
+WORKFLOW_EDIT_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "update_node",
+            "description": "修改节点的 action_id / display_name / params。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "node_id": {"type": "string"},
+                    "action_id": {"type": "string", "nullable": True},
+                    "display_name": {"type": "string", "nullable": True},
+                    "params": {"type": "object", "additionalProperties": True},
+                },
+                "required": ["node_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "update_node_params",
+            "description": "仅更新节点 params，通常用于修复缺失字段或类型问题。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "node_id": {"type": "string"},
+                    "params": {"type": "object", "additionalProperties": True},
+                },
+                "required": ["node_id", "params"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "update_edge",
+            "description": "更新 edge 的 condition，可指定 scope_node_id 在 loop.body_subgraph 内修改。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "from_node": {"type": "string"},
+                    "to_node": {"type": "string"},
+                    "condition": {"type": "string", "nullable": True},
+                    "scope_node_id": {"type": "string", "description": "可选：loop 节点 id，用于更新其 body_subgraph.edges"},
+                },
+                "required": ["from_node", "to_node"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "add_edge",
+            "description": "新增一条 edge，可选 scope_node_id 在 loop.body_subgraph 内添加。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "from_node": {"type": "string"},
+                    "to_node": {"type": "string"},
+                    "condition": {"type": "string", "nullable": True},
+                    "scope_node_id": {"type": "string", "description": "可选：loop 节点 id，用于在其 body_subgraph 内添加 edge"},
+                },
+                "required": ["from_node", "to_node"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "remove_edge",
+            "description": "删除一条 edge，可选 scope_node_id 在 loop.body_subgraph 内删除。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "from_node": {"type": "string"},
+                    "to_node": {"type": "string"},
+                    "scope_node_id": {"type": "string", "description": "可选：loop 节点 id，用于在其 body_subgraph 内删除 edge"},
+                },
+                "required": ["from_node", "to_node"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "submit_workflow",
+            "description": "当所有修复完成时调用，返回当前 workflow。",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        },
+    },
+]
+
+__all__ = ["PLANNER_TOOLS", "PARAM_COMPLETION_TOOLS", "WORKFLOW_EDIT_TOOLS"]
