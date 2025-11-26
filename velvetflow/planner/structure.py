@@ -14,6 +14,8 @@ from velvetflow.logging_utils import (
     log_event,
     log_info,
     log_json,
+    log_llm_reasoning,
+    log_llm_tool_call,
     log_llm_usage,
     log_section,
     log_success,
@@ -353,6 +355,12 @@ def plan_workflow_structure_with_llm(
             "tool_calls": msg.tool_calls,
         })
 
+        log_llm_reasoning(
+            operation="structure_planning",
+            round_idx=round_idx,
+            content=msg.content,
+        )
+
         if not msg.tool_calls:
             log_warn("[Planner] 本轮没有 tool_calls，提前结束。")
             break
@@ -445,6 +453,15 @@ def plan_workflow_structure_with_llm(
             else:
                 tool_result = {"status": "error", "message": f"未知工具 {func_name}"}
 
+            log_llm_tool_call(
+                operation="structure_planning",
+                round_idx=round_idx,
+                tool_name=func_name,
+                tool_call_id=tool_call_id,
+                arguments=args,
+                result=tool_result,
+                metadata={"raw_arguments": raw_args},
+            )
             messages.append({
                 "role": "tool",
                 "tool_call_id": tool_call_id,

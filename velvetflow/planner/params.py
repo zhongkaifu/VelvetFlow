@@ -9,7 +9,14 @@ from typing import Any, Dict, List
 from openai import OpenAI
 
 from velvetflow.config import OPENAI_MODEL
-from velvetflow.logging_utils import child_span, log_debug, log_error, log_llm_usage
+from velvetflow.logging_utils import (
+    child_span,
+    log_debug,
+    log_error,
+    log_llm_reasoning,
+    log_llm_tool_call,
+    log_llm_usage,
+)
 from velvetflow.models import Node, Workflow
 from velvetflow.planner.edit_session import WorkflowEditingSession
 from velvetflow.planner.relations import get_upstream_nodes
@@ -147,6 +154,12 @@ def fill_params_with_llm(
         log_llm_usage(model, getattr(resp, "usage", None), operation="fill_params")
 
         msg = resp.choices[0].message
+        log_llm_reasoning(
+            operation="fill_params",
+            round_idx=0,
+            content=msg.content,
+            metadata={"node_id": node.id},
+        )
         if msg.tool_calls:
             for tc in msg.tool_calls:
                 try:
@@ -156,6 +169,15 @@ def fill_params_with_llm(
                     continue
 
                 result = editor.handle_tool_call(tc.function.name, args)
+                log_llm_tool_call(
+                    operation="fill_params",
+                    round_idx=0,
+                    tool_name=tc.function.name,
+                    tool_call_id=tc.id,
+                    arguments=args,
+                    result=result,
+                    metadata={"node_id": node.id},
+                )
                 if result.get("status") == "ok" and result.get("params") is not None:
                     filled_params[node.id] = result.get("params")
         else:

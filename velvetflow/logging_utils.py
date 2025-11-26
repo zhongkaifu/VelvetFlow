@@ -226,3 +226,50 @@ def log_llm_usage(model: str, usage: Any, operation: str | None = None) -> None:
         "total_tokens": total_tokens,
     }
     log_event("llm_usage", payload)
+
+
+def log_llm_reasoning(
+    *,
+    operation: str,
+    round_idx: int | None,
+    content: str | None,
+    metadata: Mapping[str, Any] | None = None,
+) -> None:
+    """Capture the free-form reasoning text returned by the LLM."""
+
+    if content is None:
+        return
+
+    payload: dict[str, Any] = {
+        "operation": operation,
+        "round_idx": round_idx,
+        "content": content,
+    }
+    if metadata:
+        payload.update(metadata)
+    log_event("llm_reasoning", payload)
+
+
+def log_llm_tool_call(
+    *,
+    operation: str,
+    round_idx: int | None,
+    tool_name: str,
+    arguments: Any,
+    result: Any,
+    tool_call_id: str | None = None,
+    metadata: Mapping[str, Any] | None = None,
+) -> None:
+    """Log a single tool-call invocation, including input/output."""
+
+    payload: dict[str, Any] = {
+        "operation": operation,
+        "round_idx": round_idx,
+        "tool_name": tool_name,
+        "tool_call_id": tool_call_id,
+        "arguments": arguments,
+        "result": result,
+    }
+    if metadata:
+        payload.update(metadata)
+    log_event("llm_tool_call", payload)

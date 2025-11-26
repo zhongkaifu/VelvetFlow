@@ -13,6 +13,8 @@ from velvetflow.logging_utils import (
     log_debug,
     log_error,
     log_info,
+    log_llm_reasoning,
+    log_llm_tool_call,
     log_llm_usage,
     log_success,
     log_warn,
@@ -219,6 +221,13 @@ def repair_workflow_with_llm(
         msg = resp.choices[0].message
         messages.append({"role": "assistant", "content": msg.content or "", "tool_calls": msg.tool_calls})
 
+        log_llm_reasoning(
+            operation="repair_workflow",
+            round_idx=round_idx,
+            content=msg.content,
+            metadata={"validation_error_count": len(validation_errors)},
+        )
+
         if msg.tool_calls:
             for tc in msg.tool_calls:
                 try:
@@ -228,6 +237,14 @@ def repair_workflow_with_llm(
                     args = {}
 
                 result = editor.handle_tool_call(tc.function.name, args)
+                log_llm_tool_call(
+                    operation="repair_workflow",
+                    round_idx=round_idx,
+                    tool_name=tc.function.name,
+                    tool_call_id=tc.id,
+                    arguments=args,
+                    result=result,
+                )
                 messages.append(
                     {
                         "role": "tool",
