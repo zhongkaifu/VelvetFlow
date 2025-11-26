@@ -72,6 +72,8 @@ def check_requirement_coverage_with_llm(
             temperature=0.1,
         )
     log_llm_usage(model, getattr(resp, "usage", None), operation="coverage_check")
+    if not resp.choices:
+        raise RuntimeError("check_requirement_coverage_with_llm 未返回任何候选消息")
 
     content = resp.choices[0].message.content or ""
     text = content.strip()
@@ -128,6 +130,8 @@ def refine_workflow_structure_with_llm(
             temperature=0.2,
         )
     log_llm_usage(model, getattr(resp, "usage", None), operation="coverage_refine")
+    if not resp.choices:
+        raise RuntimeError("refine_workflow_structure_with_llm 未返回任何候选消息")
 
     content = resp.choices[0].message.content or ""
     text = content.strip()

@@ -140,6 +140,8 @@ def fill_params_with_llm(
                 temperature=0.1,
             )
         log_llm_usage(model, getattr(resp, "usage", None), operation="fill_params")
+        if not resp.choices:
+            raise RuntimeError(f"fill_params_with_llm({node.id}) 未返回任何候选消息")
 
         content = resp.choices[0].message.content or ""
         text = content.strip()

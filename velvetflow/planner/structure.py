@@ -203,6 +203,8 @@ def _synthesize_loop_exports_with_llm(
             temperature=0.2,
         )
     log_llm_usage(model, getattr(resp, "usage", None), operation="synthesize_loop_exports")
+    if not resp.choices:
+        raise RuntimeError("_synthesize_loop_exports_with_llm 未返回任何候选消息")
 
     content = resp.choices[0].message.content or ""
     text = content.strip()
@@ -346,6 +348,9 @@ def plan_workflow_structure_with_llm(
                 temperature=0.2,
             )
         log_llm_usage(OPENAI_MODEL, getattr(resp, "usage", None), operation="structure_planning")
+        if not resp.choices:
+            raise RuntimeError("plan_workflow_structure_with_llm 未返回任何候选消息")
+
         msg = resp.choices[0].message
         messages.append({
             "role": "assistant",

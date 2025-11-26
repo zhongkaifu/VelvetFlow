@@ -60,6 +60,8 @@ def synthesize_edges_with_llm(
             temperature=0.2,
         )
     log_llm_usage(model, getattr(resp, "usage", None), operation="edge_synthesis")
+    if not resp.choices:
+        raise RuntimeError("synthesize_edges_with_llm 未返回任何候选消息")
 
     content = resp.choices[0].message.content or ""
     text = content.strip()
