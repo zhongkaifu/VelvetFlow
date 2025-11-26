@@ -21,6 +21,7 @@ from velvetflow.logging_utils import (
     use_trace_context,
 )
 from velvetflow.models import Node, ValidationError, Workflow
+from tools import get_registered_tool
 
 # ===================== 16. 执行器 =====================
 
@@ -276,6 +277,42 @@ class DynamicActionExecutor:
             }
 
         return copy.deepcopy(self._render_template(template, params_for_render))
+
+    def _should_simulate(self, action_id: str) -> bool:
+        """Check if the current action_id has an explicit simulation entry."""
+
+        return action_id in self.simulation_data
+
+    def _invoke_tool(
+        self, tool_name: str, resolved_params: Dict[str, Any], action_id: str
+    ) -> Dict[str, Any]:
+        """Execute a registered tool and normalize its output."""
+
+        tool = get_registered_tool(tool_name)
+        if not tool:
+            log_warn(f"[action:{action_id}] tool '{tool_name}' not registered")
+            return {
+                "status": "tool_not_registered",
+                "tool_name": tool_name,
+                "action_id": action_id,
+            }
+
+        log_info(f"-> 调用工具: {tool_name} with params={resolved_params}")
+        try:
+            output = tool(**resolved_params)
+            log_debug(f"<- 工具返回: {output}")
+        except Exception as exc:  # pragma: no cover - runtime safety
+            log_warn(f"[action:{action_id}] tool '{tool_name}' 执行失败: {exc}")
+            return {
+                "status": "tool_error",
+                "tool_name": tool_name,
+                "action_id": action_id,
+                "error": str(exc),
+            }
+
+        if isinstance(output, dict):
+            return output
+        return {"value": output, "tool_name": tool_name}
 
     def _resolve_condition_source(self, source: Any, ctx: BindingContext) -> Any:
         """Resolve condition source which may be a binding dict or a path string."""
@@ -1155,7 +1192,19 @@ class DynamicActionExecutor:
                             f"-> 执行业务动作: {action['name']} (domain={action['domain']})"
                         )
                         log_debug(f"-> 描述: {action['description']}")
-                        result = self._simulate_action(action_id, resolved_params)
+                        if self._should_simulate(action_id):
+                            result = self._simulate_action(action_id, resolved_params)
+                        elif tool_name := action.get("tool_name"):
+                            result = self._invoke_tool(tool_name, resolved_params, action_id)
+                        else:
+                            log_warn(
+                                f"[action:{action_id}] 未找到工具映射，返回占位结果"
+                            )
+                            result = {
+                                "status": "no_tool_mapping",
+                                "action_id": action_id,
+                                "description": action.get("description"),
+                            }
 
                 payload = result.copy() if isinstance(result, dict) else {"value": result}
                 payload["params"] = resolved_params

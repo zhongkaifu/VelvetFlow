@@ -334,6 +334,7 @@
     "name": "AskAI",
     "domain": "common",
     "description": "LLM fallback action when no suitable business tools are available. Collects context along dependency paths (upstream tool descriptions, inputs, outputs), then uses the LLM to solve the problem and returns a structured JSON answer. Always prefer concrete business tools; call AskAI only when none are appropriate.",
+    "tool_name": "ask_ai",
     "tags": [
       "fallback",
       "llm",
@@ -376,6 +377,361 @@
       },
       "required": [
         "result"
+      ]
+    },
+    "enabled": true
+  },
+  {
+    "action_id": "common.search_web.v1",
+    "name": "Search web",
+    "domain": "common",
+    "description": "Perform a DuckDuckGo web search and return the top result titles, URLs, and snippets.",
+    "tool_name": "search_web",
+    "tags": [
+      "search",
+      "web",
+      "information"
+    ],
+    "arg_schema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string"
+        },
+        "limit": {
+          "type": "integer",
+          "default": 5
+        },
+        "timeout": {
+          "type": "integer",
+          "default": 8
+        }
+      },
+      "required": [
+        "query"
+      ]
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "results": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "title": {
+                "type": "string"
+              },
+              "url": {
+                "type": "string"
+              },
+              "snippet": {
+                "type": "string",
+                "description": "Short description of the result"
+              }
+            },
+            "required": [
+              "title",
+              "url",
+              "snippet"
+            ]
+          }
+        }
+      },
+      "required": [
+        "results"
+      ]
+    },
+    "enabled": true
+  },
+  {
+    "action_id": "common.list_files.v1",
+    "name": "List files",
+    "domain": "common",
+    "description": "List files and folders under a directory with basic metadata.",
+    "tool_name": "list_files",
+    "tags": [
+      "filesystem",
+      "list",
+      "metadata"
+    ],
+    "arg_schema": {
+      "type": "object",
+      "properties": {
+        "directory": {
+          "type": "string",
+          "default": "."
+        },
+        "include_hidden": {
+          "type": "boolean",
+          "default": false
+        },
+        "max_entries": {
+          "type": "integer",
+          "default": 200
+        }
+      }
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "entries": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              },
+              "is_dir": {
+                "type": "boolean"
+              },
+              "size": {
+                "type": "integer"
+              },
+              "modified": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "name",
+              "path",
+              "is_dir"
+            ]
+          }
+        }
+      },
+      "required": [
+        "entries"
+      ]
+    },
+    "enabled": true
+  },
+  {
+    "action_id": "common.search_news.v1",
+    "name": "Search news",
+    "domain": "common",
+    "description": "Search recent news headlines and return the top results with snippets.",
+    "tool_name": "search_news",
+    "tags": [
+      "search",
+      "news",
+      "information"
+    ],
+    "arg_schema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string"
+        },
+        "limit": {
+          "type": "integer",
+          "default": 5
+        },
+        "timeout": {
+          "type": "integer",
+          "default": 8
+        }
+      },
+      "required": [
+        "query"
+      ]
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "results": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "title": {
+                "type": "string"
+              },
+              "url": {
+                "type": "string"
+              },
+              "snippet": {
+                "type": "string",
+                "description": "Short summary of the news result"
+              }
+            },
+            "required": [
+              "title",
+              "url",
+              "snippet"
+            ]
+          }
+        }
+      },
+      "required": [
+        "results"
+      ]
+    },
+    "enabled": true
+  },
+  {
+    "action_id": "common.classify_text.v1",
+    "name": "Classify text",
+    "domain": "common",
+    "description": "Classify input text into one or more labels using the configured LLM.",
+    "tool_name": "classify_text",
+    "tags": [
+      "classification",
+      "llm",
+      "text"
+    ],
+    "arg_schema": {
+      "type": "object",
+      "properties": {
+        "text": {
+          "type": "string",
+          "description": "The content to classify"
+        },
+        "labels": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Candidate labels"
+        },
+        "instruction": {
+          "type": "string",
+          "description": "Optional guidance to steer the classification"
+        },
+        "allow_multiple": {
+          "type": "boolean",
+          "default": false
+        },
+        "model": {
+          "type": "string"
+        },
+        "max_tokens": {
+          "type": "integer",
+          "default": 128
+        }
+      },
+      "required": [
+        "text",
+        "labels"
+      ]
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "labels": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "reason": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
+        "finish_reason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "labels"
+      ]
+    },
+    "enabled": true
+  },
+  {
+    "action_id": "common.read_file.v1",
+    "name": "Read file",
+    "domain": "common",
+    "description": "Read a UTF-8 text file with a safety size limit.",
+    "tool_name": "read_file",
+    "tags": [
+      "filesystem",
+      "read",
+      "content"
+    ],
+    "arg_schema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "max_bytes": {
+          "type": "integer",
+          "default": 65536
+        },
+        "encoding": {
+          "type": "string",
+          "default": "utf-8"
+        }
+      },
+      "required": [
+        "path"
+      ]
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "size": {
+          "type": "integer"
+        },
+        "content": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "content"
+      ]
+    },
+    "enabled": true
+  },
+  {
+    "action_id": "common.summarize.v1",
+    "name": "Summarize text",
+    "domain": "common",
+    "description": "Summarize text with the LLM for concise overviews.",
+    "tool_name": "summarize",
+    "tags": [
+      "text",
+      "summarize",
+      "nlp"
+    ],
+    "arg_schema": {
+      "type": "object",
+      "properties": {
+        "text": {
+          "type": "string"
+        },
+        "max_sentences": {
+          "type": "integer",
+          "default": 3
+        }
+      },
+      "required": [
+        "text"
+      ]
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "summary": {
+          "type": "string"
+        },
+        "sentence_count": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "summary"
       ]
     },
     "enabled": true
