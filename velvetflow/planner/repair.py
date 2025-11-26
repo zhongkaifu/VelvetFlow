@@ -245,6 +245,10 @@ validation_errors 是 JSON 数组，元素包含 code/node_id/field/message。
                     validation_errors=validation_errors,
                     action_registry=action_registry,
                 )
+                log_info(
+                    "[repair_workflow_with_llm] 工具调用完成："
+                    f"tool={func_name}, args={args}, summary={summary}"
+                )
                 if summary.get("applied"):
                     working_workflow = patched_workflow
 
