@@ -334,6 +334,7 @@
     "name": "AskAI",
     "domain": "common",
     "description": "LLM fallback action when no suitable business tools are available. Collects context along dependency paths (upstream tool descriptions, inputs, outputs), then uses the LLM to solve the problem and returns a structured JSON answer. Always prefer concrete business tools; call AskAI only when none are appropriate.",
+    "tool_name": "ask_ai",
     "tags": [
       "fallback",
       "llm",
@@ -434,54 +435,6 @@
       },
       "required": [
         "results"
-      ]
-    },
-    "enabled": true
-  },
-  {
-    "action_id": "common.ask_ai_tool.v1",
-    "name": "Ask AI (tool)",
-    "domain": "common",
-    "description": "Send a prompt to the configured OpenAI chat completion model and return the reply.",
-    "tool_name": "ask_ai",
-    "tags": [
-      "llm",
-      "ask",
-      "openai"
-    ],
-    "arg_schema": {
-      "type": "object",
-      "properties": {
-        "prompt": {
-          "type": "string"
-        },
-        "model": {
-          "type": "string"
-        },
-        "max_tokens": {
-          "type": "integer",
-          "default": 256
-        }
-      },
-      "required": [
-        "prompt"
-      ]
-    },
-    "output_schema": {
-      "type": "object",
-      "properties": {
-        "model": {
-          "type": "string"
-        },
-        "answer": {
-          "type": "string"
-        },
-        "finish_reason": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "answer"
       ]
     },
     "enabled": true

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 """A small set of real, ready-to-use business tools."""
 
+import json
 import re
 import textwrap
 import urllib.parse
@@ -81,11 +82,41 @@ def search_web(query: str, limit: int = 5, timeout: int = 8) -> Dict[str, List[D
     return {"results": results}
 
 
-def ask_ai(prompt: str, *, model: str | None = None, max_tokens: int = 256) -> Dict[str, Any]:
-    """Send a prompt to the configured OpenAI model and return the response."""
+def ask_ai(
+    *,
+    prompt: str | None = None,
+    question: str | None = None,
+    context: Dict[str, Any] | None = None,
+    expected_format: str | None = None,
+    model: str | None = None,
+    max_tokens: int = 256,
+) -> Dict[str, Any]:
+    """Send a prompt to the configured OpenAI model and return structured output.
 
-    if not prompt:
-        raise ValueError("prompt is required for ask_ai")
+    The tool accepts either a raw ``prompt`` or high-level ``question`` +
+    ``context`` fields that mirror the ``common.ask_ai.v1`` action schema. When
+    structured inputs are provided, the tool generates a prompt that requests
+    JSON output matching ``expected_format`` (if supplied) and attempts to parse
+    the model response back into an object. On parsing failure, the raw content
+    is wrapped under ``{"answer": ...}`` to satisfy the action's output
+    contract.
+    """
+
+    if not (prompt or question):
+        raise ValueError("either prompt or question must be provided for ask_ai")
+
+    if prompt is None:
+        parts = ["You are a helpful assistant that produces concise JSON answers."]
+        parts.append(f"Question: {question}")
+        if context:
+            context_json = json.dumps(context, ensure_ascii=False, indent=2)
+            parts.append("Context (for reference):")
+            parts.append(context_json)
+        if expected_format:
+            parts.append("Return JSON following this guidance:")
+            parts.append(expected_format)
+        parts.append("Respond with valid JSON only.")
+        prompt = "\n\n".join(parts)
 
     client = OpenAI()
     chat_model = model or OPENAI_MODEL
@@ -98,9 +129,19 @@ def ask_ai(prompt: str, *, model: str | None = None, max_tokens: int = 256) -> D
         raise RuntimeError("ask_ai did not return any choices")
 
     message = response.choices[0].message
+    content = message.content or ""
+
+    parsed: Dict[str, Any]
+    try:
+        parsed_content = json.loads(content)
+        parsed = parsed_content if isinstance(parsed_content, dict) else {"answer": parsed_content}
+    except json.JSONDecodeError:
+        parsed = {"answer": content}
+
     return {
+        "result": parsed,
+        "reasoning": getattr(message, "refusal", None) or "",
         "model": chat_model,
-        "answer": message.content or "",
         "finish_reason": response.choices[0].finish_reason,
     }
 
@@ -193,11 +234,13 @@ def register_builtin_tools() -> None:
             args_schema={
                 "type": "object",
                 "properties": {
-                    "prompt": {"type": "string"},
+                    "prompt": {"type": "string", "nullable": True},
+                    "question": {"type": "string", "nullable": True},
+                    "context": {"type": "object", "nullable": True},
+                    "expected_format": {"type": "string", "nullable": True},
                     "model": {"type": "string", "nullable": True},
                     "max_tokens": {"type": "integer", "default": 256},
                 },
-                "required": ["prompt"],
             },
         )
     )
