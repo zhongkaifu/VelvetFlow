@@ -206,3 +206,81 @@ def test_precheck_is_available_for_planner_users():
     assert errors
     assert any(e.field == "body_subgraph.exit" for e in errors)
 
+
+def test_precheck_reports_missing_body_targets():
+    """Edges in loop body that point to missing nodes should be surfaced early."""
+
+    workflow = {
+        "workflow_name": "news_summary",
+        "nodes": [
+            {
+                "id": "loop_summarize_each_news",
+                "type": "loop",
+                "params": {
+                    "loop_kind": "for_each",
+                    "source": "result_of.search_news.results",
+                    "item_alias": "item",
+                    "body_subgraph": {
+                        "nodes": [
+                            {"id": "summarize_news", "type": "action", "action_id": "common.summarize.v1"},
+                        ],
+                        "edges": [
+                            {"from": "summarize_news", "to": "exit", "condition": None},
+                        ],
+                        "entry": "summarize_news",
+                        "exit": "exit",
+                    },
+                    "exports": {"items": {"from_node": "summarize_news", "fields": ["summary"]}},
+                },
+            }
+        ],
+    }
+
+    errors = precheck_loop_body_graphs(workflow)
+
+    assert errors
+    assert any(
+        e.code == "INVALID_LOOP_BODY" and e.field == "body_subgraph.edges[0].to" for e in errors
+    )
+
+
+def test_precheck_rejects_illegal_body_node_types():
+    """Invalid node types inside a loop body should not reach deep pydantic validation."""
+
+    workflow = {
+        "workflow_name": "news_summary",
+        "nodes": [
+            {
+                "id": "loop_summarize_each_news",
+                "type": "loop",
+                "params": {
+                    "loop_kind": "for_each",
+                    "source": "result_of.search_news.results",
+                    "item_alias": "item",
+                    "body_subgraph": {
+                        "nodes": [
+                            {"id": "summarize_news", "type": "action", "action_id": "common.summarize.v1"},
+                            {"id": "exit", "type": "exit"},
+                        ],
+                        "edges": [
+                            {"from": "summarize_news", "to": "exit", "condition": None},
+                        ],
+                        "entry": "summarize_news",
+                        "exit": "exit",
+                    },
+                    "exports": {"items": {"from_node": "summarize_news", "fields": ["summary"]}},
+                },
+            }
+        ],
+    }
+
+    errors = precheck_loop_body_graphs(workflow)
+
+    assert errors
+    assert any(
+        e.code == "INVALID_LOOP_BODY"
+        and e.field == "body_subgraph.nodes[1].type"
+        and "非法节点类型" in e.message
+        for e in errors
+    )
+

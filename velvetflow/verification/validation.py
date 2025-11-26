@@ -39,6 +39,22 @@ def precheck_loop_body_graphs(workflow_raw: Mapping[str, Any] | Any) -> List[Val
         body_nodes = [bn for bn in body.get("nodes", []) or [] if isinstance(bn, Mapping)]
         body_ids = {bn.get("id") for bn in body_nodes if isinstance(bn.get("id"), str)}
 
+        allowed_body_types = {"action", "condition", "loop", "parallel", "start", "end"}
+        for idx, body_node in enumerate(body_nodes):
+            ntype = body_node.get("type")
+            if ntype not in allowed_body_types:
+                errors.append(
+                    ValidationError(
+                        code="INVALID_LOOP_BODY",
+                        node_id=loop_id,
+                        field=f"body_subgraph.nodes[{idx}].type",
+                        message=(
+                            "loop 节点 '{loop_id}' 的 body_subgraph 包含非法节点类型 "
+                            f"'{ntype}'，允许类型: {sorted(allowed_body_types)}"
+                        ),
+                    )
+                )
+
         entry = body.get("entry")
         if isinstance(entry, str) and entry not in body_ids:
             errors.append(
