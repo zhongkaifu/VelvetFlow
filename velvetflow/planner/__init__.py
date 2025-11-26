@@ -5,6 +5,7 @@ from velvetflow.planner.orchestrator import plan_workflow_with_two_pass
 from velvetflow.planner.structure import plan_workflow_structure_with_llm
 from velvetflow.planner.params import fill_params_with_llm
 from velvetflow.planner.validation import (
+    precheck_loop_body_graphs,
     validate_completed_workflow,
     validate_param_binding,
     validate_param_binding_and_schema,
@@ -17,6 +18,7 @@ __all__ = [
     "plan_workflow_with_two_pass",
     "plan_workflow_structure_with_llm",
     "fill_params_with_llm",
+    "precheck_loop_body_graphs",
     "validate_completed_workflow",
     "validate_param_binding",
     "validate_param_binding_and_schema",
