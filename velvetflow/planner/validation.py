@@ -816,10 +816,16 @@ def validate_completed_workflow(
                     )
                 )
             else:
-                body_nodes = []
+                body_nodes: List[str] = []
+                body_node_map: Dict[str, Mapping[str, Any]] = {}
                 body_graph = params.get("body_subgraph") or {}
                 if isinstance(body_graph, Mapping):
-                    body_nodes = [bn.get("id") for bn in body_graph.get("nodes", []) if isinstance(bn, Mapping)]
+                    body_node_map = {
+                        bn.get("id"): bn
+                        for bn in body_graph.get("nodes", [])
+                        if isinstance(bn, Mapping) and isinstance(bn.get("id"), str)
+                    }
+                    body_nodes = list(body_node_map.keys())
                 items_spec = exports.get("items") if isinstance(exports, Mapping) else None
                 if items_spec is not None:
                     if not isinstance(items_spec, Mapping):
@@ -854,6 +860,47 @@ def validate_completed_workflow(
                                     message=f"loop 节点 '{nid}' 的 exports.items.fields 需要字符串数组。",
                                 )
                             )
+                        elif isinstance(from_node, str) and body_nodes:
+                            target_node = body_node_map.get(from_node)
+                            action_id = (
+                                target_node.get("action_id")
+                                if isinstance(target_node, Mapping)
+                                else None
+                            )
+                            action_def = (
+                                actions_by_id.get(action_id)
+                                if isinstance(action_id, str)
+                                else None
+                            )
+                            output_schema = (action_def or {}).get("output_schema")
+
+                            if not isinstance(output_schema, Mapping):
+                                errors.append(
+                                    ValidationError(
+                                        code="SCHEMA_MISMATCH",
+                                        node_id=nid,
+                                        field="exports.items.fields",
+                                        message=(
+                                            f"loop 节点 '{nid}' 的 exports.items.from_node='{from_node}'"
+                                            " 缺少可用的 output_schema，无法暴露字段。"
+                                        ),
+                                    )
+                                )
+                            else:
+                                for fld in fields:
+                                    field_schema = _get_field_schema(output_schema, fld)
+                                    if field_schema is None:
+                                        errors.append(
+                                            ValidationError(
+                                                code="SCHEMA_MISMATCH",
+                                                node_id=nid,
+                                                field="exports.items.fields",
+                                                message=(
+                                                    f"loop 节点 '{nid}' 的 exports.items.fields 包含未知字段 '{fld}'，"
+                                                    f"from_node '{from_node}' 的 action_id='{action_id}' 未定义该字段。"
+                                                ),
+                                            )
+                                        )
 
                 aggregates_spec = exports.get("aggregates")
                 if aggregates_spec is not None:
