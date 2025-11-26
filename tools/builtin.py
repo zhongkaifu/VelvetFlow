@@ -7,9 +7,10 @@ import re
 import textwrap
 import urllib.parse
 import urllib.request
+from http.cookiejar import CookieJar
 from html.parser import HTMLParser
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 from openai import OpenAI
 
@@ -77,12 +78,7 @@ def search_web(query: str, limit: int = 5, timeout: int = 8) -> Dict[str, List[D
 
     encoded_q = urllib.parse.quote_plus(query)
     url = f"https://duckduckgo.com/html/?q={encoded_q}&kl=wt-wt"
-    req = urllib.request.Request(url, headers={"User-Agent": "VelvetFlow/1.0"})
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            raw_html = resp.read().decode("utf-8", errors="ignore")
-    except Exception as exc:  # pragma: no cover - network-dependent
-        raise RuntimeError(f"web search failed: {exc}") from exc
+    raw_html = _fetch_duckduckgo_html(url, timeout=timeout)
 
     parser = _DuckDuckGoParser(limit=limit)
     try:
@@ -110,12 +106,7 @@ def search_news(query: str, limit: int = 5, timeout: int = 8) -> Dict[str, List[
 
     encoded_q = urllib.parse.quote_plus(query)
     url = f"https://duckduckgo.com/html/?q={encoded_q}&iar=news&ia=news"
-    req = urllib.request.Request(url, headers={"User-Agent": "VelvetFlow/1.0"})
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            raw_html = resp.read().decode("utf-8", errors="ignore")
-    except Exception as exc:  # pragma: no cover - network-dependent
-        raise RuntimeError(f"news search failed: {exc}") from exc
+    raw_html = _fetch_duckduckgo_html(url, timeout=timeout)
 
     parser = _DuckDuckGoParser(limit=limit)
     try:
@@ -485,3 +476,36 @@ __all__ = [
     "read_file",
     "summarize",
 ]
+_HUMAN_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/121.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Referer": "https://duckduckgo.com/",
+    "Connection": "keep-alive",
+}
+
+
+def _fetch_duckduckgo_html(url: str, timeout: int) -> str:
+    """Fetch HTML from DuckDuckGo while mimicking a typical browser request."""
+
+    cookie_jar = CookieJar()
+    opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cookie_jar))
+    opener.addheaders = list(_HUMAN_HEADERS.items())
+
+    # Warm-up request to obtain cookies/tokens DuckDuckGo expects from browsers.
+    try:  # pragma: no cover - network dependent
+        opener.open("https://duckduckgo.com/", timeout=timeout).read()
+    except Exception:
+        # If warm-up fails, continue with the main request to avoid masking the real error.
+        pass
+
+    try:
+        with opener.open(url, timeout=timeout) as resp:  # pragma: no cover - network dependent
+            return resp.read().decode("utf-8", errors="ignore")
+    except Exception as exc:  # pragma: no cover - network-dependent
+        raise RuntimeError(f"duckduckgo request failed: {exc}") from exc
+
