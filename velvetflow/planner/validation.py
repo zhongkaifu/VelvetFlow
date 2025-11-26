@@ -12,6 +12,25 @@ def _index_nodes_by_id(workflow: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
     return {n["id"]: n for n in workflow.get("nodes", [])}
 
 
+def _collect_param_bindings(obj: Any, prefix: str = "") -> List[Dict[str, str]]:
+    """Collect bindings that carry a __from__ reference for lightweight checks."""
+
+    bindings: List[Dict[str, str]] = []
+
+    if isinstance(obj, Mapping):
+        if "__from__" in obj:
+            bindings.append({"path": prefix or "params", "source": obj.get("__from__")})
+        for key, value in obj.items():
+            new_prefix = f"{prefix}.{key}" if prefix else str(key)
+            bindings.extend(_collect_param_bindings(value, new_prefix))
+    elif isinstance(obj, list):
+        for idx, value in enumerate(obj):
+            new_prefix = f"{prefix}[{idx}]" if prefix else f"[{idx}]"
+            bindings.extend(_collect_param_bindings(value, new_prefix))
+
+    return bindings
+
+
 def _check_output_path_against_schema(
     source_path: str,
     nodes_by_id: Dict[str, Dict[str, Any]],
@@ -343,6 +362,57 @@ def _check_array_item_field(
         return None
 
     return _schema_path_error(item_schema, [field])
+
+
+def run_lightweight_static_rules(
+    workflow: Dict[str, Any], action_registry: List[Dict[str, Any]]
+) -> List[ValidationError]:
+    """Run compact static checks and compress issues into a single summary error."""
+
+    messages: List[str] = []
+
+    nodes_by_id = _index_nodes_by_id(workflow)
+    node_ids = set(nodes_by_id.keys())
+    actions_by_id = _index_actions_by_id(action_registry)
+    loop_body_parents = index_loop_body_nodes(workflow)
+
+    invalid_edges: List[str] = []
+    for e in workflow.get("edges", []) or []:
+        frm = e.get("from")
+        to = e.get("to")
+        if frm not in node_ids or to not in node_ids:
+            invalid_edges.append(f"{frm}->{to}")
+    if invalid_edges:
+        messages.append(
+            "无效边引用: " + ", ".join(sorted(set(invalid_edges)))
+        )
+
+    binding_issues: List[str] = []
+    for node in workflow.get("nodes", []) or []:
+        nid = node.get("id")
+        params = node.get("params")
+        bindings = _collect_param_bindings(params) if isinstance(params, Mapping) else []
+        for binding in bindings:
+            err = _check_output_path_against_schema(
+                binding.get("source"), nodes_by_id, actions_by_id, loop_body_parents
+            )
+            if err:
+                binding_issues.append(f"{nid}:{binding.get('path')} -> {err}")
+    if binding_issues:
+        messages.append("参数绑定引用无效: " + "; ".join(binding_issues[:10]))
+
+    if not messages:
+        return []
+
+    summary = "；".join(messages)
+    return [
+        ValidationError(
+            code="STATIC_RULES_SUMMARY",
+            node_id=None,
+            field=None,
+            message=summary,
+        )
+    ]
 
 
 def validate_completed_workflow(
@@ -929,4 +999,5 @@ __all__ = [
     "validate_param_binding",
     "validate_completed_workflow",
     "validate_param_binding_and_schema",
+    "run_lightweight_static_rules",
 ]

@@ -38,7 +38,10 @@ from velvetflow.planner.repair import (
     _repair_with_llm_and_fallback,
 )
 from velvetflow.planner.structure import plan_workflow_structure_with_llm
-from velvetflow.planner.validation import validate_completed_workflow
+from velvetflow.planner.validation import (
+    run_lightweight_static_rules,
+    validate_completed_workflow,
+)
 from velvetflow.search import HybridActionSearchService
 
 
@@ -67,6 +70,55 @@ def _find_unregistered_action_nodes(
                 "action_id": action_id or "",
             })
     return invalid
+
+
+def _auto_replace_unregistered_actions(
+    workflow_dict: Dict[str, Any],
+    invalid_nodes: List[Dict[str, str]],
+    search_service: HybridActionSearchService,
+    actions_by_id: Mapping[str, Dict[str, Any]],
+) -> Optional[Workflow]:
+    """Attempt a one-shot auto replacement for unknown action_id to avoid LLM hops."""
+
+    changed = False
+
+    for item in invalid_nodes:
+        node_id = item.get("id")
+        if not node_id:
+            continue
+
+        node = next(
+            (n for n in iter_workflow_and_loop_body_nodes(workflow_dict) if n.get("id") == node_id),
+            None,
+        )
+        if not isinstance(node, Mapping):
+            continue
+
+        display_name = node.get("display_name") or ""
+        original_action_id = node.get("action_id") or ""
+
+        query = display_name or original_action_id
+        if not query:
+            continue
+
+        candidates = search_service.search(query=query, top_k=1) if search_service else []
+        candidate_id = candidates[0].get("action_id") if candidates else None
+        if candidate_id and candidate_id in actions_by_id:
+            node["action_id"] = candidate_id
+            changed = True
+            log_info(
+                f"[ActionGuard] 节点 '{node_id}' 的 action_id='{original_action_id}' 未注册，"
+                f"已自动替换为最相近的 '{candidate_id}'。"
+            )
+
+    if not changed:
+        return None
+
+    try:
+        return Workflow.model_validate(workflow_dict)
+    except Exception as exc:  # noqa: BLE001
+        log_warn(f"[ActionGuard] 自动替换 action_id 失败：{exc}")
+        return None
 
 
 def _schema_default_value(field_schema: Mapping[str, Any]) -> Any:
@@ -247,6 +299,18 @@ def _ensure_actions_registered_or_repair(
     if not invalid_nodes:
         return guarded
 
+    auto_repaired = _auto_replace_unregistered_actions(
+        guarded.model_dump(by_alias=True),
+        invalid_nodes=invalid_nodes,
+        search_service=search_service,
+        actions_by_id=actions_by_id,
+    )
+    if auto_repaired is not None:
+        log_info(
+            "[ActionGuard] 已基于 display_name/action_id 的相似度完成自动替换，进入一次性校验。"
+        )
+        return auto_repaired
+
     validation_errors = [
         ValidationError(
             code="UNKNOWN_ACTION_ID",
@@ -413,7 +477,12 @@ def plan_workflow_with_two_pass(
         log_section(f"校验 + 自修复轮次 {repair_round}")
         log_json("当前 workflow", current_workflow.model_dump(by_alias=True))
 
-        errors = validate_completed_workflow(
+        static_errors = run_lightweight_static_rules(
+            current_workflow.model_dump(by_alias=True),
+            action_registry=action_registry,
+        )
+
+        errors = static_errors or validate_completed_workflow(
             current_workflow.model_dump(by_alias=True),
             action_registry=action_registry,
         )
