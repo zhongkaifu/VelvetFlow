@@ -71,6 +71,47 @@ class WorkflowEditingSession:
         return None
 
     # ---- tool handlers ----
+    def add_node(
+        self,
+        node_id: str,
+        node_type: str,
+        *,
+        action_id: Optional[str] = None,
+        display_name: Optional[str] = None,
+        params: Optional[Dict[str, Any]] = None,
+        scope_node_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        container: Optional[Dict[str, Any]] = self.workflow
+        if scope_node_id:
+            scope_node = self._find_node(scope_node_id)
+            if not scope_node or scope_node.get("type") != "loop":
+                return {"status": "error", "message": f"未找到 loop 节点 {scope_node_id}"}
+
+            scope_params = scope_node.setdefault("params", {}) if isinstance(scope_node.get("params"), dict) else {}
+            scope_node["params"] = scope_params
+            body_subgraph = scope_params.get("body_subgraph")
+            if not isinstance(body_subgraph, dict):
+                body_subgraph = {"nodes": [], "edges": []}
+                scope_params["body_subgraph"] = body_subgraph
+            container = body_subgraph
+
+        if not isinstance(container, dict):
+            return {"status": "error", "message": "workflow 数据结构无效"}
+
+        nodes_list = container.setdefault("nodes", []) if isinstance(container.get("nodes"), list) else []
+        container["nodes"] = nodes_list
+
+        nodes_list.append(
+            {
+                "id": node_id,
+                "type": node_type,
+                "action_id": action_id,
+                "display_name": display_name,
+                "params": params or {},
+            }
+        )
+        return {"status": "ok", "type": "node_added", "node_id": node_id, "scope": scope_node_id}
+
     def update_node_params(self, node_id: str, params: Dict[str, Any]) -> Dict[str, Any]:
         node = self._find_node(node_id)
         if not node:
@@ -134,6 +175,43 @@ class WorkflowEditingSession:
 
         return {"status": "ok", "type": "edge_removed", "scope": scope_node_id}
 
+    def remove_node(self, node_id: str, scope_node_id: Optional[str]) -> Dict[str, Any]:
+        container: Optional[Dict[str, Any]] = self.workflow
+        if scope_node_id:
+            scope_node = self._find_node(scope_node_id)
+            if not scope_node or scope_node.get("type") != "loop":
+                return {"status": "error", "message": f"未找到 loop 节点 {scope_node_id}"}
+
+            params = scope_node.get("params") if isinstance(scope_node.get("params"), dict) else None
+            body_subgraph = params.get("body_subgraph") if isinstance(params, dict) else None
+            if not isinstance(body_subgraph, dict):
+                return {"status": "error", "message": f"loop {scope_node_id} 缺少 body_subgraph"}
+            container = body_subgraph
+
+        if not isinstance(container, dict):
+            return {"status": "error", "message": "workflow 数据结构无效"}
+
+        nodes = container.get("nodes") if isinstance(container.get("nodes"), list) else []
+        container["nodes"] = nodes
+
+        before = len(nodes)
+        nodes[:] = [n for n in nodes if not (isinstance(n, dict) and n.get("id") == node_id)]
+        if len(nodes) == before:
+            return {"status": "error", "message": f"未找到节点 {node_id}"}
+
+        edges = container.get("edges") if isinstance(container.get("edges"), list) else []
+        container["edges"] = edges
+        edges[:] = [
+            e
+            for e in edges
+            if not (
+                isinstance(e, dict)
+                and (e.get("from") == node_id or e.get("to") == node_id)
+            )
+        ]
+
+        return {"status": "ok", "type": "node_removed", "node_id": node_id, "scope": scope_node_id}
+
     def finalize(self) -> Dict[str, Any]:
         return {"status": "ok", "type": "final", "workflow": self.workflow}
 
@@ -163,6 +241,16 @@ class WorkflowEditingSession:
         }
 
     def handle_tool_call(self, name: str, args: Dict[str, Any]) -> Dict[str, Any]:
+        if name == "add_node":
+            return self.add_node(
+                args.get("id", ""),
+                args.get("type", ""),
+                action_id=args.get("action_id"),
+                display_name=args.get("display_name"),
+                params=args.get("params"),
+                scope_node_id=args.get("scope_node_id"),
+            )
+
         if name == "update_node_params":
             return self.update_node_params(args.get("node_id", ""), args.get("params") or {})
 
@@ -196,6 +284,9 @@ class WorkflowEditingSession:
                 args.get("to_node", ""),
                 args.get("scope_node_id"),
             )
+
+        if name == "remove_node":
+            return self.remove_node(args.get("node_id", ""), args.get("scope_node_id"))
 
         if name in {"submit_workflow", "finalize_workflow"}:
             return self.finalize()

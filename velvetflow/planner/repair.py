@@ -185,7 +185,7 @@ def repair_workflow_with_llm(
 
     system_prompt = (
         "你是一个工作流修复助手，所有修改必须通过工具调用完成。\n"
-        "可用工具：update_node/update_node_params/update_edge/add_edge/remove_edge/validate_workflow/submit_workflow。\n"
+        "可用工具：add_node/update_node/update_node_params/update_edge/add_edge/remove_edge/remove_node/validate_workflow/submit_workflow。\n"
         "给定当前 workflow、校验失败列表 validation_errors（code/node_id/field/message）以及 action_schemas，请逐条修复。\n"
         "严格要求：\n"
         "- 每次批量修改后调用 validate_workflow，查看最新错误列表，再继续修复。\n"

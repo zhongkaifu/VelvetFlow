@@ -152,6 +152,31 @@ WORKFLOW_EDIT_TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "add_node",
+            "description": "新增节点，可通过 scope_node_id 将节点添加到某个 loop.body_subgraph 中。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string", "description": "节点唯一 ID"},
+                    "type": {
+                        "type": "string",
+                        "enum": ["action", "condition", "loop", "parallel", "start", "end"],
+                    },
+                    "action_id": {"type": "string", "nullable": True},
+                    "display_name": {"type": "string", "nullable": True},
+                    "params": {"type": "object", "additionalProperties": True},
+                    "scope_node_id": {
+                        "type": "string",
+                        "description": "可选：loop 节点 id，用于在其 body_subgraph 内添加节点",
+                    },
+                },
+                "required": ["id", "type"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "update_node",
             "description": "修改节点的 action_id / display_name / params。",
             "parameters": {
@@ -228,6 +253,24 @@ WORKFLOW_EDIT_TOOLS = [
                     "scope_node_id": {"type": "string", "description": "可选：loop 节点 id，用于在其 body_subgraph 内删除 edge"},
                 },
                 "required": ["from_node", "to_node"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "remove_node",
+            "description": "删除一个节点（以及相关的 edges），可选 scope_node_id 针对 loop.body_subgraph。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "node_id": {"type": "string"},
+                    "scope_node_id": {
+                        "type": "string",
+                        "description": "可选：loop 节点 id，用于删除其 body_subgraph 内的节点",
+                    },
+                },
+                "required": ["node_id"],
             },
         },
     },
