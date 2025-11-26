@@ -181,7 +181,7 @@ def _synthesize_loop_exports_with_llm(
         "要求：\n"
         "1) 只输出 JSON（不要代码块），格式可以是 {\"exports\": {...}} 或直接 exports 对象。\n"
         "2) items.from_node 必须引用 body_subgraph.nodes 中的节点（通常是 exit 节点），fields 需列出你希望暴露的字段。\n"
-        "3) aggregates 是可选的 count_if/max/min/sum/avg 聚合，from_node 同样只能指向 body_subgraph 节点。\n"
+        "3) aggregates 是可选的 collect/count_if/max/min/sum/avg 聚合，from_node 可指向 body_subgraph 节点或 loop 节点自身。\n"
         "4) 避免自然语言解释，使用结构化表达式，字段名优先依据节点 output_schema.properties。\n"
         "示例（仅示意，不要生搬硬套字段名）：\n"
         "{\n  \"items\": {\"from_node\": \"finish_employee\", \"fields\": [\"employee_id\", \"risk\"], \"mode\": \"collect\"},\n"

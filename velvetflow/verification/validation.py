@@ -225,7 +225,11 @@ def _validate_nodes_recursive(
                         source = obj.get("__from__")
                         if isinstance(source, str):
                             schema_err = _check_output_path_against_schema(
-                                source, nodes_by_id, actions_by_id, loop_body_parents
+                                source,
+                                nodes_by_id,
+                                actions_by_id,
+                                loop_body_parents,
+                                current_node_id=nid,
                             )
                             if schema_err:
                                 errors.append(
@@ -413,7 +417,11 @@ def _validate_nodes_recursive(
                     )
             elif isinstance(source, str):
                 schema_err = _check_output_path_against_schema(
-                    source, nodes_by_id, actions_by_id, loop_body_parents
+                    source,
+                    nodes_by_id,
+                    actions_by_id,
+                    loop_body_parents,
+                    current_node_id=nid,
                 )
                 if schema_err:
                     errors.append(
@@ -573,13 +581,21 @@ def _validate_nodes_recursive(
                             field = expr.get("field") if isinstance(expr, Mapping) else None
                             from_node = agg.get("from_node") if isinstance(agg, Mapping) else None
 
-                            if not isinstance(kind, str) or kind not in {"count", "count_if", "max", "min", "sum", "avg"}:
+                            if not isinstance(kind, str) or kind not in {
+                                "count",
+                                "count_if",
+                                "max",
+                                "min",
+                                "sum",
+                                "avg",
+                                "collect",
+                            }:
                                 errors.append(
                                     ValidationError(
                                         code="SCHEMA_MISMATCH",
                                         node_id=nid,
                                         field=f"exports.aggregates[{idx}].kind",
-                                        message=f"loop 节点 '{nid}' 的聚合 kind 仅支持 count/count_if/max/min/sum/avg。",
+                                        message=f"loop 节点 '{nid}' 的聚合 kind 仅支持 collect/count/count_if/max/min/sum/avg。",
                                     )
                                 )
                                 continue
@@ -606,7 +622,11 @@ def _validate_nodes_recursive(
                                 )
                             elif isinstance(source, str):
                                 schema_err = _check_output_path_against_schema(
-                                    source, nodes_by_id, actions_by_id, loop_body_parents
+                                    source,
+                                    nodes_by_id,
+                                    actions_by_id,
+                                    loop_body_parents,
+                                    current_node_id=nid,
                                 )
                                 if schema_err:
                                     errors.append(
@@ -665,7 +685,7 @@ def _validate_nodes_recursive(
                                             message=f"loop 节点 '{nid}' 的 count_if 需要 field。",
                                         )
                                     )
-                            elif kind in {"max", "min", "sum", "avg"}:
+                            elif kind in {"max", "min", "sum", "avg", "collect"}:
                                 if not isinstance(field, str):
                                     errors.append(
                                         ValidationError(
@@ -754,6 +774,8 @@ def _check_output_path_against_schema(
     nodes_by_id: Dict[str, Dict[str, Any]],
     actions_by_id: Dict[str, Dict[str, Any]],
     loop_body_parents: Optional[Mapping[str, str]] = None,
+    *,
+    current_node_id: Optional[str] = None,
 ) -> Optional[str]:
     """
     对诸如 "result_of.fetch_temperatures.data" 或 "result_of.node_id.foo.bar" 做静态校验：
@@ -780,10 +802,16 @@ def _check_output_path_against_schema(
     if node_id not in nodes_by_id:
         if node_id in loop_body_parents:
             parent_loop = loop_body_parents.get(node_id)
-            return (
-                f"循环外不允许直接引用子图节点 '{node_id}'，请通过 loop 节点 '{parent_loop}' 的 exports 暴露输出。"
-            )
-        return f"路径 '{source_path}' 引用的节点 '{node_id}' 不存在。"
+            current_parent = loop_body_parents.get(current_node_id)
+            # 允许 loop 自己或其 body 内的节点引用同一个 body 节点；其余情况视为越界引用。
+            if parent_loop not in {current_node_id, current_parent}:
+                return (
+                    f"循环外不允许直接引用子图节点 '{node_id}'，请通过 loop 节点 '{parent_loop}' 的 exports 暴露输出。"
+                )
+            # body_subgraph 内部或 loop 自身可引用 body 节点
+            pass
+        else:
+            return f"路径 '{source_path}' 引用的节点 '{node_id}' 不存在。"
 
     node = nodes_by_id[node_id]
     action_id = node.get("action_id")
@@ -1112,7 +1140,11 @@ def run_lightweight_static_rules(
         bindings = _collect_param_bindings(params) if isinstance(params, Mapping) else []
         for binding in bindings:
             err = _check_output_path_against_schema(
-                binding.get("source"), nodes_by_id, actions_by_id, loop_body_parents
+                binding.get("source"),
+                nodes_by_id,
+                actions_by_id,
+                loop_body_parents,
+                current_node_id=nid,
             )
             if err:
                 binding_issues.append(f"{nid}:{binding.get('path')} -> {err}")
