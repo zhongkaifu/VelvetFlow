@@ -68,6 +68,41 @@ def test_loop_body_missing_exit_node_is_reported_before_pydantic():
     assert any("exit" in e.message for e in errors)
 
 
+def test_loop_body_missing_nodes_and_edges_is_reported():
+    """Loops with exports must provide a non-empty body_subgraph."""
+
+    workflow = {
+        "workflow_name": "news_summary",
+        "nodes": [
+            {
+                "id": "loop_nvidia_news",
+                "type": "loop",
+                "params": {
+                    "loop_kind": "for_each",
+                    "source": {
+                        "__from__": "result_of.search_news_nvidia.results",
+                        "__agg__": "identity",
+                    },
+                    "item_alias": "news_item",
+                    "exports": {
+                        "items": {
+                            "from_node": "summarize_nvidia_news",
+                            "fields": ["summary", "sentence_count"],
+                            "mode": "collect",
+                        }
+                    },
+                },
+            }
+        ],
+    }
+
+    errors = validate_workflow_data(workflow, ACTION_REGISTRY)
+
+    assert any(e.code == "INVALID_LOOP_BODY" and e.field == "body_subgraph.nodes" for e in errors)
+    assert any(e.code == "INVALID_LOOP_BODY" and e.field == "body_subgraph.edges" for e in errors)
+    assert any(e.field == "exports.items.from_node" for e in errors)
+
+
 def test_loop_body_action_missing_required_param_is_caught():
     """Loop body action nodes should honor required params from Action Registry."""
 

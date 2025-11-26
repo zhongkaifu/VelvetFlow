@@ -394,14 +394,44 @@ def _validate_nodes_recursive(
                 body_nodes: List[str] = []
                 body_node_map: Dict[str, Mapping[str, Any]] = {}
                 body_graph = params.get("body_subgraph") or {}
-                if isinstance(body_graph, Mapping):
+                if not isinstance(body_graph, Mapping):
+                    errors.append(
+                        ValidationError(
+                            code="INVALID_LOOP_BODY",
+                            node_id=nid,
+                            field="body_subgraph",
+                            message=f"loop 节点 '{nid}' 定义了 exports，但缺少 body_subgraph（需包含 nodes/edges）。",
+                        )
+                    )
+                else:
+                    raw_body_nodes = [bn for bn in body_graph.get("nodes", []) or [] if isinstance(bn, Mapping)]
+                    raw_body_edges = [e for e in body_graph.get("edges", []) or [] if isinstance(e, Mapping)]
                     body_node_map = {
-                        bn.get("id"):
-                        bn
-                        for bn in body_graph.get("nodes", [])
-                        if isinstance(bn, Mapping) and isinstance(bn.get("id"), str)
+                        bn.get("id")
+                        : bn
+                        for bn in raw_body_nodes
+                        if isinstance(bn.get("id"), str)
                     }
                     body_nodes = list(body_node_map.keys())
+
+                    if len(raw_body_nodes) == 0:
+                        errors.append(
+                            ValidationError(
+                                code="INVALID_LOOP_BODY",
+                                node_id=nid,
+                                field="body_subgraph.nodes",
+                                message=f"loop 节点 '{nid}' 的 body_subgraph.nodes 为空，无法执行循环。",
+                            )
+                        )
+                    if len(raw_body_edges) == 0:
+                        errors.append(
+                            ValidationError(
+                                code="INVALID_LOOP_BODY",
+                                node_id=nid,
+                                field="body_subgraph.edges",
+                                message=f"loop 节点 '{nid}' 的 body_subgraph.edges 为空，无法连接循环内部节点。",
+                            )
+                        )
                 items_spec = exports.get("items") if isinstance(exports, Mapping) else None
                 if items_spec is not None:
                     if not isinstance(items_spec, Mapping):
@@ -416,7 +446,7 @@ def _validate_nodes_recursive(
                     else:
                         from_node = items_spec.get("from_node")
                         fields = items_spec.get("fields")
-                        if not isinstance(from_node, str) or (body_nodes and from_node not in body_nodes):
+                        if not isinstance(from_node, str) or from_node not in body_nodes:
                             errors.append(
                                 ValidationError(
                                     code="SCHEMA_MISMATCH",
@@ -436,7 +466,7 @@ def _validate_nodes_recursive(
                                     message=f"loop 节点 '{nid}' 的 exports.items.fields 需要字符串数组。",
                                 )
                             )
-                        elif isinstance(from_node, str) and body_nodes:
+                        elif isinstance(from_node, str):
                             target_node = body_node_map.get(from_node)
                             action_id = (
                                 target_node.get("action_id")
@@ -542,7 +572,7 @@ def _validate_nodes_recursive(
                                         )
                                     )
 
-                            if not isinstance(from_node, str) or (body_nodes and from_node not in body_nodes):
+                            if not isinstance(from_node, str) or from_node not in body_nodes:
                                 errors.append(
                                     ValidationError(
                                         code="SCHEMA_MISMATCH",
