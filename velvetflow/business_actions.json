@@ -385,7 +385,7 @@
     "action_id": "common.search_web.v1",
     "name": "Search web",
     "domain": "common",
-    "description": "Perform a DuckDuckGo web search and return the top result titles and URLs.",
+    "description": "Perform a DuckDuckGo web search and return the top result titles, URLs, and snippets.",
     "tool_name": "search_web",
     "tags": [
       "search",
@@ -424,11 +424,16 @@
               },
               "url": {
                 "type": "string"
+              },
+              "snippet": {
+                "type": "string",
+                "description": "Short description of the result"
               }
             },
             "required": [
               "title",
-              "url"
+              "url",
+              "snippet"
             ]
           }
         }
@@ -501,6 +506,140 @@
       },
       "required": [
         "entries"
+      ]
+    },
+    "enabled": true
+  },
+  {
+    "action_id": "common.search_news.v1",
+    "name": "Search news",
+    "domain": "common",
+    "description": "Search recent news headlines and return the top results with snippets.",
+    "tool_name": "search_news",
+    "tags": [
+      "search",
+      "news",
+      "information"
+    ],
+    "arg_schema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string"
+        },
+        "limit": {
+          "type": "integer",
+          "default": 5
+        },
+        "timeout": {
+          "type": "integer",
+          "default": 8
+        }
+      },
+      "required": [
+        "query"
+      ]
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "results": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "title": {
+                "type": "string"
+              },
+              "url": {
+                "type": "string"
+              },
+              "snippet": {
+                "type": "string",
+                "description": "Short summary of the news result"
+              }
+            },
+            "required": [
+              "title",
+              "url",
+              "snippet"
+            ]
+          }
+        }
+      },
+      "required": [
+        "results"
+      ]
+    },
+    "enabled": true
+  },
+  {
+    "action_id": "common.classify_text.v1",
+    "name": "Classify text",
+    "domain": "common",
+    "description": "Classify input text into one or more labels using the configured LLM.",
+    "tool_name": "classify_text",
+    "tags": [
+      "classification",
+      "llm",
+      "text"
+    ],
+    "arg_schema": {
+      "type": "object",
+      "properties": {
+        "text": {
+          "type": "string",
+          "description": "The content to classify"
+        },
+        "labels": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Candidate labels"
+        },
+        "instruction": {
+          "type": "string",
+          "description": "Optional guidance to steer the classification"
+        },
+        "allow_multiple": {
+          "type": "boolean",
+          "default": false
+        },
+        "model": {
+          "type": "string"
+        },
+        "max_tokens": {
+          "type": "integer",
+          "default": 128
+        }
+      },
+      "required": [
+        "text",
+        "labels"
+      ]
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "labels": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "reason": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
+        "finish_reason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "labels"
       ]
     },
     "enabled": true

@@ -9,7 +9,7 @@ import urllib.parse
 import urllib.request
 from html.parser import HTMLParser
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List
 
 from openai import OpenAI
 
@@ -25,32 +25,46 @@ class _DuckDuckGoParser(HTMLParser):
     def __init__(self, limit: int) -> None:
         super().__init__()
         self.limit = limit
-        self.results: List[Tuple[str, str]] = []
-        self._capturing = False
+        self.results: List[Dict[str, str]] = []
+        self._capturing_title = False
+        self._capturing_snippet = False
         self._current_href: str | None = None
-        self._text_parts: List[str] = []
+        self._title_parts: List[str] = []
+        self._snippet_parts: List[str] = []
 
     def handle_starttag(self, tag: str, attrs: List[Tuple[str, str | None]]) -> None:  # pragma: no cover - HTML parsing
-        if tag != "a":
-            return
         attrs_dict = {k: v for k, v in attrs}
-        if "result__a" in (attrs_dict.get("class") or ""):
-            self._capturing = True
+        if tag == "a" and "result__a" in (attrs_dict.get("class") or ""):
+            self._capturing_title = True
             self._current_href = attrs_dict.get("href")
-            self._text_parts = []
+            self._title_parts = []
+        if tag in {"p", "div", "span"} and "result__snippet" in (attrs_dict.get("class") or ""):
+            self._capturing_snippet = True
+            self._snippet_parts = []
 
     def handle_data(self, data: str) -> None:  # pragma: no cover - HTML parsing
-        if self._capturing:
-            self._text_parts.append(data.strip())
+        if self._capturing_title:
+            self._title_parts.append(data.strip())
+        if self._capturing_snippet:
+            self._snippet_parts.append(data.strip())
 
     def handle_endtag(self, tag: str) -> None:  # pragma: no cover - HTML parsing
-        if self._capturing and tag == "a":
-            title = " ".join(self._text_parts).strip()
+        if self._capturing_title and tag == "a":
+            title = " ".join(self._title_parts).strip()
             if title and self._current_href:
-                self.results.append((title, self._current_href))
-            self._capturing = False
-            self._text_parts = []
+                self.results.append({"title": title, "url": self._current_href})
+            self._capturing_title = False
+            self._title_parts = []
             self._current_href = None
+            if len(self.results) >= self.limit:
+                raise StopIteration
+        if self._capturing_snippet and tag in {"p", "div", "span"}:
+            snippet = " ".join(self._snippet_parts).strip()
+            if snippet and self.results:
+                if "snippet" not in self.results[-1]:
+                    self.results[-1]["snippet"] = snippet
+            self._capturing_snippet = False
+            self._snippet_parts = []
             if len(self.results) >= self.limit:
                 raise StopIteration
 
@@ -77,8 +91,47 @@ def search_web(query: str, limit: int = 5, timeout: int = 8) -> Dict[str, List[D
         pass
 
     results: List[Dict[str, str]] = []
-    for title, href in parser.results[:limit]:
-        results.append({"title": title, "url": href})
+    for item in parser.results[:limit]:
+        results.append(
+            {
+                "title": item.get("title", ""),
+                "url": item.get("url", ""),
+                "snippet": item.get("snippet", ""),
+            }
+        )
+    return {"results": results}
+
+
+def search_news(query: str, limit: int = 5, timeout: int = 8) -> Dict[str, List[Dict[str, str]]]:
+    """Search recent news headlines via DuckDuckGo and return titles, URLs, and snippets."""
+
+    if not query:
+        raise ValueError("query is required for news search")
+
+    encoded_q = urllib.parse.quote_plus(query)
+    url = f"https://duckduckgo.com/html/?q={encoded_q}&iar=news&ia=news"
+    req = urllib.request.Request(url, headers={"User-Agent": "VelvetFlow/1.0"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw_html = resp.read().decode("utf-8", errors="ignore")
+    except Exception as exc:  # pragma: no cover - network-dependent
+        raise RuntimeError(f"news search failed: {exc}") from exc
+
+    parser = _DuckDuckGoParser(limit=limit)
+    try:
+        parser.feed(raw_html)
+    except StopIteration:
+        pass
+
+    results: List[Dict[str, str]] = []
+    for item in parser.results[:limit]:
+        results.append(
+            {
+                "title": item.get("title", ""),
+                "url": item.get("url", ""),
+                "snippet": item.get("snippet", ""),
+            }
+        )
     return {"results": results}
 
 
@@ -141,6 +194,71 @@ def ask_ai(
     return {
         "result": parsed,
         "reasoning": getattr(message, "refusal", None) or "",
+        "model": chat_model,
+        "finish_reason": response.choices[0].finish_reason,
+    }
+
+
+def classify_text(
+    text: str,
+    labels: List[str],
+    *,
+    instruction: str | None = None,
+    allow_multiple: bool = False,
+    model: str | None = None,
+    max_tokens: int = 128,
+) -> Dict[str, Any]:
+    """Classify text into one or more labels using the configured LLM."""
+
+    if not text:
+        raise ValueError("text is required for classification")
+    if not labels:
+        raise ValueError("labels must be a non-empty list")
+
+    client = OpenAI()
+    chat_model = model or OPENAI_MODEL
+    label_list = ", ".join(labels)
+    system_prompt = [
+        "You are a classification assistant.",
+        f"Valid labels: {label_list}.",
+        "Return JSON with keys 'labels' (array of selected labels) and 'reason'.",
+    ]
+    if instruction:
+        system_prompt.append(f"Additional guidance: {instruction}")
+    if not allow_multiple:
+        system_prompt.append("Select exactly one label unless the text is ambiguous.")
+
+    response = client.chat.completions.create(
+        model=chat_model,
+        messages=[
+            {"role": "system", "content": "\n".join(system_prompt)},
+            {"role": "user", "content": text},
+        ],
+        max_tokens=max_tokens,
+    )
+    if not response.choices:
+        raise RuntimeError("classify_text did not return any choices")
+
+    message = response.choices[0].message
+    content = message.content or ""
+    try:
+        parsed = json.loads(content)
+        labels_out = parsed.get("labels") if isinstance(parsed, dict) else None
+        reason = parsed.get("reason") if isinstance(parsed, dict) else None
+    except Exception:
+        parsed = None
+        labels_out = None
+        reason = None
+
+    labels_value: List[str]
+    if isinstance(labels_out, list) and labels_out:
+        labels_value = [str(l) for l in labels_out]
+    else:
+        first_label = str(content).strip() if content else labels[0]
+        labels_value = [first_label]
+    return {
+        "labels": labels_value,
+        "reason": reason or "",
         "model": chat_model,
         "finish_reason": response.choices[0].finish_reason,
     }
@@ -212,8 +330,25 @@ def register_builtin_tools() -> None:
     register_tool(
         Tool(
             name="search_web",
-            description="Perform a DuckDuckGo search and return titles + URLs.",
+            description="Perform a DuckDuckGo search and return titles, URLs, and snippets.",
             function=search_web,
+            args_schema={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"},
+                    "limit": {"type": "integer", "default": 5},
+                    "timeout": {"type": "integer", "default": 8},
+                },
+                "required": ["query"],
+            },
+        )
+    )
+
+    register_tool(
+        Tool(
+            name="search_news",
+            description="Search recent news headlines and return titles, URLs, and snippets.",
+            function=search_news,
             args_schema={
                 "type": "object",
                 "properties": {
@@ -241,6 +376,26 @@ def register_builtin_tools() -> None:
                     "model": {"type": "string", "nullable": True},
                     "max_tokens": {"type": "integer", "default": 256},
                 },
+            },
+        )
+    )
+
+    register_tool(
+        Tool(
+            name="classify_text",
+            description="Classify text into one or more labels via OpenAI chat completion.",
+            function=classify_text,
+            args_schema={
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string"},
+                    "labels": {"type": "array", "items": {"type": "string"}},
+                    "instruction": {"type": "string", "nullable": True},
+                    "allow_multiple": {"type": "boolean", "default": False},
+                    "model": {"type": "string", "nullable": True},
+                    "max_tokens": {"type": "integer", "default": 128},
+                },
+                "required": ["text", "labels"],
             },
         )
     )
@@ -298,7 +453,9 @@ def register_builtin_tools() -> None:
 __all__ = [
     "register_builtin_tools",
     "search_web",
+    "search_news",
     "ask_ai",
+    "classify_text",
     "list_files",
     "read_file",
     "summarize",
