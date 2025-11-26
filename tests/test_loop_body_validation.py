@@ -68,6 +68,44 @@ def test_loop_body_missing_exit_node_is_reported_before_pydantic():
     assert any("exit" in e.message for e in errors)
 
 
+def test_loop_body_unknown_node_type_is_repairable():
+    """Unknown node types inside loop bodies should surface as repairable errors."""
+
+    workflow = {
+        "workflow_name": "news_summary",
+        "nodes": [
+            {"id": "start", "type": "start", "params": {}},
+            {
+                "id": "loop_summarize",
+                "type": "loop",
+                "params": {
+                    "loop_kind": "for_each",
+                    "source": "result_of.start",
+                    "item_alias": "item",
+                    "body_subgraph": {
+                        "nodes": [
+                            {"id": "summarize_news", "type": "action", "params": {}},
+                            {"id": "exit", "type": "exit", "params": {}},
+                        ],
+                        "edges": [
+                            {"from": "summarize_news", "to": "exit", "condition": None},
+                        ],
+                        "entry": "summarize_news",
+                        "exit": "exit",
+                    },
+                },
+            },
+        ],
+        "edges": [{"from": "start", "to": "loop_summarize", "condition": None}],
+    }
+
+    errors = validate_workflow_data(workflow, ACTION_REGISTRY)
+
+    assert any(e.code == "INVALID_LOOP_BODY" for e in errors)
+    # Should not crash during Workflow.model_validate; instead produce a repairable error list
+    assert any("非法节点类型" in e.message for e in errors)
+
+
 def test_loop_body_missing_nodes_and_edges_is_reported():
     """Loops with exports must provide a non-empty body_subgraph."""
 

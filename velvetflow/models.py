@@ -152,6 +152,40 @@ class Workflow(BaseModel):
             if not isinstance(body_nodes, list) or not isinstance(body_edges, list):
                 continue
 
+            # If the subgraph is obviously malformed (unknown node types or
+            # edges/entry/exit pointing to missing nodes), skip deep validation
+            # so that upstream precheck/static rules can surface actionable
+            # errors to the LLM instead of aborting workflow construction.
+            body_ids = {bn.get("id") for bn in body_nodes if isinstance(bn.get("id"), str)}
+            allowed_body_types = {"action", "condition", "loop", "parallel", "start", "end"}
+
+            def _has_structural_issues() -> bool:
+                for bn in body_nodes:
+                    ntype = bn.get("type")
+                    if ntype not in allowed_body_types:
+                        return True
+
+                entry = body_graph.get("entry")
+                if isinstance(entry, str) and entry not in body_ids:
+                    return True
+
+                exit_node = body_graph.get("exit")
+                if isinstance(exit_node, str) and exit_node not in body_ids:
+                    return True
+
+                for edge in body_edges:
+                    frm = edge.get("from") if isinstance(edge, dict) else None
+                    to = edge.get("to") if isinstance(edge, dict) else None
+                    if isinstance(frm, str) and frm not in body_ids:
+                        return True
+                    if isinstance(to, str) and to not in body_ids:
+                        return True
+
+                return False
+
+            if _has_structural_issues():
+                continue
+
             try:
                 Workflow.model_validate(
                     {
