@@ -1,5 +1,6 @@
 """Static validation helpers for VelvetFlow workflows."""
 
+import re
 from collections import deque
 from typing import Any, Dict, List, Mapping, Optional
 
@@ -112,6 +113,9 @@ def precheck_loop_body_graphs(workflow_raw: Mapping[str, Any] | Any) -> List[Val
     return errors
 
 
+TEMPLATE_PATTERN = re.compile(r"\{\{\s*([^{}]+?)\s*\}\}")
+
+
 def _index_nodes_by_id(workflow: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
     return {n["id"]: n for n in workflow.get("nodes", [])}
 
@@ -133,6 +137,21 @@ def _validate_nodes_recursive(
         ntype = n.get("type")
         action_id = n.get("action_id")
         params = n.get("params", {})
+
+        template_refs = _collect_template_refs(params) if params is not None else []
+        for ref in template_refs:
+            errors.append(
+                ValidationError(
+                    code="INVALID_TEMPLATE_BINDING",
+                    node_id=nid,
+                    field=ref.get("path"),
+                    message=(
+                        f"节点 '{nid}' 的参数 {ref.get('path')} 使用了模板 {ref.get('template')}，"
+                        "workflow DSL 不支持 Jinja/ Mustache 模板，请改用 __from__ 参数绑定"
+                        "（例如 {\"__from__\": \"result_of.<node>.<field>\", \"__agg__\": \"identity\"}）。"
+                    ),
+                )
+            )
 
         # 1) action 节点
         if ntype == "action" and action_id:
@@ -686,6 +705,32 @@ def _collect_param_bindings(obj: Any, prefix: str = "") -> List[Dict[str, str]]:
     return bindings
 
 
+def _collect_template_refs(obj: Any, prefix: str = "") -> List[Dict[str, str]]:
+    """Collect Jinja-style template references like ``{{foo.bar}}`` for linting."""
+
+    refs: List[Dict[str, str]] = []
+
+    if isinstance(obj, str):
+        for match in TEMPLATE_PATTERN.finditer(obj):
+            refs.append(
+                {
+                    "path": prefix or "params",
+                    "template": match.group(0),
+                    "expr": match.group(1).strip(),
+                }
+            )
+    elif isinstance(obj, Mapping):
+        for key, value in obj.items():
+            new_prefix = f"{prefix}.{key}" if prefix else str(key)
+            refs.extend(_collect_template_refs(value, new_prefix))
+    elif isinstance(obj, list):
+        for idx, value in enumerate(obj):
+            new_prefix = f"{prefix}[{idx}]" if prefix else f"[{idx}]"
+            refs.extend(_collect_template_refs(value, new_prefix))
+
+    return refs
+
+
 def _check_output_path_against_schema(
     source_path: str,
     nodes_by_id: Dict[str, Dict[str, Any]],
@@ -1055,6 +1100,22 @@ def run_lightweight_static_rules(
                 binding_issues.append(f"{nid}:{binding.get('path')} -> {err}")
     if binding_issues:
         messages.append("参数绑定引用无效: " + "; ".join(binding_issues[:10]))
+
+    template_issues: List[str] = []
+    for node in workflow.get("nodes", []) or []:
+        nid = node.get("id")
+        params = node.get("params")
+        refs = _collect_template_refs(params) if params is not None else []
+        for ref in refs:
+            template_issues.append(
+                f"{nid}:{ref.get('path')} -> {ref.get('template')} (expr={ref.get('expr')})"
+            )
+    if template_issues:
+        messages.append(
+            "发现模板占位符（{{}}）: "
+            + "; ".join(template_issues[:10])
+            + "。workflow DSL 不支持模板，请改用 __from__ 绑定。"
+        )
 
     if not messages:
         return []

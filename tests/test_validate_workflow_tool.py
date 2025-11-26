@@ -46,3 +46,28 @@ def test_validate_workflow_missing_required_param():
 
     assert errors, "Expected validation to fail due to missing required param"
     assert any(e.code == "MISSING_REQUIRED_PARAM" for e in errors)
+
+
+def test_validate_workflow_rejects_template_params():
+    workflow = {
+        "workflow_name": "template-demo",
+        "description": "",
+        "nodes": [
+            {"id": "start", "type": "start"},
+            {
+                "id": "summarize_nvidia",
+                "type": "action",
+                "action_id": "common.summarize.v1",
+                "params": {"text": "{{nvidia_news.snippet}}"},
+            },
+            {"id": "end", "type": "end"},
+        ],
+        "edges": [
+            {"from": "start", "to": "summarize_nvidia"},
+            {"from": "summarize_nvidia", "to": "end"},
+        ],
+    }
+
+    errors = validate_workflow_data(workflow, ACTION_REGISTRY)
+
+    assert any(err.code == "INVALID_TEMPLATE_BINDING" for err in errors)
