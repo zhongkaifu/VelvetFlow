@@ -2,12 +2,14 @@
 
 import math
 import os
+import json
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from PIL import Image, ImageDraw, ImageFont
 
 from velvetflow.models import Node, Workflow
+from velvetflow.action_registry import get_action_by_id
 
 RGB = Tuple[int, int, int]
 
@@ -24,6 +26,27 @@ BACKGROUND: RGB = (245, 247, 250)
 EDGE_COLOR: RGB = (50, 50, 50)
 TEXT_COLOR: RGB = (20, 20, 20)
 PANEL_BORDER: RGB = (180, 180, 180)
+
+
+def _action_node_texts(node: Node) -> Tuple[str, str]:
+    """Return extra display texts for action nodes (tool name & params)."""
+
+    if node.type != "action":
+        return "", ""
+
+    action = get_action_by_id(node.action_id or "") if node.action_id else None
+    tool_name = action.get("name") if isinstance(action, dict) else None
+    tool_display = tool_name or node.action_id or "未知工具"
+    tool_text = f"工具: {tool_display}"
+
+    params_payload = node.params or {}
+    try:
+        params_serialized = json.dumps(params_payload, ensure_ascii=False, separators=(", ", ": "))
+    except Exception:
+        params_serialized = str(params_payload)
+    params_text = f"参数: {params_serialized}" if params_serialized else ""
+
+    return tool_text, params_text
 
 
 def _load_font(size: int = 16) -> ImageFont.FreeTypeFont:
@@ -304,20 +327,26 @@ def _compute_uniform_node_height(
     for node in workflow.nodes:
         label = f"{node.id} ({node.type})"
         detail = node.display_name or node.action_id or ""
+        tool_text, params_text = _action_node_texts(node)
         inputs_text = "输入: " + (", ".join(incoming[node.id]) if incoming[node.id] else "-")
         outputs_text = "输出: " + (", ".join(outgoing[node.id]) if outgoing[node.id] else "-")
 
         label_height = canvas.measure_text_block(label, max_width=content_width, font=canvas.font_regular)
         detail_height = canvas.measure_text_block(detail, max_width=content_width, font=canvas.font_small)
+        tool_height = canvas.measure_text_block(tool_text, max_width=content_width, font=canvas.font_small)
+        params_height = canvas.measure_text_block(params_text, max_width=content_width, font=canvas.font_small)
         inputs_height = canvas.measure_text_block(inputs_text, max_width=content_width, font=canvas.font_small)
         outputs_height = canvas.measure_text_block(outputs_text, max_width=content_width, font=canvas.font_small)
 
-        total_height = (
-            top_padding
-            + label_height
-            + (spacing_after_title if detail else 0)
-            + detail_height
-            + spacing_before_io
+        total_height = top_padding + label_height
+        if detail:
+            total_height += spacing_after_title + detail_height
+        if tool_text:
+            total_height += spacing_after_title + tool_height
+        if params_text:
+            total_height += spacing_after_title + params_height
+        total_height += (
+            spacing_before_io
             + inputs_height
             + io_spacing
             + outputs_height
@@ -443,6 +472,7 @@ def _draw_graph(
         content_width = node_width - 20
         label = f"{node.id} ({node.type})"
         detail = node.display_name or node.action_id or ""
+        tool_text, params_text = _action_node_texts(node)
         inputs = incoming.get(node.id) or []
         outputs = outgoing.get(node.id) or []
 
@@ -484,6 +514,36 @@ def _draw_graph(
                     max_height=detail_space,
                 )
                 cursor_y += detail_height
+
+        if tool_text:
+            cursor_y += 6
+            tool_space = node_height - bottom_block_height - (cursor_y - base_y)
+            if tool_space > 0:
+                tool_height = canvas.draw_text_block(
+                    base_x + 10,
+                    cursor_y,
+                    tool_text,
+                    TEXT_COLOR,
+                    max_width=content_width,
+                    font=canvas.font_small,
+                    max_height=tool_space,
+                )
+                cursor_y += tool_height
+
+        if params_text:
+            cursor_y += 6
+            params_space = node_height - bottom_block_height - (cursor_y - base_y)
+            if params_space > 0:
+                params_height = canvas.draw_text_block(
+                    base_x + 10,
+                    cursor_y,
+                    params_text,
+                    TEXT_COLOR,
+                    max_width=content_width,
+                    font=canvas.font_small,
+                    max_height=params_space,
+                )
+                cursor_y += params_height
 
         inputs_y = base_y + node_height - bottom_block_height
         canvas.draw_text_block(
