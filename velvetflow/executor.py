@@ -537,6 +537,18 @@ class DynamicActionExecutor:
                         },
                     )
 
+    def _clear_loop_body_results(self, results: Dict[str, Any], body_node_ids: List[str]) -> None:
+        """Remove intermediate results produced by loop body nodes.
+
+        Each iteration must start from a clean slate to avoid leaking state
+        between iterations. Body node outputs should only be exposed through
+        loop exports, so we drop them from the shared results map once they
+        have been consumed.
+        """
+
+        for nid in body_node_ids:
+            results.pop(nid, None)
+
     def _eval_condition(
         self, node: Dict[str, Any], ctx: BindingContext, *, include_debug: bool = False
     ) -> Any:
@@ -928,6 +940,13 @@ class DynamicActionExecutor:
         entry = body_graph.get("entry")
         exit_node = body_graph.get("exit")
 
+        body_node_ids: List[str] = []
+        for n in body_nodes:
+            if isinstance(n, Mapping):
+                nid = n.get("id")
+                if isinstance(nid, str):
+                    body_node_ids.append(nid)
+
         extra_node_models: Dict[str, Node] = {}
         try:
             sub_wf = Workflow.model_validate(
@@ -959,6 +978,7 @@ class DynamicActionExecutor:
                 if idx >= max_iterations:
                     log_warn("[loop] 达到 max_iterations 上限，提前结束循环")
                     break
+                self._clear_loop_body_results(binding_ctx.results, body_node_ids)
                 loop_ctx = {"index": idx, "item": item, "size": size, "accumulator": accumulator}
                 item_alias = params.get("item_alias")
                 if isinstance(item_alias, str) and item_alias:
@@ -991,6 +1011,7 @@ class DynamicActionExecutor:
                     aggregates_output,
                     avg_state,
                 )
+                self._clear_loop_body_results(binding_ctx.results, body_node_ids)
 
             return {
                 "status": "loop_completed",
@@ -1008,6 +1029,7 @@ class DynamicActionExecutor:
                 cond_value = self._eval_condition({"params": cond_def}, binding_ctx)
                 if not cond_value:
                     break
+                self._clear_loop_body_results(binding_ctx.results, body_node_ids)
                 loop_ctx = {
                     "index": iteration,
                     "size": max_iterations,
@@ -1042,6 +1064,7 @@ class DynamicActionExecutor:
                     aggregates_output,
                     avg_state,
                 )
+                self._clear_loop_body_results(binding_ctx.results, body_node_ids)
 
             return {
                 "status": "loop_completed",
