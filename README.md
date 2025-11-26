@@ -72,9 +72,10 @@ VelvetFlow (repo root)
 下面先将原本的一步式描述拆分为更细的流水线，再用流程图展示端到端构建：
 
 1. **需求接收与环境准备**：获取自然语言需求，并加载业务动作库以初始化混合检索服务。
-2. **结构规划（LLM）**：调用 `plan_workflow_structure_with_llm` 生成 `nodes/edges/entry/exit` 骨架，随后用 Pydantic 校验与 `ensure_registered_actions` 过滤不合法动作。
-3. **参数补全（LLM）**：在已通过的骨架上调用 `fill_params_with_llm` 补齐各节点 `params/exports/bindings`，生成完整的工作流字典。
-4. **多轮校验与自修复（LLM）**：
+2. **结构规划（LLM）**：调用 `plan_workflow_structure_with_llm` 生成 `nodes/edges/entry/exit` 骨架，随后用 Pydantic 校验与 `ensure_registered_actions` 过滤不合法动作。规划阶段默认开启 tool-calling，使用 `planner/tools.py` 中的动作编辑工具并通过 `tool_choice="auto"` 让模型自行选择，连同节点/边编辑记录在日志中便于回放。【F:velvetflow/planner/structure.py†L337-L451】【F:velvetflow/planner/tools.py†L1-L107】
+3. **覆盖度检查（LLM）**：在初版骨架上调用 `check_requirement_coverage_with_llm` 对用户需求做逐条覆盖评估，缺失点会触发 `refine_workflow_structure_with_llm` 生成补充节点/边，最多重试 `max_coverage_refine_rounds` 轮。【F:velvetflow/planner/structure.py†L491-L517】【F:velvetflow/planner/coverage.py†L13-L155】
+4. **参数补全（LLM）**：在已通过的骨架上调用 `fill_params_with_llm` 补齐各节点 `params/exports/bindings`，生成完整的工作流字典。
+5. **多轮校验与自修复（LLM）**：
    - 首次校验未通过时，记录 `ValidationError` 列表。
    - 进入 `_repair_with_llm_and_fallback`，结合错误提示反复修复，必要时回退到上一次有效版本，直到通过或达到 `max_repair_rounds`。
 5. **持久化与可视化**：最终通过校验后，写出 `workflow_output.json`，并可用 `render_workflow_image.py` 生成 `workflow_dag.jpg`。
@@ -89,6 +90,7 @@ flowchart TD
     D["Pydantic 校验 & ensure_registered_actions\n输入: workflow_skeleton\n输出: skeleton: Workflow"] --> E
     E{{"LLM: 参数补全 (fill_params_with_llm)\n输入: skeleton.model_dump(by_alias=True) + action_registry\n输出: completed_workflow_raw: dict 含 params/exports/bindings"}} --> F
     F{{"LLM: 自修复 (_repair_with_llm_and_fallback，可多轮)\n输入: validation_errors + 当前 workflow dict\n输出: repaired_workflow: dict"}} --> G
+    D -->|覆盖度缺失| C
     D -->|补参异常/缺字段| F
     E -->|校验失败| F
     F --> G
@@ -99,9 +101,17 @@ flowchart TD
 ```
 
 LLM 相关节点说明：
-- **结构规划**：基于自然语言需求与动作 schema，生成 `nodes/edges/entry/exit` 的骨架，必要时触发覆盖度补充与 loop exports 生成。
+- **结构规划**：基于自然语言需求与动作 schema，生成 `nodes/edges/entry/exit` 的骨架。规划阶段会使用预置的工具集（添加节点/边、设置入口出口、修改 meta 信息等），模型通过 tool-calling 自动选择，所有调用结果会以日志形式保存，便于复现或对照失败案例。【F:velvetflow/planner/structure.py†L337-L451】
+- **覆盖度检查**：初版骨架生成后，调用覆盖度检查工具对照自然语言需求输出 `missing_points` 列表；若未覆盖会触发 `refine_workflow_structure_with_llm` 增补节点/边并重新校验，保证关键需求不遗漏。【F:velvetflow/planner/coverage.py†L13-L155】【F:velvetflow/planner/structure.py†L491-L517】
 - **参数补全**：为每个 action/condition/loop 节点填充必需的 `params`、`exports` 与绑定表达式，模型由 `velvetflow.config.OPENAI_MODEL` 控制。
 - **自修复**：当校验失败或补参异常时，使用当前 workflow 字典与 `ValidationError` 列表提示模型修复，直到通过或达到 `max_repair_rounds`。
+
+## 循环节点的处理细节
+为方便开发者定位循环相关逻辑，补充 loop 的运行与导出细节：
+
+- **定义与校验**：`models.py` 会检查 loop 的 `iter` 路径、`body_subgraph` 的拓扑完整性，以及 `exports` 的 `items/aggregates` 是否声明了引用名，未通过会在规划阶段直接报错，避免运行时才失败。【F:velvetflow/models.py†L70-L92】
+- **DSL 辅助 Schema**：`loop_dsl.py` 定义了 loop 节点 exports 的 Pydantic 模型，确保 `items`（逐轮收集）与 `aggregates`（汇总）字段结构一致。【F:velvetflow/loop_dsl.py†L1-L96】
+- **执行阶段**：`executor.DynamicActionExecutor` 在遇到 loop 节点时会展开 `iter` 集合，依次执行 `body_subgraph`，将每轮输出写入 `loop_context`。子图可以引用 `loop.item`/`loop.index`，并在循环结束后依据 `exports.items/aggregates` 聚合到上层节点上下文。【F:velvetflow/executor.py†L187-L281】【F:velvetflow/bindings.py†L206-L341】
 
 ## 自定义与扩展
 - **扩展动作库**：编辑 `velvetflow/business_actions.json` 增加/调整动作，`action_registry.py` 会自动加载并附加安全字段。
