@@ -9,7 +9,8 @@ handlers without duplicating mutation logic.
 from __future__ import annotations
 
 import copy
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from dataclasses import asdict
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 from velvetflow.loop_dsl import iter_workflow_and_loop_body_nodes
 
@@ -17,8 +18,9 @@ from velvetflow.loop_dsl import iter_workflow_and_loop_body_nodes
 class WorkflowEditingSession:
     """Mutate a workflow dict based on tool-call instructions."""
 
-    def __init__(self, workflow: Dict[str, Any]):
+    def __init__(self, workflow: Dict[str, Any], *, validation_fn: Optional[Callable[[Dict[str, Any]], List[Any]]] = None):
         self.workflow: Dict[str, Any] = copy.deepcopy(workflow)
+        self._validation_fn = validation_fn
 
     # ---- helpers ----
     def _find_node(self, node_id: str, workflow: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
@@ -135,6 +137,31 @@ class WorkflowEditingSession:
     def finalize(self) -> Dict[str, Any]:
         return {"status": "ok", "type": "final", "workflow": self.workflow}
 
+    def validate(self) -> Dict[str, Any]:
+        if not self._validation_fn:
+            return {"status": "error", "message": "validation_fn 未配置"}
+
+        errors = self._validation_fn(self.workflow) or []
+        normalized_errors: List[Dict[str, Any]] = []
+        for err in errors:
+            if hasattr(err, "__dict__"):
+                try:
+                    normalized_errors.append(asdict(err))
+                    continue
+                except TypeError:
+                    pass
+            if isinstance(err, dict):
+                normalized_errors.append(err)
+            else:
+                normalized_errors.append({"message": str(err)})
+
+        return {
+            "status": "ok",
+            "type": "validation_result",
+            "errors": normalized_errors,
+            "passed": len(normalized_errors) == 0,
+        }
+
     def handle_tool_call(self, name: str, args: Dict[str, Any]) -> Dict[str, Any]:
         if name == "update_node_params":
             return self.update_node_params(args.get("node_id", ""), args.get("params") or {})
@@ -172,6 +199,9 @@ class WorkflowEditingSession:
 
         if name in {"submit_workflow", "finalize_workflow"}:
             return self.finalize()
+
+        if name == "validate_workflow":
+            return self.validate()
 
         return {"status": "error", "message": f"未知工具 {name}"}
 

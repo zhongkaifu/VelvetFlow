@@ -1,6 +1,11 @@
 """Planner package entrypoint and public API."""
 
-from velvetflow.planner.tools import PLANNER_TOOLS, PARAM_COMPLETION_TOOLS, WORKFLOW_EDIT_TOOLS
+from velvetflow.planner.tools import (
+    PARAM_COMPLETION_TOOLS,
+    PLANNER_TOOLS,
+    WORKFLOW_EDIT_TOOLS,
+    WORKFLOW_VALIDATION_TOOLS,
+)
 from velvetflow.planner.orchestrator import plan_workflow_with_two_pass
 from velvetflow.planner.structure import plan_workflow_structure_with_llm
 from velvetflow.planner.params import fill_params_with_llm
@@ -17,6 +22,7 @@ from velvetflow.planner.relations import build_node_relations, get_upstream_node
 __all__ = [
     "PLANNER_TOOLS",
     "PARAM_COMPLETION_TOOLS",
+    "WORKFLOW_VALIDATION_TOOLS",
     "WORKFLOW_EDIT_TOOLS",
     "plan_workflow_with_two_pass",
     "plan_workflow_structure_with_llm",

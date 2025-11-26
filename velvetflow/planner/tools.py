@@ -134,6 +134,20 @@ PARAM_COMPLETION_TOOLS = [
     },
 ]
 
+WORKFLOW_VALIDATION_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "validate_workflow",
+            "description": (
+                "对当前 workflow 运行校验，包括 params.kind 合法性、参数绑定引用、必填字段等问题。"
+                "返回包含 code/node_id/field/message 的错误列表，若为空代表校验通过。"
+            ),
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    }
+]
+
 WORKFLOW_EDIT_TOOLS = [
     {
         "type": "function",
@@ -231,4 +245,9 @@ WORKFLOW_EDIT_TOOLS = [
     },
 ]
 
-__all__ = ["PLANNER_TOOLS", "PARAM_COMPLETION_TOOLS", "WORKFLOW_EDIT_TOOLS"]
+__all__ = [
+    "PLANNER_TOOLS",
+    "PARAM_COMPLETION_TOOLS",
+    "WORKFLOW_VALIDATION_TOOLS",
+    "WORKFLOW_EDIT_TOOLS",
+]
