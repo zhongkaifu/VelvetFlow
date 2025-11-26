@@ -164,3 +164,78 @@ def test_validate_workflow_rejects_loop_body_reference_from_outside():
         and "循环外不允许直接引用子图节点 'append_high_temp_id'" in err.message
         for err in errors
     )
+
+
+def test_loop_exports_allow_aggregates_from_loop_self():
+    """Aggregates may use the loop id as from_node to avoid referencing body nodes externally."""
+
+    workflow = {
+        "workflow_name": "employee_temp_checks",
+        "description": "",
+        "nodes": [
+            {
+                "id": "fetch_temperatures",
+                "type": "action",
+                "action_id": "hr.get_today_temperatures.v1",
+                "params": {"date": "2024-06-07"},
+            },
+            {
+                "id": "loop_check_temp",
+                "type": "loop",
+                "params": {
+                    "loop_kind": "for_each",
+                    "source": {
+                        "__from__": "result_of.fetch_temperatures.data",
+                        "__agg__": "identity",
+                    },
+                    "item_alias": "employee",
+                    "body_subgraph": {
+                        "nodes": [
+                            {"id": "start", "type": "start"},
+                            {
+                                "id": "append_high_temp_id",
+                                "type": "action",
+                                "action_id": "hr.update_employee_health_profile.v1",
+                                "params": {
+                                    "employee_id": {
+                                        "__from__": "employee.employee_id",
+                                        "__agg__": "identity",
+                                    }
+                                },
+                            },
+                            {"id": "exit", "type": "end"},
+                        ],
+                        "edges": [
+                            {"from": "start", "to": "append_high_temp_id", "condition": None},
+                            {"from": "append_high_temp_id", "to": "exit", "condition": None},
+                        ],
+                        "entry": "start",
+                        "exit": "exit",
+                    },
+                    "exports": {
+                        "items": {
+                            "from_node": "append_high_temp_id",
+                            "fields": ["employee_id"],
+                            "mode": "collect",
+                        },
+                        "aggregates": [
+                            {
+                                "name": "high_temp_employee_ids",
+                                "kind": "collect",
+                                "from_node": "loop_check_temp",
+                                "source": "result_of.loop_check_temp.items",
+                                "expr": {"field": "employee_id"},
+                            }
+                        ],
+                    },
+                },
+            },
+        ],
+        "edges": [
+            {"from": "fetch_temperatures", "to": "loop_check_temp"},
+        ],
+    }
+
+    errors = validate_workflow_data(workflow, ACTION_REGISTRY)
+
+    assert errors == []

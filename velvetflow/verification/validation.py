@@ -618,13 +618,20 @@ def _validate_nodes_recursive(
                                         )
                                     )
 
-                            if not isinstance(from_node, str) or from_node not in body_nodes:
+                            allowed_from_nodes = set(body_nodes)
+                            # 允许使用 loop 自身的 id 作为 from_node，以便直接基于 exports.items 进行聚合
+                            # （避免在 exports 中继续引用具体的子图节点）。
+                            allowed_from_nodes.add(nid)
+
+                            if not isinstance(from_node, str) or from_node not in allowed_from_nodes:
                                 errors.append(
                                     ValidationError(
                                         code="SCHEMA_MISMATCH",
                                         node_id=nid,
                                         field=f"exports.aggregates[{idx}].from_node",
-                                        message=f"loop 节点 '{nid}' 的聚合 from_node 必须指向 body_subgraph 节点。",
+                                        message=(
+                                            f"loop 节点 '{nid}' 的聚合 from_node 必须指向 body_subgraph 节点或 loop 节点自身。"
+                                        ),
                                     )
                                 )
 
