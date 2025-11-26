@@ -54,9 +54,14 @@ VelvetFlow (repo root)
    - 结果会持久化到 `workflow_output.json`，并生成 `workflow_dag.jpg`。
 4. **从已保存 JSON 执行工作流**
    ```bash
-   python execute_workflow.py --workflow-json workflow_output.json
-   ```
+ python execute_workflow.py --workflow-json workflow_output.json
+  ```
    - 执行器会解析绑定 DSL、运行条件/循环节点，并使用 `velvetflow/simulation_data.json` 生成模拟结果。
+5. **从 JSON 绘制工作流 DAG**
+   ```bash
+   python render_workflow_image.py --workflow-json workflow_output.json --output workflow_dag.jpg
+   ```
+   - 读取已有的 workflow JSON，将 DAG 渲染成 JPEG。对于 action 节点，会额外显示调用的工具名称和输入参数。
 
 ## 工作流构建流程（含 LLM 标注）
 下面的流程图展示从自然语言需求到最终 Workflow DSL 的关键步骤，并对需要调用 LLM 的环节进行了突出标注，节点内含输入/输出数据结构：
