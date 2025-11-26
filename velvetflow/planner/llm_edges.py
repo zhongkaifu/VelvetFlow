@@ -7,7 +7,7 @@ from typing import Any, Dict, List
 from openai import OpenAI
 
 from velvetflow.config import OPENAI_MODEL
-from velvetflow.logging_utils import log_debug, log_error
+from velvetflow.logging_utils import child_span, log_debug, log_error, log_llm_usage
 
 
 def synthesize_edges_with_llm(
@@ -50,14 +50,16 @@ def synthesize_edges_with_llm(
         "nodes": node_brief,
     }
 
-    resp = client.chat.completions.create(
-        model=model,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
-        ],
-        temperature=0.2,
-    )
+    with child_span("edge_synthesis_llm"):
+        resp = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
+            ],
+            temperature=0.2,
+        )
+    log_llm_usage(model, getattr(resp, "usage", None), operation="edge_synthesis")
 
     content = resp.choices[0].message.content or ""
     text = content.strip()

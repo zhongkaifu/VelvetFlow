@@ -7,7 +7,7 @@ from typing import Any, Dict, List
 from openai import OpenAI
 
 from velvetflow.config import OPENAI_MODEL
-from velvetflow.logging_utils import log_debug, log_error, log_warn
+from velvetflow.logging_utils import child_span, log_debug, log_error, log_llm_usage, log_warn
 
 
 def check_requirement_coverage_with_llm(
@@ -62,14 +62,16 @@ def check_requirement_coverage_with_llm(
         "workflow": workflow,
     }
 
-    resp = client.chat.completions.create(
-        model=model,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
-        ],
-        temperature=0.1,
-    )
+    with child_span("coverage_check_llm"):
+        resp = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+            ],
+            temperature=0.1,
+        )
+    log_llm_usage(model, getattr(resp, "usage", None), operation="coverage_check")
 
     content = resp.choices[0].message.content or ""
     text = content.strip()
@@ -116,14 +118,16 @@ def refine_workflow_structure_with_llm(
         "missing_points": missing_points,
     }
 
-    resp = client.chat.completions.create(
-        model=model,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
-        ],
-        temperature=0.2,
-    )
+    with child_span("coverage_refine_llm"):
+        resp = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+            ],
+            temperature=0.2,
+        )
+    log_llm_usage(model, getattr(resp, "usage", None), operation="coverage_refine")
 
     content = resp.choices[0].message.content or ""
     text = content.strip()

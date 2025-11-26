@@ -9,7 +9,7 @@ from typing import Any, Dict, List
 from openai import OpenAI
 
 from velvetflow.config import OPENAI_MODEL
-from velvetflow.logging_utils import log_debug, log_error
+from velvetflow.logging_utils import child_span, log_debug, log_error, log_llm_usage
 from velvetflow.models import Node, Workflow
 from velvetflow.planner.relations import get_upstream_nodes
 
@@ -130,14 +130,16 @@ def fill_params_with_llm(
             "allowed_upstream_nodes": upstream_context,
         }
 
-        resp = client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
-            ],
-            temperature=0.1,
-        )
+        with child_span(f"fill_params_{node.id}"):
+            resp = client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
+                ],
+                temperature=0.1,
+            )
+        log_llm_usage(model, getattr(resp, "usage", None), operation="fill_params")
 
         content = resp.choices[0].message.content or ""
         text = content.strip()

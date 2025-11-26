@@ -1,11 +1,16 @@
-"""Utility helpers for structured and console-friendly logging."""
+"""Utility helpers for console + structured logging with trace context."""
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import json
+import os
 import shutil
+import uuid
 from datetime import datetime
-from typing import Any, Mapping
+from pathlib import Path
+from typing import Any, Mapping, Optional
 
 # Basic ANSI color codes for a slightly nicer CLI experience without extra deps.
 RESET = "\033[0m"
@@ -26,6 +31,82 @@ ICONS = {
     "ERROR": "❌",
     "DEBUG": "🔍",
 }
+
+LOG_FILE_PATH = Path(os.environ.get("VELVETFLOW_LOG_FILE", "velvetflow.log"))
+_TRACE_ID: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+    "trace_id", default=None
+)
+_SPAN_ID: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+    "span_id", default=None
+)
+_SPAN_NAME: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+    "span_name", default=None
+)
+
+
+class TraceContext:
+    """Small container for correlating logs across modules."""
+
+    def __init__(self, trace_id: str, span_id: str, span_name: str | None = None):
+        self.trace_id = trace_id
+        self.span_id = span_id
+        self.span_name = span_name
+
+    @classmethod
+    def create(
+        cls, trace_id: str | None = None, span_id: str | None = None, span_name: str | None = None
+    ) -> "TraceContext":
+        return cls(trace_id or _generate_trace_id(), span_id or _generate_span_id(), span_name)
+
+    def child(self, span_name: str | None = None) -> "TraceContext":
+        return TraceContext(self.trace_id, _generate_span_id(), span_name or self.span_name)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "trace_id": self.trace_id,
+            "span_id": self.span_id,
+            "span_name": self.span_name,
+        }
+
+
+def _generate_trace_id() -> str:
+    return uuid.uuid4().hex
+
+
+def _generate_span_id() -> str:
+    return uuid.uuid4().hex
+
+
+def current_trace_context() -> TraceContext | None:
+    trace_id = _TRACE_ID.get()
+    if not trace_id:
+        return None
+    return TraceContext(trace_id, _SPAN_ID.get() or _generate_span_id(), _SPAN_NAME.get())
+
+
+@contextlib.contextmanager
+def use_trace_context(context: TraceContext | None):
+    if context is None:
+        yield None
+        return
+
+    token_trace = _TRACE_ID.set(context.trace_id)
+    token_span = _SPAN_ID.set(context.span_id)
+    token_name = _SPAN_NAME.set(context.span_name)
+    try:
+        yield context
+    finally:
+        _TRACE_ID.reset(token_trace)
+        _SPAN_ID.reset(token_span)
+        _SPAN_NAME.reset(token_name)
+
+
+@contextlib.contextmanager
+def child_span(span_name: str | None = None):
+    parent = current_trace_context() or TraceContext.create()
+    child_ctx = parent.child(span_name=span_name)
+    with use_trace_context(child_ctx):
+        yield child_ctx
 
 LEVEL_COLOR = {
     "INFO": COLORS["cyan"],
@@ -52,7 +133,11 @@ def console_log(level: str, message: str) -> None:
     level = level.upper()
     color = LEVEL_COLOR.get(level, "")
     icon = ICONS.get(level, "➡️")
-    prefix = f"{color}{icon} [{level:>5}] {_timestamp()} |{RESET} "
+    trace = current_trace_context()
+    trace_prefix = ""
+    if trace:
+        trace_prefix = f" [trace={trace.trace_id} span={trace.span_id}]"
+    prefix = f"{color}{icon} [{level:>5}] {_timestamp()}{trace_prefix} |{RESET} "
     print(prefix + _format_lines(message))
 
 
@@ -98,12 +183,46 @@ def log_json(label: str, data: Mapping[str, Any] | list[Any] | Any) -> None:
     console_log("DEBUG", f"{label}:\n{payload}")
 
 
-def log_event(event_type: str, payload: dict) -> None:
+def _persist_record(record: dict[str, Any]) -> None:
+    LOG_FILE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with open(LOG_FILE_PATH, "a", encoding="utf-8") as fp:
+        fp.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
+def log_event(event_type: str, payload: dict, context: TraceContext | None = None) -> None:
     """Emit machine-readable JSON logs while still being human-friendly."""
 
+    ctx = context or current_trace_context()
     record = {
         "time": datetime.utcnow().isoformat(),
         "event_type": event_type,
         "payload": payload,
     }
-    print(json.dumps(record, ensure_ascii=False))
+    if ctx:
+        record.update(ctx.to_dict())
+
+    json_line = json.dumps(record, ensure_ascii=False)
+    print(json_line)
+    _persist_record(record)
+
+
+def log_llm_usage(model: str, usage: Any, operation: str | None = None) -> None:
+    if usage is None:
+        return
+
+    prompt_tokens = getattr(usage, "prompt_tokens", None)
+    completion_tokens = getattr(usage, "completion_tokens", None)
+    total_tokens = getattr(usage, "total_tokens", None)
+    if isinstance(usage, Mapping):
+        prompt_tokens = usage.get("prompt_tokens", prompt_tokens)
+        completion_tokens = usage.get("completion_tokens", completion_tokens)
+        total_tokens = usage.get("total_tokens", total_tokens)
+
+    payload = {
+        "model": model,
+        "operation": operation or "unknown",
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": total_tokens,
+    }
+    log_event("llm_usage", payload)
