@@ -12,10 +12,13 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from typing import Any, Iterable, List
+from typing import Any, Iterable, List, Mapping
 
 from velvetflow.models import PydanticValidationError, ValidationError, Workflow
-from velvetflow.planner.validation import validate_completed_workflow
+from velvetflow.planner.validation import (
+    precheck_loop_body_graphs,
+    validate_completed_workflow,
+)
 
 
 def _convert_pydantic_errors(
@@ -103,6 +106,10 @@ def validate_workflow_data(
     """
 
     errors: List[ValidationError] = []
+
+    precheck_errors = precheck_loop_body_graphs(workflow_raw)
+    if precheck_errors:
+        return precheck_errors
 
     try:
         workflow_model = Workflow.model_validate(workflow_raw)
