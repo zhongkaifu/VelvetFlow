@@ -7,7 +7,7 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from validate_workflow import validate_workflow_data
-from velvetflow.planner.validation import precheck_loop_body_graphs
+from velvetflow.verification import precheck_loop_body_graphs
 
 ACTION_REGISTRY = json.loads(
     (Path(__file__).parent.parent / "velvetflow" / "business_actions.json").read_text(

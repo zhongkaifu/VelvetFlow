@@ -42,7 +42,7 @@ from velvetflow.planner.repair import (
     _repair_with_llm_and_fallback,
 )
 from velvetflow.planner.structure import plan_workflow_structure_with_llm
-from velvetflow.planner.validation import (
+from velvetflow.verification import (
     precheck_loop_body_graphs,
     run_lightweight_static_rules,
     validate_completed_workflow,

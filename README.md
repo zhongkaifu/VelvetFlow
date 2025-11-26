@@ -14,7 +14,8 @@ VelvetFlow (repo root)
 │   ├── logging_utils.py         # 终端友好日志 & 事件日志
 │   ├── loop_dsl.py              # loop 节点 exports 输出 Schema 辅助
 │   ├── models.py                # Workflow/Node/Edge 强类型模型与校验
-│   ├── planner/                 # 结构规划、补参、校验与自修复模块
+│   ├── planner/                 # 结构规划、补参与自修复模块
+│   ├── verification/            # 规划/更新/执行共享的静态校验模块
 │   ├── search.py                # Fake ES + 内存向量库的混合检索服务
 │   ├── simulation_data.json     # 执行动作的模拟返回模板
 │   └── visualization.py         # 将 workflow 渲染为 JPEG DAG
@@ -29,7 +30,7 @@ VelvetFlow (repo root)
 - **工作流规划 Orchestrator**：`planner/orchestrator.py` 实现两阶段 `plan_workflow_with_two_pass`：
   - 调用 `planner/structure.py` 使用 OpenAI tool-calling 规划结构，并通过覆盖度检查、自动补边/修补循环 exports、审批节点检查等提升连通性与完备性。
   - 使用 `planner/params.py` 补全必填参数（含参数绑定示例），若失败则进入 `planner/repair.py` 与 `planner/action_guard.py` 的 LLM 自修复与动作校验。
-  - `planner/validation.py` 做最终静态校验（必填字段、节点连通性、Schema 对齐）；失败则多轮调用修复直到通过或达到上限。
+  - `verification/validation.py` 做最终静态校验（必填字段、节点连通性、Schema 对齐）；失败则多轮调用修复直到通过或达到上限。
 - **DSL 模型与校验**：`models.py` 定义 Node/Edge/Workflow，并校验节点类型、边引用合法性、loop 子图 Schema 等；提供 `ValidationError` 以在修复阶段统一描述错误。
 - **参数绑定 DSL**：`bindings.py` 支持 `__from__` 引用上游结果，`__agg__` 支持 `identity/count/count_if/format_join/filter_map/pipeline`，并校验引用路径是否存在于动作输出/输入或 loop exports。
 - **执行器**：`executor.py` 的 `DynamicActionExecutor` 会先校验 action_id 是否在注册表中，再执行拓扑排序确保连通；支持 condition 节点（如 list_not_empty/equals/contains/greater_than/between 等）与 loop 节点（body_subgraph + exports.items/aggregates 收集迭代与聚合结果），并结合 `simulation_data.json` 模拟动作返回。日志输出使用 `logging_utils.py`。
