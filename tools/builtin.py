@@ -7,9 +7,10 @@ import re
 import textwrap
 import urllib.parse
 import urllib.request
+from http.cookiejar import CookieJar
 from html.parser import HTMLParser
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 from openai import OpenAI
 
@@ -19,13 +20,14 @@ from tools.base import Tool
 from tools.registry import register_tool
 
 
-class _DuckDuckGoParser(HTMLParser):
-    """Minimal parser to extract search results from DuckDuckGo HTML."""
+class _BingWebParser(HTMLParser):
+    """Minimal parser to extract web results from Bing HTML."""
 
     def __init__(self, limit: int) -> None:
         super().__init__()
         self.limit = limit
         self.results: List[Dict[str, str]] = []
+        self._inside_result = False
         self._capturing_title = False
         self._capturing_snippet = False
         self._current_href: str | None = None
@@ -34,11 +36,14 @@ class _DuckDuckGoParser(HTMLParser):
 
     def handle_starttag(self, tag: str, attrs: List[Tuple[str, str | None]]) -> None:  # pragma: no cover - HTML parsing
         attrs_dict = {k: v for k, v in attrs}
-        if tag == "a" and "result__a" in (attrs_dict.get("class") or ""):
+        class_attr = attrs_dict.get("class") or ""
+        if tag == "li" and "b_algo" in class_attr:
+            self._inside_result = True
+        if self._inside_result and tag == "a" and "href" in attrs_dict and not attrs_dict.get("aria-hidden"):
             self._capturing_title = True
             self._current_href = attrs_dict.get("href")
             self._title_parts = []
-        if tag in {"p", "div", "span"} and "result__snippet" in (attrs_dict.get("class") or ""):
+        if self._inside_result and tag == "p":
             self._capturing_snippet = True
             self._snippet_parts = []
 
@@ -58,7 +63,7 @@ class _DuckDuckGoParser(HTMLParser):
             self._current_href = None
             if len(self.results) >= self.limit:
                 raise StopIteration
-        if self._capturing_snippet and tag in {"p", "div", "span"}:
+        if self._capturing_snippet and tag == "p":
             snippet = " ".join(self._snippet_parts).strip()
             if snippet and self.results:
                 if "snippet" not in self.results[-1]:
@@ -67,24 +72,21 @@ class _DuckDuckGoParser(HTMLParser):
             self._snippet_parts = []
             if len(self.results) >= self.limit:
                 raise StopIteration
+        if self._inside_result and tag == "li":
+            self._inside_result = False
 
 
 def search_web(query: str, limit: int = 5, timeout: int = 8) -> Dict[str, List[Dict[str, str]]]:
-    """Perform a lightweight DuckDuckGo HTML search and return top results."""
+    """Perform a lightweight Bing HTML search and return top results."""
 
     if not query:
         raise ValueError("query is required for web search")
 
     encoded_q = urllib.parse.quote_plus(query)
-    url = f"https://duckduckgo.com/html/?q={encoded_q}&kl=wt-wt"
-    req = urllib.request.Request(url, headers={"User-Agent": "VelvetFlow/1.0"})
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            raw_html = resp.read().decode("utf-8", errors="ignore")
-    except Exception as exc:  # pragma: no cover - network-dependent
-        raise RuntimeError(f"web search failed: {exc}") from exc
+    url = f"https://www.bing.com/search?q={encoded_q}&setmkt=en-US&setlang=en-US"
+    raw_html = _fetch_with_browser_headers(url, timeout=timeout)
 
-    parser = _DuckDuckGoParser(limit=limit)
+    parser = _BingWebParser(limit=limit)
     try:
         parser.feed(raw_html)
     except StopIteration:
@@ -103,35 +105,29 @@ def search_web(query: str, limit: int = 5, timeout: int = 8) -> Dict[str, List[D
 
 
 def search_news(query: str, limit: int = 5, timeout: int = 8) -> Dict[str, List[Dict[str, str]]]:
-    """Search recent news headlines via DuckDuckGo and return titles, URLs, and snippets."""
+    """Search recent news via Bing's RSS feed and return titles, URLs, and snippets."""
 
     if not query:
         raise ValueError("query is required for news search")
 
     encoded_q = urllib.parse.quote_plus(query)
-    url = f"https://duckduckgo.com/html/?q={encoded_q}&iar=news&ia=news"
-    req = urllib.request.Request(url, headers={"User-Agent": "VelvetFlow/1.0"})
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            raw_html = resp.read().decode("utf-8", errors="ignore")
-    except Exception as exc:  # pragma: no cover - network-dependent
-        raise RuntimeError(f"news search failed: {exc}") from exc
-
-    parser = _DuckDuckGoParser(limit=limit)
-    try:
-        parser.feed(raw_html)
-    except StopIteration:
-        pass
+    url = f"https://www.bing.com/news/search?q={encoded_q}&setmkt=en-US&setlang=en-US&format=rss"
+    rss_xml = _fetch_with_browser_headers(url, timeout=timeout)
 
     results: List[Dict[str, str]] = []
-    for item in parser.results[:limit]:
-        results.append(
-            {
-                "title": item.get("title", ""),
-                "url": item.get("url", ""),
-                "snippet": item.get("snippet", ""),
-            }
-        )
+    try:  # pragma: no cover - network dependent
+        import xml.etree.ElementTree as ET
+
+        root = ET.fromstring(rss_xml)
+        items = root.findall(".//item")
+        for item in items[:limit]:
+            title = (item.findtext("title") or "").strip()
+            link = (item.findtext("link") or "").strip()
+            description = (item.findtext("description") or "").strip()
+            results.append({"title": title, "url": link, "snippet": description})
+    except Exception as exc:  # pragma: no cover - network dependent
+        raise RuntimeError(f"bing news rss parse failed: {exc}") from exc
+
     return {"results": results}
 
 
@@ -485,3 +481,36 @@ __all__ = [
     "read_file",
     "summarize",
 ]
+_HUMAN_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/121.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Referer": "https://www.bing.com/",
+    "Connection": "keep-alive",
+}
+
+
+def _fetch_with_browser_headers(url: str, timeout: int) -> str:
+    """Fetch content while mimicking a typical browser request."""
+
+    cookie_jar = CookieJar()
+    opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cookie_jar))
+    opener.addheaders = list(_HUMAN_HEADERS.items())
+
+    # Warm-up request to obtain cookies/tokens search engines expect from browsers.
+    try:  # pragma: no cover - network dependent
+        opener.open("https://www.bing.com/", timeout=timeout).read()
+    except Exception:
+        # If warm-up fails, continue with the main request to avoid masking the real error.
+        pass
+
+    try:
+        with opener.open(url, timeout=timeout) as resp:  # pragma: no cover - network dependent
+            return resp.read().decode("utf-8", errors="ignore")
+    except Exception as exc:  # pragma: no cover - network-dependent
+        raise RuntimeError(f"request failed: {exc}") from exc
+

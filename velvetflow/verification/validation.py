@@ -1,11 +1,23 @@
 """Static validation helpers for VelvetFlow workflows."""
 
+import re
 from collections import deque
 from typing import Any, Dict, List, Mapping, Optional
 
 from velvetflow.loop_dsl import build_loop_output_schema, index_loop_body_nodes
 from velvetflow.models import ValidationError, Workflow
-from velvetflow.planner.action_guard import _index_actions_by_id
+
+
+def _index_actions_by_id(action_registry: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    """Lightweight action registry indexer without importing planner package.
+
+    The planner package re-exports verification helpers, so importing from
+    ``velvetflow.planner`` inside this module would trigger a circular import.
+    Keeping this helper local avoids that dependency while preserving the
+    expected behavior.
+    """
+
+    return {a.get("action_id"): a for a in action_registry or [] if isinstance(a, dict)}
 
 
 def precheck_loop_body_graphs(workflow_raw: Mapping[str, Any] | Any) -> List[ValidationError]:
@@ -38,6 +50,22 @@ def precheck_loop_body_graphs(workflow_raw: Mapping[str, Any] | Any) -> List[Val
 
         body_nodes = [bn for bn in body.get("nodes", []) or [] if isinstance(bn, Mapping)]
         body_ids = {bn.get("id") for bn in body_nodes if isinstance(bn.get("id"), str)}
+
+        allowed_body_types = {"action", "condition", "loop", "parallel", "start", "end"}
+        for idx, body_node in enumerate(body_nodes):
+            ntype = body_node.get("type")
+            if ntype not in allowed_body_types:
+                errors.append(
+                    ValidationError(
+                        code="INVALID_LOOP_BODY",
+                        node_id=loop_id,
+                        field=f"body_subgraph.nodes[{idx}].type",
+                        message=(
+                            "loop 节点 '{loop_id}' 的 body_subgraph 包含非法节点类型 "
+                            f"'{ntype}'，允许类型: {sorted(allowed_body_types)}"
+                        ),
+                    )
+                )
 
         entry = body.get("entry")
         if isinstance(entry, str) and entry not in body_ids:
@@ -96,6 +124,9 @@ def precheck_loop_body_graphs(workflow_raw: Mapping[str, Any] | Any) -> List[Val
     return errors
 
 
+TEMPLATE_PATTERN = re.compile(r"\{\{\s*([^{}]+?)\s*\}\}")
+
+
 def _index_nodes_by_id(workflow: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
     return {n["id"]: n for n in workflow.get("nodes", [])}
 
@@ -117,6 +148,21 @@ def _validate_nodes_recursive(
         ntype = n.get("type")
         action_id = n.get("action_id")
         params = n.get("params", {})
+
+        template_refs = _collect_template_refs(params) if params is not None else []
+        for ref in template_refs:
+            errors.append(
+                ValidationError(
+                    code="INVALID_TEMPLATE_BINDING",
+                    node_id=nid,
+                    field=ref.get("path"),
+                    message=(
+                        f"节点 '{nid}' 的参数 {ref.get('path')} 使用了模板 {ref.get('template')}，"
+                        "workflow DSL 不支持 Jinja/ Mustache 模板，请改用 __from__ 参数绑定"
+                        "（例如 {\"__from__\": \"result_of.<node>.<field>\", \"__agg__\": \"identity\"}）。"
+                    ),
+                )
+            )
 
         # 1) action 节点
         if ntype == "action" and action_id:
@@ -179,7 +225,11 @@ def _validate_nodes_recursive(
                         source = obj.get("__from__")
                         if isinstance(source, str):
                             schema_err = _check_output_path_against_schema(
-                                source, nodes_by_id, actions_by_id, loop_body_parents
+                                source,
+                                nodes_by_id,
+                                actions_by_id,
+                                loop_body_parents,
+                                current_node_id=nid,
                             )
                             if schema_err:
                                 errors.append(
@@ -367,7 +417,11 @@ def _validate_nodes_recursive(
                     )
             elif isinstance(source, str):
                 schema_err = _check_output_path_against_schema(
-                    source, nodes_by_id, actions_by_id, loop_body_parents
+                    source,
+                    nodes_by_id,
+                    actions_by_id,
+                    loop_body_parents,
+                    current_node_id=nid,
                 )
                 if schema_err:
                     errors.append(
@@ -394,14 +448,44 @@ def _validate_nodes_recursive(
                 body_nodes: List[str] = []
                 body_node_map: Dict[str, Mapping[str, Any]] = {}
                 body_graph = params.get("body_subgraph") or {}
-                if isinstance(body_graph, Mapping):
+                if not isinstance(body_graph, Mapping):
+                    errors.append(
+                        ValidationError(
+                            code="INVALID_LOOP_BODY",
+                            node_id=nid,
+                            field="body_subgraph",
+                            message=f"loop 节点 '{nid}' 定义了 exports，但缺少 body_subgraph（需包含 nodes/edges）。",
+                        )
+                    )
+                else:
+                    raw_body_nodes = [bn for bn in body_graph.get("nodes", []) or [] if isinstance(bn, Mapping)]
+                    raw_body_edges = [e for e in body_graph.get("edges", []) or [] if isinstance(e, Mapping)]
                     body_node_map = {
-                        bn.get("id"):
-                        bn
-                        for bn in body_graph.get("nodes", [])
-                        if isinstance(bn, Mapping) and isinstance(bn.get("id"), str)
+                        bn.get("id")
+                        : bn
+                        for bn in raw_body_nodes
+                        if isinstance(bn.get("id"), str)
                     }
                     body_nodes = list(body_node_map.keys())
+
+                    if len(raw_body_nodes) == 0:
+                        errors.append(
+                            ValidationError(
+                                code="INVALID_LOOP_BODY",
+                                node_id=nid,
+                                field="body_subgraph.nodes",
+                                message=f"loop 节点 '{nid}' 的 body_subgraph.nodes 为空，无法执行循环。",
+                            )
+                        )
+                    if len(raw_body_edges) == 0:
+                        errors.append(
+                            ValidationError(
+                                code="INVALID_LOOP_BODY",
+                                node_id=nid,
+                                field="body_subgraph.edges",
+                                message=f"loop 节点 '{nid}' 的 body_subgraph.edges 为空，无法连接循环内部节点。",
+                            )
+                        )
                 items_spec = exports.get("items") if isinstance(exports, Mapping) else None
                 if items_spec is not None:
                     if not isinstance(items_spec, Mapping):
@@ -416,7 +500,7 @@ def _validate_nodes_recursive(
                     else:
                         from_node = items_spec.get("from_node")
                         fields = items_spec.get("fields")
-                        if not isinstance(from_node, str) or (body_nodes and from_node not in body_nodes):
+                        if not isinstance(from_node, str) or from_node not in body_nodes:
                             errors.append(
                                 ValidationError(
                                     code="SCHEMA_MISMATCH",
@@ -436,7 +520,7 @@ def _validate_nodes_recursive(
                                     message=f"loop 节点 '{nid}' 的 exports.items.fields 需要字符串数组。",
                                 )
                             )
-                        elif isinstance(from_node, str) and body_nodes:
+                        elif isinstance(from_node, str):
                             target_node = body_node_map.get(from_node)
                             action_id = (
                                 target_node.get("action_id")
@@ -497,13 +581,21 @@ def _validate_nodes_recursive(
                             field = expr.get("field") if isinstance(expr, Mapping) else None
                             from_node = agg.get("from_node") if isinstance(agg, Mapping) else None
 
-                            if not isinstance(kind, str) or kind not in {"count", "count_if", "max", "min", "sum", "avg"}:
+                            if not isinstance(kind, str) or kind not in {
+                                "count",
+                                "count_if",
+                                "max",
+                                "min",
+                                "sum",
+                                "avg",
+                                "collect",
+                            }:
                                 errors.append(
                                     ValidationError(
                                         code="SCHEMA_MISMATCH",
                                         node_id=nid,
                                         field=f"exports.aggregates[{idx}].kind",
-                                        message=f"loop 节点 '{nid}' 的聚合 kind 仅支持 count/count_if/max/min/sum/avg。",
+                                        message=f"loop 节点 '{nid}' 的聚合 kind 仅支持 collect/count/count_if/max/min/sum/avg。",
                                     )
                                 )
                                 continue
@@ -530,7 +622,11 @@ def _validate_nodes_recursive(
                                 )
                             elif isinstance(source, str):
                                 schema_err = _check_output_path_against_schema(
-                                    source, nodes_by_id, actions_by_id, loop_body_parents
+                                    source,
+                                    nodes_by_id,
+                                    actions_by_id,
+                                    loop_body_parents,
+                                    current_node_id=nid,
                                 )
                                 if schema_err:
                                     errors.append(
@@ -542,13 +638,20 @@ def _validate_nodes_recursive(
                                         )
                                     )
 
-                            if not isinstance(from_node, str) or (body_nodes and from_node not in body_nodes):
+                            allowed_from_nodes = set(body_nodes)
+                            # 允许使用 loop 自身的 id 作为 from_node，以便直接基于 exports.items 进行聚合
+                            # （避免在 exports 中继续引用具体的子图节点）。
+                            allowed_from_nodes.add(nid)
+
+                            if not isinstance(from_node, str) or from_node not in allowed_from_nodes:
                                 errors.append(
                                     ValidationError(
                                         code="SCHEMA_MISMATCH",
                                         node_id=nid,
                                         field=f"exports.aggregates[{idx}].from_node",
-                                        message=f"loop 节点 '{nid}' 的聚合 from_node 必须指向 body_subgraph 节点。",
+                                        message=(
+                                            f"loop 节点 '{nid}' 的聚合 from_node 必须指向 body_subgraph 节点或 loop 节点自身。"
+                                        ),
                                     )
                                 )
 
@@ -582,7 +685,7 @@ def _validate_nodes_recursive(
                                             message=f"loop 节点 '{nid}' 的 count_if 需要 field。",
                                         )
                                     )
-                            elif kind in {"max", "min", "sum", "avg"}:
+                            elif kind in {"max", "min", "sum", "avg", "collect"}:
                                 if not isinstance(field, str):
                                     errors.append(
                                         ValidationError(
@@ -640,11 +743,39 @@ def _collect_param_bindings(obj: Any, prefix: str = "") -> List[Dict[str, str]]:
     return bindings
 
 
+def _collect_template_refs(obj: Any, prefix: str = "") -> List[Dict[str, str]]:
+    """Collect Jinja-style template references like ``{{foo.bar}}`` for linting."""
+
+    refs: List[Dict[str, str]] = []
+
+    if isinstance(obj, str):
+        for match in TEMPLATE_PATTERN.finditer(obj):
+            refs.append(
+                {
+                    "path": prefix or "params",
+                    "template": match.group(0),
+                    "expr": match.group(1).strip(),
+                }
+            )
+    elif isinstance(obj, Mapping):
+        for key, value in obj.items():
+            new_prefix = f"{prefix}.{key}" if prefix else str(key)
+            refs.extend(_collect_template_refs(value, new_prefix))
+    elif isinstance(obj, list):
+        for idx, value in enumerate(obj):
+            new_prefix = f"{prefix}[{idx}]" if prefix else f"[{idx}]"
+            refs.extend(_collect_template_refs(value, new_prefix))
+
+    return refs
+
+
 def _check_output_path_against_schema(
     source_path: str,
     nodes_by_id: Dict[str, Dict[str, Any]],
     actions_by_id: Dict[str, Dict[str, Any]],
     loop_body_parents: Optional[Mapping[str, str]] = None,
+    *,
+    current_node_id: Optional[str] = None,
 ) -> Optional[str]:
     """
     对诸如 "result_of.fetch_temperatures.data" 或 "result_of.node_id.foo.bar" 做静态校验：
@@ -671,10 +802,16 @@ def _check_output_path_against_schema(
     if node_id not in nodes_by_id:
         if node_id in loop_body_parents:
             parent_loop = loop_body_parents.get(node_id)
-            return (
-                f"循环外不允许直接引用子图节点 '{node_id}'，请通过 loop 节点 '{parent_loop}' 的 exports 暴露输出。"
-            )
-        return f"路径 '{source_path}' 引用的节点 '{node_id}' 不存在。"
+            current_parent = loop_body_parents.get(current_node_id)
+            # 允许 loop 自己或其 body 内的节点引用同一个 body 节点；其余情况视为越界引用。
+            if parent_loop not in {current_node_id, current_parent}:
+                return (
+                    f"循环外不允许直接引用子图节点 '{node_id}'，请通过 loop 节点 '{parent_loop}' 的 exports 暴露输出。"
+                )
+            # body_subgraph 内部或 loop 自身可引用 body 节点
+            pass
+        else:
+            return f"路径 '{source_path}' 引用的节点 '{node_id}' 不存在。"
 
     node = nodes_by_id[node_id]
     action_id = node.get("action_id")
@@ -822,11 +959,21 @@ def _get_array_item_schema_from_output(
     actions_by_id: Dict[str, Dict[str, Any]],
     loop_body_parents: Optional[Mapping[str, str]] = None,
 ) -> Optional[Mapping[str, Any]]:
+    if not isinstance(source, str):
+        return None
+
+    if not source.startswith("result_of."):
+        # 允许 loop body 中直接使用 item_alias（如 "employee"），这种场景无法做静态 schema 校验，直接跳过。
+        return None
+
     err = _check_output_path_against_schema(source, nodes_by_id, actions_by_id, loop_body_parents)
     if err:
         return None
 
     parts = source.split(".")
+    if len(parts) < 2:
+        return None
+
     node_id = parts[1]
     first_field = parts[2] if len(parts) >= 3 else None
     node = nodes_by_id.get(node_id)
@@ -1003,12 +1150,32 @@ def run_lightweight_static_rules(
         bindings = _collect_param_bindings(params) if isinstance(params, Mapping) else []
         for binding in bindings:
             err = _check_output_path_against_schema(
-                binding.get("source"), nodes_by_id, actions_by_id, loop_body_parents
+                binding.get("source"),
+                nodes_by_id,
+                actions_by_id,
+                loop_body_parents,
+                current_node_id=nid,
             )
             if err:
                 binding_issues.append(f"{nid}:{binding.get('path')} -> {err}")
     if binding_issues:
         messages.append("参数绑定引用无效: " + "; ".join(binding_issues[:10]))
+
+    template_issues: List[str] = []
+    for node in workflow.get("nodes", []) or []:
+        nid = node.get("id")
+        params = node.get("params")
+        refs = _collect_template_refs(params) if params is not None else []
+        for ref in refs:
+            template_issues.append(
+                f"{nid}:{ref.get('path')} -> {ref.get('template')} (expr={ref.get('expr')})"
+            )
+    if template_issues:
+        messages.append(
+            "发现模板占位符（{{}}）: "
+            + "; ".join(template_issues[:10])
+            + "。workflow DSL 不支持模板，请改用 __from__ 绑定。"
+        )
 
     if not messages:
         return []

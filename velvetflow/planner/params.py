@@ -9,9 +9,18 @@ from typing import Any, Dict, List
 from openai import OpenAI
 
 from velvetflow.config import OPENAI_MODEL
-from velvetflow.logging_utils import child_span, log_debug, log_error, log_llm_usage
+from velvetflow.logging_utils import (
+    child_span,
+    log_debug,
+    log_error,
+    log_llm_reasoning,
+    log_llm_tool_call,
+    log_llm_usage,
+)
 from velvetflow.models import Node, Workflow
+from velvetflow.planner.edit_session import WorkflowEditingSession
 from velvetflow.planner.relations import get_upstream_nodes
+from velvetflow.planner.tools import PARAM_COMPLETION_TOOLS
 
 
 def _find_start_nodes_for_params(workflow: Workflow) -> List[str]:
@@ -74,20 +83,19 @@ def fill_params_with_llm(
         }
 
     system_prompt = (
-        "你是一个工作流参数补全助手。一次只处理一个节点，请根据给定的 arg_schema 补齐当前节点的 params。\n"
+        "你是一个工作流参数补全助手，必须通过工具调用 add_node_params/modify_node_params_value/rename_node_params_key/remove_node_params 提交参数。\n"
         "当某个字段需要引用其他节点的输出时，必须使用数据绑定 DSL，并且只能引用提供的 allowed_node_ids 中的节点。\n"
         "你只能从以下节点中读取上下游结果：result_of.<node_id>.<field>...，其中 node_id 必须来自 allowed_node_ids，field 必须存在于该节点的 output_schema。\n"
         "当引用循环节点时，只能使用 loop 节点的 exports（如 result_of.<loop_id>.items / result_of.<loop_id>.aggregates.xxx），禁止直接引用 loop body 的节点。\n"
         "若 loop.exports.items.fields 仅包含用来包裹完整输出的字段（如 data/record 等），需要通过 <字段>.<子字段> 的形式访问内部属性，不能直接写子字段名。\n"
         "start/end 节点可以保持 params 为空。\n"
-        "返回 JSON：{\"id\": <当前节点 id>, \"params\": { ...补全后的参数... }}，不要加代码块标记。\n\n"
+        "返回方式：使用 add_node_params 增加字段，使用 modify_node_params_value 修改已有字段，rename_node_params_key 重命名字段，remove_node_params 删除多余字段。不要直接输出自然语言或 JSON。\n\n"
         "【重要说明：示例仅为模式，不代表具体业务】\n"
         "示例（字段名仅示意）：\n"
         "- 直接引用：{\"__from__\": \"result_of.some_node.items\", \"__agg__\": \"identity\"}\n"
         "- 列表计数：{\"__from__\": \"result_of.some_node.items\", \"__agg__\": \"count\"}\n"
         "- 条件计数：{\"__from__\": \"result_of.some_node.items\", \"__agg__\": \"count_if\", \"field\": \"value\", \"op\": \">\", \"value\": 10}\n"
-        "- 直接格式化并拼接：{\"__from__\": \"result_of.some_node.items\", \"__agg__\": \"format_join\", \"format\": \"{name}: {score}\", \"sep\": "
-        "\\n\"}\n"
+        "- 直接格式化并拼接：{\"__from__\": \"result_of.some_node.items\", \"__agg__\": \"format_join\", \"format\": \"{name}: {score}\", \"sep\": \"\\n\"}\n"
         "- pipeline：{\"__from__\": \"result_of.list_node.items\", \"__agg__\": \"pipeline\", \"steps\": [{\"op\": \"filter\", \"field\": \"score\", \"cmp\": \">\", \"value\": 0.8}, {\"op\": \"format_join\", \"field\": \"id\", \"format\": \"ID={value} 异常\", \"sep\": \"\\n\"}]}\n"
         "示例中的节点名/字段名只是格式说明，实际必须使用 payload 中的节点信息和 output_schema。"
     )
@@ -97,6 +105,8 @@ def fill_params_with_llm(
     filled_params: Dict[str, Dict[str, Any]] = {
         n.id: copy.deepcopy(n.params) for n in workflow.nodes
     }
+
+    editor = WorkflowEditingSession(workflow.model_dump(by_alias=True))
 
     for node_id in _traverse_order(workflow):
         node = nodes_by_id[node_id]
@@ -137,55 +147,78 @@ def fill_params_with_llm(
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
                 ],
+                tools=PARAM_COMPLETION_TOOLS,
+                tool_choice="auto",
                 temperature=0.1,
             )
         log_llm_usage(model, getattr(resp, "usage", None), operation="fill_params")
 
-        content = resp.choices[0].message.content or ""
-        text = content.strip()
-        if text.startswith("```"):
-            text = text.strip("`")
-            if "\n" in text:
-                first_line, rest = text.split("\n", 1)
-                if first_line.strip().lower().startswith("json"):
-                    text = rest
-
-        decoder = json.JSONDecoder()
-        node_result: Any
-        try:
-            node_result, _ = decoder.raw_decode(text)
-        except json.JSONDecodeError:
-            # 某些模型可能在 JSON 前后附带额外文本，尝试截取第一个 JSON 对象以提升鲁棒性。
-            first_curly = text.find("{")
-            if first_curly >= 0:
+        msg = resp.choices[0].message
+        log_llm_reasoning(
+            operation="fill_params",
+            round_idx=0,
+            content=msg.content,
+            metadata={"node_id": node.id},
+        )
+        if msg.tool_calls:
+            for tc in msg.tool_calls:
                 try:
-                    node_result, _ = decoder.raw_decode(text[first_curly:])
+                    args = json.loads(tc.function.arguments or "{}")
                 except json.JSONDecodeError:
+                    log_error(f"[fill_params_with_llm] 解析工具参数失败: {tc.function.arguments}")
+                    continue
+
+                result = editor.handle_tool_call(tc.function.name, args)
+                log_llm_tool_call(
+                    operation="fill_params",
+                    round_idx=0,
+                    tool_name=tc.function.name,
+                    tool_call_id=tc.id,
+                    arguments=args,
+                    result=result,
+                    metadata={"node_id": node.id},
+                )
+                if result.get("status") == "ok" and result.get("params") is not None:
+                    filled_params[node.id] = result.get("params")
+        else:
+            content = msg.content or ""
+            text = content.strip()
+            if text.startswith("```"):
+                text = text.strip("`")
+                if "\n" in text:
+                    first_line, rest = text.split("\n", 1)
+                    if first_line.strip().lower().startswith("json"):
+                        text = rest
+
+            decoder = json.JSONDecoder()
+            node_result: Any
+            try:
+                node_result, _ = decoder.raw_decode(text)
+            except json.JSONDecodeError:
+                # 某些模型可能在 JSON 前后附带额外文本，尝试截取第一个 JSON 对象以提升鲁棒性。
+                first_curly = text.find("{")
+                if first_curly >= 0:
+                    try:
+                        node_result, _ = decoder.raw_decode(text[first_curly:])
+                    except json.JSONDecodeError:
+                        log_error("[fill_params_with_llm] 无法解析模型返回 JSON")
+                        log_debug(content)
+                        raise
+                else:
                     log_error("[fill_params_with_llm] 无法解析模型返回 JSON")
                     log_debug(content)
                     raise
-            else:
-                log_error("[fill_params_with_llm] 无法解析模型返回 JSON")
-                log_debug(content)
-                raise
 
-        if isinstance(node_result, dict):
-            params = node_result.get("params", {})
-            if isinstance(params, dict):
-                filled_params[node.id] = params
+            if isinstance(node_result, dict):
+                params = node_result.get("params", {})
+                if isinstance(params, dict):
+                    filled_params[node.id] = params
+                    editor.set_node_params(node.id, params)
 
-    completed_nodes = []
-    for node in workflow.nodes:
-        data = node.model_dump(by_alias=True)
-        data["params"] = filled_params.get(node.id, node.params)
-        completed_nodes.append(data)
-
-    completed_workflow = {
-        "workflow_name": workflow.workflow_name,
-        "description": workflow.description,
-        "nodes": completed_nodes,
-        "edges": [e.model_dump(by_alias=True) for e in workflow.edges],
-    }
+    completed_workflow = editor.workflow
+    for node in completed_workflow.get("nodes", []):
+        if isinstance(node, dict) and node.get("id") in filled_params:
+            node["params"] = filled_params[node.get("id")]
 
     return completed_workflow
 

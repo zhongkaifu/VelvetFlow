@@ -14,6 +14,8 @@ from velvetflow.logging_utils import (
     log_event,
     log_info,
     log_json,
+    log_llm_reasoning,
+    log_llm_tool_call,
     log_llm_usage,
     log_section,
     log_success,
@@ -179,7 +181,7 @@ def _synthesize_loop_exports_with_llm(
         "要求：\n"
         "1) 只输出 JSON（不要代码块），格式可以是 {\"exports\": {...}} 或直接 exports 对象。\n"
         "2) items.from_node 必须引用 body_subgraph.nodes 中的节点（通常是 exit 节点），fields 需列出你希望暴露的字段。\n"
-        "3) aggregates 是可选的 count_if/max/min/sum/avg 聚合，from_node 同样只能指向 body_subgraph 节点。\n"
+        "3) aggregates 是可选的 collect/count_if/max/min/sum/avg 聚合，from_node 可指向 body_subgraph 节点或 loop 节点自身。\n"
         "4) 避免自然语言解释，使用结构化表达式，字段名优先依据节点 output_schema.properties。\n"
         "示例（仅示意，不要生搬硬套字段名）：\n"
         "{\n  \"items\": {\"from_node\": \"finish_employee\", \"fields\": [\"employee_id\", \"risk\"], \"mode\": \"collect\"},\n"
@@ -353,6 +355,12 @@ def plan_workflow_structure_with_llm(
             "tool_calls": msg.tool_calls,
         })
 
+        log_llm_reasoning(
+            operation="structure_planning",
+            round_idx=round_idx,
+            content=msg.content,
+        )
+
         if not msg.tool_calls:
             log_warn("[Planner] 本轮没有 tool_calls，提前结束。")
             break
@@ -445,6 +453,15 @@ def plan_workflow_structure_with_llm(
             else:
                 tool_result = {"status": "error", "message": f"未知工具 {func_name}"}
 
+            log_llm_tool_call(
+                operation="structure_planning",
+                round_idx=round_idx,
+                tool_name=func_name,
+                tool_call_id=tool_call_id,
+                arguments=args,
+                result=tool_result,
+                metadata={"raw_arguments": raw_args},
+            )
             messages.append({
                 "role": "tool",
                 "tool_call_id": tool_call_id,

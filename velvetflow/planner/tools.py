@@ -104,4 +104,285 @@ PLANNER_TOOLS = [
     },
 ]
 
-__all__ = ["PLANNER_TOOLS"]
+PARAM_COMPLETION_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "add_node_params",
+            "description": "在节点 params 中新增字段，禁止覆盖已有字段。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "node_id": {"type": "string"},
+                    "params": {"type": "object", "additionalProperties": True},
+                },
+                "required": ["node_id", "params"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "modify_node_params_value",
+            "description": "修改节点 params 中已存在字段的值。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "node_id": {"type": "string"},
+                    "params": {"type": "object", "additionalProperties": True},
+                },
+                "required": ["node_id", "params"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "remove_node_params",
+            "description": "删除节点 params 中的字段。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "node_id": {"type": "string"},
+                    "keys": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["node_id", "keys"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "rename_node_params_key",
+            "description": "重命名节点 params 中的字段名称。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "node_id": {"type": "string"},
+                    "old_key": {"type": "string"},
+                    "new_key": {"type": "string"},
+                },
+                "required": ["node_id", "old_key", "new_key"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "submit_workflow",
+            "description": "当所有节点参数都已补全时调用，提交最终 workflow。",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        },
+    },
+]
+
+WORKFLOW_VALIDATION_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "validate_workflow",
+            "description": (
+                "对当前 workflow 运行校验，包括 params.kind 合法性、参数绑定引用、必填字段等问题。"
+                "返回包含 code/node_id/field/message 的错误列表，若为空代表校验通过。"
+            ),
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    }
+]
+
+WORKFLOW_EDIT_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "add_node",
+            "description": "新增节点，可通过 scope_node_id 将节点添加到某个 loop.body_subgraph 中。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string", "description": "节点唯一 ID"},
+                    "type": {
+                        "type": "string",
+                        "enum": ["action", "condition", "loop", "parallel", "start", "end"],
+                    },
+                    "action_id": {"type": "string", "nullable": True},
+                    "display_name": {"type": "string", "nullable": True},
+                    "params": {"type": "object", "additionalProperties": True},
+                    "scope_node_id": {
+                        "type": "string",
+                        "description": "可选：loop 节点 id，用于在其 body_subgraph 内添加节点",
+                    },
+                },
+                "required": ["id", "type"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "update_node",
+            "description": "修改节点的 action_id / display_name / params。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "node_id": {"type": "string"},
+                    "action_id": {"type": "string", "nullable": True},
+                    "display_name": {"type": "string", "nullable": True},
+                    "params": {"type": "object", "additionalProperties": True},
+                },
+                "required": ["node_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "add_node_params",
+            "description": "在节点 params 中新增字段，禁止覆盖已有字段。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "node_id": {"type": "string"},
+                    "params": {"type": "object", "additionalProperties": True},
+                },
+                "required": ["node_id", "params"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "remove_node_params",
+            "description": "删除节点 params 中的字段。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "node_id": {"type": "string"},
+                    "keys": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["node_id", "keys"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "modify_node_params_value",
+            "description": "修改节点 params 中已存在字段的值。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "node_id": {"type": "string"},
+                    "params": {"type": "object", "additionalProperties": True},
+                },
+                "required": ["node_id", "params"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "rename_node_params_key",
+            "description": "重命名节点 params 中的字段名称。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "node_id": {"type": "string"},
+                    "old_key": {"type": "string"},
+                    "new_key": {"type": "string"},
+                },
+                "required": ["node_id", "old_key", "new_key"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "update_edge",
+            "description": "更新 edge 的 condition，可指定 scope_node_id 在 loop.body_subgraph 内修改。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "from_node": {"type": "string"},
+                    "to_node": {"type": "string"},
+                    "condition": {"type": "string", "nullable": True},
+                    "scope_node_id": {"type": "string", "description": "可选：loop 节点 id，用于更新其 body_subgraph.edges"},
+                },
+                "required": ["from_node", "to_node"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "add_edge",
+            "description": "新增一条 edge，可选 scope_node_id 在 loop.body_subgraph 内添加。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "from_node": {"type": "string"},
+                    "to_node": {"type": "string"},
+                    "condition": {"type": "string", "nullable": True},
+                    "scope_node_id": {"type": "string", "description": "可选：loop 节点 id，用于在其 body_subgraph 内添加 edge"},
+                },
+                "required": ["from_node", "to_node"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "remove_edge",
+            "description": "删除一条 edge，可选 scope_node_id 在 loop.body_subgraph 内删除。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "from_node": {"type": "string"},
+                    "to_node": {"type": "string"},
+                    "scope_node_id": {"type": "string", "description": "可选：loop 节点 id，用于在其 body_subgraph 内删除 edge"},
+                },
+                "required": ["from_node", "to_node"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "remove_node",
+            "description": "删除一个节点（以及相关的 edges），可选 scope_node_id 针对 loop.body_subgraph。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "node_id": {"type": "string"},
+                    "scope_node_id": {
+                        "type": "string",
+                        "description": "可选：loop 节点 id，用于删除其 body_subgraph 内的节点",
+                    },
+                },
+                "required": ["node_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "submit_workflow",
+            "description": "当所有修复完成时调用，返回当前 workflow。",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        },
+    },
+]
+
+__all__ = [
+    "PLANNER_TOOLS",
+    "PARAM_COMPLETION_TOOLS",
+    "WORKFLOW_VALIDATION_TOOLS",
+    "WORKFLOW_EDIT_TOOLS",
+]
