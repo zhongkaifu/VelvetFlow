@@ -224,6 +224,8 @@ validation_errors 是 JSON 数组，元素包含 code/node_id/field/message。
                 temperature=0.1,
             )
         log_llm_usage(model, getattr(resp, "usage", None), operation="repair_workflow")
+        if not resp.choices:
+            raise RuntimeError("repair_workflow_with_llm 未返回任何候选消息")
 
         msg = resp.choices[0].message
         if msg.tool_calls:
