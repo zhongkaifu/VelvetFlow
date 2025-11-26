@@ -129,7 +129,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--action-registry",
         type=Path,
-        default=Path(__file__).resolve().parent / "business_actions.json",
+        default=Path(__file__).resolve().parent
+        / "velvetflow"
+        / "business_actions.json",
         help="Path to action registry JSON file (defaults to built-in registry).",
     )
     parser.add_argument(
