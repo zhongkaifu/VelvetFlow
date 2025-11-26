@@ -425,6 +425,7 @@ def _draw_graph(
     incoming, outgoing = _build_edge_maps(workflow)
 
     flyover_lanes: Dict[Tuple[int, int], int] = {}
+    corridor_lanes: Dict[Tuple[int, int], int] = {}
 
     for edge in workflow.edges:
         start_pos = positions[edge.from_node]
@@ -437,11 +438,17 @@ def _draw_graph(
         level_from = levels.get(edge.from_node, 0)
         level_to = levels.get(edge.to_node, 0)
 
-        if abs(level_to - level_from) <= 1:
-            mid_x = (start_x + end_x) // 2
-            jitter = (hash((edge.from_node, edge.to_node)) % 7 - 3) * 4
-            corridor_margin = 12
-            mid_x = max(min(mid_x + jitter, end_x - corridor_margin), start_x + corridor_margin)
+        is_forward_neighbor = level_to - level_from == 1 and end_x > start_x
+        if is_forward_neighbor:
+            lane_idx = corridor_lanes.get((level_from, level_to), 0)
+            corridor_lanes[(level_from, level_to)] = lane_idx + 1
+
+            gap = max(end_x - start_x, 1)
+            margin = min(20, gap // 3)
+            lane_spacing = 14
+            lane_offset = min(lane_idx * lane_spacing, max(gap - 2 * margin, 0))
+            mid_x = start_x + margin + lane_offset
+            mid_x = min(mid_x, end_x - margin)
 
             canvas.draw_line(start_x, start_y, mid_x, start_y, EDGE_COLOR)
             canvas.draw_line(mid_x, start_y, mid_x, end_y, EDGE_COLOR)
