@@ -67,6 +67,11 @@ VelvetFlow (repo root)
    python validate_workflow.py path/to/workflow.json --action-registry velvetflow/business_actions.json --print-normalized
    ```
    - 复用规划阶段的静态规则与 Pydantic 校验，输出详细错误；`--print-normalized` 可打印归一化后的 DSL。
+7. **在现有 workflow 上迭代需求（可选）**
+   ```bash
+   python update_workflow.py path/to/workflow.json --requirement "新增审批环节" --output workflow_updated.json
+   ```
+   - 将自然语言需求与现有 workflow 作为输入，调用 LLM 自动更新节点、参数与边；若校验失败会将错误列表反馈给 LLM 自动修复（最多 3 轮），最终写入通过校验的结果到 `--output` 指定的文件。
 
 ## 工作流构建流程（含 LLM 标注）
 下面先将原本的一步式描述拆分为更细的流水线，再用流程图展示端到端构建：
