@@ -14,6 +14,7 @@ workflow_fc_hybrid_actions_demo.py
 
 import json
 import os
+import traceback
 from typing import Optional
 
 from velvetflow.action_registry import BUSINESS_ACTIONS
@@ -97,7 +98,10 @@ def main():
     try:
         workflow = plan_workflow(user_nl)
     except Exception as e:
-        print("\n[main] 工作流生成/补参/修复失败：", e)
+        print("\n[main] 工作流生成/补参/修复失败：", repr(e))
+        print("[main] 异常类型：", type(e).__name__)
+        print("[main] 需求输入：", user_nl)
+        print("[main] Call stack:\n", traceback.format_exc())
         return
 
     print("\n==== 最终用于保存的 Workflow DSL ====\n")
