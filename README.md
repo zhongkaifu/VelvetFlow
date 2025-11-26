@@ -107,7 +107,75 @@ LLM 相关节点说明：
 - **扩展动作库**：编辑 `velvetflow/business_actions.json` 增加/调整动作，`action_registry.py` 会自动加载并附加安全字段。
 - **调优检索**：在 `workflow_fc_hybrid_actions_demo.py` 的 `build_default_search_service` 调整 `alpha` 或替换 `DEFAULT_EMBEDDING_MODEL`/`embed_text_openai` 以适配自定义向量模型。
 - **更换模型**：`velvetflow/config.py` 中的 `OPENAI_MODEL` 控制规划/补参阶段使用的 OpenAI Chat 模型。
-- **定制执行行为**：修改 `velvetflow/simulation_data.json` 模板以覆盖动作返回；如需调整条件/循环聚合规则，可在 `executor.py` 与 `bindings.py` 中扩展。
+- **定制执行行为**：修改 `velvetflow/simulation_data.json` 模板以覆盖动作返回；如需调整条件/循环聚合规则，可在 `executor.py` 与`bindings.py` 中扩展。
+
+## Workflow DSL 速查
+下面的 JSON 结构是 VelvetFlow 规划/执行都遵循的 DSL。理解这些字段有助于手写、调试或修复 LLM 产出的 workflow。
+
+### 顶层结构
+```jsonc
+{
+  "workflow_name": "可选: 业务流程名称",
+  "description": "可选: 描述",
+  "nodes": [ /* 节点数组，详见下文 */ ],
+  "edges": [ /* 有向边数组，详见下文 */ ]
+}
+```
+- `nodes`/`edges` 会经由 Pydantic 强类型校验，重复的 `id`、边引用不存在的节点或自环都会报错。【F:velvetflow/models.py†L44-L92】
+
+### 节点定义（nodes）
+每个节点都包含以下字段：
+
+```jsonc
+{
+  "id": "唯一字符串",
+  "type": "start|end|action|condition|loop|parallel",
+  "action_id": "仅 action 节点需要，对应 business_actions.json 中的 id",
+  "display_name": "可选: 用于可视化/日志的友好名称",
+  "params": { /* 取决于节点类型的参数，下文详述 */ }
+}
+```
+
+- **start/end**：只需 `id` 与 `type`，`params` 可为空。常作为入口/出口。
+- **action**：`action_id` 必填；`params` 按动作的 `arg_schema` 填写，支持绑定 DSL（见下文）。
+- **condition**：`params` 中通常包含 `source`（绑定路径或常量）、`op`（如 equals、greater_than）、`value`（对比值）。未通过条件的边可在 `edges[].condition` 标注 `false`。
+- **loop**：`params` 需要 `iter`（循环目标，如 `result_of.fetch.items`）、`body_subgraph`（子图，结构同顶层 workflow）、`exports`（定义每轮的收集字段与聚合规则）。`body_subgraph` 在解析时也会按完整 Workflow 校验，字段不合法会提前报错。【F:velvetflow/models.py†L70-L92】
+- **parallel**：用于并行分支的占位节点，通常没有额外参数。
+
+### 边定义（edges）
+```jsonc
+{
+  "from": "上游节点 id",
+  "to": "下游节点 id",
+  "condition": "可选: 字符串条件标记 ("true"/"false" 或业务含义)",
+  "note": "可选: 人类可读备注"
+}
+```
+- `condition` 支持布尔值，解析时会被归一化为字符串，便于 LLM 输出直接通过校验。【F:velvetflow/models.py†L31-L68】
+
+### 参数绑定 DSL（params 内的占位符）
+执行器会对 `params` 里的绑定表达式进行解析与类型校验，核心形态为：
+
+```jsonc
+"some_param": {"__from__": "result_of.nodeA.output.field", "__agg__": "identity"}
+```
+
+常用能力：
+- `__from__`: 必填，指向上游结果或循环上下文，形如 `result_of.<node_id>.<path>`。如果节点是 loop，还可以写 `loop.item` 或 `loop.index`。
+- `__agg__`: 聚合/变换方式，默认 `identity`。支持：
+  - `count` / `count_if`：统计列表长度，`count_if` 还能用 `field`+`op`+`value` 过滤。
+  - `format_join`: 将列表/单值按 `format` 模板渲染并用 `sep` 拼接。
+  - `filter_map`: 先过滤再映射/格式化，适合从列表提取子字段并合并成字符串。
+  - `pipeline`: 以 `steps` 数组串联多个 `filter`/`format_join` 变换，便于描述更复杂的处理链条。
+- 直接字符串路径：`"params": {"threshold": "loop.index"}` 这类纯字符串也会尝试解析为上下文路径；解析失败会保留原值并在日志给出警告。
+- 绑定路径的有效性：`__from__` 引用动作输出时会根据动作的 `output_schema`/`arg_schema` 或 loop 的 `exports` 做静态校验，字段不存在会在执行前抛错，方便手动调试。【F:velvetflow/bindings.py†L18-L205】【F:velvetflow/bindings.py†L206-L341】
+
+### 手动调试与排错建议
+1. **先跑校验**：使用 `python validate_workflow.py your_workflow.json --print-normalized`，可以立刻发现重复节点、边引用不存在、loop 子图 schema 不合法等问题。【F:validate_workflow.py†L1-L58】
+2. **检查绑定路径**：若报 `__from__` 相关错误，确认 `result_of.<node>.<field>` 中的节点是否存在且有对应字段；loop 节点需检查 `exports` 中是否声明了该字段。
+3. **最小化修改面**：调试时优先修改 `params` 中的绑定表达式或 `edges.condition`，避免破坏整体拓扑。
+4. **模拟执行观察输出**：用 `python execute_workflow.py --workflow-json your_workflow.json`，日志会标明每个节点解析后的参数值，便于确认聚合逻辑是否符合预期。
+5. **可视化辅助**：通过 `python render_workflow_image.py --workflow-json your_workflow.json --output tmp.jpg` 生成 DAG，快速核对节点/边连通性与显示名称。
 
 ## 测试（可选）
 - 仅进行语法检查可运行：
