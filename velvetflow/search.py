@@ -1,10 +1,12 @@
 """Search and embedding utilities for VelvetFlow."""
+import time
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 from openai import OpenAI
 
 from velvetflow.action_registry import BUSINESS_ACTIONS, get_action_by_id
+from velvetflow.logging_utils import child_span, log_event
 
 
 class FakeElasticsearch:
@@ -168,82 +170,98 @@ class HybridActionSearchService:
     def search(self, query: str, top_k: int = 5,
                tenant_id: str = None,
                domain: str = None) -> List[Dict[str, Any]]:
-        q_emb = self.embed_fn(query)
+        start = time.perf_counter()
+        with child_span("action_search") as span_ctx:
+            q_emb = self.embed_fn(query)
 
-        must_clauses = [
-            {
-                "multi_match": {
-                    "query": query,
-                    "fields": ["name^3", "description^2", "tags^2", "domain"],
-                    "type": "best_fields",
+            must_clauses = [
+                {
+                    "multi_match": {
+                        "query": query,
+                        "fields": ["name^3", "description^2", "tags^2", "domain"],
+                        "type": "best_fields",
+                    }
                 }
+            ]
+            filter_clauses = [{"term": {"enabled": True}}]
+            if domain:
+                filter_clauses.append({"term": {"domain": domain}})
+
+            es_body = {
+                "query": {
+                    "bool": {
+                        "must": must_clauses,
+                        "filter": filter_clauses,
+                    }
+                },
+                "_source": ["action_id", "name", "description", "domain", "tags", "arg_schema", "output_schema"],
+                "size": 50,
             }
-        ]
-        filter_clauses = [{"term": {"enabled": True}}]
-        if domain:
-            filter_clauses.append({"term": {"domain": domain}})
 
-        es_body = {
-            "query": {
-                "bool": {
-                    "must": must_clauses,
-                    "filter": filter_clauses,
-                }
-            },
-            "_source": ["action_id", "name", "description", "domain", "tags", "arg_schema", "output_schema"],
-            "size": 50,
-        }
+            es_resp = self.es.search(index="action_registry", body=es_body)
+            bm25_scores: Dict[str, float] = {}
+            es_actions: Dict[str, Dict[str, Any]] = {}
+            for hit in es_resp["hits"]["hits"]:
+                src = hit["_source"]
+                aid = src["action_id"]
+                bm25_scores[aid] = hit["_score"]
+                es_actions[aid] = src
 
-        es_resp = self.es.search(index="action_registry", body=es_body)
-        bm25_scores: Dict[str, float] = {}
-        es_actions: Dict[str, Dict[str, Any]] = {}
-        for hit in es_resp["hits"]["hits"]:
-            src = hit["_source"]
-            aid = src["action_id"]
-            bm25_scores[aid] = hit["_score"]
-            es_actions[aid] = src
+            vec_results = self.vector_client.search(q_emb, top_k=50)
+            vec_scores: Dict[str, float] = {aid: score for aid, score in vec_results}
 
-        vec_results = self.vector_client.search(q_emb, top_k=50)
-        vec_scores: Dict[str, float] = {aid: score for aid, score in vec_results}
+            all_ids = set(bm25_scores.keys()) | set(vec_scores.keys())
+            if not all_ids:
+                return []
 
-        all_ids = set(bm25_scores.keys()) | set(vec_scores.keys())
-        if not all_ids:
-            return []
+            def normalize(scores: Dict[str, float]) -> Dict[str, float]:
+                if not scores:
+                    return {}
+                vals = list(scores.values())
+                mn, mx = min(vals), max(vals)
+                if mx - mn < 1e-8:
+                    return {k: 1.0 for k in scores}
+                return {k: (v - mn) / (mx - mn) for k, v in scores.items()}
 
-        def normalize(scores: Dict[str, float]) -> Dict[str, float]:
-            if not scores:
-                return {}
-            vals = list(scores.values())
-            mn, mx = min(vals), max(vals)
-            if mx - mn < 1e-8:
-                return {k: 1.0 for k in scores}
-            return {k: (v - mn) / (mx - mn) for k, v in scores.items()}
+            bm25_norm = normalize(bm25_scores)
+            vec_norm = normalize(vec_scores)
 
-        bm25_norm = normalize(bm25_scores)
-        vec_norm = normalize(vec_scores)
+            hybrid: List[Tuple[str, float]] = []
+            for aid in all_ids:
+                b = bm25_norm.get(aid, 0.0)
+                v = vec_norm.get(aid, 0.0)
+                score = self.alpha * b + (1.0 - self.alpha) * v
+                hybrid.append((aid, score))
 
-        hybrid: List[Tuple[str, float]] = []
-        for aid in all_ids:
-            b = bm25_norm.get(aid, 0.0)
-            v = vec_norm.get(aid, 0.0)
-            score = self.alpha * b + (1.0 - self.alpha) * v
-            hybrid.append((aid, score))
+            hybrid.sort(key=lambda x: x[1], reverse=True)
+            top_ids = [aid for aid, _ in hybrid[:top_k]]
 
-        hybrid.sort(key=lambda x: x[1], reverse=True)
-        top_ids = [aid for aid, _ in hybrid[:top_k]]
+            results = []
+            for aid in top_ids:
+                src = es_actions.get(aid)
+                if not src:
+                    src = get_action_by_id(aid) or {"action_id": aid}
+                results.append({
+                    "action_id": src["action_id"],
+                    "name": src.get("name", ""),
+                    "description": src.get("description", ""),
+                    "domain": src.get("domain", ""),
+                    "tags": src.get("tags", []),
+                    "arg_schema": src.get("arg_schema"),
+                    "output_schema": src.get("output_schema"),
+                })
 
-        results = []
-        for aid in top_ids:
-            src = es_actions.get(aid)
-            if not src:
-                src = get_action_by_id(aid) or {"action_id": aid}
-            results.append({
-                "action_id": src["action_id"],
-                "name": src.get("name", ""),
-                "description": src.get("description", ""),
-                "domain": src.get("domain", ""),
-                "tags": src.get("tags", []),
-                "arg_schema": src.get("arg_schema"),
-                "output_schema": src.get("output_schema"),
-            })
-        return results
+            duration_ms = (time.perf_counter() - start) * 1000
+            log_event(
+                "search_metrics",
+                {
+                    "query": query,
+                    "domain": domain,
+                    "tenant_id": tenant_id,
+                    "top_k": top_k,
+                    "latency_ms": round(duration_ms, 2),
+                    "result_size": len(results),
+                },
+                context=span_ctx,
+            )
+            return results

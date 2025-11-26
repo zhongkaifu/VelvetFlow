@@ -8,11 +8,13 @@ from openai import OpenAI
 
 from velvetflow.config import OPENAI_MODEL
 from velvetflow.logging_utils import (
+    child_span,
     log_debug,
     log_error,
     log_event,
     log_info,
     log_json,
+    log_llm_usage,
     log_section,
     log_success,
     log_warn,
@@ -191,14 +193,16 @@ def _synthesize_loop_exports_with_llm(
         "hint": "优先选择 body_subgraph.exit 作为 items.from_node，字段来自该节点 output_schema.properties。",
     }
 
-    resp = client.chat.completions.create(
-        model=model,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
-        ],
-        temperature=0.2,
-    )
+    with child_span("loop_exports_llm"):
+        resp = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+            ],
+            temperature=0.2,
+        )
+    log_llm_usage(model, getattr(resp, "usage", None), operation="synthesize_loop_exports")
 
     content = resp.choices[0].message.content or ""
     text = content.strip()
@@ -333,13 +337,15 @@ def plan_workflow_structure_with_llm(
     # ---------- 结构规划（多轮 tool-calling） ----------
     for round_idx in range(max_rounds):
         log_section(f"结构规划 Round {round_idx + 1}")
-        resp = client.chat.completions.create(
-            model=OPENAI_MODEL,
-            messages=messages,
-            tools=PLANNER_TOOLS,
-            tool_choice="auto",
-            temperature=0.2,
-        )
+        with child_span("structure_planning_llm"):
+            resp = client.chat.completions.create(
+                model=OPENAI_MODEL,
+                messages=messages,
+                tools=PLANNER_TOOLS,
+                tool_choice="auto",
+                temperature=0.2,
+            )
+        log_llm_usage(OPENAI_MODEL, getattr(resp, "usage", None), operation="structure_planning")
         msg = resp.choices[0].message
         messages.append({
             "role": "assistant",

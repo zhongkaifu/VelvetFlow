@@ -8,7 +8,15 @@ from typing import Any, Dict, List, Optional
 from openai import OpenAI
 
 from velvetflow.config import OPENAI_MODEL
-from velvetflow.logging_utils import log_debug, log_error, log_info, log_success, log_warn
+from velvetflow.logging_utils import (
+    child_span,
+    log_debug,
+    log_error,
+    log_info,
+    log_llm_usage,
+    log_success,
+    log_warn,
+)
 from velvetflow.models import Node, PydanticValidationError, ValidationError, Workflow
 from velvetflow.planner.action_guard import ensure_registered_actions
 
@@ -183,14 +191,16 @@ def repair_workflow_with_llm(
         "action_schemas": action_schemas,
     }
 
-    resp = client.chat.completions.create(
-        model=model,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
-        ],
-        temperature=0.1,
-    )
+    with child_span("repair_llm"):
+        resp = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
+            ],
+            temperature=0.1,
+        )
+    log_llm_usage(model, getattr(resp, "usage", None), operation="repair_workflow")
 
     content = resp.choices[0].message.content or ""
     text = content.strip()

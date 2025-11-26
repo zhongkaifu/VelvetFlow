@@ -8,6 +8,8 @@ from typing import Any, Dict, List, Mapping, Optional, Set, Union
 from velvetflow.bindings import BindingContext, eval_node_params
 from velvetflow.action_registry import get_action_by_id
 from velvetflow.logging_utils import (
+    TraceContext,
+    child_span,
     log_debug,
     log_event,
     log_info,
@@ -16,6 +18,7 @@ from velvetflow.logging_utils import (
     log_section,
     log_success,
     log_warn,
+    use_trace_context,
 )
 from velvetflow.models import Node, ValidationError, Workflow
 
@@ -65,6 +68,7 @@ class DynamicActionExecutor:
         workflow: Workflow,
         simulations: Union[str, Mapping[str, Any], None] = None,
         user_role: str = "user",
+        trace_context: TraceContext | None = None,
     ):
         if not isinstance(workflow, Workflow):
             raise ValueError(f"workflow 必须是 Workflow 对象，当前类型为 {type(workflow)}")
@@ -81,6 +85,7 @@ class DynamicActionExecutor:
         self.nodes = {n["id"]: n for n in workflow_dict["nodes"]}
         self.edges = workflow_dict["edges"]
         self.user_role = user_role
+        self.trace_context = trace_context
 
         if isinstance(simulations, str):
             self.simulation_data: SimulationData = load_simulation_data(simulations)
@@ -1162,11 +1167,34 @@ class DynamicActionExecutor:
         log_success("执行结束")
         return results
 
-    def run_workflow(self):
+    def run_workflow(self, trace_context: TraceContext | None = None):
         binding_ctx = BindingContext(self.workflow, {})
-        self._execute_graph(self.workflow_dict, binding_ctx)
+        ctx = trace_context or self.trace_context
+        if ctx:
+            with use_trace_context(ctx):
+                with child_span("executor_run") as span_ctx:
+                    log_event(
+                        "executor_start",
+                        {
+                            "workflow_name": self.workflow.workflow_name,
+                            "node_count": len(self.workflow.nodes),
+                        },
+                        context=span_ctx,
+                    )
+                    results = self._execute_graph(self.workflow_dict, binding_ctx)
+                    log_event(
+                        "executor_finished",
+                        {
+                            "workflow_name": self.workflow.workflow_name,
+                            "result_nodes": list(results.keys()),
+                        },
+                        context=span_ctx,
+                    )
+                    return results
 
-    def run(self):
-        self.run_workflow()
+        return self._execute_graph(self.workflow_dict, binding_ctx)
+
+    def run(self, trace_context: TraceContext | None = None):
+        return self.run_workflow(trace_context=trace_context)
 
 
