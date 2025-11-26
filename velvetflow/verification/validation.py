@@ -6,7 +6,18 @@ from typing import Any, Dict, List, Mapping, Optional
 
 from velvetflow.loop_dsl import build_loop_output_schema, index_loop_body_nodes
 from velvetflow.models import ValidationError, Workflow
-from velvetflow.planner.action_guard import _index_actions_by_id
+
+
+def _index_actions_by_id(action_registry: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    """Lightweight action registry indexer without importing planner package.
+
+    The planner package re-exports verification helpers, so importing from
+    ``velvetflow.planner`` inside this module would trigger a circular import.
+    Keeping this helper local avoids that dependency while preserving the
+    expected behavior.
+    """
+
+    return {a.get("action_id"): a for a in action_registry or [] if isinstance(a, dict)}
 
 
 def precheck_loop_body_graphs(workflow_raw: Mapping[str, Any] | Any) -> List[ValidationError]:
