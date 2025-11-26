@@ -2,14 +2,16 @@ from __future__ import annotations
 
 """A small set of real, ready-to-use business tools."""
 
+import html
 import json
 import re
 import textwrap
 import urllib.parse
 import urllib.request
+import xml.etree.ElementTree as ET
 from html.parser import HTMLParser
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 from openai import OpenAI
 
@@ -103,35 +105,42 @@ def search_web(query: str, limit: int = 5, timeout: int = 8) -> Dict[str, List[D
 
 
 def search_news(query: str, limit: int = 5, timeout: int = 8) -> Dict[str, List[Dict[str, str]]]:
-    """Search recent news headlines via DuckDuckGo and return titles, URLs, and snippets."""
+    """Search recent news headlines via Bing and return titles, URLs, and snippets."""
+
+    def _clean_text(value: str) -> str:
+        text_no_tags = re.sub(r"<[^>]+>", " ", value)
+        text_unescaped = html.unescape(text_no_tags)
+        return re.sub(r"\s+", " ", text_unescaped).strip()
 
     if not query:
         raise ValueError("query is required for news search")
 
     encoded_q = urllib.parse.quote_plus(query)
-    url = f"https://duckduckgo.com/html/?q={encoded_q}&iar=news&ia=news"
+    url = f"https://www.bing.com/news/search?q={encoded_q}&format=rss"
     req = urllib.request.Request(url, headers={"User-Agent": "VelvetFlow/1.0"})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            raw_html = resp.read().decode("utf-8", errors="ignore")
+            raw_feed = resp.read().decode("utf-8", errors="ignore")
     except Exception as exc:  # pragma: no cover - network-dependent
         raise RuntimeError(f"news search failed: {exc}") from exc
 
-    parser = _DuckDuckGoParser(limit=limit)
     try:
-        parser.feed(raw_html)
-    except StopIteration:
-        pass
+        root = ET.fromstring(raw_feed)
+    except ET.ParseError as exc:  # pragma: no cover - network-dependent
+        raise RuntimeError(f"failed to parse news feed: {exc}") from exc
 
     results: List[Dict[str, str]] = []
-    for item in parser.results[:limit]:
-        results.append(
-            {
-                "title": item.get("title", ""),
-                "url": item.get("url", ""),
-                "snippet": item.get("snippet", ""),
-            }
-        )
+    for item in root.findall(".//item"):
+        title = _clean_text(item.findtext("title", default=""))
+        url_value = item.findtext("link", default="")
+        description = item.findtext("description", default="")
+        snippet = _clean_text(description) or title
+
+        if title and url_value:
+            results.append({"title": title, "url": url_value, "snippet": snippet})
+        if len(results) >= limit:
+            break
+
     return {"results": results}
 
 
