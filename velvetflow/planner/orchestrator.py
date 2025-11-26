@@ -205,6 +205,111 @@ def _coerce_value_to_schema_type(value: Any, field_schema: Mapping[str, Any]) ->
     return None
 
 
+def _coerce_condition_param_types(
+    workflow: Workflow,
+) -> tuple[Workflow, List[ValidationError]]:
+    """Validate condition params against kind-specific type expectations.
+
+    在进入常规校验/修复流程前，先根据 condition 节点 params.kind 的语义
+    做一次类型匹配检查：
+
+    * 若发现数值比较类的字段（threshold/min/max/bands[*].min/bands[*].max）
+      与期望的 number 不匹配，尝试转换为 float/int。
+    * regex_match 的 pattern 会被强制转换为字符串。
+    * 无法转换的字段会生成 ValidationError，引导后续 LLM 做结构化修复。
+    """
+
+    def _to_number(value: Any) -> Optional[float]:
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return value
+        try:
+            return float(value)
+        except Exception:  # noqa: BLE001
+            return None
+
+    kind_numeric_fields = {
+        "any_greater_than": ["threshold"],
+        "all_less_than": ["threshold"],
+        "greater_than": ["threshold"],
+        "less_than": ["threshold"],
+        "between": ["min", "max"],
+        "max_in_range": ["min", "max"],
+    }
+
+    errors: List[ValidationError] = []
+    wf_dict = workflow.model_dump(by_alias=True)
+    changed = False
+
+    for node in iter_workflow_and_loop_body_nodes(wf_dict):
+        if not isinstance(node, Mapping) or node.get("type") != "condition":
+            continue
+
+        nid = node.get("id")
+        params = node.get("params") if isinstance(node.get("params"), Mapping) else None
+        kind = params.get("kind") if isinstance(params, Mapping) else None
+        if not params or not kind:
+            continue
+
+        for field in kind_numeric_fields.get(kind, []):
+            if field not in params:
+                continue
+            coerced = _to_number(params[field])
+            if coerced is None:
+                errors.append(
+                    ValidationError(
+                        code="SCHEMA_MISMATCH",
+                        node_id=nid,
+                        field=field,
+                        message=(
+                            f"condition 节点 '{nid}' (kind={kind}) 的字段 '{field}' 需要数值类型，无法自动转换当前值"
+                        ),
+                    )
+                )
+            elif coerced != params[field]:
+                params[field] = coerced
+                changed = True
+
+        if kind == "max_in_range" and isinstance(params.get("bands"), list):
+            for idx, band in enumerate(params.get("bands") or []):
+                if not isinstance(band, Mapping):
+                    continue
+                for numeric_key in ("min", "max"):
+                    if numeric_key not in band:
+                        continue
+                    coerced = _to_number(band[numeric_key])
+                    if coerced is None:
+                        errors.append(
+                            ValidationError(
+                                code="SCHEMA_MISMATCH",
+                                node_id=nid,
+                                field=f"bands[{idx}].{numeric_key}",
+                                message=(
+                                    f"condition 节点 '{nid}' (kind=max_in_range) 的 bands[{idx}].{numeric_key} 需要数值类型，无法自动转换"
+                                ),
+                            )
+                        )
+                    elif coerced != band[numeric_key]:
+                        band[numeric_key] = coerced
+                        changed = True
+
+        if kind == "regex_match" and "pattern" in params:
+            pattern = params.get("pattern")
+            if pattern is not None and not isinstance(pattern, str):
+                params["pattern"] = str(pattern)
+                changed = True
+
+    if not changed:
+        return workflow, errors
+
+    try:
+        coerced_workflow = Workflow.model_validate(wf_dict)
+    except Exception as exc:  # noqa: BLE001
+        log_warn(f"[AutoRepair] 条件节点类型矫正后验证失败：{exc}")
+        return workflow, errors
+
+    return coerced_workflow, errors
+
+
 def _apply_local_repairs_for_missing_params(
     current_workflow: Workflow,
     validation_errors: List[ValidationError],
@@ -497,15 +602,27 @@ def plan_workflow_with_two_pass(
             log_section(f"校验 + 自修复轮次 {repair_round}")
             log_json("当前 workflow", current_workflow.model_dump(by_alias=True))
 
+            current_workflow, coercion_errors = _coerce_condition_param_types(
+                current_workflow
+            )
+
             static_errors = run_lightweight_static_rules(
                 current_workflow.model_dump(by_alias=True),
                 action_registry=action_registry,
             )
 
-            errors = static_errors or validate_completed_workflow(
-                current_workflow.model_dump(by_alias=True),
-                action_registry=action_registry,
-            )
+            errors: List[ValidationError] = []
+            errors.extend(coercion_errors)
+
+            if static_errors:
+                errors.extend(static_errors)
+            else:
+                errors.extend(
+                    validate_completed_workflow(
+                        current_workflow.model_dump(by_alias=True),
+                        action_registry=action_registry,
+                    )
+                )
 
             if not errors:
                 log_success("校验通过，无需进一步修复")
