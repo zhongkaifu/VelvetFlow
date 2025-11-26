@@ -302,52 +302,86 @@ class BindingContext:
             raise KeyError("空路径")
 
         parts = path.split(".")
+        resolved_parts: List[str] = []
+
+        def _fmt_path(extra: Optional[str] = None) -> str:
+            if extra is None:
+                return ".".join(resolved_parts)
+            return ".".join([*resolved_parts, extra])
 
         if parts[0] == "loop":
             cur: Any = self.loop_ctx
+            resolved_parts.append("loop")
             for p in parts[1:]:
                 if isinstance(cur, dict) and p in cur:
                     cur = cur[p]
+                    resolved_parts.append(p)
                     continue
-                raise KeyError(p)
+                raise KeyError(f"{_fmt_path(p)}: 在 loop_ctx 中找不到字段")
             return cur
 
         if parts[0] in self.loop_ctx:
             cur = self.loop_ctx[parts[0]]
+            resolved_parts.append(parts[0])
             rest = parts[1:]
         elif parts[0] == "result_of" and len(parts) >= 2:
             first_key = parts[1]
             if first_key not in self.results:
-                raise KeyError(f"result_of.{first_key}")
-            cur: Any = self.results[first_key]
+                raise KeyError(f"result_of.{first_key}: 上游节点未执行或没有结果")
+            cur = self.results[first_key]
+            resolved_parts.extend(["result_of", first_key])
             rest = parts[2:]
         else:
             context = {f"result_of.{nid}": value for nid, value in self.results.items()}
             if parts[0] not in context:
-                raise KeyError(parts[0])
+                raise KeyError(f"{parts[0]}: 上下文中不存在")
             cur = context[parts[0]]
+            resolved_parts.append(parts[0])
             rest = parts[1:]
 
         for p in rest:
-            if isinstance(cur, dict) and p in cur:
+            if isinstance(cur, dict):
+                if p not in cur:
+                    raise KeyError(
+                        f"{_fmt_path(p)}: 字段不存在，当前可用键: {sorted(cur.keys())}"
+                    )
                 cur = cur[p]
+                resolved_parts.append(p)
                 continue
 
-            # When the current value is a list of dicts, allow selecting a
-            # sub-field from every element. This prevents parameter resolving
-            # from failing on paths like ``result_of.xxx.data.employee_id``
-            # where ``data`` is a list of objects.
             if isinstance(cur, list):
+                if not cur:
+                    raise KeyError(f"{_fmt_path()}: 列表为空，无法获取字段 '{p}'")
+
                 extracted = []
+                missing_count = 0
+                invalid_types = set()
                 for item in cur:
-                    if isinstance(item, dict) and p in item:
-                        extracted.append(item[p])
+                    if isinstance(item, dict):
+                        if p in item:
+                            extracted.append(item[p])
+                        else:
+                            missing_count += 1
+                    else:
+                        invalid_types.add(type(item).__name__)
+
                 if extracted:
                     cur = extracted
+                    resolved_parts.append(p)
                     continue
-                raise KeyError(p)
 
-                raise KeyError(p)
+                details = []
+                if missing_count:
+                    details.append(f"{missing_count} 个字典缺少字段 '{p}'")
+                if invalid_types:
+                    details.append(f"存在非字典元素类型: {sorted(invalid_types)}")
+                raise KeyError(
+                    f"{_fmt_path(p)}: 列表元素不包含目标字段，" + ", ".join(details)
+                )
+
+            raise TypeError(
+                f"{_fmt_path()}: 值类型为 {type(cur).__name__}，不支持字段 '{p}' 访问"
+            )
 
         return cur
 
