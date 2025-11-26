@@ -40,7 +40,7 @@ VelvetFlow (repo root)
    ```bash
    python -m venv .venv
    source .venv/bin/activate
-   pip install --upgrade openai numpy pillow
+   pip install --upgrade openai numpy pillow pydantic
    ```
 2. **设置凭证**
    ```bash
@@ -54,17 +54,32 @@ VelvetFlow (repo root)
    - 结果会持久化到 `workflow_output.json`，并生成 `workflow_dag.jpg`。
 4. **从已保存 JSON 执行工作流**
    ```bash
- python execute_workflow.py --workflow-json workflow_output.json
-  ```
+   python execute_workflow.py --workflow-json workflow_output.json
+   ```
    - 执行器会解析绑定 DSL、运行条件/循环节点，并使用 `velvetflow/simulation_data.json` 生成模拟结果。
 5. **从 JSON 绘制工作流 DAG**
    ```bash
    python render_workflow_image.py --workflow-json workflow_output.json --output workflow_dag.jpg
    ```
    - 读取已有的 workflow JSON，将 DAG 渲染成 JPEG。对于 action 节点，会额外显示调用的工具名称和输入参数。
+6. **校验任意 workflow JSON（可选）**
+   ```bash
+   python validate_workflow.py path/to/workflow.json --action-registry velvetflow/business_actions.json --print-normalized
+   ```
+   - 复用规划阶段的静态规则与 Pydantic 校验，输出详细错误；`--print-normalized` 可打印归一化后的 DSL。
 
 ## 工作流构建流程（含 LLM 标注）
-下面的流程图展示从自然语言需求到最终 Workflow DSL 的关键步骤，并对需要调用 LLM 的环节进行了突出标注，节点内含输入/输出数据结构：
+下面先将原本的一步式描述拆分为更细的流水线，再用流程图展示端到端构建：
+
+1. **需求接收与环境准备**：获取自然语言需求，并加载业务动作库以初始化混合检索服务。
+2. **结构规划（LLM）**：调用 `plan_workflow_structure_with_llm` 生成 `nodes/edges/entry/exit` 骨架，随后用 Pydantic 校验与 `ensure_registered_actions` 过滤不合法动作。
+3. **参数补全（LLM）**：在已通过的骨架上调用 `fill_params_with_llm` 补齐各节点 `params/exports/bindings`，生成完整的工作流字典。
+4. **多轮校验与自修复（LLM）**：
+   - 首次校验未通过时，记录 `ValidationError` 列表。
+   - 进入 `_repair_with_llm_and_fallback`，结合错误提示反复修复，必要时回退到上一次有效版本，直到通过或达到 `max_repair_rounds`。
+5. **持久化与可视化**：最终通过校验后，写出 `workflow_output.json`，并可用 `render_workflow_image.py` 生成 `workflow_dag.jpg`。
+
+下方流程图标明关键输入/输出与 LLM 节点：
 
 ```mermaid
 flowchart TD
