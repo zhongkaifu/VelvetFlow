@@ -73,6 +73,69 @@ def test_validate_workflow_rejects_template_params():
     assert any(err.code == "INVALID_TEMPLATE_BINDING" for err in errors)
 
 
+def test_loop_alias_source_does_not_crash_array_field_validation():
+    """Ensure loop body conditions using item_alias strings won't trigger index errors."""
+
+    workflow = {
+        "workflow_name": "temperature_loop_alias",
+        "description": "",
+        "nodes": [
+            {"id": "start", "type": "start", "params": {}},
+            {
+                "id": "get_temperatures",
+                "type": "action",
+                "action_id": "hr.get_today_temperatures.v1",
+                "params": {"date": {"__from__": "result_of.start", "__agg__": "identity"}},
+            },
+            {
+                "id": "loop_check_temp",
+                "type": "loop",
+                "params": {
+                    "loop_kind": "for_each",
+                    "source": {"__from__": "result_of.get_temperatures.data", "__agg__": "identity"},
+                    "item_alias": "employee",
+                    "body_subgraph": {
+                        "nodes": [
+                            {
+                                "id": "check_temp_condition",
+                                "type": "condition",
+                                "params": {
+                                    "kind": "any_greater_than",
+                                    "source": "employee",
+                                    "field": "temperature",
+                                    "threshold": 38,
+                                },
+                            },
+                            {
+                                "id": "record_high_temp",
+                                "type": "action",
+                                "action_id": "hr.record_health_event.v1",
+                                "params": {},
+                            },
+                        ],
+                        "edges": [
+                            {"from": "check_temp_condition", "to": "record_high_temp", "condition": "true"}
+                        ],
+                        "entry": "check_temp_condition",
+                        "exit": "record_high_temp",
+                    },
+                    "exports": {"items": {"from_node": "record_high_temp", "fields": ["event_id"]}},
+                },
+            },
+        ],
+        "edges": [
+            {"from": "start", "to": "get_temperatures"},
+            {"from": "get_temperatures", "to": "loop_check_temp"},
+        ],
+    }
+
+    errors = validate_workflow_data(workflow, ACTION_REGISTRY)
+
+    assert any(
+        e.code == "MISSING_REQUIRED_PARAM" and e.node_id == "record_high_temp" for e in errors
+    ), "Expected validation to surface missing params without crashing"
+
+
 def test_validate_workflow_rejects_loop_body_reference_from_outside():
     """Bindings must not directly reference loop body nodes from outside the loop."""
 

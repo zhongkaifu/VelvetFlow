@@ -959,11 +959,21 @@ def _get_array_item_schema_from_output(
     actions_by_id: Dict[str, Dict[str, Any]],
     loop_body_parents: Optional[Mapping[str, str]] = None,
 ) -> Optional[Mapping[str, Any]]:
+    if not isinstance(source, str):
+        return None
+
+    if not source.startswith("result_of."):
+        # 允许 loop body 中直接使用 item_alias（如 "employee"），这种场景无法做静态 schema 校验，直接跳过。
+        return None
+
     err = _check_output_path_against_schema(source, nodes_by_id, actions_by_id, loop_body_parents)
     if err:
         return None
 
     parts = source.split(".")
+    if len(parts) < 2:
+        return None
+
     node_id = parts[1]
     first_field = parts[2] if len(parts) >= 3 else None
     node = nodes_by_id.get(node_id)
