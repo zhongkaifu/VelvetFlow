@@ -413,7 +413,22 @@ class DynamicActionExecutor:
 
             kind = expr.get("kind")
             field = expr.get("field") if isinstance(expr, Mapping) else None
-            values = self._extract_export_values(results.get(from_node), field if isinstance(field, str) else None)
+            raw_source = results.get(from_node)
+            values = self._extract_export_values(raw_source, field if isinstance(field, str) else None)
+
+            log_json(
+                "[loop.exports.aggregates] 输入",
+                {
+                    "name": name,
+                    "kind": kind,
+                    "from_node": from_node,
+                    "field": field,
+                    "raw_result": raw_source,
+                    "extracted_values": values,
+                    "current_output": aggregates_output.get(name),
+                    "avg_state": avg_state.get(name),
+                },
+            )
 
             if kind == "count_if":
                 op = expr.get("op", "==")
@@ -440,6 +455,17 @@ class DynamicActionExecutor:
                     if _match(v):
                         count += 1
                 aggregates_output[name] = count
+                log_json(
+                    "[loop.exports.aggregates] count_if 计算结果",
+                    {
+                        "name": name,
+                        "op": op,
+                        "target": target,
+                        "matched_values": [v for v in values if _match(v)],
+                        "count_before": count - sum(1 for v in values if _match(v)),
+                        "count_after": count,
+                    },
+                )
                 continue
 
             numeric_values: List[float] = []
@@ -451,6 +477,17 @@ class DynamicActionExecutor:
                 except Exception:
                     continue
 
+            log_json(
+                "[loop.exports.aggregates] 数值化输入",
+                {
+                    "name": name,
+                    "kind": kind,
+                    "numeric_values": numeric_values,
+                    "previous_output": aggregates_output.get(name),
+                    "avg_state": avg_state.get(name),
+                },
+            )
+
             if not numeric_values and kind not in {"max", "min"}:
                 continue
 
@@ -461,6 +498,10 @@ class DynamicActionExecutor:
                     if max_val is None or v > max_val:
                         max_val = v
                 aggregates_output[name] = max_val
+                log_json(
+                    "[loop.exports.aggregates] max 计算结果",
+                    {"name": name, "previous": current, "values": numeric_values, "result": max_val},
+                )
             elif kind == "min":
                 current = aggregates_output.get(name)
                 min_val = current
@@ -468,15 +509,33 @@ class DynamicActionExecutor:
                     if min_val is None or v < min_val:
                         min_val = v
                 aggregates_output[name] = min_val
+                log_json(
+                    "[loop.exports.aggregates] min 计算结果",
+                    {"name": name, "previous": current, "values": numeric_values, "result": min_val},
+                )
             elif kind == "sum":
                 base = aggregates_output.get(name, 0)
                 aggregates_output[name] = base + sum(numeric_values)
+                log_json(
+                    "[loop.exports.aggregates] sum 计算结果",
+                    {"name": name, "base": base, "values": numeric_values, "result": aggregates_output[name]},
+                )
             elif kind == "avg":
                 state = avg_state.setdefault(name, {"sum": 0.0, "count": 0})
                 state["sum"] += sum(numeric_values)
                 state["count"] += len(numeric_values)
                 if state["count"] > 0:
                     aggregates_output[name] = state["sum"] / state["count"]
+                    log_json(
+                        "[loop.exports.aggregates] avg 计算结果",
+                        {
+                            "name": name,
+                            "values": numeric_values,
+                            "state_sum": state["sum"],
+                            "state_count": state["count"],
+                            "result": aggregates_output.get(name),
+                        },
+                    )
 
     def _eval_condition(
         self, node: Dict[str, Any], ctx: BindingContext, *, include_debug: bool = False
