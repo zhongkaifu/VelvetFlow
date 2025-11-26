@@ -31,6 +31,7 @@ from velvetflow.logging_utils import (
 from velvetflow.models import PydanticValidationError, ValidationError, Workflow
 from velvetflow.loop_dsl import iter_workflow_and_loop_body_nodes
 from velvetflow.planner.action_guard import ensure_registered_actions
+from velvetflow.planner.coverage import check_requirement_coverage_with_llm
 from velvetflow.planner.params import fill_params_with_llm
 from velvetflow.planner.repair import (
     _convert_pydantic_errors,
@@ -348,11 +349,22 @@ def plan_workflow_with_two_pass(
         search_service=search_service,
         reason="结构规划后修正未注册的 action_id",
     )
+    coverage_hint = check_requirement_coverage_with_llm(
+        nl_requirement=nl_requirement,
+        workflow=skeleton.model_dump(by_alias=True),
+        model=OPENAI_MODEL,
+    )
+    log_json("覆盖度摘要（补参提示用）", coverage_hint)
+    coverage_missing_points = coverage_hint.get("missing_points") or []
+    coverage_analysis = coverage_hint.get("analysis") or ""
     last_good_workflow: Workflow = skeleton
     try:
         completed_workflow_raw = fill_params_with_llm(
             workflow_skeleton=skeleton.model_dump(by_alias=True),
             action_registry=action_registry,
+            nl_requirement=nl_requirement,
+            coverage_missing_points=coverage_missing_points,
+            coverage_analysis=coverage_analysis,
             model=OPENAI_MODEL,
         )
     except Exception as err:  # noqa: BLE001

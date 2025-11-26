@@ -4,7 +4,7 @@ import copy
 import json
 import os
 from collections import deque
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Mapping, Optional
 
 from openai import OpenAI
 
@@ -55,9 +55,40 @@ def _traverse_order(workflow: Workflow) -> List[str]:
     return order
 
 
+def _build_condition_paths(workflow: Workflow) -> Dict[str, List[str]]:
+    """为每个节点构建包含条件分支的上游路径描述。"""
+
+    edges_by_from: Dict[str, List[Mapping[str, Any]]] = {}
+    for e in workflow.edges:
+        edges_by_from.setdefault(e.from_node, []).append(e.model_dump(by_alias=True))
+
+    starts = _find_start_nodes_for_params(workflow)
+    paths: Dict[str, List[str]] = {nid: [f"start:{nid}"] for nid in starts}
+
+    for node_id in _traverse_order(workflow):
+        current_paths = paths.get(node_id, []) or [node_id]
+        for edge in edges_by_from.get(node_id, []):
+            seg = (
+                f"{node_id} -[condition={edge['condition']}]-> {edge['to']}"
+                if edge.get("condition")
+                else f"{node_id} -> {edge['to']}"
+            )
+
+            for p in current_paths:
+                new_path = f"{p} => {seg}" if p else seg
+                dest_paths = paths.setdefault(edge["to"], [])
+                if new_path not in dest_paths:
+                    dest_paths.append(new_path)
+
+    return paths
+
+
 def fill_params_with_llm(
     workflow_skeleton: Dict[str, Any],
     action_registry: List[Dict[str, Any]],
+    nl_requirement: Optional[str] = None,
+    coverage_missing_points: Optional[List[str]] = None,
+    coverage_analysis: Optional[str] = None,
     model: str = OPENAI_MODEL,
 ) -> Dict[str, Any]:
     client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
@@ -79,6 +110,7 @@ def fill_params_with_llm(
         "你只能从以下节点中读取上下游结果：result_of.<node_id>.<field>...，其中 node_id 必须来自 allowed_node_ids，field 必须存在于该节点的 output_schema。\n"
         "当引用循环节点时，只能使用 loop 节点的 exports（如 result_of.<loop_id>.items / result_of.<loop_id>.aggregates.xxx），禁止直接引用 loop body 的节点。\n"
         "若 loop.exports.items.fields 仅包含用来包裹完整输出的字段（如 data/record 等），需要通过 <字段>.<子字段> 的形式访问内部属性，不能直接写子字段名。\n"
+        "你会同时看到全局需求摘要、覆盖度缺口以及通往当前节点的条件路径，请利用这些信息保持不同节点之间的字段/风格一致。\n"
         "start/end 节点可以保持 params 为空。\n"
         "返回 JSON：{\"id\": <当前节点 id>, \"params\": { ...补全后的参数... }}，不要加代码块标记。\n\n"
         "【重要说明：示例仅为模式，不代表具体业务】\n"
@@ -86,9 +118,8 @@ def fill_params_with_llm(
         "- 直接引用：{\"__from__\": \"result_of.some_node.items\", \"__agg__\": \"identity\"}\n"
         "- 列表计数：{\"__from__\": \"result_of.some_node.items\", \"__agg__\": \"count\"}\n"
         "- 条件计数：{\"__from__\": \"result_of.some_node.items\", \"__agg__\": \"count_if\", \"field\": \"value\", \"op\": \">\", \"value\": 10}\n"
-        "- 直接格式化并拼接：{\"__from__\": \"result_of.some_node.items\", \"__agg__\": \"format_join\", \"format\": \"{name}: {score}\", \"sep\": "
-        "\\n\"}\n"
-        "- pipeline：{\"__from__\": \"result_of.list_node.items\", \"__agg__\": \"pipeline\", \"steps\": [{\"op\": \"filter\", \"field\": \"score\", \"cmp\": \">\", \"value\": 0.8}, {\"op\": \"format_join\", \"field\": \"id\", \"format\": \"ID={value} 异常\", \"sep\": \"\\n\"}]}\n"
+        "- 直接格式化并拼接：{\"__from__\": \"result_of.some_node.items\", \"__agg__\": \"format_join\", \"format\": \"{name}: {score}\", \"sep\": \"\n\"}\n"
+        "- pipeline：{\"__from__\": \"result_of.list_node.items\", \"__agg__\": \"pipeline\", \"steps\": [{\"op\": \"filter\", \"field\": \"score\", \"cmp\": \">\", \"value\": 0.8}, {\"op\": \"format_join\", \"field\": \"id\", \"format\": \"ID={value} 异常\", \"sep\": \"\n\"}]}\n"
         "示例中的节点名/字段名只是格式说明，实际必须使用 payload 中的节点信息和 output_schema。"
     )
 
@@ -97,6 +128,10 @@ def fill_params_with_llm(
     filled_params: Dict[str, Dict[str, Any]] = {
         n.id: copy.deepcopy(n.params) for n in workflow.nodes
     }
+    condition_paths = _build_condition_paths(workflow)
+    global_summary = (nl_requirement or "").strip() or workflow.description
+    missing_points = coverage_missing_points or []
+    coverage_comment = (coverage_analysis or "").strip()
 
     for node_id in _traverse_order(workflow):
         node = nodes_by_id[node_id]
@@ -118,6 +153,13 @@ def fill_params_with_llm(
 
         target_action_schema = action_schemas.get(node.action_id, {}) if node.action_id else {}
         user_payload = {
+            "global_requirement_summary": global_summary,
+            "coverage_missing_points": missing_points,
+            "coverage_analysis": coverage_comment,
+            "workflow_meta": {
+                "name": workflow.workflow_name,
+                "description": workflow.description,
+            },
             "target_node": {
                 "id": node.id,
                 "type": node.type,
@@ -128,6 +170,7 @@ def fill_params_with_llm(
             "arg_schema": target_action_schema.get("arg_schema"),
             "allowed_node_ids": allowed_node_ids,
             "allowed_upstream_nodes": upstream_context,
+            "condition_paths_to_target": condition_paths.get(node.id, []),
         }
 
         resp = client.chat.completions.create(
