@@ -83,13 +83,13 @@ def fill_params_with_llm(
         }
 
     system_prompt = (
-        "你是一个工作流参数补全助手，必须通过工具调用 update_node_params 提交参数。\n"
+        "你是一个工作流参数补全助手，必须通过工具调用 add_node_params/modify_node_params_value/rename_node_params_key/remove_node_params 提交参数。\n"
         "当某个字段需要引用其他节点的输出时，必须使用数据绑定 DSL，并且只能引用提供的 allowed_node_ids 中的节点。\n"
         "你只能从以下节点中读取上下游结果：result_of.<node_id>.<field>...，其中 node_id 必须来自 allowed_node_ids，field 必须存在于该节点的 output_schema。\n"
         "当引用循环节点时，只能使用 loop 节点的 exports（如 result_of.<loop_id>.items / result_of.<loop_id>.aggregates.xxx），禁止直接引用 loop body 的节点。\n"
         "若 loop.exports.items.fields 仅包含用来包裹完整输出的字段（如 data/record 等），需要通过 <字段>.<子字段> 的形式访问内部属性，不能直接写子字段名。\n"
         "start/end 节点可以保持 params 为空。\n"
-        "返回方式：用工具 update_node_params 提交 {node_id, params}，不要直接输出自然语言或 JSON。\n\n"
+        "返回方式：使用 add_node_params 增加字段，使用 modify_node_params_value 修改已有字段，rename_node_params_key 重命名字段，remove_node_params 删除多余字段。不要直接输出自然语言或 JSON。\n\n"
         "【重要说明：示例仅为模式，不代表具体业务】\n"
         "示例（字段名仅示意）：\n"
         "- 直接引用：{\"__from__\": \"result_of.some_node.items\", \"__agg__\": \"identity\"}\n"
@@ -213,7 +213,7 @@ def fill_params_with_llm(
                 params = node_result.get("params", {})
                 if isinstance(params, dict):
                     filled_params[node.id] = params
-                    editor.update_node_params(node.id, params)
+                    editor.set_node_params(node.id, params)
 
     completed_workflow = editor.workflow
     for node in completed_workflow.get("nodes", []):

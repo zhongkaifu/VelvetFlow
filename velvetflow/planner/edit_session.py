@@ -112,7 +112,91 @@ class WorkflowEditingSession:
         )
         return {"status": "ok", "type": "node_added", "node_id": node_id, "scope": scope_node_id}
 
-    def update_node_params(self, node_id: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    def _ensure_params(self, node: Dict[str, Any]) -> Dict[str, Any]:
+        params = node.get("params") if isinstance(node.get("params"), dict) else None
+        if not isinstance(params, dict):
+            params = {}
+            node["params"] = params
+        return params
+
+    def add_node_params(self, node_id: str, params: Dict[str, Any]) -> Dict[str, Any]:
+        node = self._find_node(node_id)
+        if not node:
+            return {"status": "error", "message": f"未找到节点 {node_id}"}
+
+        params_dict = self._ensure_params(node)
+        conflicts = [k for k in (params or {}).keys() if k in params_dict]
+        if conflicts:
+            return {"status": "error", "message": f"字段已存在: {', '.join(conflicts)}，请改用 modify_node_params_value 或 rename_node_params_key"}
+
+        params_dict.update(params or {})
+        return {
+            "status": "ok",
+            "type": "node_params_added",
+            "node_id": node_id,
+            "params": params_dict,
+        }
+
+    def remove_node_params(self, node_id: str, keys: List[str]) -> Dict[str, Any]:
+        node = self._find_node(node_id)
+        if not node:
+            return {"status": "error", "message": f"未找到节点 {node_id}"}
+
+        params_dict = self._ensure_params(node)
+        missing = [k for k in keys if k not in params_dict]
+        for k in keys:
+            params_dict.pop(k, None)
+
+        if missing:
+            return {"status": "error", "message": f"以下字段不存在，无法删除: {', '.join(missing)}"}
+
+        return {
+            "status": "ok",
+            "type": "node_params_removed",
+            "node_id": node_id,
+            "params": params_dict,
+        }
+
+    def modify_node_params_value(self, node_id: str, params: Dict[str, Any]) -> Dict[str, Any]:
+        node = self._find_node(node_id)
+        if not node:
+            return {"status": "error", "message": f"未找到节点 {node_id}"}
+
+        params_dict = self._ensure_params(node)
+        missing = [k for k in (params or {}).keys() if k not in params_dict]
+        if missing:
+            return {"status": "error", "message": f"以下字段不存在，无法修改: {', '.join(missing)}"}
+
+        params_dict.update(params or {})
+        return {
+            "status": "ok",
+            "type": "node_params_modified",
+            "node_id": node_id,
+            "params": params_dict,
+        }
+
+    def rename_node_params_key(self, node_id: str, old_key: str, new_key: str) -> Dict[str, Any]:
+        node = self._find_node(node_id)
+        if not node:
+            return {"status": "error", "message": f"未找到节点 {node_id}"}
+
+        params_dict = self._ensure_params(node)
+        if old_key not in params_dict:
+            return {"status": "error", "message": f"字段不存在: {old_key}"}
+        if new_key in params_dict:
+            return {"status": "error", "message": f"目标字段已存在: {new_key}"}
+
+        params_dict[new_key] = params_dict.pop(old_key)
+        return {
+            "status": "ok",
+            "type": "node_params_renamed",
+            "node_id": node_id,
+            "params": params_dict,
+        }
+
+    def set_node_params(self, node_id: str, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Internal helper for non-tool flows to replace params wholesale."""
+
         node = self._find_node(node_id)
         if not node:
             return {"status": "error", "message": f"未找到节点 {node_id}"}
@@ -251,8 +335,20 @@ class WorkflowEditingSession:
                 scope_node_id=args.get("scope_node_id"),
             )
 
-        if name == "update_node_params":
-            return self.update_node_params(args.get("node_id", ""), args.get("params") or {})
+        if name == "add_node_params":
+            return self.add_node_params(args.get("node_id", ""), args.get("params") or {})
+
+        if name == "remove_node_params":
+            keys = args.get("keys") or []
+            if isinstance(keys, str):
+                keys = [keys]
+            return self.remove_node_params(args.get("node_id", ""), list(keys))
+
+        if name == "modify_node_params_value":
+            return self.modify_node_params_value(args.get("node_id", ""), args.get("params") or {})
+
+        if name == "rename_node_params_key":
+            return self.rename_node_params_key(args.get("node_id", ""), args.get("old_key", ""), args.get("new_key", ""))
 
         if name == "update_node":
             return self.update_node(

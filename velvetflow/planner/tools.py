@@ -108,8 +108,8 @@ PARAM_COMPLETION_TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "update_node_params",
-            "description": "更新指定节点的 params（用于参数补全阶段）。",
+            "name": "add_node_params",
+            "description": "在节点 params 中新增字段，禁止覆盖已有字段。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -117,6 +117,52 @@ PARAM_COMPLETION_TOOLS = [
                     "params": {"type": "object", "additionalProperties": True},
                 },
                 "required": ["node_id", "params"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "modify_node_params_value",
+            "description": "修改节点 params 中已存在字段的值。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "node_id": {"type": "string"},
+                    "params": {"type": "object", "additionalProperties": True},
+                },
+                "required": ["node_id", "params"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "remove_node_params",
+            "description": "删除节点 params 中的字段。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "node_id": {"type": "string"},
+                    "keys": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["node_id", "keys"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "rename_node_params_key",
+            "description": "重命名节点 params 中的字段名称。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "node_id": {"type": "string"},
+                    "old_key": {"type": "string"},
+                    "new_key": {"type": "string"},
+                },
+                "required": ["node_id", "old_key", "new_key"],
             },
         },
     },
@@ -194,8 +240,8 @@ WORKFLOW_EDIT_TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "update_node_params",
-            "description": "仅更新节点 params，通常用于修复缺失字段或类型问题。",
+            "name": "add_node_params",
+            "description": "在节点 params 中新增字段，禁止覆盖已有字段。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -203,6 +249,52 @@ WORKFLOW_EDIT_TOOLS = [
                     "params": {"type": "object", "additionalProperties": True},
                 },
                 "required": ["node_id", "params"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "remove_node_params",
+            "description": "删除节点 params 中的字段。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "node_id": {"type": "string"},
+                    "keys": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["node_id", "keys"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "modify_node_params_value",
+            "description": "修改节点 params 中已存在字段的值。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "node_id": {"type": "string"},
+                    "params": {"type": "object", "additionalProperties": True},
+                },
+                "required": ["node_id", "params"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "rename_node_params_key",
+            "description": "重命名节点 params 中的字段名称。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "node_id": {"type": "string"},
+                    "old_key": {"type": "string"},
+                    "new_key": {"type": "string"},
+                },
+                "required": ["node_id", "old_key", "new_key"],
             },
         },
     },
