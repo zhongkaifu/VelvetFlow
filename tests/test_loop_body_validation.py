@@ -68,6 +68,75 @@ def test_loop_body_missing_exit_node_is_reported_before_pydantic():
     assert any("exit" in e.message for e in errors)
 
 
+def test_loop_body_action_missing_required_param_is_caught():
+    """Loop body action nodes should honor required params from Action Registry."""
+
+    workflow = {
+        "workflow_name": "Nvidia和Google财经新闻搜索总结通知",
+        "nodes": [
+            {
+                "id": "search_news_nvidia_google",
+                "type": "action",
+                "action_id": "common.search_news.v1",
+                "params": {"query": "Nvidia AND Google", "limit": 5, "timeout": 8},
+            },
+            {
+                "id": "loop_news",
+                "type": "loop",
+                "params": {
+                    "loop_kind": "for_each",
+                    "source": "result_of.search_news_nvidia_google.results",
+                    "item_alias": "news_item",
+                    "body_subgraph": {
+                        "nodes": [
+                            {
+                                "id": "summarize_news",
+                                "type": "action",
+                                "action_id": "common.summarize.v1",
+                            },
+                            {"id": "exit", "type": "end"},
+                        ],
+                        "edges": [{"from": "summarize_news", "to": "exit"}],
+                        "entry": "summarize_news",
+                        "exit": "exit",
+                    },
+                    "exports": {
+                        "items": {
+                            "from_node": "summarize_news",
+                            "fields": ["summary", "sentence_count"],
+                            "mode": "collect",
+                        }
+                    },
+                },
+            },
+            {
+                "id": "notify_user",
+                "type": "action",
+                "action_id": "hr.notify_human.v1",
+                "params": {
+                    "message": {
+                        "__from__": "result_of.loop_news.items",
+                        "__agg__": "format_join",
+                        "format": "{summary}",
+                        "sep": "\n\n",
+                    }
+                },
+            },
+        ],
+        "edges": [
+            {"from": "search_news_nvidia_google", "to": "loop_news"},
+            {"from": "loop_news", "to": "notify_user"},
+        ],
+    }
+
+    errors = validate_workflow_data(workflow, ACTION_REGISTRY)
+
+    assert any(
+        e.code == "MISSING_REQUIRED_PARAM" and e.node_id == "summarize_news" and e.field == "text"
+        for e in errors
+    )
+
+
 def test_precheck_is_available_for_planner_users():
     """Planner 层的 precheck 导出应可独立调用。"""
 
