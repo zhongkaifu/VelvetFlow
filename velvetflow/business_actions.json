@@ -698,7 +698,7 @@
     "action_id": "common.summarize.v1",
     "name": "Summarize text",
     "domain": "common",
-    "description": "Summarize text by selecting the first few sentences.",
+    "description": "Summarize text with the LLM for concise overviews.",
     "tool_name": "summarize",
     "tags": [
       "text",

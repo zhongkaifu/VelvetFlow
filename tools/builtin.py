@@ -313,14 +313,39 @@ def read_file(path: str, *, max_bytes: int = 65536, encoding: str = "utf-8") -> 
 
 
 def summarize(text: str, max_sentences: int = 3) -> Dict[str, Any]:
-    """Summarize a block of text using a simple sentence selection heuristic."""
+    """Summarize a block of text using the configured LLM."""
 
     if not text:
         raise ValueError("text is required for summarization")
 
-    sentences = re.split(r"(?<=[。！？.!?])\s+", textwrap.dedent(text).strip())
+    normalized_text = textwrap.dedent(text).strip()
+    sentences = re.split(r"(?<=[。！？.!?])\s+", normalized_text)
     sentences = [s.strip() for s in sentences if s.strip()]
-    summary = " ".join(sentences[:max_sentences])
+
+    client = OpenAI()
+    chat_model = OPENAI_MODEL
+    prompt = textwrap.dedent(
+        f"""
+        Provide a concise summary of the following content in no more than {max_sentences} sentences.
+        Keep the summary factual and omit speculation.
+
+        Content:
+        {normalized_text}
+        """
+    ).strip()
+
+    response = client.chat.completions.create(
+        model=chat_model,
+        messages=[
+            {"role": "system", "content": "You are an expert summarization assistant."},
+            {"role": "user", "content": prompt},
+        ],
+        max_tokens=max(64, max_sentences * 64),
+    )
+    if not response.choices:
+        raise RuntimeError("summarize did not return any choices")
+
+    summary = (response.choices[0].message.content or "").strip()
     return {"summary": summary, "sentence_count": len(sentences)}
 
 
@@ -436,7 +461,7 @@ def register_builtin_tools() -> None:
     register_tool(
         Tool(
             name="summarize",
-            description="Summarize text by selecting the first few sentences.",
+            description="Summarize text with the LLM for concise overviews.",
             function=summarize,
             args_schema={
                 "type": "object",
