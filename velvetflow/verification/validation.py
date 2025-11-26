@@ -827,6 +827,9 @@ def _get_array_item_schema_from_output(
         return None
 
     parts = source.split(".")
+    if len(parts) < 2 or parts[0] != "result_of":
+        return None
+
     node_id = parts[1]
     first_field = parts[2] if len(parts) >= 3 else None
     node = nodes_by_id.get(node_id)
