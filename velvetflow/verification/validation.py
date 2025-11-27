@@ -826,7 +826,9 @@ def _check_output_path_against_schema(
         loop_schema = build_loop_output_schema(node.get("params") or {})
         if not loop_schema:
             return f"loop 节点 '{node_id}' 未定义 exports，无法暴露给外部引用。"
-        err = _schema_path_error(loop_schema, rest_path)
+
+        effective_path = rest_path[1:] if rest_path and rest_path[0] == "exports" else rest_path
+        err = _schema_path_error(loop_schema, effective_path)
         if err:
             return f"路径 '{source_path}' 无效：{err}"
         return None
