@@ -41,6 +41,20 @@ class WorkflowBuilder:
     def add_edge(self, from_node: str, to_node: str, condition: Optional[str]):
         self.edges.append({"from": from_node, "to": to_node, "condition": condition})
 
+    def set_loop_exports(self, loop_id: str, exports: Dict[str, Any]) -> bool:
+        node = self.nodes.get(loop_id)
+        if not node or node.get("type") != "loop":
+            return False
+
+        params = node.get("params") or {}
+        new_params = dict(params)
+        new_params["exports"] = exports
+
+        new_node = dict(node)
+        new_node["params"] = new_params
+        self.nodes[loop_id] = new_node
+        return True
+
     def to_workflow(self) -> Dict[str, Any]:
         return {
             "workflow_name": self.workflow_name,
