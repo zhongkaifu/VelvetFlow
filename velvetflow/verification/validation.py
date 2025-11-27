@@ -110,6 +110,7 @@ def _validate_nodes_recursive(
     actions_by_id: Dict[str, Dict[str, Any]],
     loop_body_parents: Mapping[str, str],
     errors: List[ValidationError],
+    alias_schemas: Optional[Dict[str, Mapping[str, Any]]] = None,
 ):
     """Validate nodes (and nested loop body nodes) against planner rules."""
 
@@ -249,6 +250,56 @@ def _validate_nodes_recursive(
                         _walk_params_for_from(v, new_prefix)
 
             _walk_params_for_from(params)
+
+            # 模板引用静态校验（例如 "{{news_item.title}}"）
+            def _walk_params_for_template_refs(obj: Any, path_prefix: str = ""):
+                if isinstance(obj, str):
+                    normalized = normalize_reference_path(obj)
+                    if isinstance(normalized, str) and normalized != obj:
+                        parts = normalized.split(".")
+                        alias = parts[0] if parts else None
+
+                        if alias_schemas and alias in alias_schemas:
+                            alias_schema = alias_schemas.get(alias)
+                            err = _schema_path_error(alias_schema or {}, parts[1:])
+                            if err:
+                                errors.append(
+                                    ValidationError(
+                                        code="SCHEMA_MISMATCH",
+                                        node_id=nid,
+                                        field=path_prefix or "params",
+                                        message=(
+                                            f"action 节点 '{nid}' 的参数绑定（{path_prefix or '<root>'}）"
+                                            f"引用无效：别名 '{alias}' {err}"
+                                        ),
+                                    )
+                                )
+                        elif isinstance(normalized, str) and normalized.startswith("result_of."):
+                            schema_err = _check_output_path_against_schema(
+                                normalized, nodes_by_id, actions_by_id, loop_body_parents
+                            )
+                            if schema_err:
+                                errors.append(
+                                    ValidationError(
+                                        code="SCHEMA_MISMATCH",
+                                        node_id=nid,
+                                        field=path_prefix or "params",
+                                        message=(
+                                            f"action 节点 '{nid}' 的参数绑定（{path_prefix or '<root>'}）"
+                                            f"引用无效：{schema_err}"
+                                        ),
+                                    )
+                                )
+                elif isinstance(obj, Mapping):
+                    for key, value in obj.items():
+                        new_prefix = f"{path_prefix}.{key}" if path_prefix else str(key)
+                        _walk_params_for_template_refs(value, new_prefix)
+                elif isinstance(obj, list):
+                    for idx, value in enumerate(obj):
+                        new_prefix = f"{path_prefix}[{idx}]" if path_prefix else f"[{idx}]"
+                        _walk_params_for_template_refs(value, new_prefix)
+
+            _walk_params_for_template_refs(params)
 
         # 2) condition 节点
         if ntype == "condition":
@@ -667,6 +718,14 @@ def _validate_nodes_recursive(
             body_nodes = body_graph.get("nodes") if isinstance(body_graph, Mapping) else None
             if isinstance(body_nodes, list) and body_nodes:
                 extended_nodes_by_id = dict(nodes_by_id)
+                loop_alias_schemas = dict(alias_schemas or {})
+                if isinstance(source, str) and isinstance(item_alias, str):
+                    item_schema = _get_array_item_schema_from_output(
+                        source, nodes_by_id, actions_by_id, loop_body_parents
+                    )
+                    if item_schema:
+                        loop_alias_schemas[item_alias] = item_schema
+
                 for body_node in body_nodes:
                     if isinstance(body_node, Mapping) and isinstance(body_node.get("id"), str):
                         extended_nodes_by_id[body_node["id"]] = body_node
@@ -676,6 +735,7 @@ def _validate_nodes_recursive(
                     actions_by_id,
                     loop_body_parents,
                     errors,
+                    loop_alias_schemas,
                 )
 
         # 4) parallel 节点
