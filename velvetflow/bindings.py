@@ -1,5 +1,6 @@
 """Parameter binding resolution for workflow execution."""
 
+import json
 from typing import Any, Dict, List, Mapping, Optional
 
 from velvetflow.action_registry import get_action_by_id
@@ -415,6 +416,20 @@ def eval_node_params(node: Node, ctx: BindingContext) -> Dict[str, Any]:
             else:
                 resolved[k] = resolved_value
         elif isinstance(v, str):
+            str_val = v.strip()
+            # 允许 text 等字段以字符串形式携带绑定表达式（常见于外部序列化后传入）
+            if str_val.startswith("{") and str_val.endswith("}") and "__from__" in str_val:
+                try:
+                    parsed = json.loads(str_val)
+                except Exception:
+                    parsed = None
+                if isinstance(parsed, dict) and "__from__" in parsed:
+                    try:
+                        resolved[k] = ctx.resolve_binding(parsed)
+                        continue
+                    except Exception as e:
+                        log_warn(f"[param-resolver] 字符串绑定 {v} 解析失败: {e}，使用原值")
+
             normalized_v = normalize_reference_path(v)
             head = normalized_v.split(".", 1)[0]
             if head in ctx.loop_ctx or normalized_v.startswith("loop.") or normalized_v.startswith("result_of."):

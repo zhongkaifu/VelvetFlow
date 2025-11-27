@@ -55,3 +55,27 @@ def test_validation_accepts_templated_result_reference():
     errors = validate_workflow_data(workflow, ACTION_REGISTRY)
 
     assert errors == []
+
+
+def test_eval_params_parses_json_string_bindings():
+    workflow = Workflow.model_validate({"nodes": [{"id": "start", "type": "start"}], "edges": []})
+    ctx = BindingContext(
+        workflow,
+        {
+            "start": {
+                "items": [
+                    {"title": "新闻一"},
+                    {"title": "新闻二"},
+                ]
+            }
+        },
+    )
+
+    binding_str = (
+        '{"__from__":"result_of.start.items","__agg__":"format_join","format":"{title}","sep":"\\n"}'
+    )
+    node = Node(id="aggregate", type="action", params={"text": binding_str})
+
+    params = eval_node_params(node, ctx)
+
+    assert params["text"] == "新闻一\n新闻二"
