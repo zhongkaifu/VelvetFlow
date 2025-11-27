@@ -3,6 +3,7 @@ from __future__ import annotations
 """A small set of real, ready-to-use business tools."""
 
 import html
+import asyncio
 import importlib
 import importlib.util
 import json
@@ -14,6 +15,7 @@ import xml.etree.ElementTree as ET
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
+import inspect
 
 from openai import OpenAI
 
@@ -370,6 +372,20 @@ def _load_crawl4ai_module():
     return importlib.import_module("crawl4ai")
 
 
+def _resolve_crawl4ai_class(name: str):
+    """Best-effort lookup for Crawl4AI classes across known modules."""
+
+    for module_name in ("crawl4ai", "crawl4ai.crawler", "crawl4ai.web_crawler"):
+        try:
+            module = importlib.import_module(module_name)
+        except Exception:
+            continue
+        cls = getattr(module, name, None)
+        if cls is not None:
+            return cls
+    return None
+
+
 def _extract_crawl4ai_content(result: Any) -> str:
     """Extract the richest text payload returned by Crawl4AI."""
 
@@ -451,17 +467,32 @@ def crawl_and_summarize(
     if max_chars <= 0:
         raise ValueError("max_chars must be positive")
 
-    crawl4ai = _load_crawl4ai_module()
-    WebCrawler = getattr(crawl4ai, "WebCrawler", None)
-    if WebCrawler is None:
-        raise RuntimeError("crawl4ai.WebCrawler is not available in the installed crawl4ai version")
+    _load_crawl4ai_module()
+    WebCrawler = _resolve_crawl4ai_class("WebCrawler")
+    AsyncWebCrawler = _resolve_crawl4ai_class("AsyncWebCrawler")
 
-    crawler = WebCrawler(verbose=False)
-    warmup = getattr(crawler, "warmup", None)
-    if callable(warmup):
-        warmup()
+    if WebCrawler is not None:
+        crawler = WebCrawler(verbose=False)
+        warmup = getattr(crawler, "warmup", None)
+        if callable(warmup):
+            warmup()
+        result = crawler.run(url=url)
+    elif AsyncWebCrawler is not None:
+        async def _async_crawl() -> Any:
+            async with AsyncWebCrawler(verbose=False) as crawler:
+                warmup = getattr(crawler, "warmup", None)
+                if callable(warmup):
+                    maybe_coroutine = warmup()
+                    if inspect.iscoroutine(maybe_coroutine):
+                        await maybe_coroutine
+                return await crawler.arun(url=url)
 
-    result = crawler.run(url=url)
+        result = asyncio.run(_async_crawl())
+    else:
+        raise RuntimeError(
+            "crawl4ai does not provide WebCrawler/AsyncWebCrawler in the installed version; "
+            "upgrade crawl4ai or use a compatible release."
+        )
     content = _extract_crawl4ai_content(result)
     if not content:
         raise RuntimeError("crawl4ai did not return any textual content for the requested page")
