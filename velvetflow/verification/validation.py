@@ -69,7 +69,18 @@ def precheck_loop_body_graphs(workflow_raw: Mapping[str, Any] | Any) -> List[Val
                 )
             )
 
-        for idx, edge in enumerate(body.get("edges") or []):
+        edges = body.get("edges")
+        if isinstance(edges, list) and len(edges) == 0:
+            errors.append(
+                ValidationError(
+                    code="INVALID_LOOP_BODY",
+                    node_id=loop_id,
+                    field="body_subgraph.edges",
+                    message=f"loop 节点 '{loop_id}' 的 body_subgraph.edges 不能为空。",
+                )
+            )
+
+        for idx, edge in enumerate(edges or []):
             if not isinstance(edge, Mapping):
                 continue
             frm = edge.get("from")

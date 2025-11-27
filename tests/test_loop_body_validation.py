@@ -71,6 +71,60 @@ def test_loop_body_missing_exit_node_is_reported_before_pydantic():
     assert any("exit" in e.message for e in errors)
 
 
+def test_loop_body_edges_cannot_be_empty():
+    """空的 loop body 边列表应该在校验时被拒绝。"""
+
+    workflow = {
+        "workflow_name": "news_summary",
+        "nodes": [
+            {
+                "id": "search_news",
+                "type": "action",
+                "action_id": "common.search_news.v1",
+                "params": {"query": "AI"},
+            },
+            {
+                "id": "loop_summarize",
+                "type": "loop",
+                "params": {
+                    "loop_kind": "for_each",
+                    "source": "result_of.search_news.results",
+                    "item_alias": "news_item",
+                    "body_subgraph": {
+                        "nodes": [
+                            {
+                                "id": "summarize",
+                                "type": "action",
+                                "action_id": "common.summarize.v1",
+                                "params": {"text": "placeholder"},
+                            },
+                            {"id": "exit", "type": "end"},
+                        ],
+                        "edges": [],
+                        "entry": "summarize",
+                        "exit": "exit",
+                    },
+                    "exports": {
+                        "items": {
+                            "from_node": "summarize",
+                            "fields": ["summary"],
+                            "mode": "collect",
+                        }
+                    },
+                },
+            },
+        ],
+        "edges": [{"from": "search_news", "to": "loop_summarize"}],
+    }
+
+    errors = validate_workflow_data(workflow, ACTION_REGISTRY)
+
+    assert errors
+    assert any(
+        e.code == "INVALID_LOOP_BODY" and e.field == "body_subgraph.edges" for e in errors
+    )
+
+
 def test_loop_body_action_missing_required_param_is_caught():
     """Loop body action nodes should honor required params from Action Registry."""
 
