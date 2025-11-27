@@ -11,6 +11,7 @@ from openai import OpenAI
 from velvetflow.config import OPENAI_MODEL
 from velvetflow.logging_utils import child_span, log_debug, log_error, log_llm_usage
 from velvetflow.models import Node, Workflow
+from velvetflow.planner.params_tools import build_param_completion_tool
 from velvetflow.planner.relations import get_upstream_nodes
 
 
@@ -75,20 +76,19 @@ def fill_params_with_llm(
 
     system_prompt = (
         "你是一个工作流参数补全助手。一次只处理一个节点，请根据给定的 arg_schema 补齐当前节点的 params。\n"
+        "请务必调用 submit_node_params 工具提交结果，禁止返回自然语言。\n"
         "当某个字段需要引用其他节点的输出时，必须使用数据绑定 DSL，并且只能引用提供的 allowed_node_ids 中的节点。\n"
         "你只能从以下节点中读取上下游结果：result_of.<node_id>.<field>...，其中 node_id 必须来自 allowed_node_ids，field 必须存在于该节点的 output_schema。\n"
         "当引用循环节点时，只能使用 loop 节点的 exports（如 result_of.<loop_id>.items / result_of.<loop_id>.aggregates.xxx），禁止直接引用 loop body 的节点。\n"
         "若 loop.exports.items.fields 仅包含用来包裹完整输出的字段（如 data/record 等），需要通过 <字段>.<子字段> 的形式访问内部属性，不能直接写子字段名。\n"
         "start/end 节点可以保持 params 为空。\n"
-        "返回 JSON：{\"id\": <当前节点 id>, \"params\": { ...补全后的参数... }}，不要加代码块标记。\n\n"
         "【重要说明：示例仅为模式，不代表具体业务】\n"
         "示例（字段名仅示意）：\n"
-        "- 直接引用：{\"__from__\": \"result_of.some_node.items\", \"__agg__\": \"identity\"}\n"
-        "- 列表计数：{\"__from__\": \"result_of.some_node.items\", \"__agg__\": \"count\"}\n"
-        "- 条件计数：{\"__from__\": \"result_of.some_node.items\", \"__agg__\": \"count_if\", \"field\": \"value\", \"op\": \">\", \"value\": 10}\n"
-        "- 直接格式化并拼接：{\"__from__\": \"result_of.some_node.items\", \"__agg__\": \"format_join\", \"format\": \"{name}: {score}\", \"sep\": "
-        "\\n\"}\n"
-        "- pipeline：{\"__from__\": \"result_of.list_node.items\", \"__agg__\": \"pipeline\", \"steps\": [{\"op\": \"filter\", \"field\": \"score\", \"cmp\": \">\", \"value\": 0.8}, {\"op\": \"format_join\", \"field\": \"id\", \"format\": \"ID={value} 异常\", \"sep\": \"\\n\"}]}\n"
+        '- 直接引用：{"__from__": "result_of.some_node.items", "__agg__": "identity"}\n'
+        '- 列表计数：{"__from__": "result_of.some_node.items", "__agg__": "count"}\n'
+        '- 条件计数：{"__from__": "result_of.some_node.items", "__agg__": "count_if", "field": "value", "op": ">", "value": 10}\n'
+        '- 直接格式化并拼接：{"__from__": "result_of.some_node.items", "__agg__": "format_join", "format": "{name}: {score}", "sep": "\\n"}\n'
+        '- pipeline：{"__from__": "result_of.list_node.items", "__agg__": "pipeline", "steps": [{"op": "filter", "field": "score", "cmp": ">", "value": 0.8}, {"op": "format_join", "field": "id", "format": "ID={value} 异常", "sep": "\\n"}]}\n'
         "示例中的节点名/字段名只是格式说明，实际必须使用 payload 中的节点信息和 output_schema。"
     )
 
@@ -137,44 +137,79 @@ def fill_params_with_llm(
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
                 ],
+                tools=[
+                    build_param_completion_tool(
+                        node,
+                        action_schemas=action_schemas,
+                        allowed_node_ids=allowed_node_ids,
+                    )
+                ],
+                tool_choice={
+                    "type": "function",
+                    "function": {"name": "submit_node_params"},
+                },
                 temperature=0.1,
             )
         log_llm_usage(model, getattr(resp, "usage", None), operation="fill_params")
         if not resp.choices:
             raise RuntimeError(f"fill_params_with_llm({node.id}) 未返回任何候选消息")
 
-        content = resp.choices[0].message.content or ""
-        text = content.strip()
-        if text.startswith("```"):
-            text = text.strip("`")
-            if "\n" in text:
-                first_line, rest = text.split("\n", 1)
-                if first_line.strip().lower().startswith("json"):
-                    text = rest
+        message = resp.choices[0].message
+        tool_calls = getattr(message, "tool_calls", None) or []
 
-        decoder = json.JSONDecoder()
-        node_result: Any
-        try:
-            node_result, _ = decoder.raw_decode(text)
-        except json.JSONDecodeError:
-            # 某些模型可能在 JSON 前后附带额外文本，尝试截取第一个 JSON 对象以提升鲁棒性。
-            first_curly = text.find("{")
-            if first_curly >= 0:
-                try:
-                    node_result, _ = decoder.raw_decode(text[first_curly:])
-                except json.JSONDecodeError:
+        parsed_params: Dict[str, Any] | None = None
+        for tc in tool_calls:
+            if tc.function.name != "submit_node_params":
+                continue
+            try:
+                args = json.loads(tc.function.arguments or "{}")
+            except json.JSONDecodeError:
+                log_error("[fill_params_with_llm] 无法解析 tool_call 参数 JSON")
+                log_debug(tc.function.arguments)
+                continue
+            if args.get("id") != node.id:
+                continue
+            tool_params = args.get("params", {})
+            if isinstance(tool_params, dict):
+                parsed_params = tool_params
+                break
+
+        if parsed_params is None:
+            content = message.content or ""
+            text = content.strip()
+            if text.startswith("```"):
+                text = text.strip("`")
+                if "\n" in text:
+                    first_line, rest = text.split("\n", 1)
+                    if first_line.strip().lower().startswith("json"):
+                        text = rest
+
+            decoder = json.JSONDecoder()
+            node_result: Any
+            try:
+                node_result, _ = decoder.raw_decode(text)
+            except json.JSONDecodeError:
+                # 某些模型可能在 JSON 前后附带额外文本，尝试截取第一个 JSON 对象以提升鲁棒性。
+                first_curly = text.find("{")
+                if first_curly >= 0:
+                    try:
+                        node_result, _ = decoder.raw_decode(text[first_curly:])
+                    except json.JSONDecodeError:
+                        log_error("[fill_params_with_llm] 无法解析模型返回 JSON")
+                        log_debug(content)
+                        raise
+                else:
                     log_error("[fill_params_with_llm] 无法解析模型返回 JSON")
                     log_debug(content)
                     raise
-            else:
-                log_error("[fill_params_with_llm] 无法解析模型返回 JSON")
-                log_debug(content)
-                raise
 
-        if isinstance(node_result, dict):
-            params = node_result.get("params", {})
-            if isinstance(params, dict):
-                filled_params[node.id] = params
+            if isinstance(node_result, dict):
+                params = node_result.get("params", {})
+                if isinstance(params, dict):
+                    parsed_params = params
+
+        if parsed_params is not None:
+            filled_params[node.id] = parsed_params
 
     completed_nodes = []
     for node in workflow.nodes:
