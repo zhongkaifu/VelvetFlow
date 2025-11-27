@@ -6,6 +6,7 @@ from velvetflow.action_registry import get_action_by_id
 from velvetflow.loop_dsl import build_loop_output_schema
 from velvetflow.logging_utils import log_warn
 from velvetflow.models import Node, Workflow
+from velvetflow.reference_utils import normalize_reference_path
 
 
 class BindingContext:
@@ -46,7 +47,7 @@ class BindingContext:
         if not isinstance(binding, dict) or "__from__" not in binding:
             return binding
 
-        src_path = binding["__from__"]
+        src_path = normalize_reference_path(binding["__from__"])
         self._validate_result_reference(src_path)
         data = self._get_from_context(src_path)
         agg = binding.get("__agg__", "identity")
@@ -235,6 +236,7 @@ class BindingContext:
     def _validate_result_reference(self, src_path: str) -> None:
         """Ensure __from__ references point to valid node outputs."""
 
+        src_path = normalize_reference_path(src_path)
         if not isinstance(src_path, str) or not src_path.startswith("result_of."):
             return
 
@@ -298,6 +300,7 @@ class BindingContext:
         return self._get_from_context(path)
 
     def _get_from_context(self, path: str):
+        path = normalize_reference_path(path)
         if not path:
             raise KeyError("空路径")
 
@@ -407,13 +410,16 @@ def eval_node_params(node: Node, ctx: BindingContext) -> Dict[str, Any]:
             else:
                 resolved[k] = resolved_value
         elif isinstance(v, str):
-            head = v.split(".", 1)[0]
-            if head in ctx.loop_ctx or v.startswith("loop."):
+            normalized_v = normalize_reference_path(v)
+            head = normalized_v.split(".", 1)[0]
+            if head in ctx.loop_ctx or normalized_v.startswith("loop.") or normalized_v.startswith("result_of."):
                 try:
-                    resolved[k] = ctx.get_value(v)
+                    resolved[k] = ctx.get_value(normalized_v)
                     continue
                 except Exception as e:
-                    log_warn(f"[param-resolver] 路径字符串 {v} 解析失败: {e}，使用原值")
+                    log_warn(
+                        f"[param-resolver] 路径字符串 {v} 解析失败: {e}，使用原值"
+                    )
 
             resolved[k] = v
         else:

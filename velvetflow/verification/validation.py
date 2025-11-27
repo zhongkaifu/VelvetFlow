@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Mapping, Optional
 
 from velvetflow.loop_dsl import build_loop_output_schema, index_loop_body_nodes
 from velvetflow.models import ValidationError, Workflow
+from velvetflow.reference_utils import normalize_reference_path
 
 
 def _index_actions_by_id(action_registry: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
@@ -675,6 +676,7 @@ def _check_output_path_against_schema(
       - None: 校验通过
       - str: 具体错误信息
     """
+    source_path = normalize_reference_path(source_path)
     if not isinstance(source_path, str):
         return f"source/__from__ 应该是字符串，但收到类型: {type(source_path)}"
 
@@ -841,11 +843,14 @@ def _get_array_item_schema_from_output(
     actions_by_id: Dict[str, Dict[str, Any]],
     loop_body_parents: Optional[Mapping[str, str]] = None,
 ) -> Optional[Mapping[str, Any]]:
-    err = _check_output_path_against_schema(source, nodes_by_id, actions_by_id, loop_body_parents)
+    normalized_source = normalize_reference_path(source)
+    err = _check_output_path_against_schema(
+        normalized_source, nodes_by_id, actions_by_id, loop_body_parents
+    )
     if err:
         return None
 
-    parts = source.split(".")
+    parts = normalized_source.split(".")
     if len(parts) < 2 or parts[0] != "result_of":
         return None
 
