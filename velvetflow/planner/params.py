@@ -19,6 +19,11 @@ from velvetflow.logging_utils import (
 from velvetflow.models import Node, Workflow
 from velvetflow.planner.params_tools import build_param_completion_tool
 from velvetflow.planner.relations import get_upstream_nodes
+from velvetflow.reference_utils import normalize_reference_path
+from velvetflow.verification.validation import (
+    _check_array_item_field,
+    _check_output_path_against_schema,
+)
 
 
 def _find_start_nodes_for_params(workflow: Workflow) -> List[str]:
@@ -60,6 +65,80 @@ def _traverse_order(workflow: Workflow) -> List[str]:
             order.append(node.id)
 
     return order
+
+
+def _collect_binding_issues(
+    params: Dict[str, Any],
+    upstream_nodes: List[Node],
+    action_schemas: Dict[str, Dict[str, Any]],
+) -> List[str]:
+    """Validate __from__ / field references against upstream schemas.
+
+    The function only checks bindings that point to ``result_of.<node_id>``
+    sources. When a binding or its nested pipeline/count_if field refers to a
+    missing node or field, the issue is returned as a human-readable string so
+    that the caller can surface it early and trigger automated repair tools.
+    """
+
+    nodes_by_id: Dict[str, Dict[str, Any]] = {
+        n.id: n.model_dump(by_alias=True) for n in upstream_nodes
+    }
+    actions_by_id = {aid: schema for aid, schema in action_schemas.items()}
+
+    issues: List[str] = []
+
+    def _walk(obj: Any, path_prefix: str = "params") -> None:
+        if isinstance(obj, dict):
+            if "__from__" in obj:
+                src = normalize_reference_path(obj.get("__from__"))
+                schema_err = _check_output_path_against_schema(
+                    src, nodes_by_id, actions_by_id
+                )
+                if schema_err:
+                    issues.append(f"{path_prefix}: {schema_err}")
+
+                agg = obj.get("__agg__")
+                field_checks: List[tuple[str, str]] = []
+                if agg == "count_if":
+                    fld = obj.get("field")
+                    if isinstance(fld, str):
+                        field_checks.append(("count_if.field", fld))
+                if agg == "pipeline":
+                    steps = obj.get("steps")
+                    if isinstance(steps, list):
+                        for idx, step in enumerate(steps):
+                            if not isinstance(step, dict):
+                                continue
+                            if step.get("op") == "filter" and isinstance(
+                                step.get("field"), str
+                            ):
+                                field_checks.append(
+                                    (
+                                        f"pipeline.steps[{idx}].field",
+                                        step["field"],
+                                    )
+                                )
+
+                for field_label, fld in field_checks:
+                    item_err = _check_array_item_field(
+                        src, fld, nodes_by_id, actions_by_id
+                    )
+                    if item_err:
+                        issues.append(
+                            f"{path_prefix}.{field_label}: {item_err}"
+                        )
+
+            for k, v in obj.items():
+                new_prefix = f"{path_prefix}.{k}" if path_prefix else k
+                _walk(v, new_prefix)
+
+        elif isinstance(obj, list):
+            for idx, v in enumerate(obj):
+                _walk(v, f"{path_prefix}[{idx}]")
+
+    _walk(params)
+
+    return issues
 
 
 def fill_params_with_llm(
@@ -235,6 +314,15 @@ def fill_params_with_llm(
                     parsed_params = params
 
         if parsed_params is not None:
+            binding_issues = _collect_binding_issues(
+                parsed_params, upstream_nodes=upstream_nodes, action_schemas=action_schemas
+            )
+            if binding_issues:
+                issues_text = "；".join(binding_issues)
+                raise ValueError(
+                    f"节点 {node.id} 的参数绑定存在非法引用：{issues_text}"
+                )
+
             filled_params[node.id] = parsed_params
 
     completed_nodes = []
