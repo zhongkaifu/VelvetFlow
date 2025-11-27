@@ -2,6 +2,7 @@
 
 import json
 import os
+from dataclasses import asdict
 from typing import Any, Dict, List, Mapping
 
 from openai import OpenAI
@@ -30,6 +31,10 @@ from velvetflow.planner.llm_edges import synthesize_edges_with_llm
 from velvetflow.planner.tools import PLANNER_TOOLS
 from velvetflow.planner.workflow_builder import WorkflowBuilder
 from velvetflow.search import HybridActionSearchService
+from velvetflow.verification.validation import (
+    precheck_loop_body_graphs,
+    validate_completed_workflow,
+)
 
 
 def _build_action_schema_map(action_registry: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
@@ -76,6 +81,26 @@ def _extract_loop_body_context(
         "nodes": context_nodes,
         "entry": body.get("entry"),
         "exit": body.get("exit"),
+    }
+
+
+def _run_snapshot_validation(
+    builder: WorkflowBuilder, action_registry: List[Dict[str, Any]]
+) -> Dict[str, Any]:
+    """Run lightweight validation after every workflow mutation.
+
+    The function aggregates loop body prechecks with the standard structural
+    validator so the LLM can see errors immediately and continue editing.
+    """
+
+    snapshot = builder.to_workflow()
+    errors = precheck_loop_body_graphs(snapshot)
+    if not errors:
+        errors = validate_completed_workflow(snapshot, action_registry)
+
+    return {
+        "status": "ok" if not errors else "error",
+        "errors": [asdict(err) for err in errors],
     }
 
 
@@ -267,6 +292,16 @@ def plan_workflow_structure_with_llm(
 
             else:
                 tool_result = {"status": "error", "message": f"未知工具 {func_name}"}
+
+            if tool_result.get("status") == "ok" and func_name in {
+                "set_workflow_meta",
+                "add_node",
+                "add_edge",
+                "design_loop_exports",
+            }:
+                tool_result["validation"] = _run_snapshot_validation(
+                    builder, action_registry=action_registry
+                )
 
             messages.append({
                 "role": "tool",
