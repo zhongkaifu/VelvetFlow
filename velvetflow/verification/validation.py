@@ -136,6 +136,8 @@ def _validate_nodes_recursive(
             else:
                 schema = action_def.get("arg_schema") or {}
                 required_fields = (schema.get("required") or []) if isinstance(schema, dict) else []
+                properties = schema.get("properties") if isinstance(schema, Mapping) else None
+                allow_additional = bool(schema.get("additionalProperties")) if isinstance(schema, Mapping) else False
 
                 if not isinstance(params, dict) or len(params) == 0:
                     if required_fields:
@@ -160,6 +162,20 @@ def _validate_nodes_recursive(
                                     field=field,
                                     message=(
                                         f"action 节点 '{nid}' 的 params 缺少必填字段 '{field}' (action_id='{action_id}')"
+                                    ),
+                                )
+                            )
+
+                    if isinstance(properties, Mapping) and not allow_additional:
+                        unknown_fields = [k for k in params if k not in properties]
+                        for field in unknown_fields:
+                            errors.append(
+                                ValidationError(
+                                    code="UNKNOWN_PARAM",
+                                    node_id=nid,
+                                    field=field,
+                                    message=(
+                                        f"action 节点 '{nid}' 的参数 '{field}' 未在 action '{action_id}' 的 arg_schema 中定义。"
                                     ),
                                 )
                             )

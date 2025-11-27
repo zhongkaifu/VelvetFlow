@@ -50,11 +50,13 @@ class ValidationError:
     code: Literal[
         "MISSING_REQUIRED_PARAM",
         "UNKNOWN_ACTION_ID",
+        "UNKNOWN_PARAM",
         "DISCONNECTED_GRAPH",
         "INVALID_EDGE",
         "SCHEMA_MISMATCH",
         "INVALID_SCHEMA",
         "INVALID_LOOP_BODY",
+        "STATIC_RULES_SUMMARY",
     ]
     node_id: Optional[str]
     field: Optional[str]

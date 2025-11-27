@@ -7,6 +7,8 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from validate_workflow import validate_workflow_data
+from velvetflow.models import ValidationError, Workflow
+from velvetflow.planner.repair_tools import _apply_local_repairs_for_unknown_params
 
 ACTION_REGISTRY = json.loads(
     (Path(__file__).parent.parent / "velvetflow" / "business_actions.json").read_text(
@@ -46,3 +48,38 @@ def test_validate_workflow_missing_required_param():
 
     assert errors, "Expected validation to fail due to missing required param"
     assert any(e.code == "MISSING_REQUIRED_PARAM" for e in errors)
+
+
+def test_validate_workflow_unknown_param():
+    workflow = _basic_workflow({"message": "hello", "date_filter": "today"})
+
+    errors = validate_workflow_data(workflow, ACTION_REGISTRY)
+
+    assert errors, "Expected validation to fail due to unknown param"
+    assert any(e.code == "UNKNOWN_PARAM" and e.field == "date_filter" for e in errors)
+
+
+def test_local_repair_removes_unknown_param():
+    workflow = Workflow.model_validate(
+        _basic_workflow({"message": "hello", "date_filter": "today"})
+    )
+    validation_errors = [
+        ValidationError(
+            code="UNKNOWN_PARAM",
+            node_id="notify",
+            field="date_filter",
+            message="unexpected param",
+        )
+    ]
+
+    repaired = _apply_local_repairs_for_unknown_params(
+        current_workflow=workflow,
+        validation_errors=validation_errors,
+        action_registry=ACTION_REGISTRY,
+    )
+
+    assert repaired is not None
+    repaired_params = next(
+        n for n in repaired.model_dump(by_alias=True)["nodes"] if n["id"] == "notify"
+    )["params"]
+    assert "date_filter" not in repaired_params
