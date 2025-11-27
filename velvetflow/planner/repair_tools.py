@@ -8,7 +8,7 @@ import json
 from typing import Any, Dict, Iterable, List, Mapping, MutableMapping, Optional, Tuple
 
 from velvetflow.logging_utils import log_event, log_info, log_warn
-from velvetflow.models import ValidationError
+from velvetflow.models import ValidationError, Workflow
 
 
 def _workflow_fingerprint(workflow: Mapping[str, Any]) -> str:
@@ -162,6 +162,58 @@ def _set_nested_field(container: MutableMapping[str, Any], path: str, value: Any
                     nxt = [] if isinstance(segments[idx + 1], int) else {}
                     current[seg] = nxt
                 current = nxt
+
+
+def _apply_local_repairs_for_unknown_params(
+    current_workflow: Workflow,
+    validation_errors: List[ValidationError],
+    action_registry: List[Dict[str, Any]],
+) -> Optional[Workflow]:
+    """Remove parameters that are not defined in the action schema."""
+
+    actions_by_id = _index_actions_by_id(action_registry)
+    workflow_dict = current_workflow.model_dump(by_alias=True)
+    nodes: List[Dict[str, Any]] = [
+        n for n in workflow_dict.get("nodes", []) if isinstance(n, Mapping)
+    ]
+    nodes_by_id: Dict[str, Dict[str, Any]] = {n.get("id"): n for n in nodes}
+
+    changed = False
+
+    for err in validation_errors:
+        if err.code != "UNKNOWN_PARAM" or not err.node_id or not err.field:
+            continue
+
+        node = nodes_by_id.get(err.node_id)
+        if not node or node.get("type") != "action":
+            continue
+
+        action_id = node.get("action_id")
+        action_def = actions_by_id.get(action_id)
+        if not action_def:
+            continue
+
+        arg_schema = action_def.get("arg_schema") or {}
+        additional_allowed = bool(arg_schema.get("additionalProperties")) if isinstance(arg_schema, Mapping) else False
+        if additional_allowed:
+            continue
+
+        params = node.get("params")
+        if not isinstance(params, dict):
+            continue
+
+        if err.field in params:
+            params.pop(err.field, None)
+            changed = True
+
+    if not changed:
+        return None
+
+    try:
+        return Workflow.model_validate(workflow_dict)
+    except Exception as exc:  # noqa: BLE001
+        log_warn(f"[AutoRepair] 移除未定义参数时验证失败：{exc}")
+        return None
 
 
 def repair_loop_body_references(
@@ -404,6 +456,7 @@ REPAIR_TOOLS = [
 __all__ = [
     "apply_repair_tool",
     "fill_action_required_params",
+    "_apply_local_repairs_for_unknown_params",
     "fix_loop_body_references",
     "update_node_field",
     "REPAIR_TOOLS",

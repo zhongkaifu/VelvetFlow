@@ -41,6 +41,7 @@ from velvetflow.planner.repair import (
     _make_failure_validation_error,
     _repair_with_llm_and_fallback,
 )
+from velvetflow.planner.repair_tools import _apply_local_repairs_for_unknown_params
 from velvetflow.planner.structure import plan_workflow_structure_with_llm
 from velvetflow.verification import (
     precheck_loop_body_graphs,
@@ -689,15 +690,19 @@ def plan_workflow_with_two_pass(
                     f"[code={e.code}] node={e.node_id} field={e.field} message={e.message}"
                 )
 
-            locally_repaired = _apply_local_repairs_for_missing_params(
+            locally_repaired = _apply_local_repairs_for_unknown_params(
                 current_workflow=current_workflow,
                 validation_errors=errors,
                 action_registry=action_registry,
             )
-            if locally_repaired is not None:
-                log_info(
-                    "[AutoRepair] 检测到可预测的缺失字段/类型问题，已在本地修正并重新校验。"
+            if locally_repaired is None:
+                locally_repaired = _apply_local_repairs_for_missing_params(
+                    current_workflow=current_workflow,
+                    validation_errors=errors,
+                    action_registry=action_registry,
                 )
+            if locally_repaired is not None:
+                log_info("[AutoRepair] 检测到可预测的字段缺失/多余问题，已在本地修正并重新校验。")
                 current_workflow = locally_repaired
                 last_good_workflow = current_workflow
 
