@@ -9,7 +9,13 @@ from typing import Any, Dict, List
 from openai import OpenAI
 
 from velvetflow.config import OPENAI_MODEL
-from velvetflow.logging_utils import child_span, log_debug, log_error, log_llm_usage
+from velvetflow.logging_utils import (
+    child_span,
+    log_debug,
+    log_error,
+    log_event,
+    log_llm_usage,
+)
 from velvetflow.models import Node, Workflow
 from velvetflow.planner.params_tools import build_param_completion_tool
 from velvetflow.planner.relations import get_upstream_nodes
@@ -157,6 +163,18 @@ def fill_params_with_llm(
         message = resp.choices[0].message
         tool_calls = getattr(message, "tool_calls", None) or []
 
+        if tool_calls:
+            for tc in tool_calls:
+                log_event(
+                    "params_tool_call",
+                    {
+                        "node_id": node.id,
+                        "tool_name": tc.function.name,
+                        "tool_call_id": getattr(tc, "id", None),
+                        "raw_arguments": tc.function.arguments,
+                    },
+                )
+
         parsed_params: Dict[str, Any] | None = None
         for tc in tool_calls:
             if tc.function.name != "submit_node_params":
@@ -172,6 +190,14 @@ def fill_params_with_llm(
             tool_params = args.get("params", {})
             if isinstance(tool_params, dict):
                 parsed_params = tool_params
+                log_event(
+                    "params_tool_result",
+                    {
+                        "node_id": node.id,
+                        "tool_name": tc.function.name,
+                        "params": parsed_params,
+                    },
+                )
                 break
 
         if parsed_params is None:
