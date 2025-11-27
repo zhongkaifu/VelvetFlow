@@ -1,5 +1,6 @@
 """Static validation helpers for VelvetFlow workflows."""
 
+import json
 from collections import deque
 from typing import Any, Dict, List, Mapping, Optional
 
@@ -10,6 +11,32 @@ from velvetflow.reference_utils import normalize_reference_path
 
 def _index_actions_by_id(action_registry: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
     return {a["action_id"]: a for a in action_registry}
+
+
+def _maybe_decode_binding_string(raw: str) -> Optional[Any]:
+    """Attempt to parse a JSON-like binding stored as string.
+
+    Planner 生成的 workflow 有时会携带字符串化的参数绑定（例如 "{\"__from__\": ...}"），
+    否则这些绑定只能在执行时才暴露错误。通过在验证阶段尝试解析，可提早暴露
+    引用错误并让 LLM 通过工具修复。
+    """
+
+    if not isinstance(raw, str):
+        return None
+
+    text = raw.strip()
+    if not text.startswith("{"):
+        return None
+
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+
+    if isinstance(parsed, Mapping) and "__from__" in parsed:
+        return parsed
+
+    return None
 
 
 def precheck_loop_body_graphs(workflow_raw: Mapping[str, Any] | Any) -> List[ValidationError]:
@@ -259,6 +286,10 @@ def _validate_nodes_recursive(
                     for idx, v in enumerate(obj):
                         new_prefix = f"{path_prefix}[{idx}]"
                         _walk_params_for_from(v, new_prefix)
+                elif isinstance(obj, str):
+                    decoded = _maybe_decode_binding_string(obj)
+                    if decoded:
+                        _walk_params_for_from(decoded, path_prefix)
 
             _walk_params_for_from(params)
 
@@ -776,6 +807,10 @@ def _collect_param_bindings(obj: Any, prefix: str = "") -> List[Dict[str, str]]:
         for idx, value in enumerate(obj):
             new_prefix = f"{prefix}[{idx}]" if prefix else f"[{idx}]"
             bindings.extend(_collect_param_bindings(value, new_prefix))
+    elif isinstance(obj, str):
+        decoded = _maybe_decode_binding_string(obj)
+        if decoded:
+            bindings.extend(_collect_param_bindings(decoded, prefix))
 
     return bindings
 
