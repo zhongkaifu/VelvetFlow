@@ -2,11 +2,14 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT_DIR = Path(__file__).parent.parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from validate_workflow import validate_workflow_data
+from velvetflow.models import PydanticValidationError, Workflow
 from velvetflow.verification import precheck_loop_body_graphs
 
 ACTION_REGISTRY = json.loads(
@@ -170,6 +173,34 @@ def test_precheck_is_available_for_planner_users():
 
     assert errors
     assert any(e.field == "body_subgraph.exit" for e in errors)
+
+
+def test_loop_body_pydantic_errors_are_preserved():
+    """Pydantic 校验错误需要原样向上传递，避免被包装成 ValueError。"""
+
+    workflow = {
+        "workflow_name": "news_summary",
+        "nodes": [
+            {
+                "id": "loop_summarize",
+                "type": "loop",
+                "params": {
+                    "loop_kind": "for_each",
+                    "source": "result_of.search_news.results",
+                    # body_subgraph 缺少节点 id，会触发 Pydantic 校验错误
+                    "body_subgraph": {"nodes": [{"type": "action"}], "edges": []},
+                },
+            }
+        ],
+        "edges": [],
+    }
+
+    with pytest.raises(PydanticValidationError) as exc_info:
+        Workflow.model_validate(workflow)
+
+    # 错误位置信息应该保留，并标注在 body_subgraph 下，方便修复逻辑使用
+    error = exc_info.value.errors()[0]
+    assert error.get("loc", ())[:3] == ("body_subgraph", "nodes", 0)
 
 
 def test_loop_missing_item_alias_is_reported():

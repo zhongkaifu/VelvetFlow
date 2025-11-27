@@ -304,6 +304,14 @@ class Workflow:
                         "edges": body_edges,
                     }
                 )
+            except PydanticValidationError as exc:
+                # 标注 body_subgraph 中的具体字段，方便上层修复逻辑消费
+                errors: List[Dict[str, Any]] = []
+                for err in exc.errors():
+                    loc = ("body_subgraph", *err.get("loc", ()))
+                    errors.append({"loc": loc, "msg": err.get("msg")})
+
+                raise PydanticValidationError(errors) from exc
             except Exception as exc:  # noqa: BLE001
                 raise ValueError(
                     f"loop 节点 '{node.id}' 的 body_subgraph 校验失败: {exc}"
