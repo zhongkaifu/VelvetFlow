@@ -90,6 +90,73 @@ PLANNER_TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "design_loop_exports",
+            "description": (
+                "为已存在的 loop 节点设计 exports（items/aggregates）。\n"
+                "- items.from_node 必须引用 body_subgraph 内的节点，fields 是希望暴露的字段名。\n"
+                "- aggregates 是可选的汇总指标，支持 count/count_if/max/min/sum/avg，from_node 同样只能引用 loop body 节点。\n"
+                "- 如果只需简单收集列表，可仅填写 items 字段。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "loop_id": {"type": "string", "description": "已添加的 loop 节点 ID"},
+                    "exports": {
+                        "type": "object",
+                        "properties": {
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "from_node": {"type": "string"},
+                                    "fields": {
+                                        "type": "array",
+                                        "items": {"type": "string"},
+                                    },
+                                    "mode": {
+                                        "type": "string",
+                                        "enum": ["collect", "append", "extend"],
+                                    },
+                                },
+                                "required": ["from_node", "fields"],
+                                "additionalProperties": True,
+                            },
+                            "aggregates": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "name": {"type": "string"},
+                                        "from_node": {"type": "string"},
+                                        "kind": {
+                                            "type": "string",
+                                            "enum": ["count", "count_if", "max", "min", "sum", "avg"],
+                                        },
+                                        "expr": {
+                                            "type": "object",
+                                            "properties": {
+                                                "field": {"type": "string"},
+                                                "op": {"type": "string"},
+                                                "value": {},
+                                            },
+                                            "additionalProperties": True,
+                                        },
+                                    },
+                                    "required": ["name", "kind", "from_node"],
+                                    "additionalProperties": True,
+                                },
+                            },
+                        },
+                        "required": ["items"],
+                        "additionalProperties": True,
+                    },
+                },
+                "required": ["loop_id", "exports"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "finalize_workflow",
             "description": "当你认为结构已经覆盖需求时调用，结束规划阶段。",
             "parameters": {
