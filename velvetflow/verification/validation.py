@@ -395,9 +395,58 @@ def _validate_nodes_recursive(
                             code="SCHEMA_MISMATCH",
                             node_id=nid,
                             field="source",
-                            message=f"loop 节点 '{nid}' 的 source 引用无效：{schema_err}",
+                        message=f"loop 节点 '{nid}' 的 source 引用无效：{schema_err}",
+                    )
+                )
+
+            item_alias = params.get("item_alias") if isinstance(params, Mapping) else None
+            if not isinstance(item_alias, str) or not item_alias.strip():
+                errors.append(
+                    ValidationError(
+                        code="MISSING_REQUIRED_PARAM",
+                        node_id=nid,
+                        field="item_alias",
+                        message=f"loop 节点 '{nid}' 缺少 item_alias 或其值为空字符串。",
+                    )
+                )
+
+            if loop_kind == "while":
+                condition = params.get("condition") if isinstance(params, Mapping) else None
+                if not condition:
+                    errors.append(
+                        ValidationError(
+                            code="MISSING_REQUIRED_PARAM",
+                            node_id=nid,
+                            field="condition",
+                            message=f"loop 节点 '{nid}' (loop_kind=while) 需要 condition。",
                         )
                     )
+                elif isinstance(condition, Mapping):
+                    err = validate_param_binding_and_schema(
+                        condition, {"nodes": list(nodes_by_id.values())}, list(actions_by_id.values())
+                    )
+                    if err:
+                        errors.append(
+                            ValidationError(
+                                code="SCHEMA_MISMATCH",
+                                node_id=nid,
+                                field="condition",
+                                message=f"loop 节点 '{nid}' 的 condition 无效：{err}",
+                            )
+                        )
+                elif isinstance(condition, str):
+                    schema_err = _check_output_path_against_schema(
+                        condition, nodes_by_id, actions_by_id, loop_body_parents
+                    )
+                    if schema_err:
+                        errors.append(
+                            ValidationError(
+                                code="SCHEMA_MISMATCH",
+                                node_id=nid,
+                                field="condition",
+                                message=f"loop 节点 '{nid}' 的 condition 引用无效：{schema_err}",
+                            )
+                        )
 
             # exports 静态校验
             exports = params.get("exports") if isinstance(params, dict) else None

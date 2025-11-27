@@ -117,6 +117,10 @@ def _loop_params_schema() -> Dict[str, Any]:
                     _binding_schema(),
                 ],
             },
+            "item_alias": {
+                "type": "string",
+                "description": "循环体内访问当前元素时使用的变量名，必填且需非空。",
+            },
             "body_subgraph": {
                 "type": "object",
                 "properties": {
@@ -173,7 +177,7 @@ def _loop_params_schema() -> Dict[str, Any]:
                 "additionalProperties": True,
             },
         },
-        "required": ["loop_kind", "source", "exports"],
+        "required": ["loop_kind", "source", "item_alias", "exports"],
         "additionalProperties": True,
     }
 
