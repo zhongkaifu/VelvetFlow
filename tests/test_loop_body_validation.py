@@ -171,3 +171,104 @@ def test_precheck_is_available_for_planner_users():
     assert errors
     assert any(e.field == "body_subgraph.exit" for e in errors)
 
+
+def test_loop_missing_item_alias_is_reported():
+    workflow = {
+        "workflow_name": "news_summary",
+        "nodes": [
+            {
+                "id": "search_news",
+                "type": "action",
+                "action_id": "common.search_news.v1",
+                "params": {"query": "AI"},
+            },
+            {
+                "id": "loop_without_alias",
+                "type": "loop",
+                "params": {
+                    "loop_kind": "for_each",
+                    "source": "result_of.search_news.results",
+                    "exports": {
+                        "items": {
+                            "from_node": "exit",
+                            "fields": ["summary"],
+                        }
+                    },
+                    "body_subgraph": {
+                        "nodes": [
+                            {
+                                "id": "summarize",
+                                "type": "action",
+                                "action_id": "common.summarize.v1",
+                                "params": {"text": "placeholder"},
+                            },
+                            {"id": "exit", "type": "end"},
+                        ],
+                        "edges": [{"from": "summarize", "to": "exit"}],
+                        "entry": "summarize",
+                        "exit": "exit",
+                    },
+                },
+            },
+        ],
+        "edges": [{"from": "search_news", "to": "loop_without_alias"}],
+    }
+
+    errors = validate_workflow_data(workflow, ACTION_REGISTRY)
+
+    assert any(
+        e.code == "MISSING_REQUIRED_PARAM" and e.node_id == "loop_without_alias" and e.field == "item_alias"
+        for e in errors
+    )
+
+
+def test_while_loop_requires_condition():
+    workflow = {
+        "workflow_name": "news_summary",
+        "nodes": [
+            {
+                "id": "search_news",
+                "type": "action",
+                "action_id": "common.search_news.v1",
+                "params": {"query": "AI"},
+            },
+            {
+                "id": "loop_until_empty",
+                "type": "loop",
+                "params": {
+                    "loop_kind": "while",
+                    "source": "result_of.search_news.results",
+                    "item_alias": "news_item",
+                    "exports": {
+                        "items": {
+                            "from_node": "exit",
+                            "fields": ["summary"],
+                        }
+                    },
+                    "body_subgraph": {
+                        "nodes": [
+                            {
+                                "id": "summarize",
+                                "type": "action",
+                                "action_id": "common.summarize.v1",
+                                "params": {"text": "placeholder"},
+                            },
+                            {"id": "exit", "type": "end"},
+                        ],
+                        "edges": [{"from": "summarize", "to": "exit"}],
+                        "entry": "summarize",
+                        "exit": "exit",
+                    },
+                },
+            },
+        ],
+        "edges": [{"from": "search_news", "to": "loop_until_empty"}],
+    }
+
+    errors = validate_workflow_data(workflow, ACTION_REGISTRY)
+
+    assert any(
+        e.code == "MISSING_REQUIRED_PARAM" and e.node_id == "loop_until_empty" and e.field == "condition"
+        for e in errors
+    )
+
