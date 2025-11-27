@@ -255,6 +255,8 @@ class BindingContext:
             if not loop_schema:
                 raise ValueError(f"__from__ 引用的 loop 节点 '{node_id}' 未定义 exports")
             field_path = parts[2:]
+            if field_path and field_path[0] == "exports":
+                field_path = field_path[1:]
             if not self._schema_has_path(loop_schema, field_path):
                 raise ValueError(
                     f"__from__ 路径 '{src_path}' 引用了 loop '{node_id}' 输出中不存在的字段"
@@ -334,6 +336,9 @@ class BindingContext:
             cur = self.results[first_key]
             resolved_parts.extend(["result_of", first_key])
             rest = parts[2:]
+            node = self._nodes.get(first_key)
+            if node and node.type == "loop" and rest and rest[0] == "exports":
+                rest = rest[1:]
         else:
             context = {f"result_of.{nid}": value for nid, value in self.results.items()}
             if parts[0] not in context:
