@@ -31,6 +31,50 @@ from velvetflow.planner.tools import PLANNER_TOOLS
 from velvetflow.planner.workflow_builder import WorkflowBuilder
 from velvetflow.search import HybridActionSearchService
 
+LOOP_EXPORT_EDIT_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "edit_loop_exports",
+            "description": "编辑 loop 节点的 exports（items/aggregates），请直接给出完整的 exports。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "exports": {
+                        "type": "object",
+                        "description": "完整的 exports 对象，包含 items/aggregates。",
+                        "additionalProperties": True,
+                    },
+                    "items": {
+                        "type": "object",
+                        "description": "如果不提供 exports，也可以单独提供 items 段。",
+                        "properties": {
+                            "from_node": {"type": "string"},
+                            "fields": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                            },
+                            "mode": {"type": "string", "enum": ["collect", "first", "last"]},
+                        },
+                    },
+                    "aggregates": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "name": {"type": "string"},
+                                "from_node": {"type": "string"},
+                                "expr": {"type": "object", "additionalProperties": True},
+                            },
+                        },
+                    },
+                },
+                "additionalProperties": False,
+            },
+        },
+    }
+]
+
 
 def _build_action_schema_map(action_registry: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
     action_schemas: Dict[str, Dict[str, Any]] = {}
@@ -77,6 +121,61 @@ def _extract_loop_body_context(
         "entry": body.get("entry"),
         "exit": body.get("exit"),
     }
+
+
+def _validate_loop_exports(
+    *, loop_node: Mapping[str, Any], exports: Mapping[str, Any]
+) -> List[str]:
+    params = loop_node.get("params") if isinstance(loop_node.get("params"), Mapping) else {}
+    body = params.get("body_subgraph") if isinstance(params, Mapping) else {}
+    body_nodes = [bn for bn in body.get("nodes", []) or [] if isinstance(bn, Mapping)]
+    body_ids = {bn.get("id") for bn in body_nodes if isinstance(bn.get("id"), str)}
+
+    errors: List[str] = []
+
+    if not isinstance(exports, Mapping):
+        return ["exports 必须是对象"]
+
+    items = exports.get("items")
+    if not isinstance(items, Mapping):
+        errors.append("缺少 items 对象")
+    else:
+        from_node = items.get("from_node")
+        if not isinstance(from_node, str) or from_node not in body_ids:
+            errors.append("items.from_node 必须引用 body_subgraph.nodes 中的节点")
+
+        fields = items.get("fields")
+        if not (isinstance(fields, list) and [f for f in fields if isinstance(f, str)]):
+            errors.append("items.fields 必须是非空字符串数组")
+
+        mode = items.get("mode")
+        if mode is not None and mode not in {"collect", "first", "last"}:
+            errors.append("items.mode 仅支持 collect/first/last")
+
+    aggregates = exports.get("aggregates")
+    if aggregates is not None:
+        if not isinstance(aggregates, list):
+            errors.append("aggregates 必须是数组或省略")
+        else:
+            for idx, agg in enumerate(aggregates):
+                if not isinstance(agg, Mapping):
+                    errors.append(f"aggregates[{idx}] 必须是对象")
+                    continue
+
+                if not isinstance(agg.get("name"), str):
+                    errors.append(f"aggregates[{idx}].name 必须是字符串")
+
+                from_node = agg.get("from_node")
+                if not isinstance(from_node, str) or from_node not in body_ids:
+                    errors.append(
+                        f"aggregates[{idx}].from_node 必须引用 body_subgraph.nodes 中的节点"
+                    )
+
+                expr = agg.get("expr")
+                if not isinstance(expr, Mapping):
+                    errors.append(f"aggregates[{idx}].expr 必须是对象")
+
+    return errors
 
 
 def _fallback_loop_exports(
@@ -229,6 +328,146 @@ def _synthesize_loop_exports_with_llm(
     return None
 
 
+def _extract_exports_from_tool_args(raw_args: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(raw_args, Mapping):
+        return None
+
+    if isinstance(raw_args.get("exports"), Mapping):
+        return dict(raw_args["exports"])
+
+    candidate: Dict[str, Any] = {}
+    if isinstance(raw_args.get("items"), Mapping):
+        candidate["items"] = raw_args["items"]
+    if isinstance(raw_args.get("aggregates"), list):
+        candidate["aggregates"] = raw_args["aggregates"]
+
+    return candidate or None
+
+
+def _plan_loop_exports_with_tools(
+    *,
+    client: OpenAI,
+    model: str,
+    nl_requirement: str,
+    loop_node: Mapping[str, Any],
+    action_schemas: Mapping[str, Mapping[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    body_context = _extract_loop_body_context(loop_node, action_schemas)
+    system_prompt = (
+        "你是一个专门为循环节点设计 exports 的助手。\n"
+        "你可以调用工具 edit_loop_exports 直接给出 exports 对象。\n"
+        "要求：items.from_node 必须引用 body_subgraph.nodes 中的节点（首选 exit），fields 需列出你希望暴露的字段。"
+    )
+
+    payload = {
+        "nl_requirement": nl_requirement,
+        "loop_node": loop_node,
+        "loop_body": body_context,
+        "hint": "使用工具输出完整 exports，对 aggregates 可选填 count_if/sum/avg 等表达式。",
+    }
+
+    messages: List[Dict[str, Any]] = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+    ]
+
+    for round_idx in range(3):
+        with child_span(f"loop_exports_tool_round_{round_idx}"):
+            resp = client.chat.completions.create(
+                model=model,
+                messages=messages,
+                tools=LOOP_EXPORT_EDIT_TOOLS,
+                tool_choice="auto",
+                temperature=0.2,
+            )
+        log_llm_usage(model, getattr(resp, "usage", None), operation="plan_loop_exports")
+        if not resp.choices:
+            raise RuntimeError("_plan_loop_exports_with_tools 未返回任何候选消息")
+
+        msg = resp.choices[0].message
+        messages.append({
+            "role": "assistant",
+            "content": msg.content or "",
+            "tool_calls": msg.tool_calls,
+        })
+
+        if msg.tool_calls:
+            for tc in msg.tool_calls:
+                tool_call_id = tc.id
+                func_name = tc.function.name
+                raw_args = tc.function.arguments
+                try:
+                    args = json.loads(raw_args) if raw_args else {}
+                except json.JSONDecodeError:
+                    log_error(f"[Error] 解析 exports 工具参数失败: {raw_args}")
+                    args = {}
+
+                if func_name != "edit_loop_exports":
+                    tool_result = {"status": "error", "message": f"未知工具 {func_name}"}
+                else:
+                    extracted = _extract_exports_from_tool_args(args)
+                    if extracted:
+                        validation_errors = _validate_loop_exports(
+                            loop_node=loop_node, exports=extracted
+                        )
+                        if not validation_errors:
+                            tool_result = {
+                                "status": "ok",
+                                "message": "已接收并通过校验的 exports",
+                                "exports": extracted,
+                            }
+                            messages.append(
+                                {
+                                    "role": "tool",
+                                    "tool_call_id": tool_call_id,
+                                    "content": json.dumps(tool_result, ensure_ascii=False),
+                                }
+                            )
+                            return extracted
+
+                        tool_result = {
+                            "status": "error",
+                            "message": "exports 校验失败，请修正后重试",
+                            "errors": validation_errors,
+                        }
+                    else:
+                        tool_result = {"status": "error", "message": "未提供合法的 exports"}
+
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tool_call_id,
+                        "content": json.dumps(tool_result, ensure_ascii=False),
+                    }
+                )
+
+            continue
+
+        text = (msg.content or "").strip()
+        if not text:
+            continue
+        decoder = json.JSONDecoder()
+        try:
+            parsed, _ = decoder.raw_decode(text)
+        except json.JSONDecodeError:
+            log_warn("[Planner] LLM 没有调用工具且返回内容无法解析为 JSON。")
+            continue
+
+        if isinstance(parsed, Mapping):
+            exports = parsed.get("exports") if "exports" in parsed else parsed
+            if isinstance(exports, Mapping):
+                validation_errors = _validate_loop_exports(
+                    loop_node=loop_node, exports=exports
+                )
+                if not validation_errors:
+                    return dict(exports)
+                log_warn(
+                    "[Planner] LLM 文本返回的 exports 未通过校验，将继续尝试。"
+                )
+
+    return None
+
+
 def _ensure_loop_exports_with_llm(
     *,
     workflow: Dict[str, Any],
@@ -263,23 +502,37 @@ def _ensure_loop_exports_with_llm(
             new_nodes.append(new_node)
             continue
 
-        synthesized = _synthesize_loop_exports_with_llm(
+        synthesized: Optional[Dict[str, Any]] = None
+        planned = _plan_loop_exports_with_tools(
             client=client,
             model=model,
             nl_requirement=nl_requirement,
             loop_node=node,
             action_schemas=action_schemas,
         )
-        if not synthesized:
-            synthesized = _fallback_loop_exports(node, action_schemas) or {}
+        used_tool = planned is not None
+        if not planned:
+            synthesized = _synthesize_loop_exports_with_llm(
+                client=client,
+                model=model,
+                nl_requirement=nl_requirement,
+                loop_node=node,
+                action_schemas=action_schemas,
+            )
+            planned = synthesized
+
+        if not planned:
+            planned = _fallback_loop_exports(node, action_schemas) or {}
             log_warn(
                 f"[Planner] LLM 未能生成 exports，loop 节点 {node.get('id')} 使用兜底 exports。"
             )
-        else:
+        elif used_tool:
+            log_info(f"[Planner] LLM 工具已为 loop 节点 {node.get('id')} 编辑 exports。")
+        elif synthesized is planned:
             log_info(f"[Planner] LLM 已为 loop 节点 {node.get('id')} 生成 exports。")
 
         ensured_exports = _ensure_loop_items_fields(
-            exports=synthesized, loop_node=node, action_schemas=action_schemas
+            exports=planned, loop_node=node, action_schemas=action_schemas
         )
         new_params = dict(params)
         new_params["exports"] = ensured_exports
