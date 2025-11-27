@@ -140,6 +140,60 @@ def test_loop_body_action_missing_required_param_is_caught():
     )
 
 
+def test_loop_body_template_respects_item_schema():
+    """模板引用 loop item 时应使用 source 的输出 schema 校验字段。"""
+
+    workflow = {
+        "workflow_name": "Nvidia 新闻总结",
+        "nodes": [
+            {
+                "id": "search_news",
+                "type": "action",
+                "action_id": "common.search_news.v1",
+                "params": {"query": "Nvidia"},
+            },
+            {
+                "id": "loop_news",
+                "type": "loop",
+                "params": {
+                    "loop_kind": "for_each",
+                    "source": "result_of.search_news.results",
+                    "item_alias": "news_item",
+                    "body_subgraph": {
+                        "nodes": [
+                            {
+                                "id": "summarize_news",
+                                "type": "action",
+                                "action_id": "common.summarize.v1",
+                                "params": {"text": "{{news_item.content}}"},
+                            },
+                            {"id": "exit", "type": "end"},
+                        ],
+                        "edges": [{"from": "summarize_news", "to": "exit"}],
+                        "entry": "summarize_news",
+                        "exit": "exit",
+                    },
+                    "exports": {
+                        "items": {
+                            "from_node": "summarize_news",
+                            "fields": ["summary", "sentence_count"],
+                            "mode": "collect",
+                        }
+                    },
+                },
+            },
+        ],
+        "edges": [{"from": "search_news", "to": "loop_news"}],
+    }
+
+    errors = validate_workflow_data(workflow, ACTION_REGISTRY)
+
+    assert any(
+        e.code == "SCHEMA_MISMATCH" and e.node_id == "summarize_news" and e.field == "text"
+        for e in errors
+    )
+
+
 def test_precheck_is_available_for_planner_users():
     """Planner 层的 precheck 导出应可独立调用。"""
 
