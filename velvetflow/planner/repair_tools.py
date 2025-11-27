@@ -7,6 +7,7 @@ import hashlib
 import json
 from typing import Any, Dict, Iterable, List, Mapping, MutableMapping, Optional, Tuple
 
+from velvetflow.planner.connectivity import ensure_edges_connectivity
 from velvetflow.logging_utils import log_event, log_info, log_warn
 from velvetflow.models import ValidationError, Workflow
 
@@ -110,6 +111,46 @@ def _collect_related_errors(
             "message": err.message,
         })
     return related
+
+
+def fix_empty_edges(workflow: Mapping[str, Any]) -> Tuple[Mapping[str, Any], Dict[str, Any]]:
+    """Remove blank edges and auto-connect nodes when edges are missing.
+
+    The function treats edges without ``from``/``to`` as empty and drops them
+    before reconnecting the graph via :func:`ensure_edges_connectivity`.
+    """
+
+    patched = copy.deepcopy(workflow)
+    nodes = patched.get("nodes") if isinstance(patched.get("nodes"), list) else []
+
+    raw_edges = patched.get("edges") or []
+    if not isinstance(raw_edges, list):
+        return patched, {"applied": False, "reason": "edges 不是列表"}
+
+    cleaned_edges: List[Dict[str, Any]] = []
+    removed_edges = 0
+    for edge in raw_edges:
+        if not isinstance(edge, Mapping):
+            removed_edges += 1
+            continue
+        frm = edge.get("from")
+        to = edge.get("to")
+        if not frm or not to:
+            removed_edges += 1
+            continue
+        cleaned_edges.append({"from": frm, "to": to, "condition": edge.get("condition")})
+
+    if removed_edges == 0 and cleaned_edges:
+        return patched, {"applied": False, "reason": "未发现空边"}
+
+    patched["edges"] = ensure_edges_connectivity(nodes, cleaned_edges)
+    added_edges = len(patched["edges"]) - len(cleaned_edges)
+    return patched, {
+        "applied": True,
+        "removed_edges": removed_edges,
+        "added_edges": added_edges,
+        "final_edge_count": len(patched["edges"]),
+    }
 
 
 def _split_path(path: str) -> List[str | int]:
@@ -359,6 +400,8 @@ def apply_repair_tool(
         patched, summary = fill_action_required_params(
             workflow, node_id=node_id or "", action_registry=action_registry
         )
+    elif tool_name == "fix_empty_edges":
+        patched, summary = fix_empty_edges(workflow)
     elif tool_name == "update_node_field":
         patched, summary = update_node_field(
             workflow,
@@ -432,6 +475,14 @@ REPAIR_TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "fix_empty_edges",
+            "description": "移除空边并自动补全 nodes/edges 连通性，避免 edges 为空。",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "update_node_field",
             "description": "以可重复方式写入节点的字段值（支持 params.foo 或 params.items[0].field 形式的路径）。",
             "parameters": {
@@ -458,6 +509,7 @@ __all__ = [
     "fill_action_required_params",
     "_apply_local_repairs_for_unknown_params",
     "fix_loop_body_references",
+    "fix_empty_edges",
     "update_node_field",
     "REPAIR_TOOLS",
 ]

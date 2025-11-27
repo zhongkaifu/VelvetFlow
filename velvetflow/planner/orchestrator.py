@@ -41,7 +41,10 @@ from velvetflow.planner.repair import (
     _make_failure_validation_error,
     _repair_with_llm_and_fallback,
 )
-from velvetflow.planner.repair_tools import _apply_local_repairs_for_unknown_params
+from velvetflow.planner.repair_tools import (
+    _apply_local_repairs_for_unknown_params,
+    fix_empty_edges,
+)
 from velvetflow.planner.structure import plan_workflow_structure_with_llm
 from velvetflow.verification import (
     precheck_loop_body_graphs,
@@ -640,6 +643,17 @@ def plan_workflow_with_two_pass(
             current_workflow, coercion_errors = _coerce_condition_param_types(
                 current_workflow
             )
+
+            fixed_edges_workflow, edge_fix_summary = fix_empty_edges(
+                current_workflow.model_dump(by_alias=True)
+            )
+            if edge_fix_summary.get("applied"):
+                log_info(
+                    "[AutoRepair] 检测到空边，已自动修复："
+                    f"summary={edge_fix_summary}"
+                )
+                current_workflow = Workflow.model_validate(fixed_edges_workflow)
+                last_good_workflow = current_workflow
 
             static_errors = run_lightweight_static_rules(
                 current_workflow.model_dump(by_alias=True),
