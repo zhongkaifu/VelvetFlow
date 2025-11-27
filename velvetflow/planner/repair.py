@@ -3,7 +3,7 @@
 import json
 import os
 from dataclasses import asdict
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Mapping, Optional
 
 from openai import OpenAI
 
@@ -79,6 +79,62 @@ def _make_failure_validation_error(message: str) -> ValidationError:
     )
 
 
+def _safe_repair_invalid_loop_body(workflow_raw: Mapping[str, Any]) -> Workflow:
+    """Best-effort patch for loop body graphs with missing nodes.
+
+    当 loop.body_subgraph 的 edges/entry/exit 引用缺失节点时，校验会抛出
+    异常并导致 AutoRepair 的回退逻辑失败。这里先补齐缺失节点（默认使用
+    ``end`` 类型）后再做校验，确保至少可以返回结构化的 fallback workflow。
+    """
+
+    workflow_dict: Dict[str, Any] = dict(workflow_raw)
+    nodes = workflow_dict.get("nodes") if isinstance(workflow_dict.get("nodes"), list) else []
+
+    for node in nodes:
+        if not isinstance(node, Mapping) or node.get("type") != "loop":
+            continue
+
+        params = node.get("params") if isinstance(node.get("params"), dict) else {}
+        body = params.get("body_subgraph") if isinstance(params, Mapping) else None
+        if not isinstance(body, dict):
+            continue
+
+        body_nodes = body.get("nodes") if isinstance(body.get("nodes"), list) else []
+        body_ids = {bn.get("id") for bn in body_nodes if isinstance(bn, Mapping)}
+
+        def _append_missing(node_id: str):
+            if node_id in body_ids:
+                return
+            placeholder = {"id": node_id, "type": "end"}
+            body_nodes.append(placeholder)
+            body_ids.add(node_id)
+
+        entry = body.get("entry")
+        if isinstance(entry, str):
+            _append_missing(entry)
+
+        exit_node = body.get("exit")
+        if isinstance(exit_node, str):
+            _append_missing(exit_node)
+
+        for edge in body.get("edges") or []:
+            if not isinstance(edge, Mapping):
+                continue
+            frm = edge.get("from")
+            to = edge.get("to")
+            if isinstance(frm, str):
+                _append_missing(frm)
+            if isinstance(to, str):
+                _append_missing(to)
+
+        body["nodes"] = body_nodes
+        params["body_subgraph"] = body
+        node["params"] = params
+
+    workflow_dict["nodes"] = nodes
+    return Workflow.model_validate(workflow_dict)
+
+
 def _repair_with_llm_and_fallback(
     *,
     broken_workflow: Dict[str, Any],
@@ -108,7 +164,7 @@ def _repair_with_llm_and_fallback(
     except Exception as err:  # noqa: BLE001
         log_warn(f"[AutoRepair] LLM 修复失败：{err}")
         try:
-            fallback = Workflow.model_validate(broken_workflow)
+            fallback = _safe_repair_invalid_loop_body(broken_workflow)
             fallback = ensure_registered_actions(
                 fallback,
                 action_registry=action_registry,

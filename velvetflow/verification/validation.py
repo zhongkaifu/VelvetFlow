@@ -5,7 +5,10 @@ from typing import Any, Dict, List, Mapping, Optional
 
 from velvetflow.loop_dsl import build_loop_output_schema, index_loop_body_nodes
 from velvetflow.models import ValidationError, Workflow
-from velvetflow.planner.action_guard import _index_actions_by_id
+
+
+def _index_actions_by_id(action_registry: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    return {a["action_id"]: a for a in action_registry}
 
 
 def precheck_loop_body_graphs(workflow_raw: Mapping[str, Any] | Any) -> List[ValidationError]:
