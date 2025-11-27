@@ -248,6 +248,73 @@ def test_loop_body_template_respects_item_schema():
     )
 
 
+def test_stringified_binding_referencing_loop_body_is_flagged():
+    """字符串化的 __from__ 绑定也应在 planner 校验阶段暴露错误。"""
+
+    workflow = {
+        "workflow_name": "Nvidia和Google财经新闻搜索总结通知",
+        "nodes": [
+            {
+                "id": "search_news_nvidia_google",
+                "type": "action",
+                "action_id": "common.search_news.v1",
+                "params": {"query": "Nvidia AND Google"},
+            },
+            {
+                "id": "loop_each_news",
+                "type": "loop",
+                "params": {
+                    "loop_kind": "for_each",
+                    "source": "result_of.search_news_nvidia_google.results",
+                    "item_alias": "news_item",
+                    "body_subgraph": {
+                        "nodes": [
+                            {
+                                "id": "summarize_news",
+                                "type": "action",
+                                "action_id": "common.summarize.v1",
+                                "params": {"text": "placeholder"},
+                            },
+                            {"id": "exit", "type": "end"},
+                        ],
+                        "edges": [{"from": "summarize_news", "to": "exit"}],
+                        "entry": "summarize_news",
+                        "exit": "exit",
+                    },
+                    "exports": {
+                        "items": {
+                            "from_node": "summarize_news",
+                            "fields": ["summary"],
+                            "mode": "collect",
+                        }
+                    },
+                },
+            },
+            {
+                "id": "aggregate_summaries",
+                "type": "action",
+                "action_id": "common.summarize.v1",
+                "params": {
+                    "text": "{\"__from__\":\"result_of.loop_each_news.summarize_news.summary\",\"__agg__\":\"format_join\",\"sep\":\"\\n\"}",
+                },
+            },
+            {"id": "end", "type": "end"},
+        ],
+        "edges": [
+            {"from": "search_news_nvidia_google", "to": "loop_each_news"},
+            {"from": "loop_each_news", "to": "aggregate_summaries"},
+            {"from": "aggregate_summaries", "to": "end"},
+        ],
+    }
+
+    errors = validate_workflow_data(workflow, ACTION_REGISTRY)
+
+    assert any(
+        e.code == "SCHEMA_MISMATCH" and e.node_id == "aggregate_summaries" and e.field == "text"
+        for e in errors
+    )
+
+
 def test_precheck_is_available_for_planner_users():
     """Planner 层的 precheck 导出应可独立调用。"""
 

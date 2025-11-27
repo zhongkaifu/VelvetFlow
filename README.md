@@ -198,6 +198,9 @@ LLM 相关节点说明：
 ### 手动调试与排错建议
 1. **先跑校验**：使用 `python validate_workflow.py your_workflow.json --print-normalized`，可以立刻发现重复节点、边引用不存在、loop 子图 schema 不合法等问题。【F:validate_workflow.py†L1-L58】
 2. **检查绑定路径**：若报 `__from__` 相关错误，确认 `result_of.<node>.<field>` 中的节点是否存在且有对应字段；loop 节点需检查 `exports` 中是否声明了该字段。
+
+### 常见绑定警告示例
+- **引用了 loop 未导出的字段**：loop 节点的输出仅包含 `exports.items`/`exports.aggregates` 声明的字段，不会直接暴露子图节点的字段。示例中 `aggregate_summaries` 的 `text` 绑定写成 `{"__from__":"result_of.loop_each_news.summarize_news.summary","__agg__":"format_join","sep":"\n"}`，在解析时会因为 `loop_each_news` 的虚拟输出 Schema 中不存在 `summarize_news.summary` 而触发 `__from__ 路径 ... 引用了 loop 输出中不存在的字段` 的警告。应改为引用 loop 导出的数组：`{"__from__":"result_of.loop_each_news.items.summary","__agg__":"format_join","sep":"\n"}`。
 3. **最小化修改面**：调试时优先修改 `params` 中的绑定表达式或 `edges.condition`，避免破坏整体拓扑。
 4. **模拟执行观察输出**：用 `python execute_workflow.py --workflow-json your_workflow.json`，日志会标明每个节点解析后的参数值，便于确认聚合逻辑是否符合预期。
 5. **可视化辅助**：通过 `python render_workflow_image.py --workflow-json your_workflow.json --output tmp.jpg` 生成 DAG，快速核对节点/边连通性与显示名称。
