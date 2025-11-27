@@ -32,6 +32,27 @@ def get_upstream_nodes(workflow: Workflow, target_node_id: str) -> List[Node]:
     return [node_map[uid] for uid in node_map if uid in visited]
 
 
+def get_referenced_nodes(workflow: Workflow, target_node_id: str) -> List[Node]:
+    """收集通过边直接指向 target_node_id 的节点。"""
+
+    node_map = {n.id: n for n in workflow.nodes}
+    if target_node_id not in node_map:
+        return []
+
+    referenced: List[Node] = []
+    seen: set[str] = set()
+    for e in workflow.edges:
+        if e.to_node != target_node_id:
+            continue
+        if e.from_node in seen:
+            continue
+        if e.from_node in node_map:
+            referenced.append(node_map[e.from_node])
+            seen.add(e.from_node)
+
+    return referenced
+
+
 def build_node_relations(workflow_skeleton: Dict[str, Any]) -> Dict[str, Dict[str, List[str]]]:
     nodes = workflow_skeleton.get("nodes", [])
     edges = workflow_skeleton.get("edges", [])
@@ -48,4 +69,4 @@ def build_node_relations(workflow_skeleton: Dict[str, Any]) -> Dict[str, Dict[st
     return relations
 
 
-__all__ = ["get_upstream_nodes", "build_node_relations"]
+__all__ = ["get_upstream_nodes", "get_referenced_nodes", "build_node_relations"]

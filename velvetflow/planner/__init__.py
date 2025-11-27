@@ -6,7 +6,11 @@ from velvetflow.planner.structure import plan_workflow_structure_with_llm
 from velvetflow.planner.params import fill_params_with_llm
 from velvetflow.planner.repair import repair_workflow_with_llm
 from velvetflow.planner.update import update_workflow_with_llm
-from velvetflow.planner.relations import build_node_relations, get_upstream_nodes
+from velvetflow.planner.relations import (
+    build_node_relations,
+    get_referenced_nodes,
+    get_upstream_nodes,
+)
 
 __all__ = [
     "PLANNER_TOOLS",
@@ -16,5 +20,6 @@ __all__ = [
     "repair_workflow_with_llm",
     "update_workflow_with_llm",
     "build_node_relations",
+    "get_referenced_nodes",
     "get_upstream_nodes",
 ]

@@ -18,7 +18,7 @@ from velvetflow.logging_utils import (
 )
 from velvetflow.models import Node, Workflow
 from velvetflow.planner.params_tools import build_param_completion_tool
-from velvetflow.planner.relations import get_upstream_nodes
+from velvetflow.planner.relations import get_referenced_nodes
 from velvetflow.reference_utils import normalize_reference_path
 from velvetflow.verification.validation import (
     _check_array_item_field,
@@ -185,7 +185,7 @@ def fill_params_with_llm(
 
     for node_id in _traverse_order(workflow):
         node = nodes_by_id[node_id]
-        upstream_nodes = get_upstream_nodes(workflow, node_id)
+        upstream_nodes = get_referenced_nodes(workflow, node_id)
         allowed_node_ids = [n.id for n in upstream_nodes]
 
         upstream_context = []
