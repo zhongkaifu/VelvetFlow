@@ -735,5 +735,77 @@
       ]
     },
     "enabled": true
+  },
+  {
+    "action_id": "common.crawl4ai_scrape.v1",
+    "name": "Crawl web content with Crawl4AI",
+    "domain": "common",
+    "description": "Crawl a web page with Crawl4AI and return query-focused highlights and a summary.",
+    "tool_name": "crawl_and_summarize",
+    "tags": [
+      "web",
+      "crawl",
+      "summarize",
+      "crawl4ai"
+    ],
+    "arg_schema": {
+      "type": "object",
+      "properties": {
+        "url": {
+          "type": "string"
+        },
+        "query": {
+          "type": "string",
+          "description": "Natural language description of what to extract or focus on"
+        },
+        "max_chars": {
+          "type": "integer",
+          "default": 2000
+        },
+        "max_sentences": {
+          "type": "integer",
+          "default": 5
+        }
+      },
+      "required": [
+        "url",
+        "query"
+      ]
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "url": {
+          "type": "string"
+        },
+        "query": {
+          "type": "string"
+        },
+        "summary": {
+          "type": "string",
+          "description": "Natural language summary focused on the query"
+        },
+        "matched_passages": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Key text snippets related to the query"
+        },
+        "content_preview": {
+          "type": "string",
+          "description": "Trimmed preview of the crawled content"
+        },
+        "content_length": {
+          "type": "integer",
+          "description": "Total characters extracted from the page"
+        }
+      },
+      "required": [
+        "summary",
+        "content_preview"
+      ]
+    },
+    "enabled": true
   }
 ]

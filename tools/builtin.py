@@ -3,6 +3,8 @@ from __future__ import annotations
 """A small set of real, ready-to-use business tools."""
 
 import html
+import importlib
+import importlib.util
 import json
 import re
 import textwrap
@@ -358,6 +360,126 @@ def summarize(text: str, max_sentences: int = 3) -> Dict[str, Any]:
     return {"summary": summary, "sentence_count": len(sentences)}
 
 
+def _load_crawl4ai_module():
+    """Ensure ``crawl4ai`` is available before attempting to use it."""
+
+    if importlib.util.find_spec("crawl4ai") is None:
+        raise RuntimeError(
+            "crawl4ai is required for this tool. Install it with `pip install crawl4ai` and retry."
+        )
+    return importlib.import_module("crawl4ai")
+
+
+def _extract_crawl4ai_content(result: Any) -> str:
+    """Extract the richest text payload returned by Crawl4AI."""
+
+    if result is None:
+        return ""
+
+    candidates = []
+    for attr in ("markdown_v2", "markdown", "cleaned_html", "html"):
+        value = getattr(result, attr, None)
+        if isinstance(value, str):
+            candidates.append(value)
+        elif value is not None:
+            raw_markdown = getattr(value, "raw_markdown", None)
+            if isinstance(raw_markdown, str):
+                candidates.append(raw_markdown)
+
+    for candidate in candidates:
+        normalized = textwrap.dedent(candidate).strip()
+        if normalized:
+            return normalized
+
+    return ""
+
+
+def _select_passages(content: str, query: str, *, max_chars: int = 2000) -> List[str]:
+    """Pick a handful of lines that relate to the query for quick inspection."""
+
+    lines = [line.strip() for line in content.splitlines() if line.strip()]
+    lower_query = query.lower()
+    passages: List[str] = []
+
+    for line in lines:
+        if lower_query in line.lower():
+            passages.append(line)
+        if len(passages) >= 6:
+            break
+
+    if not passages:
+        passages = lines[:6]
+
+    condensed: List[str] = []
+    for passage in passages:
+        width = max(40, max_chars)
+        condensed.append(textwrap.shorten(passage, width=width, placeholder="..."))
+
+    return condensed
+
+
+def _summarize_locally(content: str, query: str, max_sentences: int) -> str:
+    """Create a lightweight extractive summary without an external model."""
+
+    sentences = re.split(r"(?<=[。！？.!?])\s+", content)
+    sentences = [s.strip() for s in sentences if s.strip()]
+
+    relevant: List[str] = []
+    lower_query = query.lower()
+    for sentence in sentences:
+        if lower_query in sentence.lower():
+            relevant.append(sentence)
+        if len(relevant) >= max_sentences:
+            break
+
+    if not relevant:
+        relevant = sentences[:max_sentences]
+
+    summary = " ".join(relevant[:max_sentences]).strip()
+    return summary
+
+
+def crawl_and_summarize(
+    url: str, query: str, *, max_chars: int = 2000, max_sentences: int = 5
+) -> Dict[str, Any]:
+    """Crawl a web page with Crawl4AI and return a query-focused summary."""
+
+    if not url:
+        raise ValueError("url is required for crawling")
+    if not query:
+        raise ValueError("query is required to focus the extraction")
+    if max_chars <= 0:
+        raise ValueError("max_chars must be positive")
+
+    crawl4ai = _load_crawl4ai_module()
+    WebCrawler = getattr(crawl4ai, "WebCrawler", None)
+    if WebCrawler is None:
+        raise RuntimeError("crawl4ai.WebCrawler is not available in the installed crawl4ai version")
+
+    crawler = WebCrawler(verbose=False)
+    warmup = getattr(crawler, "warmup", None)
+    if callable(warmup):
+        warmup()
+
+    result = crawler.run(url=url)
+    content = _extract_crawl4ai_content(result)
+    if not content:
+        raise RuntimeError("crawl4ai did not return any textual content for the requested page")
+
+    summary = _summarize_locally(content, query, max_sentences=max_sentences)
+    passages = _select_passages(content, query, max_chars=max_chars)
+    preview = textwrap.shorten(content, width=max_chars, placeholder="...")
+
+    return {
+        "url": url,
+        "query": query,
+        "summary": summary,
+        "matched_passages": passages,
+        "content_preview": preview,
+        "content_length": len(content),
+    }
+
+
 def register_builtin_tools() -> None:
     """Register all built-in tools in the global registry."""
 
@@ -483,6 +605,24 @@ def register_builtin_tools() -> None:
         )
     )
 
+    register_tool(
+        Tool(
+            name="crawl_and_summarize",
+            description="Use Crawl4AI to fetch a web page, extract text, and summarize it for a query.",
+            function=crawl_and_summarize,
+            args_schema={
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string"},
+                    "query": {"type": "string"},
+                    "max_chars": {"type": "integer", "default": 2000},
+                    "max_sentences": {"type": "integer", "default": 5},
+                },
+                "required": ["url", "query"],
+            },
+        )
+    )
+
 
 __all__ = [
     "register_builtin_tools",
@@ -493,4 +633,5 @@ __all__ = [
     "list_files",
     "read_file",
     "summarize",
+    "crawl_and_summarize",
 ]
