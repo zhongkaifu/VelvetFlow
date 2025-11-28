@@ -1276,6 +1276,12 @@ class DynamicActionExecutor:
                     payload = result.copy() if isinstance(result, dict) else {"value": result}
                     payload["params"] = resolved_params
                     results[nid] = payload
+                    next_ids = self._next_nodes(
+                        self._derive_edges(workflow), nid, nodes_data=nodes_data
+                    )
+                    for nxt in next_ids:
+                        if nxt not in visited:
+                            reachable.add(nxt)
                     log_event(
                         "node_end",
                         {
@@ -1284,6 +1290,7 @@ class DynamicActionExecutor:
                             "action_id": action_id,
                             "resolved_params": resolved_params,
                             "result": result,
+                            "next_nodes": next_ids,
                         },
                     )
                     continue
