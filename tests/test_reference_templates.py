@@ -8,7 +8,7 @@ if str(ROOT_DIR) not in sys.path:
 
 from validate_workflow import validate_workflow_data
 from velvetflow.bindings import BindingContext, eval_node_params
-from velvetflow.models import Node, Workflow
+from velvetflow.models import Node, Workflow, infer_edges_from_bindings
 
 ACTION_REGISTRY = json.loads(
     (Path(__file__).parent.parent / "velvetflow" / "business_actions.json").read_text(
@@ -79,3 +79,22 @@ def test_eval_params_parses_json_string_bindings():
     params = eval_node_params(node, ctx)
 
     assert params["text"] == "新闻一\n新闻二"
+
+
+def test_infer_edges_from_embedded_result_refs():
+    nodes = [
+        Node(id="loop_nvidia_news", type="loop", params={}),
+        Node(
+            id="combine_summaries",
+            type="action",
+            params={
+                "text": "结合Nvidia新闻总结：{{result_of.loop_nvidia_news.exports.items.summary}}，Google新闻总结：{{result_of.loop_google_news.exports.items.summary}}",
+            },
+        ),
+        Node(id="loop_google_news", type="loop", params={}),
+    ]
+
+    edges = infer_edges_from_bindings(nodes)
+
+    assert {"from": "loop_nvidia_news", "to": "combine_summaries", "condition": None} in edges
+    assert {"from": "loop_google_news", "to": "combine_summaries", "condition": None} in edges
