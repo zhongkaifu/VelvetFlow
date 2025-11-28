@@ -2,6 +2,7 @@
 from tools.base import Tool
 from tools.builtin import (
     ask_ai,
+    crawl_and_summarize,
     list_files,
     read_file,
     register_builtin_tools,
@@ -32,4 +33,5 @@ __all__ = [
     "list_files",
     "read_file",
     "summarize",
+    "crawl_and_summarize",
 ]
