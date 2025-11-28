@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import re
 from typing import Any, Dict, Iterable, List, Literal, Mapping, Optional, Set
 
 from velvetflow.reference_utils import normalize_reference_path
@@ -135,6 +136,10 @@ def infer_edges_from_bindings(nodes: Iterable[Any]) -> List[Dict[str, Any]]:
                 parts = normalized.split(".")
                 if len(parts) >= 2 and parts[1]:
                     yield parts[1]
+            # Also detect embedded result_of references inside templated or
+            # free-form strings, e.g. "Hello {{result_of.node.foo}} world".
+            for match in re.findall(r"result_of\.([A-Za-z0-9_-]+)", value):
+                yield match
 
     node_ids = {_extract_node_id(n) for n in nodes}
     node_ids.discard(None)
