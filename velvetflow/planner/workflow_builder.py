@@ -82,6 +82,8 @@ class WorkflowBuilder:
         action_id: Optional[str],
         display_name: Optional[str],
         params: Optional[Dict[str, Any]],
+        true_to_node: Optional[str] = None,
+        false_to_node: Optional[str] = None,
     ):
         if node_id in self.nodes:
             log_warn(f"[Builder] 节点 {node_id} 已存在，将覆盖。")
@@ -91,7 +93,18 @@ class WorkflowBuilder:
             "action_id": action_id,
             "display_name": display_name,
             "params": params or {},
+            "true_to_node": true_to_node,
+            "false_to_node": false_to_node,
         }
+
+    def update_node(self, node_id: str, updates: Mapping[str, Any]):
+        node = self.nodes.get(node_id)
+        if not isinstance(node, dict):
+            log_warn(f"[Builder] 节点 {node_id} 不存在，无法更新。")
+            return
+
+        for key, value in updates.items():
+            node[key] = value
 
     def to_workflow(self) -> Dict[str, Any]:
         workflow = {

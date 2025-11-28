@@ -4,11 +4,11 @@ import math
 import os
 import json
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 from PIL import Image, ImageDraw, ImageFont
 
-from velvetflow.models import Node, Workflow
+from velvetflow.models import Edge, Node, Workflow
 from velvetflow.action_registry import get_action_by_id
 
 RGB = Tuple[int, int, int]
@@ -245,10 +245,10 @@ class _ImageCanvas:
         return height
 
 
-def _topological_levels(workflow: Workflow) -> Dict[str, int]:
+def _topological_levels(workflow: Workflow, edges: List[Edge]) -> Dict[str, int]:
     adjacency: Dict[str, List[str]] = {n.id: [] for n in workflow.nodes}
     indegree: Dict[str, int] = {n.id: 0 for n in workflow.nodes}
-    for edge in workflow.edges:
+    for edge in edges:
         adjacency[edge.from_node].append(edge.to_node)
         indegree[edge.to_node] += 1
 
@@ -297,10 +297,10 @@ def _refine_order(
     return order
 
 
-def _build_edge_maps(workflow: Workflow) -> Tuple[Dict[str, List[str]], Dict[str, List[str]]]:
-    incoming: Dict[str, List[str]] = {n.id: [] for n in workflow.nodes}
-    outgoing: Dict[str, List[str]] = {n.id: [] for n in workflow.nodes}
-    for edge in workflow.edges:
+def _build_edge_maps(nodes: List[Node], edges: List[Edge]) -> Tuple[Dict[str, List[str]], Dict[str, List[str]]]:
+    incoming: Dict[str, List[str]] = {n.id: [] for n in nodes}
+    outgoing: Dict[str, List[str]] = {n.id: [] for n in nodes}
+    for edge in edges:
         incoming[edge.to_node].append(edge.from_node)
         outgoing[edge.from_node].append(edge.to_node)
     return incoming, outgoing
@@ -308,6 +308,7 @@ def _build_edge_maps(workflow: Workflow) -> Tuple[Dict[str, List[str]], Dict[str
 
 def _compute_uniform_node_height(
     workflow: Workflow,
+    edges: List[Edge],
     canvas: _ImageCanvas,
     node_width: int,
     min_height: int,
@@ -315,7 +316,7 @@ def _compute_uniform_node_height(
     if not workflow.nodes:
         return min_height
 
-    incoming, outgoing = _build_edge_maps(workflow)
+    incoming, outgoing = _build_edge_maps(workflow.nodes, edges)
     content_width = node_width - 20
     top_padding = 8
     bottom_padding = 8
@@ -357,19 +358,66 @@ def _compute_uniform_node_height(
     return max(min_height, max(heights))
 
 
+def _resolve_display_edges(workflow: Workflow) -> List[Edge]:
+    """Derive edges for visualization based on the current workflow definition.
+
+    The renderer should not rely on callers to provide an ``edges`` list. It
+    reconstructs topology from node parameter bindings (via ``workflow.edges``)
+    and augments it with condition branches declared on each node so that true
+    and false flows are always visible in the diagram.
+    """
+
+    resolved: List[Edge] = []
+    existing: Set[Tuple[str, str, Optional[str]]] = set()
+
+    for edge in workflow.edges:
+        key = (edge.from_node, edge.to_node, edge.condition)
+        if key in existing:
+            continue
+        existing.add(key)
+        resolved.append(edge)
+
+    node_ids = {n.id for n in workflow.nodes}
+
+    for node in workflow.nodes:
+        if node.type != "condition":
+            continue
+        meta = node.meta if isinstance(node.meta, dict) else {}
+        branch_pairs = [
+            ("true", node.true_to_node),
+            ("false", node.false_to_node),
+        ]
+
+        for legacy_key, branch_label in (("next_on_true", "true"), ("next_on_false", "false")):
+            if legacy_key in meta and meta.get(legacy_key) not in {None, ""}:
+                branch_pairs.append((branch_label, meta.get(legacy_key)))
+
+        for branch_label, target in branch_pairs:
+            if not isinstance(target, str) or target not in node_ids:
+                continue
+            key = (node.id, target, branch_label)
+            if key in existing:
+                continue
+            existing.add(key)
+            resolved.append(Edge(from_node=node.id, to_node=target, condition=branch_label))
+
+    return resolved
+
+
 def _layout_graph(
     workflow: Workflow,
+    edges: List[Edge],
     node_size: Tuple[int, int],
     level_gap: int,
     node_gap: int,
     padding: int,
 ) -> Dict[str, object]:
-    levels = _topological_levels(workflow)
+    levels = _topological_levels(workflow, edges)
     max_level = max(levels.values()) if levels else 0
     nodes_by_level: Dict[int, List[str]] = {}
     predecessors: Dict[str, List[str]] = {n.id: [] for n in workflow.nodes}
     successors: Dict[str, List[str]] = {n.id: [] for n in workflow.nodes}
-    for edge in workflow.edges:
+    for edge in edges:
         nodes_by_level.setdefault(levels[edge.from_node], []).append(edge.from_node)
         nodes_by_level.setdefault(levels[edge.to_node], []).append(edge.to_node)
         successors[edge.from_node].append(edge.to_node)
@@ -412,6 +460,7 @@ def _layout_graph(
 def _draw_graph(
     canvas: _ImageCanvas,
     workflow: Workflow,
+    edges: List[Edge],
     layout: Dict[str, object],
     node_size: Tuple[int, int],
     offset: Tuple[int, int] = (0, 0),
@@ -422,12 +471,12 @@ def _draw_graph(
     levels: Dict[str, int] = layout.get("levels", {})  # type: ignore[assignment]
     padding: int = layout.get("padding", 50)  # type: ignore[assignment]
 
-    incoming, outgoing = _build_edge_maps(workflow)
+    incoming, outgoing = _build_edge_maps(workflow.nodes, edges)
 
     flyover_lanes: Dict[Tuple[int, int], int] = {}
     corridor_lanes: Dict[Tuple[int, int], int] = {}
 
-    for edge in workflow.edges:
+    for edge in edges:
         start_pos = positions[edge.from_node]
         end_pos = positions[edge.to_node]
         start_x = start_pos[0] + node_width + offset_x
@@ -605,10 +654,20 @@ def render_workflow_dag(workflow: Workflow, output_path: str = "workflow_dag.jpg
     """Render the final workflow DAG to a JPEG file and return the saved path."""
 
     probe_canvas = _ImageCanvas(10, 10)
+    edges = _resolve_display_edges(workflow)
     main_node_width = 200
-    main_node_height = _compute_uniform_node_height(workflow, probe_canvas, main_node_width, min_height=110)
+    main_node_height = _compute_uniform_node_height(
+        workflow, edges, probe_canvas, main_node_width, min_height=110
+    )
     main_node_size = (main_node_width, main_node_height)
-    main_layout = _layout_graph(workflow, main_node_size, level_gap=170, node_gap=36, padding=50)
+    main_layout = _layout_graph(
+        workflow,
+        edges,
+        main_node_size,
+        level_gap=170,
+        node_gap=36,
+        padding=50,
+    )
 
     loop_panels = []
     for node in workflow.nodes:
@@ -618,14 +677,25 @@ def render_workflow_dag(workflow: Workflow, output_path: str = "workflow_dag.jpg
         if not body_workflow:
             continue
         body_node_width = 170
-        body_node_height = _compute_uniform_node_height(body_workflow, probe_canvas, body_node_width, min_height=100)
+        body_edges = _resolve_display_edges(body_workflow)
+        body_node_height = _compute_uniform_node_height(
+            body_workflow, body_edges, probe_canvas, body_node_width, min_height=100
+        )
         body_node_size = (body_node_width, body_node_height)
-        body_layout = _layout_graph(body_workflow, body_node_size, level_gap=130, node_gap=28, padding=40)
+        body_layout = _layout_graph(
+            body_workflow,
+            body_edges,
+            body_node_size,
+            level_gap=130,
+            node_gap=28,
+            padding=40,
+        )
         panel_title = f"循环子图：{node.display_name or node.id}"
         loop_panels.append(
             {
                 "loop_id": node.id,
                 "workflow": body_workflow,
+                "edges": body_edges,
                 "layout": body_layout,
                 "node_size": body_node_size,
                 "title": panel_title,
@@ -645,7 +715,7 @@ def render_workflow_dag(workflow: Workflow, output_path: str = "workflow_dag.jpg
 
     canvas = _ImageCanvas(width, height)
 
-    _draw_graph(canvas, workflow, main_layout, main_node_size)
+    _draw_graph(canvas, workflow, edges, main_layout, main_node_size)
 
     current_y = main_layout["height"] + (panel_gap if loop_panels else 0)
     for panel in loop_panels:
@@ -679,6 +749,7 @@ def render_workflow_dag(workflow: Workflow, output_path: str = "workflow_dag.jpg
         _draw_graph(
             canvas,
             panel["workflow"],
+            panel["edges"],
             panel["layout"],
             panel["node_size"],
             offset=(offset_x, current_y + title_height),

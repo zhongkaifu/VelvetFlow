@@ -242,19 +242,21 @@ class DynamicActionExecutor:
 
         node_def = self.nodes.get(nid, {}) if isinstance(self.nodes.get(nid, {}), Mapping) else {}
         meta = node_def.get("meta") if isinstance(node_def, Mapping) else {}
-        if (
-            node_def.get("type") == "condition"
-            and isinstance(meta, Mapping)
-            and isinstance(cond_value, bool)
-        ):
-            branch_target = node_def.get("true_to_node" if cond_value else "false_to_node")
-            if isinstance(branch_target, str):
-                return [branch_target]
+        if node_def.get("type") == "condition" and isinstance(cond_value, bool):
+            branch_key = "true_to_node" if cond_value else "false_to_node"
+            if branch_key in node_def:
+                branch_target = node_def.get(branch_key)
+                if isinstance(branch_target, str):
+                    return [branch_target]
+                return []
 
-            branch_key = f"next_on_{cond_label}"
-            legacy_target = meta.get(branch_key)
-            if isinstance(legacy_target, str):
-                return [legacy_target]
+            if isinstance(meta, Mapping):
+                legacy_key = f"next_on_{cond_label}"
+                if legacy_key in meta:
+                    legacy_target = meta.get(legacy_key)
+                    if isinstance(legacy_target, str):
+                        return [legacy_target]
+                    return []
 
         for e in edges:
             frm = e.from_node if hasattr(e, "from_node") else e.get("from")
