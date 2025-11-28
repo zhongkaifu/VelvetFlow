@@ -55,3 +55,52 @@ def test_loop_body_results_are_cleared_between_iterations():
 
     assert "loop_action" not in results
     assert results["loop"]["items"] == [{"value": "1"}, {"value": "2"}]
+
+
+def test_condition_branch_inside_loop_body_uses_true_target():
+    workflow_dict = {
+        "workflow_name": "loop_condition_branch",
+        "nodes": [
+            {
+                "id": "loop",
+                "type": "loop",
+                "params": {
+                    "loop_kind": "for_each",
+                    "source": [True],
+                    "item_alias": "flag",
+                    "body_subgraph": {
+                        "nodes": [
+                            {
+                                "id": "check_flag",
+                                "type": "condition",
+                                "params": {"kind": "equals", "source": {"__from__": "loop.item"}, "value": True},
+                                "true_to_node": "t_branch",
+                                "false_to_node": None,
+                            },
+                            {
+                                "id": "t_branch",
+                                "type": "action",
+                                "action_id": "hr.notify_human.v1",
+                                "params": {},
+                            },
+                        ],
+                    },
+                    "exports": {
+                        "items": {
+                            "from_node": "t_branch",
+                            "fields": ["branch"],
+                        }
+                    },
+                },
+            }
+        ],
+    }
+
+    workflow = Workflow.model_validate(workflow_dict)
+    executor = DynamicActionExecutor(
+        workflow, simulations={"hr.notify_human.v1": {"result": {"branch": "true_taken"}}}
+    )
+
+    results = executor.run()
+
+    assert results["loop"]["items"] == [{"branch": "true_taken"}]
