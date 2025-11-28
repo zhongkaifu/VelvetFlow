@@ -78,10 +78,9 @@ VelvetFlow (repo root)
 下面先将原本的一步式描述拆分为更细的流水线，再用流程图展示端到端构建：
 
 1. **需求接收与环境准备**：获取自然语言需求，并加载业务动作库以初始化混合检索服务。
-2. **结构规划（LLM）**：调用 `plan_workflow_structure_with_llm` 生成 `nodes/edges/entry/exit` 骨架，随后用 Pydantic 校验与 `ensure_registered_actions` 过滤不合法动作。规划阶段默认开启 tool-calling，使用 `planner/tools.py` 中的动作编辑工具并通过 `tool_choice="auto"` 让模型自行选择，连同节点/边编辑记录在日志中便于回放。【F:velvetflow/planner/structure.py†L337-L451】【F:velvetflow/planner/tools.py†L1-L107】
-3. **覆盖度检查（LLM）**：在初版骨架上调用 `check_requirement_coverage_with_llm` 对用户需求做逐条覆盖评估，缺失点会触发 `refine_workflow_structure_with_llm` 通过工具调用直接编辑节点/边以补齐覆盖，最多重试 `max_coverage_refine_rounds` 轮。【F:velvetflow/planner/structure.py†L491-L517】【F:velvetflow/planner/coverage.py†L13-L380】
-4. **参数补全（LLM）**：在已通过的骨架上调用 `fill_params_with_llm` 补齐各节点 `params/exports/bindings`，生成完整的工作流字典。
-5. **多轮校验与自修复（LLM）**：
+2. **结构规划 + 覆盖度校验（LLM）**：调用 `plan_workflow_structure_with_llm` 通过 `planner/tools.py` 提供的工具集多轮构建 `nodes/edges/entry/exit` 骨架。每当模型调用 `finalize_workflow` 时会立即触发 `check_requirement_coverage_with_llm`，如果发现 `missing_points` 会将缺失点和当前 workflow 以 system 消息反馈给模型，继续使用 `PLANNER_TOOLS` 修补直至覆盖或达到 `max_coverage_refine_rounds` 上限。【F:velvetflow/planner/structure.py†L631-L960】【F:velvetflow/planner/tools.py†L1-L107】【F:velvetflow/planner/coverage.py†L13-L118】
+3. **参数补全（LLM）**：在已通过的骨架上调用 `fill_params_with_llm` 补齐各节点 `params/exports/bindings`，生成完整的工作流字典。
+4. **多轮校验与自修复（LLM）**：
    - 首次校验未通过时，记录 `ValidationError` 列表。
    - 进入 `_repair_with_llm_and_fallback`，结合错误提示反复修复，必要时回退到上一次有效版本，直到通过或达到 `max_repair_rounds`。
 5. **持久化与可视化**：最终通过校验后，写出 `workflow_output.json`，并可用 `render_workflow_image.py` 生成 `workflow_dag.jpg`。
@@ -92,11 +91,10 @@ VelvetFlow (repo root)
 flowchart TD
     A["用户需求输入\n输入: nl_requirement:str"] --> B
     B["构建混合检索服务\n输入: BUSINESS_ACTIONS\n输出: HybridActionSearchService (BM25+向量索引)"] --> C
-    C{{"LLM: 结构规划 (plan_workflow_structure_with_llm)\n输入: nl_requirement + action_registry\n输出: workflow_skeleton: dict{nodes,edges,entry,exit}"}} --> D
+    C{{"LLM: 结构规划 (plan_workflow_structure_with_llm)\n内置覆盖度自检/补充\n输入: nl_requirement + action_registry\n输出: workflow_skeleton: dict{nodes,edges,entry,exit}"}} --> D
     D["Pydantic 校验 & ensure_registered_actions\n输入: workflow_skeleton\n输出: skeleton: Workflow"] --> E
     E{{"LLM: 参数补全 (fill_params_with_llm)\n输入: skeleton.model_dump(by_alias=True) + action_registry\n输出: completed_workflow_raw: dict 含 params/exports/bindings"}} --> F
     F{{"LLM: 自修复 (_repair_with_llm_and_fallback，可多轮)\n输入: validation_errors + 当前 workflow dict\n输出: repaired_workflow: dict"}} --> G
-    D -->|覆盖度缺失| C
     D -->|补参异常/缺字段| F
     E -->|校验失败| F
     F --> G
@@ -108,18 +106,18 @@ flowchart TD
 
 LLM 相关节点说明：
 - **结构规划**：基于自然语言需求与动作 schema，生成 `nodes/edges/entry/exit` 的骨架。规划阶段会使用预置的工具集（添加节点/边、设置入口出口、修改 meta 信息等），模型通过 tool-calling 自动选择，所有调用结果会以日志形式保存，便于复现或对照失败案例。【F:velvetflow/planner/structure.py†L337-L451】
-- **覆盖度检查**：初版骨架生成后，调用覆盖度检查工具对照自然语言需求输出 `missing_points` 列表；若未覆盖会触发 `refine_workflow_structure_with_llm` 以 tool-calling 方式直接编辑 workflow（新增/改线节点）并重新校验，保证关键需求不遗漏。【F:velvetflow/planner/coverage.py†L13-L380】【F:velvetflow/planner/structure.py†L491-L517】
+- **覆盖度检查**：在结构规划阶段，当模型调用 `finalize_workflow` 时会立即对照自然语言需求触发覆盖度检查；若出现 `missing_points` 会把缺失点和当前 workflow 反馈给模型，让其继续用规划工具补齐后再次 finalize，直至覆盖或达到补全上限。【F:velvetflow/planner/structure.py†L631-L960】【F:velvetflow/planner/coverage.py†L13-L118】
 - **参数补全**：为每个 action/condition/loop 节点填充必需的 `params`、`exports` 与绑定表达式，模型由 `velvetflow.config.OPENAI_MODEL` 控制。
 - **自修复**：当校验失败或补参异常时，使用当前 workflow 字典与 `ValidationError` 列表提示模型修复，直到通过或达到 `max_repair_rounds`。
 
 ### Tool-calling 的设计与技术细节
 - **工具清单与参数规范**：规划阶段暴露给 LLM 的工具集中定义在 `planner/tools.py`，包含元数据设置、业务动作检索、节点/边增删以及结束标记，共同组成结构规划的“编辑指令集”。每个工具都给出了 JSON Schema 约束，帮助模型生成可解析的参数；其中 `search_business_actions` 返回 candidates 列表，后续 `add_node(type="action")` 只能在该候选集里选择 action_id，强制动作来自注册表。【F:velvetflow/planner/tools.py†L1-L96】
-- **系统提示词与回合驱动**：`plan_workflow_structure_with_llm` 会构造包含硬性约束的 system prompt，强调必须围绕用户需求逐步覆盖触发/查询/筛选/总结/通知等子任务，并在循环节点外部只能引用 `loop.exports`。随后以多轮对话驱动 tool-calling，默认温度 0.2、`tool_choice="auto"`，直到模型调用 `finalize_workflow` 或达到轮次上限。【F:velvetflow/planner/structure.py†L305-L375】
+- **系统提示词与回合驱动**：`plan_workflow_structure_with_llm` 会构造包含硬性约束的 system prompt，强调必须围绕用户需求逐步覆盖触发/查询/筛选/总结/通知等子任务，并在循环节点外部只能引用 `loop.exports`。随后以多轮对话驱动 tool-calling，默认温度 0.2、`tool_choice="auto"`，模型在调用 `finalize_workflow` 后会收到覆盖度缺失的 system 反馈并继续补齐。【F:velvetflow/planner/structure.py†L305-L375】【F:velvetflow/planner/structure.py†L631-L960】
 - **工具执行与防御式校验**：每轮返回的 tool_calls 会被逐个解析 JSON 参数并分派执行：
   - 动作检索会更新 `last_action_candidates`，用来限定后续 action 节点的合法 ID；若未先检索或 ID 不在候选集中，会返回错误结果继续对话，防止幻觉动作写入工作流。【F:velvetflow/planner/structure.py†L376-L438】
   - 节点/边增删最终通过 `WorkflowBuilder` 汇总到 skeleton；解析失败时会记录错误并附带 `tool_call_id`，便于模型在下一轮修正。【F:velvetflow/planner/structure.py†L341-L449】
-  - 接收到 `finalize_workflow` 后立即退出结构规划回合，并进入自动接线、注册表校正与覆盖度二次改进阶段，确保无工具调用也能生成连通的 DAG。【F:velvetflow/planner/structure.py†L449-L517】
-- **日志与可复现性**：每次调用都会使用 `log_info/log_error/log_event` 记录函数名与参数，LLM 返回的 `messages` 会完整保留 tool 调用及结果，方便重放或定位失败的阶段；覆盖度检查与缺失审批检测的结果同样被输出到事件日志。【F:velvetflow/planner/structure.py†L327-L517】
+  - 在 `finalize_workflow` 触发覆盖度缺失时，会通过 tool 回执与 system 提示反馈缺失点，允许模型继续使用相同的规划工具补齐骨架。【F:velvetflow/planner/structure.py†L631-L960】
+- **日志与可复现性**：每次调用都会使用 `log_info/log_error/log_event` 记录函数名与参数，LLM 返回的 `messages` 会完整保留 tool 调用及结果，覆盖度检查反馈同样会写入日志，方便重放或定位失败的阶段。【F:velvetflow/planner/structure.py†L327-L960】
 
 ## 循环节点的处理细节
 为方便开发者定位循环相关逻辑，补充 loop 的运行与导出细节：

@@ -10,7 +10,6 @@ from openai import OpenAI
 from velvetflow.config import OPENAI_MODEL
 from velvetflow.logging_utils import (
     child_span,
-    log_debug,
     log_error,
     log_event,
     log_info,
@@ -22,10 +21,7 @@ from velvetflow.logging_utils import (
 )
 from velvetflow.planner.action_guard import ensure_registered_actions
 from velvetflow.planner.approval import detect_missing_approval_nodes
-from velvetflow.planner.coverage import (
-    check_requirement_coverage_with_llm,
-    refine_workflow_structure_with_llm,
-)
+from velvetflow.planner.coverage import check_requirement_coverage_with_llm
 from velvetflow.planner.tools import PLANNER_TOOLS
 from velvetflow.planner.workflow_builder import (
     WorkflowBuilder,
@@ -553,6 +549,62 @@ def _ensure_loop_exports_with_llm(
     return new_workflow
 
 
+def _prepare_skeleton_for_coverage(
+    *,
+    builder: WorkflowBuilder,
+    action_registry: List[Dict[str, Any]],
+    search_service: HybridActionSearchService,
+) -> Dict[str, Any]:
+    skeleton = _attach_inferred_edges(builder.to_workflow())
+    skeleton = ensure_registered_actions(
+        skeleton, action_registry=action_registry, search_service=search_service
+    )
+    return _attach_inferred_edges(skeleton)
+
+
+def _run_coverage_check(
+    *,
+    nl_requirement: str,
+    builder: WorkflowBuilder,
+    action_registry: List[Dict[str, Any]],
+    search_service: HybridActionSearchService,
+) -> Dict[str, Any]:
+    skeleton = _prepare_skeleton_for_coverage(
+        builder=builder, action_registry=action_registry, search_service=search_service
+    )
+
+    coverage = check_requirement_coverage_with_llm(
+        nl_requirement=nl_requirement,
+        workflow=skeleton,
+        model=OPENAI_MODEL,
+    )
+    approval_missing = detect_missing_approval_nodes(
+        workflow=skeleton, action_registry=action_registry
+    )
+    if approval_missing:
+        coverage.setdefault("missing_points", [])
+        coverage["missing_points"].extend(approval_missing)
+        coverage["is_covered"] = False
+
+    log_event("coverage_check", {"coverage": coverage})
+    log_json("覆盖度检查结果", coverage)
+    return skeleton, coverage
+
+
+def _build_coverage_feedback_message(
+    *, coverage: Mapping[str, Any], workflow: Mapping[str, Any]
+) -> str:
+    missing_points = coverage.get("missing_points", []) or []
+    analysis = coverage.get("analysis", "")
+    return (
+        "覆盖度检查未通过，请继续使用规划工具补充缺失点，并再次调用 finalize_workflow。\n"
+        f"- missing_points: {json.dumps(missing_points, ensure_ascii=False)}\n"
+        f"- analysis: {analysis}\n"
+        "当前 workflow 供参考（含推导的 edges）：\n"
+        f"{json.dumps(workflow, ensure_ascii=False)}"
+    )
+
+
 def plan_workflow_structure_with_llm(
     nl_requirement: str,
     search_service: HybridActionSearchService,
@@ -588,7 +640,7 @@ def plan_workflow_structure_with_llm(
         "你必须确保工作流结构能够完全覆盖用户自然语言需求中的每个子任务，而不是只覆盖前半部分：\n"
         "例如，如果需求包含：触发 + 查询 + 筛选 + 总结 + 通知，你不能只实现触发 + 查询，\n"
         "必须在结构里显式包含筛选、总结、通知等对应节点和数据流。\n"
-        "当你确信所有子需求都有对应的节点和边时，再调用 finalize_workflow。"
+        "调用 finalize_workflow 后系统会立即对照 nl_requirement 做覆盖度检查；如果发现 missing_points 会把缺失点和当前 workflow 反馈给你，请继续用规划工具修补后再次 finalize。"
     )
 
     messages: List[Dict[str, Any]] = [
@@ -597,9 +649,13 @@ def plan_workflow_structure_with_llm(
     ]
 
     finalized = False
+    latest_skeleton: Dict[str, Any] = {}
+    latest_coverage: Dict[str, Any] = {}
+    coverage_retry = 0
+    total_rounds = max_rounds + max_coverage_refine_rounds
 
     # ---------- 结构规划（多轮 tool-calling） ----------
-    for round_idx in range(max_rounds):
+    for round_idx in range(total_rounds):
         log_section(f"结构规划 Round {round_idx + 1}")
         with child_span("structure_planning_llm"):
             resp = client.chat.completions.create(
@@ -614,11 +670,13 @@ def plan_workflow_structure_with_llm(
             raise RuntimeError("plan_workflow_structure_with_llm 未返回任何候选消息")
 
         msg = resp.choices[0].message
-        messages.append({
-            "role": "assistant",
-            "content": msg.content or "",
-            "tool_calls": msg.tool_calls,
-        })
+        messages.append(
+            {
+                "role": "assistant",
+                "content": msg.content or "",
+                "tool_calls": msg.tool_calls,
+            }
+        )
 
         if not msg.tool_calls:
             log_warn("[Planner] 本轮没有 tool_calls，提前结束。")
@@ -827,79 +885,72 @@ def plan_workflow_structure_with_llm(
                         tool_result = {"status": "ok", "type": "node_updated", "node_id": node_id}
 
             elif func_name == "finalize_workflow":
-                finalized = True
-                tool_result = {"status": "ok", "type": "finalized", "notes": args.get("notes")}
+                skeleton, coverage = _run_coverage_check(
+                    nl_requirement=nl_requirement,
+                    builder=builder,
+                    action_registry=action_registry,
+                    search_service=search_service,
+                )
+                latest_skeleton = skeleton
+                latest_coverage = coverage
+                is_covered = bool(coverage.get("is_covered", False))
+                tool_result = {
+                    "status": "ok" if is_covered else "needs_more_coverage",
+                    "type": "finalized",
+                    "notes": args.get("notes"),
+                    "coverage": coverage,
+                }
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tool_call_id,
+                        "content": json.dumps(tool_result, ensure_ascii=False),
+                    }
+                )
+
+                if is_covered:
+                    finalized = True
+                    log_success("[Planner] 覆盖度检查通过，结束结构规划。")
+                else:
+                    coverage_retry += 1
+                    log_info("🔧 覆盖度检查未通过，将继续使用规划工具完善。")
+                    feedback_message = _build_coverage_feedback_message(
+                        coverage=coverage, workflow=skeleton
+                    )
+                    messages.append({"role": "system", "content": feedback_message})
+                    if coverage_retry > max_coverage_refine_rounds:
+                        log_warn("已达到覆盖度补全上限，仍有缺失点，结束规划阶段。")
+                        finalized = True
+
+                continue
 
             else:
                 tool_result = {"status": "error", "message": f"未知工具 {func_name}"}
 
-            messages.append({
-                "role": "tool",
-                "tool_call_id": tool_call_id,
-                "content": json.dumps(tool_result, ensure_ascii=False),
-            })
+            messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": tool_call_id,
+                    "content": json.dumps(tool_result, ensure_ascii=False),
+                }
+            )
 
         if finalized:
-            log_success("[Planner] 收到 finalize_workflow，结束结构规划。")
             break
 
-    skeleton = _attach_inferred_edges(builder.to_workflow())
-    skeleton = ensure_registered_actions(
-        skeleton, action_registry=action_registry, search_service=search_service
-    )
-    skeleton = _attach_inferred_edges(skeleton)
+    if not finalized:
+        if latest_coverage and not latest_coverage.get("is_covered", False):
+            log_warn("[Planner] 规划回合结束但覆盖度仍未通过，使用当前骨架继续后续阶段。")
+        else:
+            log_warn("[Planner] 未收到 finalize_workflow，使用当前骨架继续后续阶段。")
 
-    # ---------- 覆盖度校验 + 结构改进 ----------
-    for refine_round in range(max_coverage_refine_rounds + 1):
-        log_section(f"覆盖度校验轮次 {refine_round}")
-        skeleton = _attach_inferred_edges(skeleton)
-
-        coverage = check_requirement_coverage_with_llm(
-            nl_requirement=nl_requirement,
-            workflow=skeleton,
-            model=OPENAI_MODEL,
+    if not finalized or not latest_skeleton:
+        latest_skeleton = _prepare_skeleton_for_coverage(
+            builder=builder, action_registry=action_registry, search_service=search_service
         )
-        approval_missing = detect_missing_approval_nodes(
-            workflow=skeleton, action_registry=action_registry
-        )
-        if approval_missing:
-            coverage.setdefault("missing_points", [])
-            coverage["missing_points"].extend(approval_missing)
-            coverage["is_covered"] = False
-        log_event("coverage_check", {"round": refine_round, "coverage": coverage})
-        log_json("覆盖度检查结果", coverage)
-
-        if coverage.get("is_covered", False):
-            log_success("当前结构已经被判定为“完全覆盖”用户需求。")
-            break
-
-        missing_points = coverage.get("missing_points", []) or []
-        if not missing_points:
-            log_warn("覆盖度检查认为不完整，但 missing_points 为空，不再尝试结构改进。")
-            break
-
-        if refine_round == max_coverage_refine_rounds:
-            log_warn("已达到最大结构改进轮次，仍认为不完全覆盖，保留当前结构继续后续阶段。")
-            break
-
-        log_info("🔧 检测到未覆盖的需求点，将调用 LLM 对工作流结构进行增量改进：")
-        for mp in missing_points:
-            log_debug(f" - {mp}")
-
-        refined = refine_workflow_structure_with_llm(
-            nl_requirement=nl_requirement,
-            current_workflow=skeleton,
-            missing_points=missing_points,
-            model=OPENAI_MODEL,
-        )
-
-        refined = ensure_registered_actions(
-            refined, action_registry=action_registry, search_service=search_service
-        )
-        skeleton = _attach_inferred_edges(refined)
 
     skeleton = _ensure_loop_exports_with_llm(
-        workflow=skeleton,
+        workflow=latest_skeleton,
         action_registry=action_registry,
         nl_requirement=nl_requirement,
         model=OPENAI_MODEL,
