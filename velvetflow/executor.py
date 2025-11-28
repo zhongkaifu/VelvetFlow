@@ -76,6 +76,7 @@ class DynamicActionExecutor:
             raise ValueError(f"workflow 必须是 Workflow 对象，当前类型为 {type(workflow)}")
 
         workflow_dict = workflow.model_dump(by_alias=True)
+        workflow_dict["edges"] = [e.model_dump(by_alias=True) for e in workflow.edges]
         if not isinstance(workflow_dict.get("nodes"), list):
             raise ValueError("workflow 缺少合法的 'nodes' 列表。")
 
@@ -130,11 +131,11 @@ class DynamicActionExecutor:
         return workflow.edges
 
     def _find_start_nodes(self, nodes: Mapping[str, Dict[str, Any]], edges: List[Dict[str, Any]]) -> List[str]:
-        """Locate start nodes or infer them by missing inbound edges.
+        """Locate start nodes by combining explicit标记与“无入度”节点。
 
-        优先使用显式标记为 `type == "start"` 的节点；若不存在，则以“未作为
-        `to` 端出现的节点”作为潜在起点。返回的是节点 id 列表，调用者需要
-        自行处理空列表场景。
+        无论是否声明 start 节点，都将所有未作为 `to` 端出现的节点纳入起点，这样
+        任何独立子图都可以从自身的入度为 0 节点开始执行，避免因缺失 start 节点
+        而导致的不可达警告。
         """
 
         all_ids = set(nodes.keys())
@@ -148,17 +149,13 @@ class DynamicActionExecutor:
         inbound_free = list(all_ids - to_ids)
 
         starts = [nid for nid, n in nodes.items() if n.get("type") == "start"]
-        if starts:
-            condition_starts = [nid for nid, n in nodes.items() if n.get("type") == "condition" and nid in inbound_free]
-            for nid in condition_starts:
-                if nid not in starts:
-                    starts.append(nid)
-            return starts
+        condition_starts = [
+            nid for nid, n in nodes.items() if n.get("type") == "condition" and nid in inbound_free
+        ]
 
-        # When no explicit start is provided, fall back to nodes with no inbound
-        # references so disconnected graphs still execute for debugging/demo
-        # scenarios.
-        return inbound_free
+        # 合并显式 start、满足条件的 condition 以及所有入度为 0 的节点
+        merged = list(dict.fromkeys(starts + condition_starts + inbound_free))
+        return merged
 
     def _topological_sort(self, workflow: Workflow) -> List[Node]:
         """Return execution order while validating reachability constraints.
@@ -1178,6 +1175,7 @@ class DynamicActionExecutor:
         workflow = Workflow.model_validate(workflow_dict)
         nodes_data = {n["id"]: n for n in workflow.model_dump(by_alias=True)["nodes"]}
         sorted_nodes = self._topological_sort(workflow)
+        edges = self._derive_edges(workflow)
 
         graph_label = workflow_dict.get("workflow_name", "")
         log_section("执行工作流", graph_label)
@@ -1185,7 +1183,17 @@ class DynamicActionExecutor:
         log_kv("模拟用户角色", self.user_role)
 
         if start_nodes is None:
-            start_nodes = self._find_start_nodes(nodes_data, self._derive_edges(workflow))
+            start_nodes = self._find_start_nodes(nodes_data, edges)
+
+        indegree = {nid: 0 for nid in nodes_data}
+        for e in edges:
+            frm = e.from_node if hasattr(e, "from_node") else e.get("from")
+            to = e.to_node if hasattr(e, "to_node") else e.get("to")
+            if frm in indegree and to in indegree:
+                indegree[to] += 1
+
+        zero_indegree = [nid for nid, deg in indegree.items() if deg == 0]
+        start_nodes = list(dict.fromkeys((start_nodes or []) + zero_indegree))
         if not start_nodes and sorted_nodes:
             log_warn("未找到 start 节点，将从任意一个节点开始（仅 demo）。")
             start_nodes = [sorted_nodes[0].id]
