@@ -145,6 +145,8 @@ def infer_edges_from_bindings(nodes: Iterable[Any]) -> List[Dict[str, Any]]:
         nid = _extract_node_id(node)
         if not nid:
             continue
+
+        # 参数依赖推导出的隐式连线
         deps = {
             ref
             for ref in _collect_refs(_extract_params(node))
@@ -156,6 +158,25 @@ def infer_edges_from_bindings(nodes: Iterable[Any]) -> List[Dict[str, Any]]:
                 continue
             seen_pairs.add(pair)
             edges.append({"from": dep, "to": nid, "condition": None})
+
+        # condition 节点的 true/false 分支也被视为连线，避免被误判为“无入度”起点。
+        branches = []
+        if isinstance(node, Node) and node.type == "condition":
+            branches = [("true", node.true_to_node), ("false", node.false_to_node)]
+        elif isinstance(node, Mapping) and node.get("type") == "condition":
+            branches = [
+                ("true", node.get("true_to_node")),
+                ("false", node.get("false_to_node")),
+            ]
+
+        for cond_label, target in branches:
+            if not isinstance(target, str):
+                continue
+            pair = (nid, target)
+            if pair in seen_pairs:
+                continue
+            seen_pairs.add(pair)
+            edges.append({"from": nid, "to": target, "condition": cond_label})
 
     return edges
 
