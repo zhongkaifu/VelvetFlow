@@ -8,7 +8,6 @@ from typing import Any, Dict, List, Optional
 from openai import OpenAI
 
 from velvetflow.config import OPENAI_MODEL
-from velvetflow.models import infer_edges_from_bindings
 from velvetflow.logging_utils import (
     child_span,
     log_debug,
@@ -63,22 +62,6 @@ COVERAGE_EDIT_TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "add_or_update_edge",
-            "description": "新增或更新一条边，依据 from/to 唯一定位。",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "from_node": {"type": "string"},
-                    "to_node": {"type": "string"},
-                    "condition": {"type": "string", "nullable": True},
-                },
-                "required": ["from_node", "to_node"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
             "name": "finalize_edit",
             "description": "当覆盖度改进完成时调用，结束本轮编辑。",
             "parameters": {
@@ -115,7 +98,7 @@ def check_requirement_coverage_with_llm(
         "你是一个严谨的工作流需求覆盖度审查员。\n"
         "给定：\n"
         "1) 用户的自然语言需求 nl_requirement\n"
-        "2) 当前的 workflow（workflow_name/description/nodes，以及根据 params 推导的 edges，仅作上下文）\n\n"
+        "2) 当前的 workflow（workflow_name/description/nodes，其中节点的输入输出绑定隐式定义了执行顺序）\n\n"
         "你的任务：\n"
         "1. 先把 nl_requirement 中的关键子需求拆分成若干个“原子能力”，例如：\n"
         "   - 某个触发方式（定时 / 事件 / 手动等）\n"
@@ -143,7 +126,7 @@ def check_requirement_coverage_with_llm(
 
     payload = {
         "nl_requirement": nl_requirement,
-        "workflow": workflow,
+        "workflow": _normalize_workflow(workflow),
     }
 
     with child_span("coverage_check_llm"):
@@ -190,10 +173,10 @@ def refine_workflow_structure_with_llm(
         "你是一个工作流覆盖度修补助手。\n"
         "已知：\n"
         "1) 用户需求 nl_requirement\n"
-        "2) 当前 workflow（nodes + 基于 params 推导的 edges，edges 为只读上下文）\n"
+        "2) 当前 workflow（nodes，节点的输入输出绑定隐式定义了执行顺序）\n"
         "3) 覆盖度检查中发现的 missing_points\n\n"
         "请通过工具调用直接编辑 workflow：\n"
-        "- 必须围绕 missing_points 增补节点或连线，确保需求被覆盖。\n"
+        "- 必须围绕 missing_points 增补或调整节点，确保需求被覆盖。\n"
         "- 如需调整已有节点，可重写同 id 的节点。\n"
         "- 只输出工具调用，不要返回自然语言方案。\n"
         "- 当你认为已覆盖所有缺失点时调用 finalize_edit。"
@@ -201,7 +184,7 @@ def refine_workflow_structure_with_llm(
 
     payload = {
         "nl_requirement": nl_requirement,
-        "current_workflow": current_workflow,
+        "current_workflow": _normalize_workflow(current_workflow),
         "missing_points": missing_points,
     }
 
@@ -266,15 +249,6 @@ def refine_workflow_structure_with_llm(
                 )
                 tool_result = {"status": "ok", "type": "node_upserted", "node": updated_node}
 
-            elif func_name == "add_or_update_edge":
-                updated_edge = _apply_edge_edit(
-                    working_workflow,
-                    from_node=args.get("from_node", ""),
-                    to_node=args.get("to_node", ""),
-                    condition=args.get("condition"),
-                )
-                tool_result = {"status": "ok", "type": "edge_upserted", "edge": updated_edge}
-
             elif func_name == "finalize_edit":
                 finalized = True
                 tool_result = {"status": "ok", "type": "finalized", "notes": args.get("notes")}
@@ -308,7 +282,7 @@ def _normalize_workflow(workflow: Dict[str, Any]) -> Dict[str, Any]:
     normalized.setdefault("nodes", [])
     nodes = normalized.get("nodes") if isinstance(normalized.get("nodes"), list) else []
     normalized["nodes"] = nodes
-    normalized["edges"] = infer_edges_from_bindings(nodes)
+    normalized.pop("edges", None)
     return normalized
 
 
@@ -356,29 +330,6 @@ def _apply_node_edit(
 
     workflow["nodes"] = nodes
     return new_node
-
-
-def _apply_edge_edit(
-    workflow: Dict[str, Any],
-    from_node: str,
-    to_node: str,
-    condition: Optional[str],
-) -> Dict[str, Any]:
-    if not from_node or not to_node:
-        return {}
-
-    edges: List[Dict[str, Any]] = workflow.get("edges", [])
-    updated_edge = {"from": from_node, "to": to_node, "condition": condition}
-
-    for idx, edge in enumerate(edges):
-        if edge.get("from") == from_node and edge.get("to") == to_node:
-            edges[idx] = updated_edge
-            workflow["edges"] = edges
-            return updated_edge
-
-    edges.append(updated_edge)
-    workflow["edges"] = edges
-    return updated_edge
 
 
 __all__ = ["check_requirement_coverage_with_llm", "refine_workflow_structure_with_llm"]
