@@ -131,7 +131,10 @@ def _validate_loop_exports(
     *, loop_node: Mapping[str, Any], exports: Mapping[str, Any]
 ) -> List[str]:
     params = loop_node.get("params") if isinstance(loop_node.get("params"), Mapping) else {}
-    body = params.get("body_subgraph") if isinstance(params, Mapping) else {}
+    body = params.get("body_subgraph") if isinstance(params, Mapping) else None
+    if not isinstance(body, Mapping):
+        body = {}
+
     body_nodes = [bn for bn in body.get("nodes", []) or [] if isinstance(bn, Mapping)]
     body_ids = {bn.get("id") for bn in body_nodes if isinstance(bn.get("id"), str)}
 
