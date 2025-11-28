@@ -8,8 +8,10 @@ import json
 from typing import Any, Dict, Iterable, List, Mapping, MutableMapping, Optional, Tuple
 
 from velvetflow.planner.connectivity import ensure_edges_connectivity
+from velvetflow.planner.structure import _ensure_loop_items_fields, _fallback_loop_exports
 from velvetflow.logging_utils import log_event, log_info, log_warn
 from velvetflow.models import ValidationError, Workflow
+from velvetflow.reference_utils import normalize_reference_path
 
 
 def _workflow_fingerprint(workflow: Mapping[str, Any]) -> str:
@@ -255,6 +257,101 @@ def _apply_local_repairs_for_unknown_params(
     except Exception as exc:  # noqa: BLE001
         log_warn(f"[AutoRepair] 移除未定义参数时验证失败：{exc}")
         return None
+
+
+def fill_loop_exports_defaults(
+    workflow: Mapping[str, Any], *, action_registry: Iterable[Mapping[str, Any]]
+) -> Tuple[Mapping[str, Any], Dict[str, Any]]:
+    """Ensure loop nodes carry minimally valid exports to avoid trivial LLM repairs."""
+
+    patched = copy.deepcopy(workflow)
+    actions_by_id = _index_actions_by_id(action_registry)
+    nodes = patched.get("nodes") if isinstance(patched.get("nodes"), list) else []
+
+    changed = False
+    updated_nodes: List[Dict[str, Any]] = []
+
+    for node in nodes:
+        if not isinstance(node, MutableMapping) or node.get("type") != "loop":
+            updated_nodes.append(node)
+            continue
+
+        params = node.get("params") if isinstance(node.get("params"), MutableMapping) else {}
+        body = params.get("body_subgraph") if isinstance(params.get("body_subgraph"), Mapping) else {}
+        body_nodes = [bn for bn in body.get("nodes", []) or [] if isinstance(bn, Mapping) and bn.get("id")]
+        body_ids = [bn.get("id") for bn in body_nodes if isinstance(bn.get("id"), str)]
+
+        exports = params.get("exports") if isinstance(params.get("exports"), Mapping) else None
+        fallback = _fallback_loop_exports(node, actions_by_id)
+
+        if not isinstance(exports, Mapping) or not exports:
+            if fallback:
+                params = dict(params)
+                params["exports"] = fallback
+                node = dict(node)
+                node["params"] = params
+                changed = True
+            updated_nodes.append(node)
+            continue
+
+        new_exports: Dict[str, Any] = dict(exports)
+        items_spec = new_exports.get("items")
+
+        if not isinstance(items_spec, Mapping):
+            if fallback and isinstance(fallback.get("items"), Mapping):
+                new_exports["items"] = fallback["items"]
+                changed = True
+        else:
+            new_items = dict(items_spec)
+            from_node = new_items.get("from_node")
+            if body_ids and (not isinstance(from_node, str) or from_node not in body_ids):
+                if fallback and isinstance(fallback.get("items"), Mapping):
+                    new_items["from_node"] = fallback["items"].get("from_node")
+                    changed = True
+            new_exports["items"] = new_items
+
+        ensured_exports = _ensure_loop_items_fields(
+            exports=new_exports, loop_node=node, action_schemas=actions_by_id
+        )
+        if ensured_exports != exports:
+            params = dict(params)
+            params["exports"] = ensured_exports
+            node = dict(node)
+            node["params"] = params
+            changed = True
+
+        updated_nodes.append(node)
+
+    if changed:
+        patched["nodes"] = updated_nodes
+
+    return patched, {"applied": changed, "reason": None if changed else "无修复项"}
+
+
+def normalize_binding_paths(workflow: Mapping[str, Any]) -> Tuple[Mapping[str, Any], Dict[str, Any]]:
+    """Normalize __from__ bindings that are wrapped in templates or whitespace."""
+
+    patched = copy.deepcopy(workflow)
+    changed = False
+
+    def _walk(obj: Any) -> Any:
+        nonlocal changed
+        if isinstance(obj, Mapping):
+            new_obj = obj if isinstance(obj, MutableMapping) else dict(obj)
+            if "__from__" in obj and isinstance(obj.get("__from__"), str):
+                normalized = normalize_reference_path(obj.get("__from__"))
+                if normalized != obj.get("__from__"):
+                    new_obj["__from__"] = normalized
+                    changed = True
+            for key, value in obj.items():
+                new_obj[key] = _walk(value)
+            return new_obj
+        if isinstance(obj, list):
+            return [_walk(item) for item in obj]
+        return obj
+
+    patched = _walk(patched)
+    return patched, {"applied": changed, "reason": None if changed else "未发现需要规范化的绑定"}
 
 
 def repair_loop_body_references(
@@ -505,6 +602,8 @@ REPAIR_TOOLS = [
 
 
 __all__ = [
+    "fill_loop_exports_defaults",
+    "normalize_binding_paths",
     "apply_repair_tool",
     "fill_action_required_params",
     "_apply_local_repairs_for_unknown_params",
