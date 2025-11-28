@@ -169,7 +169,6 @@ class Node:
     action_id: Optional[str] = None
     display_name: Optional[str] = None
     params: Dict[str, Any] = field(default_factory=dict)
-    meta: Dict[str, Any] = field(default_factory=dict)
     true_to_node: Optional[str] = None
     false_to_node: Optional[str] = None
 
@@ -204,7 +203,6 @@ class Node:
             raise PydanticValidationError(errors)
 
         params = data.get("params") if isinstance(data.get("params"), Mapping) else {}
-        meta = data.get("meta") if isinstance(data.get("meta"), Mapping) else {}
 
         true_to_node = data.get("true_to_node")
         false_to_node = data.get("false_to_node")
@@ -219,7 +217,6 @@ class Node:
             action_id=data.get("action_id"),
             display_name=data.get("display_name"),
             params=dict(params),
-            meta=dict(meta),
             true_to_node=true_to_node if isinstance(true_to_node, str) else None,
             false_to_node=false_to_node if isinstance(false_to_node, str) else None,
         )
@@ -231,7 +228,6 @@ class Node:
             "action_id": self.action_id,
             "display_name": self.display_name,
             "params": self.params,
-            "meta": self.meta,
             "true_to_node": self.true_to_node,
             "false_to_node": self.false_to_node,
         }
@@ -447,7 +443,6 @@ class Workflow:
             "workflow_name": self.workflow_name,
             "description": self.description,
             "nodes": [n.model_dump(by_alias=by_alias) for n in self.nodes],
-            "edges": [e.model_dump(by_alias=by_alias) for e in self.edges],
         }
 
 

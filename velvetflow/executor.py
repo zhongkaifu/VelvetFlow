@@ -137,8 +137,6 @@ class DynamicActionExecutor:
         自行处理空列表场景。
         """
 
-        starts = [nid for nid, n in nodes.items() if n.get("type") == "start"]
-
         all_ids = set(nodes.keys())
         to_ids = set()
         for e in edges:
@@ -147,14 +145,20 @@ class DynamicActionExecutor:
             elif isinstance(e, Mapping) and "to" in e:
                 to_ids.add(e.get("to"))
 
-        # Always include nodes with no inbound references to avoid disconnecting
-        # leaf nodes when explicit edges are absent.
         inbound_free = list(all_ids - to_ids)
-        for nid in inbound_free:
-            if nid not in starts:
-                starts.append(nid)
 
-        return starts
+        starts = [nid for nid, n in nodes.items() if n.get("type") == "start"]
+        if starts:
+            condition_starts = [nid for nid, n in nodes.items() if n.get("type") == "condition" and nid in inbound_free]
+            for nid in condition_starts:
+                if nid not in starts:
+                    starts.append(nid)
+            return starts
+
+        # When no explicit start is provided, fall back to nodes with no inbound
+        # references so disconnected graphs still execute for debugging/demo
+        # scenarios.
+        return inbound_free
 
     def _topological_sort(self, workflow: Workflow) -> List[Node]:
         """Return execution order while validating reachability constraints.
@@ -218,7 +222,7 @@ class DynamicActionExecutor:
                     if nxt not in reachable:
                         queue.append(nxt)
 
-        if nodes and (not start_nodes or len(reachable) != len(nodes)):
+        if nodes and not start_nodes:
             raise ValueError(
                 ValidationError(
                     code="DISCONNECTED_GRAPH",
@@ -227,6 +231,9 @@ class DynamicActionExecutor:
                     message="存在无法从 start 节点到达的节点。",
                 )
             )
+
+        if nodes and len(reachable) != len(nodes):
+            log_warn("存在无法从 start 节点到达的节点，将跳过这些节点。")
 
         return [node_lookup[nid] for nid in ordered]
 
@@ -248,7 +255,6 @@ class DynamicActionExecutor:
 
         node_lookup = nodes_data if isinstance(nodes_data, Mapping) else self.nodes
         node_def = node_lookup.get(nid, {}) if isinstance(node_lookup.get(nid, {}), Mapping) else {}
-        meta = node_def.get("meta") if isinstance(node_def, Mapping) else {}
         if node_def.get("type") == "condition" and isinstance(cond_value, bool):
             branch_key = "true_to_node" if cond_value else "false_to_node"
             if branch_key in node_def:
@@ -256,14 +262,13 @@ class DynamicActionExecutor:
                 if isinstance(branch_target, str):
                     return [branch_target]
                 return []
-
-            if isinstance(meta, Mapping):
-                legacy_key = f"next_on_{cond_label}"
-                if legacy_key in meta:
-                    legacy_target = meta.get(legacy_key)
-                    if isinstance(legacy_target, str):
-                        return [legacy_target]
-                    return []
+            # Explicit true/false bindings take precedence over declarative edges;
+            # when missing, fall back to edge-based routing for backward compatibility.
+            #
+            # Without this guard, legacy edges in serialized workflows would override
+            # the structured true_to_node/false_to_node intent (including explicit
+            # nulls that terminate a branch).
+            return []
 
         for e in edges:
             frm = e.from_node if hasattr(e, "from_node") else e.get("from")
@@ -1189,141 +1194,166 @@ class DynamicActionExecutor:
         reachable: Set[str] = set(start_nodes)
         results = binding_ctx.results
 
-        for node_model in sorted_nodes:
-            nid = node_model.id
-            if nid in visited or (reachable and nid not in reachable):
-                continue
-            visited.add(nid)
+        pending: List[Node] = list(sorted_nodes)
+        while pending:
+            progress = False
+            remaining: List[Node] = []
+            for node_model in pending:
+                nid = node_model.id
+                if nid in visited or (reachable and nid not in reachable):
+                    remaining.append(node_model)
+                    continue
+                visited.add(nid)
+                progress = True
 
-            node = nodes_data[nid]
-            ntype = node.get("type")
-            action_id = node.get("action_id")
-            display_name = node.get("display_name") or action_id or ntype
-            params = node.get("params", {})
+                node = nodes_data[nid]
+                ntype = node.get("type")
+                action_id = node.get("action_id")
+                display_name = node.get("display_name") or action_id or ntype
+                params = node.get("params", {})
 
-            log_event(
-                "node_start",
-                {
-                    "node_id": nid,
-                    "type": ntype,
-                    "display_name": display_name,
-                    "action_id": action_id,
-                    "params": params,
-                },
-            )
-            log_info(f"[Node {nid}] type={ntype}, display_name={display_name}, action_id={action_id}")
-            if params:
-                log_json("raw params", params)
+                log_event(
+                    "node_start",
+                    {
+                        "node_id": nid,
+                        "type": ntype,
+                        "display_name": display_name,
+                        "action_id": action_id,
+                        "params": params,
+                    },
+                )
+                log_info(f"[Node {nid}] type={ntype}, display_name={display_name}, action_id={action_id}")
+                if params:
+                    log_json("raw params", params)
 
-            if ntype == "action" and action_id:
-                resolved_params = eval_node_params(node_model, binding_ctx)
-                log_json("resolved params", resolved_params)
+                if ntype == "action" and action_id:
+                    resolved_params = eval_node_params(node_model, binding_ctx)
+                    log_json("resolved params", resolved_params)
 
-                action = get_action_by_id(action_id)
-                if not action:
-                    log_warn(f"未在 Registry 中找到 action_id={action_id}")
-                    result = {"status": "no_action_impl"}
-                else:
-                    allowed_roles = action.get("allowed_roles") or []
-                    if allowed_roles and self.user_role not in allowed_roles:
-                        log_warn(
-                            f"[FORBIDDEN] 当前角色 '{self.user_role}' 无权执行该动作，允许角色：{allowed_roles}"
-                        )
-                        result = {
-                            "status": "forbidden",
-                            "reason": "role_not_allowed",
-                            "required_roles": allowed_roles,
-                            "actor_role": self.user_role,
-                        }
+                    action = get_action_by_id(action_id)
+                    if not action:
+                        log_warn(f"未在 Registry 中找到 action_id={action_id}")
+                        result = {"status": "no_action_impl"}
                     else:
-                        log_info(
-                            f"-> 执行业务动作: {action['name']} (domain={action['domain']})"
-                        )
-                        log_debug(f"-> 描述: {action['description']}")
-                        if self._should_simulate(action_id):
-                            result = self._simulate_action(action_id, resolved_params)
-                        elif tool_name := action.get("tool_name"):
-                            result = self._invoke_tool(tool_name, resolved_params, action_id)
-                        else:
+                        allowed_roles = action.get("allowed_roles") or []
+                        if allowed_roles and self.user_role not in allowed_roles:
                             log_warn(
-                                f"[action:{action_id}] 未找到工具映射，返回占位结果"
+                                f"[FORBIDDEN] 当前角色 '{self.user_role}' 无权执行该动作，允许角色：{allowed_roles}"
                             )
                             result = {
-                                "status": "no_tool_mapping",
-                                "action_id": action_id,
-                                "description": action.get("description"),
+                                "status": "forbidden",
+                                "reason": "role_not_allowed",
+                                "required_roles": allowed_roles,
+                                "actor_role": self.user_role,
                             }
+                        else:
+                            log_info(
+                                f"-> 执行业务动作: {action['name']} (domain={action['domain']})"
+                            )
+                            log_debug(f"-> 描述: {action['description']}")
+                            if self._should_simulate(action_id):
+                                result = self._simulate_action(action_id, resolved_params)
+                            elif tool_name := action.get("tool_name"):
+                                result = self._invoke_tool(tool_name, resolved_params, action_id)
+                            else:
+                                log_warn(
+                                    f"[action:{action_id}] 未找到工具映射，返回占位结果"
+                                )
+                                result = {
+                                    "status": "no_tool_mapping",
+                                    "action_id": action_id,
+                                    "description": action.get("description"),
+                                }
 
-                payload = result.copy() if isinstance(result, dict) else {"value": result}
-                payload["params"] = resolved_params
-                results[nid] = payload
-                log_event(
-                    "node_end",
-                    {
-                        "node_id": nid,
-                        "type": ntype,
-                        "action_id": action_id,
-                        "resolved_params": resolved_params,
-                        "result": result,
-                    },
-                )
+                    payload = result.copy() if isinstance(result, dict) else {"value": result}
+                    payload["params"] = resolved_params
+                    results[nid] = payload
+                    log_event(
+                        "node_end",
+                        {
+                            "node_id": nid,
+                            "type": ntype,
+                            "action_id": action_id,
+                            "resolved_params": resolved_params,
+                            "result": result,
+                        },
+                    )
+                    continue
 
-            elif ntype == "condition":
-                cond_eval = self._eval_condition(node, binding_ctx, include_debug=True)
-                if isinstance(cond_eval, tuple) and len(cond_eval) == 2:
-                    cond_value, cond_debug = cond_eval
-                else:
-                    cond_value, cond_debug = cond_eval, None
-                log_info(f"[condition] 结果: {cond_value}")
-                payload: Dict[str, Any] = {"condition_result": cond_value}
-                if isinstance(cond_debug, Mapping):
-                    resolved_value = cond_debug.get("resolved_value")
-                    if resolved_value is not None:
-                        payload["resolved_value"] = resolved_value
-                        if isinstance(resolved_value, Mapping):
-                            for k, v in resolved_value.items():
-                                payload.setdefault(k, v)
-                    values = cond_debug.get("values")
-                    if values is not None:
-                        payload["evaluated_values"] = values
-                results[nid] = payload
-                next_ids = self._next_nodes(
-                    self._derive_edges(workflow),
-                    nid,
-                    cond_value=cond_value,
-                    nodes_data=nodes_data,
-                )
-                for nxt in next_ids:
-                    if nxt not in visited:
-                        reachable.add(nxt)
-                log_event(
-                    "node_end",
-                    {
-                        "node_id": nid,
-                        "type": ntype,
-                        "condition_result": cond_value,
-                        "next_nodes": next_ids,
-                    },
-                )
-                continue
+                if ntype == "condition":
+                    cond_eval = self._eval_condition(node, binding_ctx, include_debug=True)
+                    if isinstance(cond_eval, tuple) and len(cond_eval) == 2:
+                        cond_value, cond_debug = cond_eval
+                    else:
+                        cond_value, cond_debug = cond_eval, None
+                    log_info(f"[condition] 结果: {cond_value}")
+                    payload: Dict[str, Any] = {"condition_result": cond_value}
+                    if isinstance(cond_debug, Mapping):
+                        resolved_value = cond_debug.get("resolved_value")
+                        if resolved_value is not None:
+                            payload["resolved_value"] = resolved_value
+                            if isinstance(resolved_value, Mapping):
+                                for k, v in resolved_value.items():
+                                    payload.setdefault(k, v)
+                        values = cond_debug.get("values")
+                        if values is not None:
+                            payload["evaluated_values"] = values
+                    results[nid] = payload
+                    next_ids = self._next_nodes(
+                        self._derive_edges(workflow),
+                        nid,
+                        cond_value=cond_value,
+                        nodes_data=nodes_data,
+                    )
+                    for nxt in next_ids:
+                        if nxt not in visited:
+                            reachable.add(nxt)
+                    log_event(
+                        "node_end",
+                        {
+                            "node_id": nid,
+                            "type": ntype,
+                            "condition_result": cond_value,
+                            "next_nodes": next_ids,
+                        },
+                    )
+                    continue
 
-            elif ntype == "loop":
-                loop_result = self._execute_loop_node(node, binding_ctx)
-                results[nid] = loop_result
-                log_event(
-                    "node_end",
-                    {
-                        "node_id": nid,
-                        "type": ntype,
-                        "result": loop_result,
-                    },
-                )
+                if ntype == "loop":
+                    loop_result = self._execute_loop_node(node, binding_ctx)
+                    results[nid] = loop_result
+                    log_event(
+                        "node_end",
+                        {
+                            "node_id": nid,
+                            "type": ntype,
+                            "result": loop_result,
+                        },
+                    )
+                    next_ids = self._next_nodes(
+                        self._derive_edges(workflow), nid, nodes_data=nodes_data
+                    )
+                    for nxt in next_ids:
+                        if nxt not in visited:
+                            reachable.add(nxt)
+                    log_event(
+                        "node_end",
+                        {
+                            "node_id": nid,
+                            "type": ntype,
+                            "next_nodes": next_ids,
+                            "result": results.get(nid),
+                        },
+                    )
+                    continue
+
                 next_ids = self._next_nodes(
                     self._derive_edges(workflow), nid, nodes_data=nodes_data
                 )
                 for nxt in next_ids:
                     if nxt not in visited:
                         reachable.add(nxt)
+
                 log_event(
                     "node_end",
                     {
@@ -1333,26 +1363,11 @@ class DynamicActionExecutor:
                         "result": results.get(nid),
                     },
                 )
-                continue
 
-            next_ids = self._next_nodes(
-                self._derive_edges(workflow), nid, nodes_data=nodes_data
-            )
-            for nxt in next_ids:
-                if nxt not in visited:
-                    reachable.add(nxt)
+            pending = remaining
+            if not progress:
+                break
 
-            log_event(
-                "node_end",
-                {
-                    "node_id": nid,
-                    "type": ntype,
-                    "next_nodes": next_ids,
-                    "result": results.get(nid),
-                },
-            )
-
-        log_success("执行结束")
         return results
 
     def run_workflow(self, trace_context: TraceContext | None = None):

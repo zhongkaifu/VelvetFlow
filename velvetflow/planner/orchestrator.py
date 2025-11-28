@@ -172,21 +172,6 @@ def _auto_replace_unregistered_actions(
             continue
 
         node["action_id"] = candidate_id
-        node_meta = node.get("meta") if isinstance(node.get("meta"), Mapping) else {}
-        node_meta = dict(node_meta)
-        node_meta["auto_action_replacement"] = {
-            "reason": "unregistered_action",
-            "original_action_id": original_action_id,
-            "replaced_by": candidate_id,
-            "search_confidence": round(search_confidence, 3) if search_confidence is not None else None,
-            "schema_match_score": round(schema_score, 3),
-            "schema_match_details": {
-                "matched_params": matched_params,
-                "unrecognized_params": unmatched_params,
-                "notes": schema_notes,
-            },
-        }
-        node["meta"] = node_meta
         changed = True
         log_info(
             f"[ActionGuard] 节点 '{node_id}' 的 action_id='{original_action_id}' 未注册，",

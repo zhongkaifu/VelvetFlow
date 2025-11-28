@@ -382,15 +382,10 @@ def _resolve_display_edges(workflow: Workflow) -> List[Edge]:
     for node in workflow.nodes:
         if node.type != "condition":
             continue
-        meta = node.meta if isinstance(node.meta, dict) else {}
         branch_pairs = [
             ("true", node.true_to_node),
             ("false", node.false_to_node),
         ]
-
-        for legacy_key, branch_label in (("next_on_true", "true"), ("next_on_false", "false")):
-            if legacy_key in meta and meta.get(legacy_key) not in {None, ""}:
-                branch_pairs.append((branch_label, meta.get(legacy_key)))
 
         for branch_label, target in branch_pairs:
             if not isinstance(target, str) or target not in node_ids:

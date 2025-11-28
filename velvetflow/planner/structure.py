@@ -110,7 +110,7 @@ def _extract_loop_body_context(
     params = loop_node.get("params") if isinstance(loop_node, Mapping) else None
     body = params.get("body_subgraph") if isinstance(params, Mapping) else None
     if not isinstance(body, Mapping):
-        return {"nodes": [], "entry": None, "exit": None}
+        return {"nodes": []}
 
     context_nodes = []
     for child in body.get("nodes", []) or []:
@@ -128,11 +128,7 @@ def _extract_loop_body_context(
             }
         )
 
-    return {
-        "nodes": context_nodes,
-        "entry": body.get("entry"),
-        "exit": body.get("exit"),
-    }
+    return {"nodes": context_nodes}
 
 
 def _validate_loop_exports(
@@ -289,7 +285,7 @@ def _synthesize_loop_exports_with_llm(
         "请输出符合 DSL 的 exports 结构，用于将循环子图的结果暴露给外部节点。\n"
         "要求：\n"
         "1) 只输出 JSON（不要代码块），格式可以是 {\"exports\": {...}} 或直接 exports 对象。\n"
-        "2) items.from_node 必须引用 body_subgraph.nodes 中的节点（通常是 exit 节点），fields 需列出你希望暴露的字段。\n"
+        "2) items.from_node 必须引用 body_subgraph.nodes 中的节点，fields 需列出你希望暴露的字段。\n"
         "3) aggregates 是可选的 count_if/max/min/sum/avg 聚合，from_node 同样只能指向 body_subgraph 节点。\n"
         "4) 避免自然语言解释，使用结构化表达式，字段名优先依据节点 output_schema.properties。\n"
         "示例（仅示意，不要生搬硬套字段名）：\n"
@@ -301,7 +297,7 @@ def _synthesize_loop_exports_with_llm(
         "nl_requirement": nl_requirement,
         "loop_node": loop_node,
         "loop_body": body_context,
-        "hint": "优先选择 body_subgraph.exit 作为 items.from_node，字段来自该节点 output_schema.properties。",
+        "hint": "选择具有完整输出的节点作为 items.from_node，字段来自其 output_schema.properties。",
     }
 
     with child_span("loop_exports_llm"):
