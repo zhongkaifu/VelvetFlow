@@ -123,7 +123,10 @@ def validate_workflow_data(
         ]
 
     workflow_dict = workflow_model.model_dump(by_alias=True)
+    # 保留显式或推断的边，用于静态控制/数据流分析
+    workflow_dict["edges"] = [e.model_dump(by_alias=True) for e in workflow_model.edges]
     errors.extend(validate_completed_workflow(workflow_dict, action_registry))
+
     return errors
 
 

@@ -60,6 +60,10 @@ class ValidationError:
         "INVALID_SCHEMA",
         "INVALID_LOOP_BODY",
         "STATIC_RULES_SUMMARY",
+        "CONTROL_FLOW_VIOLATION",
+        "DATA_FLOW_VIOLATION",
+        "PROPERTY_VIOLATION",
+        "SECURITY_VIOLATION",
     ]
     node_id: Optional[str]
     field: Optional[str]

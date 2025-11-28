@@ -33,6 +33,8 @@ VelvetFlow (repo root)
   - `verification/validation.py` 做最终静态校验（必填字段、节点连通性、Schema 对齐）；失败则多轮调用修复直到通过或达到上限。
 - **DSL 模型与校验**：`models.py` 定义 Node/Edge/Workflow，并校验节点类型、边引用合法性、loop 子图 Schema 等；提供 `ValidationError` 以在修复阶段统一描述错误。
 - **参数绑定 DSL**：`bindings.py` 支持 `__from__` 引用上游结果，`__agg__` 支持 `identity/count/count_if/format_join/filter_map/pipeline`，并校验引用路径是否存在于动作输出/输入或 loop exports。
+- **编译式 IR 统一与优化**：`velvetflow/ir.py` 将 JSON/YAML/DSL/GUI 前端描述归一为中间表示（IR），在执行前进行常量折叠、公共子表达式消除、纯净节点裁剪，并计算可并行拓扑层级；同时提供 Argo/Airflow/K8s/自研执行器的目标清单生成，减少多端编排重复劳动。
+- **静态控制/数据流与安全分析**：`verification/flow_analysis.py` 基于编译原理的强连通分量、数据流与属性检查，检测无出口循环、死路、冗余输出、重试/幂等性冲突以及敏感数据跨域泄漏风险。
 - **执行器**：`executor.py` 的 `DynamicActionExecutor` 会先校验 action_id 是否在注册表中，再执行拓扑排序确保连通；支持 condition 节点（如 list_not_empty/equals/contains/greater_than/between 等）与 loop 节点（body_subgraph + exports.items/aggregates 收集迭代与聚合结果），并结合 `simulation_data.json` 模拟动作返回。日志输出使用 `logging_utils.py`。
 - **可视化**：`visualization.py` 提供 `render_workflow_dag`，支持 Unicode 字体回退，将 Workflow 渲染为 JPEG DAG。
 
@@ -134,6 +136,8 @@ LLM 相关节点说明：
 
 ## Workflow DSL 速查
 下面的 JSON 结构是 VelvetFlow 规划/执行都遵循的 DSL。理解这些字段有助于手写、调试或修复 LLM 产出的 workflow。
+
+完整的 EBNF 与词法/语义约束请见 [`docs/workflow_grammar.md`](docs/workflow_grammar.md)，可直接用于 IDE 补全、格式化和离线校验。
 
 ### 顶层结构
 ```jsonc
