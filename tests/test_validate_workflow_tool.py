@@ -83,3 +83,42 @@ def test_local_repair_removes_unknown_param():
         n for n in repaired.model_dump(by_alias=True)["nodes"] if n["id"] == "notify"
     )["params"]
     assert "date_filter" not in repaired_params
+
+
+def test_invalid_condition_reference_detected():
+    workflow = {
+        "workflow_name": "health_alert",
+        "description": "",
+        "nodes": [
+            {"id": "start", "type": "start"},
+            {
+                "id": "condition_any_high_temp",
+                "type": "condition",
+                "params": {"kind": "list_not_empty", "source": []},
+            },
+            {
+                "id": "action_generate_alert_report",
+                "type": "action",
+                "action_id": "hr.record_health_event.v1",
+                "params": {
+                    "event_type": "High Temperature Alert",
+                    "abnormal_count": {
+                        "__from__": "result_of.condition_any_high_temp.exports.items",
+                        "__agg__": "count",
+                    },
+                },
+            },
+            {"id": "end", "type": "end"},
+        ],
+        "edges": [
+            {"from": "start", "to": "condition_any_high_temp"},
+            {"from": "condition_any_high_temp", "to": "action_generate_alert_report"},
+            {"from": "action_generate_alert_report", "to": "end"},
+        ],
+    }
+
+    errors = validate_workflow_data(workflow, ACTION_REGISTRY)
+
+    assert any(
+        err.code == "SCHEMA_MISMATCH" and "exports.items" in err.message for err in errors
+    )
