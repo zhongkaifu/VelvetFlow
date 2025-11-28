@@ -11,14 +11,14 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from html.parser import HTMLParser
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from openai import OpenAI
 
 from velvetflow.config import OPENAI_MODEL
 
 from tools.base import Tool
-from tools.registry import register_tool
+from tools.registry import get_registered_tool, register_tool
 
 
 class _DuckDuckGoParser(HTMLParser):
@@ -144,67 +144,179 @@ def search_news(query: str, limit: int = 5, timeout: int = 8) -> Dict[str, List[
     return {"results": results}
 
 
+def _prepare_ask_ai_prompt(
+    *,
+    prompt: str | None,
+    question: str | None,
+    context: Dict[str, Any] | None,
+    expected_format: str | None,
+) -> str:
+    if prompt:
+        return prompt
+
+    parts = ["You are a helpful assistant that produces concise JSON answers."]
+    parts.append(f"Question: {question}")
+    if context:
+        context_json = json.dumps(context, ensure_ascii=False, indent=2)
+        parts.append("Context (for reference):")
+        parts.append(context_json)
+    if expected_format:
+        parts.append("Return JSON following this guidance:")
+        parts.append(expected_format)
+    parts.append("Respond with valid JSON only.")
+    return "\n\n".join(parts)
+
+
+def _build_call_tool_schema(action: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
+    action_id = action.get("action_id") or action.get("tool_name") or "tool"
+    safe_name = re.sub(r"[^a-zA-Z0-9_-]", "_", action.get("tool_name") or action_id)
+    description = action.get("description") or action.get("name") or action_id
+    parameters = action.get("arg_schema") or action.get("params_schema")
+    if not isinstance(parameters, Mapping):
+        return None
+
+    return {
+        "type": "function",
+        "function": {
+            "name": safe_name,
+            "description": description,
+            "parameters": parameters,
+        },
+    }
+
+
+def _execute_business_tool(
+    *, action: Mapping[str, Any], args: Mapping[str, Any], call_name: str
+) -> Dict[str, Any]:
+    tool_fn_name = action.get("tool_name") or action.get("action_id") or call_name
+    registered_tool = get_registered_tool(tool_fn_name)
+
+    if not registered_tool:
+        return {
+            "status": "unavailable",
+            "action_id": action.get("action_id"),
+            "message": f"业务工具 '{tool_fn_name}' 未注册，返回原始参数供参考。",
+            "echo": args,
+        }
+
+    try:
+        output = registered_tool(**args)
+        return {
+            "status": "ok",
+            "action_id": action.get("action_id"),
+            "output": output,
+        }
+    except Exception as exc:  # pragma: no cover - runtime errors are surfaced to LLM
+        return {
+            "status": "error",
+            "action_id": action.get("action_id"),
+            "message": str(exc),
+        }
+
+
 def ask_ai(
     *,
+    system_prompt: str | None = None,
     prompt: str | None = None,
     question: str | None = None,
     context: Dict[str, Any] | None = None,
     expected_format: str | None = None,
+    tool: List[Mapping[str, Any]] | None = None,
     model: str | None = None,
     max_tokens: int = 256,
+    max_rounds: int = 3,
 ) -> Dict[str, Any]:
-    """Send a prompt to the configured OpenAI model and return structured output.
-
-    The tool accepts either a raw ``prompt`` or high-level ``question`` +
-    ``context`` fields that mirror the ``common.ask_ai.v1`` action schema. When
-    structured inputs are provided, the tool generates a prompt that requests
-    JSON output matching ``expected_format`` (if supplied) and attempts to parse
-    the model response back into an object. On parsing failure, the raw content
-    is wrapped under ``{"answer": ...}`` to satisfy the action's output
-    contract.
-    """
+    """LLM helper that can optionally call business tools and analyze results."""
 
     if not (prompt or question):
         raise ValueError("either prompt or question must be provided for ask_ai")
 
-    if prompt is None:
-        parts = ["You are a helpful assistant that produces concise JSON answers."]
-        parts.append(f"Question: {question}")
-        if context:
-            context_json = json.dumps(context, ensure_ascii=False, indent=2)
-            parts.append("Context (for reference):")
-            parts.append(context_json)
-        if expected_format:
-            parts.append("Return JSON following this guidance:")
-            parts.append(expected_format)
-        parts.append("Respond with valid JSON only.")
-        prompt = "\n\n".join(parts)
+    user_prompt = _prepare_ask_ai_prompt(
+        prompt=prompt, question=question, context=context, expected_format=expected_format
+    )
+    system_text = system_prompt or "你是一个善于调用业务工具解决问题的智能助手。"
 
     client = OpenAI()
     chat_model = model or OPENAI_MODEL
-    response = client.chat.completions.create(
-        model=chat_model,
-        messages=[{"role": "user", "content": prompt}],
-        max_tokens=max_tokens,
-    )
-    if not response.choices:
-        raise RuntimeError("ask_ai did not return any choices")
+    messages: List[Dict[str, Any]] = [
+        {"role": "system", "content": system_text},
+        {"role": "user", "content": user_prompt},
+    ]
 
-    message = response.choices[0].message
-    content = message.content or ""
+    tools_spec: List[Dict[str, Any]] = []
+    tool_lookup: Dict[str, Mapping[str, Any]] = {}
+    for item in tool or []:
+        schema = _build_call_tool_schema(item)
+        if schema:
+            tool_name = schema["function"]["name"]
+            tools_spec.append(schema)
+            tool_lookup[tool_name] = item
 
-    parsed: Dict[str, Any]
-    try:
-        parsed_content = json.loads(content)
-        parsed = parsed_content if isinstance(parsed_content, dict) else {"answer": parsed_content}
-    except json.JSONDecodeError:
-        parsed = {"answer": content}
+    for _ in range(max_rounds):
+        response = client.chat.completions.create(
+            model=chat_model,
+            messages=messages,
+            tools=tools_spec or None,
+            tool_choice="auto" if tools_spec else None,
+            max_tokens=max_tokens,
+        )
+        if not response.choices:
+            raise RuntimeError("ask_ai did not return any choices")
+
+        message = response.choices[0].message
+        assistant_msg = {
+            "role": "assistant",
+            "content": message.content or "",
+            "tool_calls": message.tool_calls,
+        }
+        messages.append(assistant_msg)
+
+        tool_calls = getattr(message, "tool_calls", None) or []
+        if tool_calls:
+            for tc in tool_calls:
+                func_name = tc.function.name
+                raw_args = tc.function.arguments
+                try:
+                    parsed_args = json.loads(raw_args) if raw_args else {}
+                except json.JSONDecodeError:
+                    parsed_args = {"__raw__": raw_args or ""}
+
+                action_def = tool_lookup.get(func_name)
+                if not action_def:
+                    tool_result = {
+                        "status": "error",
+                        "message": f"未知的业务工具调用: {func_name}",
+                        "echo": parsed_args,
+                    }
+                else:
+                    tool_result = _execute_business_tool(
+                        action=action_def, args=parsed_args, call_name=func_name
+                    )
+
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "content": json.dumps(tool_result, ensure_ascii=False),
+                    }
+                )
+            continue
+
+        final_content = (message.content or "").strip()
+        if not final_content:
+            continue
+
+        try:
+            parsed_content = json.loads(final_content)
+            results = parsed_content if isinstance(parsed_content, dict) else {"answer": parsed_content}
+        except json.JSONDecodeError:
+            results = {"answer": final_content}
+
+        return {"status": "ok", "results": results}
 
     return {
-        "result": parsed,
-        "reasoning": getattr(message, "refusal", None) or "",
-        "model": chat_model,
-        "finish_reason": response.choices[0].finish_reason,
+        "status": "error",
+        "results": {"message": "ask_ai 未能在限定轮次内给出答案"},
     }
 
 
@@ -398,17 +510,23 @@ def register_builtin_tools() -> None:
     register_tool(
         Tool(
             name="ask_ai",
-            description="Send a prompt to OpenAI chat completion and return the answer.",
+            description=(
+                "LLM helper that can run multi-round chat with optional business tool calls "
+                "and return normalized status/results output."
+            ),
             function=ask_ai,
             args_schema={
                 "type": "object",
                 "properties": {
+                    "system_prompt": {"type": "string", "nullable": True},
                     "prompt": {"type": "string", "nullable": True},
                     "question": {"type": "string", "nullable": True},
                     "context": {"type": "object", "nullable": True},
                     "expected_format": {"type": "string", "nullable": True},
+                    "tool": {"type": "array", "items": {"type": "object"}, "nullable": True},
                     "model": {"type": "string", "nullable": True},
                     "max_tokens": {"type": "integer", "default": 256},
+                    "max_rounds": {"type": "integer", "default": 3},
                 },
             },
         )
