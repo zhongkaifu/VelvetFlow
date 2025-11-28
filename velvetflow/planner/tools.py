@@ -46,7 +46,7 @@ PLANNER_TOOLS = [
                 "  {\"kind\": \"any_greater_than\", \"source\": \"result_of.some_node.items\", \"field\": \"value\", \"threshold\": 10 }\n"
                 "或 {\"kind\": \"equals\", \"source\": \"result_of.some_node.count\", \"value\": 0 }，也可以使用 between/not_equals/multi_band 等枚举。\n"
                 "  必须同时提供 true_to_node 和 false_to_node，可为节点 id（继续执行）或 null（该分支结束）。\n"
-                "- type='loop'：params 需要提供 loop_kind(for_each/while)、source/condition、item_alias、body_subgraph(nodes/edges/entry/exit) 等。\n"
+                "- type='loop'：params 需要提供 loop_kind(for_each/while)、source/condition、item_alias、body_subgraph(nodes) 等。\n"
                 "- 节点依赖关系通过 params 中的 result_of 引用自动推导，edges 会被隐式记录为上下文，无需手工 add_edge。"
             ),
             "parameters": {

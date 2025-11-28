@@ -53,11 +53,6 @@ def attach_condition_branches(workflow: Dict[str, Any]) -> Dict[str, Any]:
         elif cond_label == "false":
             source_node.setdefault("false_to_node", to_node)
 
-        # Legacy meta hints for downstream consumers still expecting them.
-        meta = source_node.setdefault("meta", {}) if isinstance(source_node.get("meta"), dict) else {}
-        source_node["meta"] = meta
-        meta.setdefault(f"next_on_{cond_label}", to_node)
-
     return copied
 
 

@@ -19,8 +19,8 @@ ACTION_REGISTRY = json.loads(
 )
 
 
-def test_loop_body_missing_exit_node_is_reported_before_pydantic():
-    """Ensure invalid loop body edges/exit are caught with a readable error."""
+def test_loop_body_exports_must_target_existing_nodes():
+    """Exports referencing missing body nodes should surface a clear error."""
 
     workflow = {
         "workflow_name": "news_summary",
@@ -66,9 +66,8 @@ def test_loop_body_missing_exit_node_is_reported_before_pydantic():
 
     errors = validate_workflow_data(workflow, ACTION_REGISTRY)
 
-    assert errors, "Expected validation errors for missing loop body nodes"
-    assert all(e.code == "INVALID_LOOP_BODY" for e in errors)
-    assert any("exit" in e.message for e in errors)
+    assert errors, "Expected validation errors for invalid loop exports"
+    assert any(e.field == "exports.items.from_node" for e in errors)
 
 
 def test_loop_body_allows_edge_free_body():
@@ -343,8 +342,7 @@ def test_precheck_is_available_for_planner_users():
 
     errors = precheck_loop_body_graphs(workflow)
 
-    assert errors
-    assert any(e.field == "body_subgraph.exit" for e in errors)
+    assert errors == []
 
 
 def test_loop_body_pydantic_errors_are_preserved():

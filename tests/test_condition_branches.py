@@ -13,7 +13,7 @@ def _find_node(nodes, node_id):
     raise AssertionError(f"node {node_id} not found")
 
 
-def test_attach_condition_branches_populates_meta():
+def test_attach_condition_branches_populates_branch_targets():
     workflow = {
         "workflow_name": "demo",
         "description": "",
@@ -33,11 +33,9 @@ def test_attach_condition_branches_populates_meta():
 
     assert check_node.get("true_to_node") == "yes"
     assert check_node.get("false_to_node") == "no"
-    assert check_node["meta"].get("next_on_true") == "yes"
-    assert check_node["meta"].get("next_on_false") == "no"
 
 
-def test_executor_respects_condition_branch_meta():
+def test_executor_respects_condition_branch_targets():
     workflow_dict = {
         "workflow_name": "branching_demo",
         "description": "",

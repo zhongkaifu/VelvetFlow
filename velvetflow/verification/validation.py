@@ -42,10 +42,9 @@ def _maybe_decode_binding_string(raw: str) -> Optional[Any]:
 def precheck_loop_body_graphs(workflow_raw: Mapping[str, Any] | Any) -> List[ValidationError]:
     """Detect loop body graphs that refer to nonexistent nodes.
 
-    Pydantic 会在校验时将 loop.body_subgraph 当作独立 workflow 再做一次
-    校验，如果 body_subgraph.edges/entry/exit 指向不存在的节点，会直接
-    抛出 ValueError。这里提前做轻量校验，用更易读的错误提示阻断后续
-    的深度校验，避免出现“边引用不存在节点”的模糊错误信息。
+    Loop 子图无需再声明 entry/exit 或 edges，执行流程会根据参数绑定推断。
+    这里仅保留对节点基本结构的检查，避免因缺少 body_subgraph.nodes 而导致
+    难以理解的错误信息。
     """
 
     errors: List[ValidationError] = []
@@ -68,63 +67,15 @@ def precheck_loop_body_graphs(workflow_raw: Mapping[str, Any] | Any) -> List[Val
             continue
 
         body_nodes = [bn for bn in body.get("nodes", []) or [] if isinstance(bn, Mapping)]
-        body_ids = {bn.get("id") for bn in body_nodes if isinstance(bn.get("id"), str)}
-
-        entry = body.get("entry")
-        if isinstance(entry, str) and entry not in body_ids:
+        if not body_nodes:
             errors.append(
                 ValidationError(
                     code="INVALID_LOOP_BODY",
                     node_id=loop_id,
-                    field="body_subgraph.entry",
-                    message=(
-                        f"loop 节点 '{loop_id}' 的 body_subgraph.entry 指向不存在的节点 '{entry}'"
-                    ),
+                    field="body_subgraph.nodes",
+                    message=f"loop 节点 '{loop_id}' 的 body_subgraph.nodes 不能为空。",
                 )
             )
-
-        exit_node = body.get("exit")
-        if isinstance(exit_node, str) and exit_node not in body_ids:
-            errors.append(
-                ValidationError(
-                    code="INVALID_LOOP_BODY",
-                    node_id=loop_id,
-                    field="body_subgraph.exit",
-                    message=(
-                        f"loop 节点 '{loop_id}' 的 body_subgraph.exit 指向不存在的节点 '{exit_node}'"
-                    ),
-                )
-            )
-
-        edges = body.get("edges")
-
-        for idx, edge in enumerate(edges or []):
-            if not isinstance(edge, Mapping):
-                continue
-            frm = edge.get("from")
-            to = edge.get("to")
-            if isinstance(frm, str) and frm not in body_ids:
-                errors.append(
-                    ValidationError(
-                        code="INVALID_LOOP_BODY",
-                        node_id=loop_id,
-                        field=f"body_subgraph.edges[{idx}].from",
-                        message=(
-                            f"loop 节点 '{loop_id}' 的 body_subgraph.edges[{idx}].from 指向不存在的节点 '{frm}'"
-                        ),
-                    )
-                )
-            if isinstance(to, str) and to not in body_ids:
-                errors.append(
-                    ValidationError(
-                        code="INVALID_LOOP_BODY",
-                        node_id=loop_id,
-                        field=f"body_subgraph.edges[{idx}].to",
-                        message=(
-                            f"loop 节点 '{loop_id}' 的 body_subgraph.edges[{idx}].to 指向不存在的节点 '{to}'"
-                        ),
-                    )
-                )
 
     return errors
 
