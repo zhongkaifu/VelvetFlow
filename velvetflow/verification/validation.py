@@ -869,8 +869,14 @@ def _check_output_path_against_schema(
         return None
 
     # 控制节点（如 condition / start / end）没有 action_id，也没有可用的 output_schema。
-    # 在这种情况下跳过 schema 校验，允许下游继续引用其动态结果。
+    # 若下游尝试访问子字段（例如误写了 exports/items），应当直接报错，避免静默跳过校验。
     if not action_id and node_type in {"condition", "start", "end"}:
+        if rest_path:
+            path_str = ".".join(rest_path)
+            return (
+                f"路径 '{source_path}' 引用的 {node_type} 节点没有 output_schema，"
+                f"无法访问子字段 '{path_str}'。"
+            )
         return None
 
     if not action_id:
