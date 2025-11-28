@@ -30,6 +30,8 @@ def test_attach_condition_branches_populates_meta():
     updated = attach_condition_branches(workflow)
     check_node = _find_node(updated["nodes"], "check")
 
+    assert check_node.get("true_to_node") == "yes"
+    assert check_node.get("false_to_node") == "no"
     assert check_node["meta"].get("next_on_true") == "yes"
     assert check_node["meta"].get("next_on_false") == "no"
 
@@ -44,7 +46,8 @@ def test_executor_respects_condition_branch_meta():
                 "id": "check",
                 "type": "condition",
                 "params": {"kind": "equals", "source": True, "value": True},
-                "meta": {"next_on_true": "notify_yes", "next_on_false": "notify_no"},
+                "true_to_node": "notify_yes",
+                "false_to_node": "notify_no",
             },
             {
                 "id": "notify_yes",

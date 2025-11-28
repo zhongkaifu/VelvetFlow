@@ -143,6 +143,8 @@ def _validate_nodes_recursive(
 ):
     """Validate nodes (and nested loop body nodes) against planner rules."""
 
+    node_ids = set(nodes_by_id.keys())
+
     for n in nodes or []:
         if not isinstance(n, Mapping):
             continue
@@ -336,6 +338,37 @@ def _validate_nodes_recursive(
 
         # 2) condition 节点
         if ntype == "condition":
+            true_target = n.get("true_to_node")
+            false_target = n.get("false_to_node")
+            for field_name, target in ("true_to_node", true_target), ("false_to_node", false_target):
+                if not target:
+                    errors.append(
+                        ValidationError(
+                            code="MISSING_REQUIRED_PARAM",
+                            node_id=nid,
+                            field=field_name,
+                            message=f"condition 节点 '{nid}' 缺少 {field_name}。",
+                        )
+                    )
+                elif not isinstance(target, str):
+                    errors.append(
+                        ValidationError(
+                            code="SCHEMA_MISMATCH",
+                            node_id=nid,
+                            field=field_name,
+                            message=f"condition 节点 '{nid}' 的 {field_name} 需要是字符串。",
+                        )
+                    )
+                elif target not in node_ids:
+                    errors.append(
+                        ValidationError(
+                            code="SCHEMA_MISMATCH",
+                            node_id=nid,
+                            field=field_name,
+                            message=f"condition 节点 '{nid}' 的 {field_name} 指向未知节点 '{target}'。",
+                        )
+                    )
+
             if not isinstance(params, dict) or len(params) == 0:
                 errors.append(
                     ValidationError(
