@@ -170,6 +170,8 @@ class Node:
     display_name: Optional[str] = None
     params: Dict[str, Any] = field(default_factory=dict)
     meta: Dict[str, Any] = field(default_factory=dict)
+    true_to_node: Optional[str] = None
+    false_to_node: Optional[str] = None
 
     @classmethod
     def model_validate(cls, data: Any) -> "Node":
@@ -204,6 +206,13 @@ class Node:
         params = data.get("params") if isinstance(data.get("params"), Mapping) else {}
         meta = data.get("meta") if isinstance(data.get("meta"), Mapping) else {}
 
+        true_to_node = data.get("true_to_node")
+        false_to_node = data.get("false_to_node")
+        if true_to_node is not None and not isinstance(true_to_node, str):
+            errors.append({"loc": ("true_to_node",), "msg": "true_to_node 必须是字符串"})
+        if false_to_node is not None and not isinstance(false_to_node, str):
+            errors.append({"loc": ("false_to_node",), "msg": "false_to_node 必须是字符串"})
+
         return cls(
             id=node_id,
             type=node_type,
@@ -211,6 +220,8 @@ class Node:
             display_name=data.get("display_name"),
             params=dict(params),
             meta=dict(meta),
+            true_to_node=true_to_node if isinstance(true_to_node, str) else None,
+            false_to_node=false_to_node if isinstance(false_to_node, str) else None,
         )
 
     def model_dump(self, *, by_alias: bool = False) -> Dict[str, Any]:
@@ -221,6 +232,8 @@ class Node:
             "display_name": self.display_name,
             "params": self.params,
             "meta": self.meta,
+            "true_to_node": self.true_to_node,
+            "false_to_node": self.false_to_node,
         }
 
 
