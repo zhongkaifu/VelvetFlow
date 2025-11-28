@@ -510,7 +510,10 @@ def register_builtin_tools() -> None:
     register_tool(
         Tool(
             name="ask_ai",
-            description="Send a prompt to OpenAI chat completion and return the answer.",
+            description=(
+                "LLM helper that can run multi-round chat with optional business tool calls "
+                "and return normalized status/results output."
+            ),
             function=ask_ai,
             args_schema={
                 "type": "object",
