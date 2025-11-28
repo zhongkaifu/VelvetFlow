@@ -70,6 +70,31 @@ def test_loop_body_exports_must_target_existing_nodes():
     assert any(e.field == "exports.items.from_node" for e in errors)
 
 
+def test_exports_disallowed_outside_loop_body():
+    """Non-loop nodes carrying exports should be rejected early."""
+
+    workflow = {
+        "workflow_name": "invalid_exports_location",
+        "nodes": [
+            {
+                "id": "search_news",
+                "type": "action",
+                "action_id": "common.search_news.v1",
+                "params": {
+                    "query": "AI",
+                    "exports": {"items": {"from_node": "search_news", "fields": ["results"]}},
+                },
+            }
+        ],
+        "edges": [],
+    }
+
+    errors = validate_workflow_data(workflow, ACTION_REGISTRY)
+
+    assert errors, "Expected validation errors for misplaced exports"
+    assert any(err.field == "exports" and err.code == "INVALID_SCHEMA" for err in errors)
+
+
 def test_loop_body_allows_edge_free_body():
     """Loop body graphs can omit explicit edges when bindings define flow."""
 
