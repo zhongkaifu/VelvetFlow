@@ -230,7 +230,13 @@ class DynamicActionExecutor:
 
         return [node_lookup[nid] for nid in ordered]
 
-    def _next_nodes(self, edges: List[Dict[str, Any]], nid: str, cond_value: Any = None) -> List[str]:
+    def _next_nodes(
+        self,
+        edges: List[Dict[str, Any]],
+        nid: str,
+        cond_value: Any = None,
+        nodes_data: Optional[Mapping[str, Any]] = None,
+    ) -> List[str]:
         res: List[str] = []
         cond_label: Optional[str]
         if isinstance(cond_value, bool):
@@ -240,7 +246,8 @@ class DynamicActionExecutor:
         else:
             cond_label = str(cond_value)
 
-        node_def = self.nodes.get(nid, {}) if isinstance(self.nodes.get(nid, {}), Mapping) else {}
+        node_lookup = nodes_data if isinstance(nodes_data, Mapping) else self.nodes
+        node_def = node_lookup.get(nid, {}) if isinstance(node_lookup.get(nid, {}), Mapping) else {}
         meta = node_def.get("meta") if isinstance(node_def, Mapping) else {}
         if node_def.get("type") == "condition" and isinstance(cond_value, bool):
             branch_key = "true_to_node" if cond_value else "false_to_node"
@@ -1281,7 +1288,10 @@ class DynamicActionExecutor:
                         payload["evaluated_values"] = values
                 results[nid] = payload
                 next_ids = self._next_nodes(
-                    self._derive_edges(workflow), nid, cond_value=cond_value
+                    self._derive_edges(workflow),
+                    nid,
+                    cond_value=cond_value,
+                    nodes_data=nodes_data,
                 )
                 for nxt in next_ids:
                     if nxt not in visited:
@@ -1308,7 +1318,9 @@ class DynamicActionExecutor:
                         "result": loop_result,
                     },
                 )
-                next_ids = self._next_nodes(self._derive_edges(workflow), nid)
+                next_ids = self._next_nodes(
+                    self._derive_edges(workflow), nid, nodes_data=nodes_data
+                )
                 for nxt in next_ids:
                     if nxt not in visited:
                         reachable.add(nxt)
@@ -1323,7 +1335,9 @@ class DynamicActionExecutor:
                 )
                 continue
 
-            next_ids = self._next_nodes(self._derive_edges(workflow), nid)
+            next_ids = self._next_nodes(
+                self._derive_edges(workflow), nid, nodes_data=nodes_data
+            )
             for nxt in next_ids:
                 if nxt not in visited:
                     reachable.add(nxt)
