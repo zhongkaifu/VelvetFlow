@@ -785,6 +785,17 @@
           "type": "string",
           "description": "Natural language summary focused on the query"
         },
+        "answer": {
+          "type": "string",
+          "description": "Direct answer returned by Crawl4AI for the query"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Key snippets supporting the answer"
+        },
         "matched_passages": {
           "type": "array",
           "items": {

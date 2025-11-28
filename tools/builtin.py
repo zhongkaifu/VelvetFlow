@@ -410,6 +410,63 @@ def _extract_crawl4ai_content(result: Any) -> str:
     return ""
 
 
+def _build_crawl4ai_config(query: str, module: Any) -> Any | None:
+    """Construct a Crawl4AI run config that applies LLM extraction when available."""
+
+    CrawlerRunConfig = getattr(module, "CrawlerRunConfig", None)
+    LLMExtractionStrategy = getattr(module, "LLMExtractionStrategy", None)
+    LLMConfig = getattr(module, "LLMConfig", None)
+
+    if not (CrawlerRunConfig and LLMExtractionStrategy and LLMConfig):
+        return None
+
+    CacheMode = getattr(module, "CacheMode", None)
+
+    cache_mode = None
+    if CacheMode is not None:
+        cache_mode = getattr(CacheMode, "BYPASS", None) or getattr(CacheMode, "bypass", None)
+
+    llm_config = LLMConfig(
+        provider="openai/gpt-4o-mini",
+        api_token="env:OPENAI_API_KEY",
+        temperature=0.1,
+        max_tokens=1000,
+    )
+
+    extraction_schema = {
+        "type": "object",
+        "properties": {
+            "answer": {"type": "string", "description": "Direct answer to the query"},
+            "summary": {"type": "string", "description": "Brief summary focused on the query"},
+            "evidence": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Key snippets that support the answer",
+            },
+        },
+    }
+
+    extraction_strategy = LLMExtractionStrategy(
+        llm_config=llm_config,
+        schema=extraction_schema,
+        extraction_type="schema",
+        instruction=textwrap.dedent(
+            f"""
+            You are extracting information for this query: {query}
+            Answer directly and include a concise summary and evidence snippets.
+            """
+        ).strip(),
+        apply_chunking=True,
+        chunk_token_threshold=1500,
+    )
+
+    config_kwargs = {"extraction_strategy": extraction_strategy}
+    if cache_mode is not None:
+        config_kwargs["cache_mode"] = cache_mode
+
+    return CrawlerRunConfig(**config_kwargs)
+
+
 def _normalize_url(url: str) -> str:
     """Ensure the URL has a supported scheme, defaulting to HTTPS."""
 
@@ -443,7 +500,31 @@ def _extract_query_answer(result: Any) -> str:
         if normalized:
             return normalized
 
+    extracted = getattr(result, "extracted_content", None)
+    if isinstance(extracted, str):
+        try:
+            parsed = json.loads(extracted)
+            if isinstance(parsed, dict):
+                answer_value = parsed.get("answer")
+                if isinstance(answer_value, str) and answer_value.strip():
+                    return answer_value.strip()
+        except json.JSONDecodeError:
+            pass
+
     return ""
+
+
+def _extract_structured_extraction(result: Any) -> Dict[str, Any]:
+    """Return parsed extraction payload when Crawl4AI returns JSON content."""
+
+    extracted = getattr(result, "extracted_content", None)
+    if isinstance(extracted, str):
+        try:
+            parsed = json.loads(extracted)
+        except json.JSONDecodeError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
 
 
 def _summarize_head(content: str, max_sentences: int) -> str:
@@ -468,16 +549,20 @@ def crawl_and_summarize(
 
     url = _normalize_url(url)
 
-    _load_crawl4ai_module()
+    crawl4ai_module = _load_crawl4ai_module()
     WebCrawler = _resolve_crawl4ai_class("WebCrawler")
     AsyncWebCrawler = _resolve_crawl4ai_class("AsyncWebCrawler")
+    run_config = _build_crawl4ai_config(query, crawl4ai_module)
 
     if WebCrawler is not None:
         crawler = WebCrawler(verbose=False)
         warmup = getattr(crawler, "warmup", None)
         if callable(warmup):
             warmup()
-        result = crawler.run(url=url, query=query)
+        if run_config is not None:
+            result = crawler.run(url=url, query=query, config=run_config)
+        else:
+            result = crawler.run(url=url, query=query)
     elif AsyncWebCrawler is not None:
         async def _async_crawl() -> Any:
             async with AsyncWebCrawler(verbose=False) as crawler:
@@ -486,6 +571,8 @@ def crawl_and_summarize(
                     maybe_coroutine = warmup()
                     if inspect.iscoroutine(maybe_coroutine):
                         await maybe_coroutine
+                if run_config is not None:
+                    return await crawler.arun(url=url, query=query, config=run_config)
                 return await crawler.arun(url=url, query=query)
 
         result = asyncio.run(_async_crawl())
@@ -494,12 +581,15 @@ def crawl_and_summarize(
             "crawl4ai does not provide WebCrawler/AsyncWebCrawler in the installed version; "
             "upgrade crawl4ai or use a compatible release."
         )
+    structured_payload = _extract_structured_extraction(result)
     content = _extract_crawl4ai_content(result)
     if not content:
         raise RuntimeError("crawl4ai did not return any textual content for the requested page")
 
-    answer = _extract_query_answer(result)
-    summary = answer or _summarize_head(content, max_sentences=max_sentences)
+    answer = structured_payload.get("answer") or _extract_query_answer(result)
+    summary = structured_payload.get("summary") or answer or _summarize_head(content, max_sentences=max_sentences)
+    evidence = structured_payload.get("evidence")
+    evidence_list = evidence if isinstance(evidence, list) else []
     preview = textwrap.shorten(content, width=max_chars, placeholder="...")
 
     return {
@@ -507,6 +597,7 @@ def crawl_and_summarize(
         "query": query,
         "summary": summary,
         "answer": answer,
+        "evidence": evidence_list,
         "content_preview": preview,
         "content_length": len(content),
     }
