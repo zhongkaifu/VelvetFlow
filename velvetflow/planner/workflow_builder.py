@@ -98,8 +98,22 @@ class WorkflowBuilder:
             log_warn(f"[Builder] 节点 {node_id} 不存在，无法更新。")
             return
 
-        for key, value in updates.items():
-            node[key] = value
+        if isinstance(updates, Mapping):
+            entries = [
+                {"op": "modify", "key": key, "value": value} for key, value in updates.items()
+            ]
+        else:
+            entries = list(updates)
+
+        for entry in entries:
+            op = entry.get("op", "modify")
+            key = entry.get("key")
+            value = entry.get("value") if "value" in entry else None
+
+            if op == "remove":
+                node.pop(key, None)
+            else:
+                node[key] = value
 
     def to_workflow(self) -> Dict[str, Any]:
         workflow = {

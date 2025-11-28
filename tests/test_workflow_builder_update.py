@@ -20,10 +20,14 @@ def test_builder_update_node_overrides_fields():
 
     builder.update_node(
         "notify",
-        {
-            "display_name": "Updated notify",
-            "params": {"message": "new", "channel": "email"},
-        },
+        [
+            {"op": "modify", "key": "display_name", "value": "Updated notify"},
+            {
+                "op": "modify",
+                "key": "params",
+                "value": {"message": "new", "channel": "email"},
+            },
+        ],
     )
 
     wf = builder.to_workflow()
@@ -45,10 +49,41 @@ def test_builder_update_node_allows_branch_overrides():
         false_to_node="no",
     )
 
-    builder.update_node("check", {"true_to_node": None, "false_to_node": "end"})
+    builder.update_node(
+        "check",
+        [
+            {"op": "modify", "key": "true_to_node", "value": None},
+            {"op": "modify", "key": "false_to_node", "value": "end"},
+        ],
+    )
 
     wf = builder.to_workflow()
     check = _find(wf["nodes"], "check")
 
     assert check["true_to_node"] is None
     assert check["false_to_node"] == "end"
+
+
+def test_builder_update_node_supports_remove():
+    builder = WorkflowBuilder()
+    builder.add_node(
+        node_id="notify",
+        node_type="action",
+        action_id="hr.notify.v1",
+        display_name="Notify",
+        params={"message": "old"},
+    )
+
+    builder.update_node(
+        "notify",
+        [
+            {"op": "remove", "key": "display_name"},
+            {"op": "remove", "key": "params"},
+        ],
+    )
+
+    wf = builder.to_workflow()
+    notify = _find(wf["nodes"], "notify")
+
+    assert "display_name" not in notify
+    assert "params" not in notify

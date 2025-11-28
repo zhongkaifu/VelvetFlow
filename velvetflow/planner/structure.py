@@ -748,15 +748,21 @@ def plan_workflow_structure_with_llm(
                 elif not isinstance(updates, list):
                     tool_result = {
                         "status": "error",
-                        "message": "updates 必须是 key/value 对象组成的数组。",
+                        "message": "updates 必须是 {op,key,value} 对象组成的数组。",
                     }
                 else:
                     invalid_entries = []
                     invalid_branch_fields = []
-                    normalized_updates = {}
+                    invalid_ops = []
+                    normalized_updates = []
                     for idx, entry in enumerate(updates):
                         if not isinstance(entry, Mapping):
                             invalid_entries.append(idx)
+                            continue
+
+                        op = entry.get("op", "modify")
+                        if op not in {"add", "modify", "remove"}:
+                            invalid_ops.append(idx)
                             continue
 
                         key = entry.get("key")
@@ -765,17 +771,27 @@ def plan_workflow_structure_with_llm(
                             continue
 
                         value = entry.get("value") if "value" in entry else None
-                        if key in {"true_to_node", "false_to_node"} and value is not None and not isinstance(value, str):
+                        if (
+                            op != "remove"
+                            and key in {"true_to_node", "false_to_node"}
+                            and value is not None
+                            and not isinstance(value, str)
+                        ):
                             invalid_branch_fields.append(key)
                             continue
 
-                        normalized_updates[key] = value
+                        normalized_updates.append({"op": op, "key": key, "value": value})
 
                     node_type = builder.nodes.get(node_id, {}).get("type")
                     if invalid_entries:
                         tool_result = {
                             "status": "error",
-                            "message": f"updates[{invalid_entries}] 不是合法的 {{key,value}} 对象。",
+                            "message": f"updates[{invalid_entries}] 不是合法的 {{op,key,value}} 对象。",
+                        }
+                    elif invalid_ops:
+                        tool_result = {
+                            "status": "error",
+                            "message": f"updates[{invalid_ops}] 包含不支持的 op（仅支持 add/modify/remove）。",
                         }
                     elif invalid_branch_fields:
                         tool_result = {
@@ -783,8 +799,15 @@ def plan_workflow_structure_with_llm(
                             "message": "condition 的 true_to_node/false_to_node 只能是节点 id 或 null。",
                             "invalid_fields": invalid_branch_fields,
                         }
-                    elif node_type == "action" and "action_id" in normalized_updates:
-                        new_action_id = normalized_updates.get("action_id")
+                    elif node_type == "action" and any(
+                        entry.get("op", "modify") != "remove" and entry.get("key") == "action_id"
+                        for entry in normalized_updates
+                    ):
+                        new_action_id = next(
+                            entry.get("value")
+                            for entry in normalized_updates
+                            if entry.get("op", "modify") != "remove" and entry.get("key") == "action_id"
+                        )
                         if not last_action_candidates:
                             tool_result = {
                                 "status": "error",
