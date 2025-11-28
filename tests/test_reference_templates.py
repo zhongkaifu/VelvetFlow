@@ -98,3 +98,38 @@ def test_infer_edges_from_embedded_result_refs():
 
     assert {"from": "loop_nvidia_news", "to": "combine_summaries", "condition": None} in edges
     assert {"from": "loop_google_news", "to": "combine_summaries", "condition": None} in edges
+
+
+def test_eval_params_renders_interpolated_templates():
+    workflow = Workflow.model_validate(
+        {
+            "nodes": [
+                {"id": "loop_nvidia_news", "type": "loop"},
+                {"id": "loop_google_news", "type": "loop"},
+                {"id": "combine", "type": "action"},
+            ],
+            "edges": [],
+        }
+    )
+
+    ctx = BindingContext(
+        workflow,
+        {
+            "loop_nvidia_news": {"items": {"summary": "N1"}},
+            "loop_google_news": {"items": {"summary": "G1"}},
+        },
+    )
+
+    node = Node(
+        id="combine",
+        type="action",
+        params={
+            "text": "结合Nvidia新闻总结：{{result_of.loop_nvidia_news.exports.items.summary}}，Google新闻总结：{{result_of.loop_google_news.exports.items.summary}}",
+            "subject": "demo",
+        },
+    )
+
+    params = eval_node_params(node, ctx)
+
+    assert params["text"] == "结合Nvidia新闻总结：N1，Google新闻总结：G1"
+    assert params["subject"] == "demo"
