@@ -1,11 +1,10 @@
 """LLM-powered parameter completion utilities."""
 
 import copy
-import copy
 import json
 import os
 from collections import deque
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Mapping, Sequence, Tuple
 
 from openai import OpenAI
 
@@ -68,10 +67,136 @@ def _traverse_order(workflow: Workflow) -> List[str]:
     return order
 
 
+def _looks_like_entity_key(field_name: str) -> bool:
+    lower = field_name.lower()
+    return any(token in lower for token in ["id", "code", "key", "uuid"])
+
+
+def _extract_binding_sources(
+    obj: Any, *, path_prefix: str = "params"
+) -> List[Tuple[str, str]]:
+    """Return all bindings within a params object as (path, __from__) pairs."""
+
+    bindings: List[Tuple[str, str]] = []
+
+    if isinstance(obj, dict):
+        if isinstance(obj.get("__from__"), str):
+            bindings.append(
+                (path_prefix, normalize_reference_path(obj["__from__"]))
+            )
+        for k, v in obj.items():
+            child_prefix = f"{path_prefix}.{k}"
+            bindings.extend(_extract_binding_sources(v, path_prefix=child_prefix))
+    elif isinstance(obj, list):
+        for idx, item in enumerate(obj):
+            bindings.extend(
+                _extract_binding_sources(item, path_prefix=f"{path_prefix}[{idx}]")
+            )
+
+    return bindings
+
+
+def _build_binding_memory(
+    filled_params: Mapping[str, Mapping[str, Any]], processed_node_ids: Sequence[str]
+) -> Dict[str, str]:
+    """Track key entity bindings from already补全的节点，供跨节点一致性检查使用。"""
+
+    memory: Dict[str, str] = {}
+
+    for nid in processed_node_ids:
+        params = filled_params.get(nid)
+        if not isinstance(params, Mapping):
+            continue
+        for path, source in _extract_binding_sources(params):
+            field = path.split(".")[-1]
+            if _looks_like_entity_key(field) and field not in memory:
+                memory[field] = source
+
+    return memory
+
+
+def _summarize_output_fields_from_schema(
+    schema: Mapping[str, Any] | None,
+) -> List[str]:
+    if not isinstance(schema, Mapping):
+        return []
+    props = schema.get("properties")
+    if isinstance(props, Mapping):
+        return [k for k in props.keys() if isinstance(k, str)]
+    return []
+
+
+def _summarize_node_outputs(
+    node: Node, action_schemas: Mapping[str, Dict[str, Any]]
+) -> List[str]:
+    if node.type == "loop":
+        exports = node.params.get("exports") if isinstance(node.params, Mapping) else {}
+        fields: List[str] = []
+        if isinstance(exports, Mapping):
+            items = exports.get("items")
+            if isinstance(items, Mapping):
+                item_fields = items.get("fields")
+                if isinstance(item_fields, list):
+                    fields.extend([f for f in item_fields if isinstance(f, str)])
+            aggregates = exports.get("aggregates")
+            if isinstance(aggregates, Mapping):
+                fields.extend([f"aggregates.{k}" for k in aggregates.keys() if isinstance(k, str)])
+        return fields
+
+    if not node.action_id:
+        return []
+    schema = action_schemas.get(node.action_id, {}).get("output_schema")
+    return _summarize_output_fields_from_schema(schema)
+
+
+def _build_global_context(
+    *,
+    workflow: Workflow,
+    action_schemas: Mapping[str, Dict[str, Any]],
+    filled_params: Mapping[str, Mapping[str, Any]],
+    processed_node_ids: Sequence[str],
+    binding_memory: Mapping[str, str],
+) -> Dict[str, Any]:
+    upstream_map: Dict[str, List[str]] = {}
+    for e in workflow.edges:
+        upstream_map.setdefault(e.to_node, []).append(e.from_node)
+
+    node_summaries: List[Dict[str, Any]] = []
+    for n in workflow.nodes:
+        schema = action_schemas.get(n.action_id, {}) if n.action_id else {}
+        node_summaries.append(
+            {
+                "id": n.id,
+                "type": n.type,
+                "action_id": n.action_id,
+                "display_name": n.display_name,
+                "domain": schema.get("domain"),
+                "output_fields": _summarize_node_outputs(n, action_schemas),
+                "arg_required_fields": (
+                    schema.get("arg_schema", {}).get("required") if isinstance(schema.get("arg_schema"), Mapping) else None
+                ),
+                "upstream": upstream_map.get(n.id, []),
+                "params_snapshot": filled_params.get(n.id) if n.id in processed_node_ids else None,
+            }
+        )
+
+    return {
+        "workflow": {
+            "name": workflow.workflow_name,
+            "description": workflow.description,
+        },
+        "node_summaries": node_summaries,
+        "entity_binding_hints": [
+            {"field": field, "source": src} for field, src in binding_memory.items()
+        ],
+    }
+
+
 def _collect_binding_issues(
     params: Dict[str, Any],
     upstream_nodes: List[Node],
     action_schemas: Dict[str, Dict[str, Any]],
+    binding_memory: Mapping[str, str] | None = None,
 ) -> List[str]:
     """Validate __from__ / field references against upstream schemas.
 
@@ -97,6 +222,13 @@ def _collect_binding_issues(
                 )
                 if schema_err:
                     issues.append(f"{path_prefix}: {schema_err}")
+
+                field_name = path_prefix.split(".")[-1]
+                remembered = (binding_memory or {}).get(field_name)
+                if remembered and normalize_reference_path(remembered) != src:
+                    issues.append(
+                        f"{path_prefix}: 字段 {field_name} 需要与之前的绑定保持一致（之前来源 {remembered}，当前 {src}）。"
+                    )
 
                 agg = obj.get("__agg__")
                 field_checks: List[tuple[str, str]] = []
@@ -148,6 +280,7 @@ def _validate_node_params(
     params: Dict[str, Any],
     upstream_nodes: List[Node],
     action_schemas: Dict[str, Dict[str, Any]],
+    binding_memory: Mapping[str, str] | None = None,
 ) -> List[str]:
     """Validate a single node's params after every tool submission.
 
@@ -184,7 +317,10 @@ def _validate_node_params(
 
     errors.extend(
         _collect_binding_issues(
-            params, upstream_nodes=upstream_nodes, action_schemas=action_schemas
+            params,
+            upstream_nodes=upstream_nodes,
+            action_schemas=action_schemas,
+            binding_memory=binding_memory,
         )
     )
 
@@ -234,6 +370,7 @@ def fill_params_with_llm(
     system_prompt = (
         "你是一个工作流参数补全助手。一次只处理一个节点，请根据给定的 arg_schema 补齐当前节点的 params。\n"
         "请务必调用 submit_node_params 工具提交结果，禁止返回自然语言。每次提交后必须调用 validate_node_params 工具进行校验，收到校验错误要重新分析并再次提交。\n"
+        "在补参前先阅读 global_context：理解 workflow 场景、节点之间的上下游关系，以及 entity_binding_hints 中记录的关键实体字段（如 *_id/*_code 等）来源。补参时必须保持同名实体字段的来源一致，如发现冲突请主动调整当前节点的绑定。\n"
         "当某个字段需要引用其他节点的输出时，必须使用数据绑定 DSL，并且只能引用提供的 allowed_node_ids 中的节点。\n"
         "你只能从以下节点中读取上下游结果：result_of.<node_id>.<field>...，其中 node_id 必须来自 allowed_node_ids，field 必须存在于该节点的 output_schema。\n"
         "当引用循环节点时，只能使用 loop 节点的 exports（如 result_of.<loop_id>.items、result_of.<loop_id>.exports.items 或 result_of.<loop_id>.aggregates.xxx），禁止直接引用 loop body 的节点。\n"
@@ -255,10 +392,24 @@ def fill_params_with_llm(
         n.id: copy.deepcopy(n.params) for n in workflow.nodes
     }
 
+    processed_node_ids: List[str] = []
+
     for node_id in _traverse_order(workflow):
         node = nodes_by_id[node_id]
         upstream_nodes = get_referenced_nodes(workflow, node_id)
         allowed_node_ids = [n.id for n in upstream_nodes]
+
+        binding_memory = _build_binding_memory(
+            filled_params, processed_node_ids
+        )
+
+        global_context = _build_global_context(
+            workflow=workflow,
+            action_schemas=action_schemas,
+            filled_params=filled_params,
+            processed_node_ids=processed_node_ids,
+            binding_memory=binding_memory,
+        )
 
         upstream_context = []
         for n in upstream_nodes:
@@ -285,6 +436,7 @@ def fill_params_with_llm(
             "arg_schema": target_action_schema.get("arg_schema"),
             "allowed_node_ids": allowed_node_ids,
             "allowed_upstream_nodes": upstream_context,
+            "global_context": global_context,
         }
 
         messages = [
@@ -394,6 +546,7 @@ def fill_params_with_llm(
                             params=params_to_check,
                             upstream_nodes=upstream_nodes,
                             action_schemas=action_schemas,
+                            binding_memory=binding_memory,
                         )
 
                     tool_payload = {
@@ -435,6 +588,7 @@ def fill_params_with_llm(
                     params=last_submitted_params,
                     upstream_nodes=upstream_nodes,
                     action_schemas=action_schemas,
+                    binding_memory=binding_memory,
                 )
                 auto_call_id = f"auto_validate_{round_idx}_{node.id}"
                 messages.append(
@@ -458,6 +612,8 @@ def fill_params_with_llm(
 
         if validated_params is None:
             raise ValueError(f"节点 {node.id} 的参数补全未通过校验，请检查工具调用返回。")
+
+        processed_node_ids.append(node.id)
 
     completed_nodes = []
     for node in workflow.nodes:
