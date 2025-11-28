@@ -20,7 +20,7 @@ from velvetflow.logging_utils import (
     log_warn,
     use_trace_context,
 )
-from velvetflow.models import Node, ValidationError, Workflow
+from velvetflow.models import Node, ValidationError, Workflow, infer_edges_from_bindings
 from tools import get_registered_tool
 
 # ===================== 16. 执行器 =====================
@@ -127,8 +127,12 @@ class DynamicActionExecutor:
 
     def _derive_edges(self, workflow: Workflow) -> List[Any]:
         """Rebuild implicit edges from the latest node bindings."""
+        if workflow.edges:
+            return workflow.edges
 
-        return workflow.edges
+        # 当缺少显式 edges 时，从节点参数中的 result_of 引用推导依赖，
+        # 确保执行顺序满足数据绑定需求。
+        return infer_edges_from_bindings(workflow.nodes)
 
     def _find_start_nodes(self, nodes: Mapping[str, Dict[str, Any]], edges: List[Dict[str, Any]]) -> List[str]:
         """Locate start nodes by combining explicit标记与“无入度”节点。
