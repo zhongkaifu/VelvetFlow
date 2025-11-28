@@ -240,6 +240,18 @@ class DynamicActionExecutor:
         else:
             cond_label = str(cond_value)
 
+        node_def = self.nodes.get(nid, {}) if isinstance(self.nodes.get(nid, {}), Mapping) else {}
+        meta = node_def.get("meta") if isinstance(node_def, Mapping) else {}
+        if (
+            node_def.get("type") == "condition"
+            and isinstance(meta, Mapping)
+            and isinstance(cond_value, bool)
+        ):
+            branch_key = f"next_on_{cond_label}"
+            branch_target = meta.get(branch_key)
+            if isinstance(branch_target, str):
+                return [branch_target]
+
         for e in edges:
             frm = e.from_node if hasattr(e, "from_node") else e.get("from")
             if frm != nid:

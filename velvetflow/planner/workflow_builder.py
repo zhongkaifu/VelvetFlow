@@ -1,9 +1,58 @@
 """Utilities for building workflow skeletons during planning."""
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Mapping, Optional
 
 from velvetflow.logging_utils import log_warn
 from velvetflow.models import infer_edges_from_bindings
+
+
+def _normalize_condition_label(raw: Any) -> Optional[str]:
+    if isinstance(raw, bool):
+        return "true" if raw else "false"
+
+    if isinstance(raw, str):
+        lowered = raw.lower()
+        if lowered in {"true", "false"}:
+            return lowered
+
+    return None
+
+
+def attach_condition_branches(workflow: Dict[str, Any]) -> Dict[str, Any]:
+    """Augment condition nodes with downstream branch references.
+
+    在 planner 构建 skeleton 阶段就写入 condition 的 true/false 下游指向，
+    方便后续执行器无需再依赖 edges 来决定分支流向。
+    """
+
+    copied = {**workflow}
+    nodes = copied.get("nodes") if isinstance(copied.get("nodes"), list) else []
+    edges = copied.get("edges") if isinstance(copied.get("edges"), list) else []
+
+    node_lookup: Dict[str, Mapping[str, Any]] = {}
+    for node in nodes:
+        if isinstance(node, Mapping):
+            node_lookup[str(node.get("id"))] = node
+
+    for edge in edges:
+        if not isinstance(edge, Mapping):
+            continue
+        from_node = edge.get("from") or edge.get("from_node")
+        to_node = edge.get("to") or edge.get("to_node")
+        cond_label = _normalize_condition_label(edge.get("condition"))
+
+        if not cond_label or not isinstance(from_node, str) or not isinstance(to_node, str):
+            continue
+
+        source_node = node_lookup.get(from_node)
+        if not source_node or source_node.get("type") != "condition":
+            continue
+
+        meta = source_node.setdefault("meta", {}) if isinstance(source_node.get("meta"), dict) else {}
+        source_node["meta"] = meta
+        meta.setdefault(f"next_on_{cond_label}", to_node)
+
+    return copied
 
 
 class WorkflowBuilder:
@@ -48,7 +97,7 @@ class WorkflowBuilder:
         # tools/LLM refinement while keeping the source of truth in param
         # bindings.
         workflow["edges"] = infer_edges_from_bindings(self.nodes.values())
-        return workflow
+        return attach_condition_branches(workflow)
 
 
-__all__ = ["WorkflowBuilder"]
+__all__ = ["WorkflowBuilder", "attach_condition_branches"]

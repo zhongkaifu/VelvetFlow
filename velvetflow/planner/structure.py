@@ -27,7 +27,10 @@ from velvetflow.planner.coverage import (
     refine_workflow_structure_with_llm,
 )
 from velvetflow.planner.tools import PLANNER_TOOLS
-from velvetflow.planner.workflow_builder import WorkflowBuilder
+from velvetflow.planner.workflow_builder import (
+    WorkflowBuilder,
+    attach_condition_branches,
+)
 from velvetflow.search import HybridActionSearchService
 from velvetflow.models import infer_edges_from_bindings
 
@@ -82,7 +85,7 @@ def _attach_inferred_edges(workflow: Dict[str, Any]) -> Dict[str, Any]:
     copied = copy.deepcopy(workflow)
     nodes = copied.get("nodes") if isinstance(copied.get("nodes"), list) else []
     copied["edges"] = infer_edges_from_bindings(nodes)
-    return copied
+    return attach_condition_branches(copied)
 
 
 def _build_action_schema_map(action_registry: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
