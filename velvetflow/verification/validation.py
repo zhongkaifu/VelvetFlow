@@ -105,6 +105,17 @@ def _validate_nodes_recursive(
         action_id = n.get("action_id")
         params = n.get("params", {})
 
+        # exports 只能用于 loop.body_subgraph
+        if "exports" in params and ntype != "loop":
+            errors.append(
+                ValidationError(
+                    code="INVALID_SCHEMA",
+                    node_id=nid,
+                    field="exports",
+                    message="exports 仅允许出现在 loop 节点上，用于暴露 body_subgraph 结果。",
+                )
+            )
+
         # 1) action 节点
         if ntype == "action" and action_id:
             action_def = actions_by_id.get(action_id)
@@ -417,6 +428,17 @@ def _validate_nodes_recursive(
 
         # 3) loop 节点
         if ntype == "loop":
+            body_graph = params.get("body_subgraph") if isinstance(params, Mapping) else None
+            if "exports" in params and not isinstance(body_graph, Mapping):
+                errors.append(
+                    ValidationError(
+                        code="INVALID_SCHEMA",
+                        node_id=nid,
+                        field="exports",
+                        message="loop 节点定义 exports 时必须提供 body_subgraph。",
+                    )
+                )
+
             loop_kind = (params or {}).get("loop_kind")
             if not loop_kind:
                 errors.append(
