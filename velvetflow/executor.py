@@ -481,7 +481,7 @@ class DynamicActionExecutor:
                 if not handled_items:
                     if isinstance(source_res, Mapping):
                         items_output.append(_build_record(source_res))
-                    else:
+                    elif source_res is not None:
                         items_output.append(_build_record(None))
 
         if not isinstance(aggregates_spec, list):

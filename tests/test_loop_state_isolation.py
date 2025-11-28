@@ -104,3 +104,63 @@ def test_condition_branch_inside_loop_body_uses_true_target():
     results = executor.run()
 
     assert results["loop"]["items"] == [{"branch": "true_taken"}]
+
+
+def test_condition_false_branch_inside_loop_body_skips_true_target():
+    workflow_dict = {
+        "workflow_name": "loop_condition_branch_false",
+        "nodes": [
+            {
+                "id": "loop",
+                "type": "loop",
+                "params": {
+                    "loop_kind": "for_each",
+                    "source": [
+                        {"employee_id": "001", "temperature": 36.5},
+                    ],
+                    "item_alias": "employee",
+                    "body_subgraph": {
+                        "nodes": [
+                            {
+                                "id": "check_temperature_condition",
+                                "type": "condition",
+                                "params": {
+                                    "kind": "any_greater_than",
+                                    "source": {"__from__": "loop.employee"},
+                                    "field": "temperature",
+                                    "threshold": 38,
+                                },
+                                "true_to_node": "add_to_warning_list",
+                                "false_to_node": None,
+                            },
+                            {
+                                "id": "add_to_warning_list",
+                                "type": "action",
+                                "action_id": "hr.update_employee_health_profile.v1",
+                                "params": {
+                                    "employee_id": {"__from__": "loop.employee.employee_id"},
+                                    "last_temperature": {"__from__": "loop.employee.temperature"},
+                                    "status": "fever",
+                                },
+                            },
+                        ],
+                    },
+                    "exports": {
+                        "items": {
+                            "from_node": "add_to_warning_list",
+                            "fields": ["employee_id"],
+                        }
+                    },
+                },
+            }
+        ],
+    }
+
+    workflow = Workflow.model_validate(workflow_dict)
+    executor = DynamicActionExecutor(
+        workflow, simulations={"hr.update_employee_health_profile.v1": {"result": {"employee_id": "{{employee_id}}"}}}
+    )
+
+    results = executor.run()
+
+    assert results["loop"]["items"] == []
