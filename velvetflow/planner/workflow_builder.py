@@ -1,18 +1,18 @@
 """Utilities for building workflow skeletons during planning."""
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 from velvetflow.logging_utils import log_warn
+from velvetflow.models import infer_edges_from_bindings
 
 
 class WorkflowBuilder:
-    """Mutable builder used by the planner to accumulate nodes and edges."""
+    """Mutable builder used by the planner to accumulate nodes."""
 
     def __init__(self):
         self.workflow_name: str = "unnamed_workflow"
         self.description: str = ""
         self.nodes: Dict[str, Dict[str, Any]] = {}
-        self.edges: List[Dict[str, Any]] = []
 
     def set_meta(self, name: str, description: Optional[str]):
         if name:
@@ -38,16 +38,17 @@ class WorkflowBuilder:
             "params": params or {},
         }
 
-    def add_edge(self, from_node: str, to_node: str, condition: Optional[str]):
-        self.edges.append({"from": from_node, "to": to_node, "condition": condition})
-
     def to_workflow(self) -> Dict[str, Any]:
-        return {
+        workflow = {
             "workflow_name": self.workflow_name,
             "description": self.description,
             "nodes": list(self.nodes.values()),
-            "edges": self.edges,
         }
+        # Provide implicitly derived edges as read-only context for downstream
+        # tools/LLM refinement while keeping the source of truth in param
+        # bindings.
+        workflow["edges"] = infer_edges_from_bindings(self.nodes.values())
+        return workflow
 
 
 __all__ = ["WorkflowBuilder"]

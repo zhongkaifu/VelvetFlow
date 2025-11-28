@@ -45,7 +45,8 @@ PLANNER_TOOLS = [
                 "- type='condition'：请在 params 中使用结构化条件，例如：\n"
                 "  {\"kind\": \"any_greater_than\", \"source\": \"result_of.some_node.items\", \"field\": \"value\", \"threshold\": 10 }\n"
                 "或 {\"kind\": \"equals\", \"source\": \"result_of.some_node.count\", \"value\": 0 }，也可以使用 between/not_equals/multi_band 等枚举。\n"
-                "- type='loop'：params 需要提供 loop_kind(for_each/while)、source/condition、item_alias、body_subgraph(nodes/edges/entry/exit) 等。"
+                "- type='loop'：params 需要提供 loop_kind(for_each/while)、source/condition、item_alias、body_subgraph(nodes/edges/entry/exit) 等。\n"
+                "- 节点依赖关系通过 params 中的 result_of 引用自动推导，edges 会被隐式记录为上下文，无需手工 add_edge。"
             ),
             "parameters": {
                 "type": "object",
@@ -68,22 +69,6 @@ PLANNER_TOOLS = [
                     },
                 },
                 "required": ["id", "type"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "add_edge",
-            "description": "新增一条有向边（from -> to），可选 condition（true/false 等）。",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "from_node": {"type": "string"},
-                    "to_node": {"type": "string"},
-                    "condition": {"type": "string", "nullable": True},
-                },
-                "required": ["from_node", "to_node"],
             },
         },
     },

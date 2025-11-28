@@ -56,7 +56,8 @@ class DynamicActionExecutor:
     参数
     ----
     workflow:
-        已通过 Pydantic 校验的工作流对象，需包含 `nodes` 与 `edges`。
+        已通过 Pydantic 校验的工作流对象，仅需声明 `nodes`；拓扑关系会基于
+        参数绑定自动推导。
     simulations:
         * `None`：正常执行真实动作；
         * `Mapping`：以 action_id 为键的模拟结果；
@@ -77,14 +78,11 @@ class DynamicActionExecutor:
         workflow_dict = workflow.model_dump(by_alias=True)
         if not isinstance(workflow_dict.get("nodes"), list):
             raise ValueError("workflow 缺少合法的 'nodes' 列表。")
-        if not isinstance(workflow_dict.get("edges"), list):
-            raise ValueError("workflow 缺少合法的 'edges' 列表。")
 
         self.workflow = workflow
         self.workflow_dict = workflow_dict
         self.node_models = {n.id: n for n in workflow.nodes}
         self.nodes = {n["id"]: n for n in workflow_dict["nodes"]}
-        self.edges = workflow_dict["edges"]
         self.user_role = user_role
         self.trace_context = trace_context
 
@@ -126,6 +124,11 @@ class DynamicActionExecutor:
                 "workflow 中存在未注册或缺失的 action_id，请在构建阶段修复: " + details
             )
 
+    def _derive_edges(self, workflow: Workflow) -> List[Any]:
+        """Rebuild implicit edges from the latest node bindings."""
+
+        return workflow.edges
+
     def _find_start_nodes(self, nodes: Mapping[str, Dict[str, Any]], edges: List[Dict[str, Any]]) -> List[str]:
         """Locate start nodes or infer them by missing inbound edges.
 
@@ -135,10 +138,22 @@ class DynamicActionExecutor:
         """
 
         starts = [nid for nid, n in nodes.items() if n.get("type") == "start"]
-        if not starts:
-            all_ids = set(nodes.keys())
-            to_ids = {e["to"] for e in edges}
-            starts = list(all_ids - to_ids)
+
+        all_ids = set(nodes.keys())
+        to_ids = set()
+        for e in edges:
+            if hasattr(e, "to_node"):
+                to_ids.add(e.to_node)
+            elif isinstance(e, Mapping) and "to" in e:
+                to_ids.add(e.get("to"))
+
+        # Always include nodes with no inbound references to avoid disconnecting
+        # leaf nodes when explicit edges are absent.
+        inbound_free = list(all_ids - to_ids)
+        for nid in inbound_free:
+            if nid not in starts:
+                starts.append(nid)
+
         return starts
 
     def _topological_sort(self, workflow: Workflow) -> List[Node]:
@@ -150,14 +165,20 @@ class DynamicActionExecutor:
         """
 
         nodes = workflow.nodes
-        edges = workflow.edges
+        edges = self._derive_edges(workflow)
 
         indegree: Dict[str, int] = {n.id: 0 for n in nodes}
         adjacency: Dict[str, List[str]] = {n.id: [] for n in nodes}
         node_lookup: Dict[str, Node] = {n.id: n for n in nodes}
         for e in edges:
-            indegree[e.to_node] += 1
-            adjacency[e.from_node].append(e.to_node)
+            frm = e.from_node if hasattr(e, "from_node") else e.get("from")
+            to = e.to_node if hasattr(e, "to_node") else e.get("to")
+            if not frm or not to:
+                continue
+            if frm not in indegree or to not in indegree:
+                continue
+            indegree[to] += 1
+            adjacency[frm].append(to)
 
         queue: List[str] = [nid for nid, deg in indegree.items() if deg == 0]
         if not queue and nodes:
@@ -183,9 +204,8 @@ class DynamicActionExecutor:
             log_warn("检测到工作流包含环（例如 loop 子图），按声明顺序执行。")
             ordered = [n.id for n in nodes]
 
-        edges_dump = [e.model_dump(by_alias=True) for e in edges]
         nodes_dump = {n.id: n.model_dump(by_alias=True) for n in nodes}
-        start_nodes = self._find_start_nodes(nodes_dump, edges_dump)
+        start_nodes = self._find_start_nodes(nodes_dump, edges)
         reachable: Set[str] = set()
         if start_nodes:
             queue = list(start_nodes)
@@ -221,13 +241,14 @@ class DynamicActionExecutor:
             cond_label = str(cond_value)
 
         for e in edges:
-            if e.get("from") != nid:
+            frm = e.from_node if hasattr(e, "from_node") else e.get("from")
+            if frm != nid:
                 continue
-            cond = e.get("condition")
+            cond = e.condition if hasattr(e, "condition") else e.get("condition")
             if cond is None:
-                res.append(e.get("to"))
+                res.append(e.to_node if hasattr(e, "to_node") else e.get("to"))
             elif cond_label is not None and cond == cond_label:
-                res.append(e.get("to"))
+                res.append(e.to_node if hasattr(e, "to_node") else e.get("to"))
         return [r for r in res if r]
 
     def _render_template(self, value: Any, params: Mapping[str, Any]) -> Any:
@@ -973,7 +994,6 @@ class DynamicActionExecutor:
         loop_kind = params.get("loop_kind", "for_each")
         body_graph = params.get("body_subgraph") or {}
         body_nodes = body_graph.get("nodes") or []
-        body_edges = body_graph.get("edges") or []
         entry = body_graph.get("entry")
         exit_node = body_graph.get("exit")
 
@@ -986,9 +1006,7 @@ class DynamicActionExecutor:
 
         extra_node_models: Dict[str, Node] = {}
         try:
-            sub_wf = Workflow.model_validate(
-                {"workflow_name": "loop_body", "nodes": body_nodes, "edges": body_edges}
-            )
+            sub_wf = Workflow.model_validate({"workflow_name": "loop_body", "nodes": body_nodes})
             extra_node_models = {n.id: n for n in sub_wf.nodes}
         except Exception:
             extra_node_models = {}
@@ -1028,7 +1046,6 @@ class DynamicActionExecutor:
                         "workflow_name": f"{node.get('id')}_iter_{idx}",
                         "description": body_graph.get("description", ""),
                         "nodes": body_nodes,
-                        "edges": body_edges,
                     },
                     loop_binding,
                     start_nodes=[entry] if entry else None,
@@ -1084,7 +1101,6 @@ class DynamicActionExecutor:
                         "workflow_name": f"{node.get('id')}_while_{iteration}",
                         "description": body_graph.get("description", ""),
                         "nodes": body_nodes,
-                        "edges": body_edges,
                     },
                     loop_binding,
                     start_nodes=[entry] if entry else None,
@@ -1131,7 +1147,6 @@ class DynamicActionExecutor:
     ) -> Dict[str, Any]:
         workflow = Workflow.model_validate(workflow_dict)
         nodes_data = {n["id"]: n for n in workflow.model_dump(by_alias=True)["nodes"]}
-        edges = workflow.model_dump(by_alias=True)["edges"]
         sorted_nodes = self._topological_sort(workflow)
 
         graph_label = workflow_dict.get("workflow_name", "")
@@ -1140,7 +1155,7 @@ class DynamicActionExecutor:
         log_kv("模拟用户角色", self.user_role)
 
         if start_nodes is None:
-            start_nodes = self._find_start_nodes(nodes_data, edges)
+            start_nodes = self._find_start_nodes(nodes_data, self._derive_edges(workflow))
         if not start_nodes and sorted_nodes:
             log_warn("未找到 start 节点，将从任意一个节点开始（仅 demo）。")
             start_nodes = [sorted_nodes[0].id]
@@ -1247,7 +1262,9 @@ class DynamicActionExecutor:
                     if values is not None:
                         payload["evaluated_values"] = values
                 results[nid] = payload
-                next_ids = self._next_nodes(edges, nid, cond_value=cond_value)
+                next_ids = self._next_nodes(
+                    self._derive_edges(workflow), nid, cond_value=cond_value
+                )
                 for nxt in next_ids:
                     if nxt not in visited:
                         reachable.add(nxt)
@@ -1273,7 +1290,7 @@ class DynamicActionExecutor:
                         "result": loop_result,
                     },
                 )
-                next_ids = self._next_nodes(edges, nid)
+                next_ids = self._next_nodes(self._derive_edges(workflow), nid)
                 for nxt in next_ids:
                     if nxt not in visited:
                         reachable.add(nxt)
@@ -1288,7 +1305,7 @@ class DynamicActionExecutor:
                 )
                 continue
 
-            next_ids = self._next_nodes(edges, nid)
+            next_ids = self._next_nodes(self._derive_edges(workflow), nid)
             for nxt in next_ids:
                 if nxt not in visited:
                     reachable.add(nxt)

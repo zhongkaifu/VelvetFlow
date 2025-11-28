@@ -5,7 +5,7 @@ workflow 结构和参数的两阶段推理，然后在必要时向 LLM 提供错
 自修复。为了降低调用方的认知负担，核心入口 `plan_workflow_with_two_pass`
 会处理：
 
-* 骨架阶段：根据自然语言需求触发 LLM 生成节点/边的初稿，并保证 Action
+* 骨架阶段：根据自然语言需求触发 LLM 生成节点的初稿，并保证 Action
   Registry 覆盖。
 * 参数阶段：在约定的 prompt 语境下补全每个 action 的参数，并校验返回
   结构符合 `Workflow` Pydantic 模型。
@@ -45,7 +45,6 @@ from velvetflow.planner.repair_tools import (
     fill_loop_exports_defaults,
     normalize_binding_paths,
     _apply_local_repairs_for_unknown_params,
-    fix_empty_edges,
 )
 from velvetflow.planner.structure import plan_workflow_structure_with_llm
 from velvetflow.verification import (
@@ -468,8 +467,8 @@ def _ensure_actions_registered_or_repair(
 
     如果 Workflow 中的 action 节点缺失或引用未注册的 `action_id`，该函数会
     生成对应的 `ValidationError`，并将错误上下文、Action Registry 以及调用
-    原因传递给 LLM 进行自动修复。LLM 需要返回一个完整的 workflow JSON
-    （包含 nodes/edges），随后再由 Pydantic 转为 `Workflow` 实例。
+    原因传递给 LLM 进行自动修复。LLM 需要返回一个完整的 workflow JSON，
+    随后再由 Pydantic 转为 `Workflow` 实例。
     """
 
     guarded = ensure_registered_actions(
@@ -557,7 +556,7 @@ def plan_workflow_with_two_pass(
     LLM 返回格式约定
     ----------------
     * 结构规划与参数补全阶段均要求 LLM 返回可被 `Workflow` 解析的 JSON 对象，
-      至少包含 `nodes` 与 `edges` 数组。
+      至少包含 `nodes` 数组（连线会通过节点绑定自动推导）。
     * 修复阶段会附带 `validation_errors`，LLM 需直接输出修正后的完整 JSON，
       不需要包含额外解释文本。
 
@@ -717,17 +716,6 @@ def plan_workflow_with_two_pass(
             current_workflow, coercion_errors = _coerce_condition_param_types(
                 current_workflow
             )
-
-            fixed_edges_workflow, edge_fix_summary = fix_empty_edges(
-                current_workflow.model_dump(by_alias=True)
-            )
-            if edge_fix_summary.get("applied"):
-                log_info(
-                    "[AutoRepair] 检测到空边，已自动修复：",
-                    f"summary={edge_fix_summary}"
-                )
-                current_workflow = Workflow.model_validate(fixed_edges_workflow)
-                last_good_workflow = current_workflow
 
             loop_exports_workflow, loop_export_summary = fill_loop_exports_defaults(
                 current_workflow.model_dump(by_alias=True),

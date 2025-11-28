@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Literal, Mapping, Optional
+from typing import Any, Dict, Iterable, List, Literal, Mapping, Optional, Set
+
+from velvetflow.reference_utils import normalize_reference_path
 
 
 class PydanticValidationError(Exception):
@@ -86,6 +88,76 @@ class ParamBinding:
     format: str | None = None
     sep: str | None = None
     steps: List[Dict[str, Any]] | None = None
+
+
+def infer_edges_from_bindings(nodes: Iterable[Any]) -> List[Dict[str, Any]]:
+    """Infer directed edges from node parameter bindings.
+
+    This helper is used to generate *contextual* topology information for LLMs
+    and internal checks without requiring callers to maintain a redundant
+    ``edges`` array. It supports both :class:`Node` instances and mapping-like
+    node dictionaries.
+    """
+
+    def _extract_node_id(node: Any) -> Optional[str]:
+        if isinstance(node, Node):
+            return node.id
+        if isinstance(node, Mapping):
+            raw_id = node.get("id")
+            return raw_id if isinstance(raw_id, str) else None
+        return None
+
+    def _extract_params(node: Any) -> Mapping[str, Any]:
+        if isinstance(node, Node):
+            return node.params
+        if isinstance(node, Mapping):
+            params = node.get("params")
+            if isinstance(params, Mapping):
+                return params
+        return {}
+
+    def _collect_refs(value: Any) -> Iterable[str]:
+        if isinstance(value, Mapping):
+            if "__from__" in value:
+                ref = normalize_reference_path(value.get("__from__"))
+                if isinstance(ref, str) and ref.startswith("result_of."):
+                    parts = ref.split(".")
+                    if len(parts) >= 2 and parts[1]:
+                        yield parts[1]
+            for v in value.values():
+                yield from _collect_refs(v)
+        elif isinstance(value, list):
+            for item in value:
+                yield from _collect_refs(item)
+        elif isinstance(value, str):
+            normalized = normalize_reference_path(value)
+            if normalized.startswith("result_of."):
+                parts = normalized.split(".")
+                if len(parts) >= 2 and parts[1]:
+                    yield parts[1]
+
+    node_ids = {_extract_node_id(n) for n in nodes}
+    node_ids.discard(None)
+    seen_pairs: Set[tuple[str | None, str | None]] = set()
+    edges: List[Dict[str, Any]] = []
+
+    for node in nodes:
+        nid = _extract_node_id(node)
+        if not nid:
+            continue
+        deps = {
+            ref
+            for ref in _collect_refs(_extract_params(node))
+            if ref in node_ids and ref != nid
+        }
+        for dep in sorted(deps):
+            pair = (dep, nid)
+            if pair in seen_pairs:
+                continue
+            seen_pairs.add(pair)
+            edges.append({"from": dep, "to": nid, "condition": None})
+
+    return edges
 
 
 @dataclass
@@ -210,9 +282,33 @@ class Workflow:
     """Complete workflow definition used across planner and executor."""
 
     nodes: List[Node]
-    edges: List[Edge]
     workflow_name: str = "unnamed_workflow"
     description: str = ""
+
+    @property
+    def edges(self) -> List[Edge]:
+        """Always rebuild edges from the latest node bindings.
+
+        Implicit wiring must faithfully reflect the *current* node set. The
+        derived edges are therefore regenerated on every access instead of
+        cached, ensuring callers never read stale topology after node edits.
+        """
+
+        return self._infer_edges()
+
+    def _infer_edges(self) -> List[Edge]:
+        """Build edges from parameter bindings declared on nodes.
+
+        The workflow DSL expresses dependencies via ``result_of.<node>`` bindings
+        rather than explicit edge arrays. This helper walks each node's params to
+        discover inbound dependencies and materializes them as edge dictionaries
+        for internal use (topological sort, reachability checks, etc.). The
+        derived edges are not part of the external contract and are regenerated
+        on demand to stay in sync with the latest node bindings.
+        """
+
+        inferred = infer_edges_from_bindings(self.nodes)
+        return [Edge(from_node=e["from"], to_node=e["to"], condition=e.get("condition")) for e in inferred]
 
     @classmethod
     def model_validate(cls, data: Any) -> "Workflow":
@@ -230,7 +326,7 @@ class Workflow:
 
         if not isinstance(raw_nodes, list):
             errors.append({"loc": ("nodes",), "msg": "nodes 必须是数组"})
-        if not isinstance(raw_edges, list):
+        if raw_edges is not None and not isinstance(raw_edges, list):
             errors.append({"loc": ("edges",), "msg": "edges 必须是数组"})
 
         parsed_nodes: List[Node] = []
@@ -264,21 +360,20 @@ class Workflow:
                 raise ValueError(f"重复的节点 id: {n.id}")
             seen.add(n.id)
 
-        # ensure edges refer to existing nodes
-        node_ids = {n.id for n in parsed_nodes}
-        for e in parsed_edges:
-            if e.from_node not in node_ids or e.to_node not in node_ids:
-                raise ValueError(
-                    f"边 {e.model_dump(by_alias=True)} 引用了不存在的节点，已知节点: {sorted(node_ids)}"
-                )
-            if e.from_node == e.to_node:
-                raise ValueError("边的 from/to 不能指向同一个节点")
+        if parsed_edges:
+            node_ids = {n.id for n in parsed_nodes}
+            for e in parsed_edges:
+                if e.from_node not in node_ids or e.to_node not in node_ids:
+                    raise ValueError(
+                        f"边 {e.model_dump(by_alias=True)} 引用了不存在的节点，已知节点: {sorted(node_ids)}"
+                    )
+                if e.from_node == e.to_node:
+                    raise ValueError("边的 from/to 不能指向同一个节点")
 
         workflow = cls(
             workflow_name=str(data.get("workflow_name", "unnamed_workflow")),
             description=str(data.get("description", "")),
             nodes=parsed_nodes,
-            edges=parsed_edges,
         )
 
         return workflow.validate_loop_body_subgraphs()
@@ -296,8 +391,7 @@ class Workflow:
                 continue
 
             body_nodes = body_graph.get("nodes")
-            body_edges = body_graph.get("edges")
-            if not isinstance(body_nodes, list) or not isinstance(body_edges, list):
+            if not isinstance(body_nodes, list):
                 continue
 
             try:
@@ -305,7 +399,6 @@ class Workflow:
                     {
                         "workflow_name": f"{node.id}_loop_body",
                         "nodes": body_nodes,
-                        "edges": body_edges,
                     }
                 )
             except PydanticValidationError as exc:
@@ -333,10 +426,11 @@ class Workflow:
 
 
 __all__ = [
-    "Edge",
     "Node",
+    "Edge",
     "ParamBinding",
     "PydanticValidationError",
     "ValidationError",
+    "infer_edges_from_bindings",
     "Workflow",
 ]

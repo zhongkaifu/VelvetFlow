@@ -71,8 +71,8 @@ def test_loop_body_missing_exit_node_is_reported_before_pydantic():
     assert any("exit" in e.message for e in errors)
 
 
-def test_loop_body_edges_cannot_be_empty():
-    """空的 loop body 边列表应该在校验时被拒绝。"""
+def test_loop_body_allows_edge_free_body():
+    """Loop body graphs can omit explicit edges when bindings define flow."""
 
     workflow = {
         "workflow_name": "news_summary",
@@ -119,10 +119,7 @@ def test_loop_body_edges_cannot_be_empty():
 
     errors = validate_workflow_data(workflow, ACTION_REGISTRY)
 
-    assert errors
-    assert any(
-        e.code == "INVALID_LOOP_BODY" and e.field == "body_subgraph.edges" for e in errors
-    )
+    assert errors == []
 
 
 def test_loop_body_action_missing_required_param_is_caught():
