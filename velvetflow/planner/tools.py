@@ -81,30 +81,39 @@ PLANNER_TOOLS = [
             },
         },
     },
-    {
-        "type": "function",
-        "function": {
-            "name": "update_node",
-            "description": (
-                "更新已创建节点的字段。使用 updates 传入 key/value 列表，"
-                "例如 [{\"key\": \"display_name\", \"value\": \"新的名称\"}, {\"key\": \"params\", \"value\": {...}}]。"
+        {
+            "type": "function",
+            "function": {
+                "name": "update_node",
+                "description": (
+                "更新已创建节点的字段。使用 updates 传入操作列表，每项包含 key/value 与 op（add/modify/remove），"
+                "例如 [{\"op\": \"modify\", \"key\": \"display_name\", \"value\": \"新的名称\"}, {\"op\": \"remove\", \"key\": \"params\"}]。"
                 "对于 condition 节点，true_to_node/false_to_node 的值可为节点 id 或 null（表示该分支结束）。"
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "id": {"type": "string", "description": "要更新的节点 id"},
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "string", "description": "要更新的节点 id"},
                     "updates": {
                         "type": "array",
                         "items": {
                             "type": "object",
                             "properties": {
+                                "op": {
+                                    "type": "string",
+                                    "enum": ["add", "modify", "remove"],
+                                    "description": "对目标 key 执行的操作，默认为 modify。",
+                                    "default": "modify",
+                                },
                                 "key": {"type": "string"},
-                                "value": {"description": "要写入的值", "nullable": True},
+                                "value": {
+                                    "description": "要写入的值，op=remove 时可省略。",
+                                    "nullable": True,
+                                },
                             },
                             "required": ["key"],
                         },
-                        "description": "要更新的字段列表，按顺序覆盖。",
+                        "description": "要更新的字段列表，按顺序覆盖或删除。",
                     },
                 },
                 "required": ["id", "updates"],
