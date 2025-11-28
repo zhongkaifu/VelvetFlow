@@ -420,49 +420,38 @@ def _normalize_url(url: str) -> str:
     return trimmed
 
 
-def _select_passages(content: str, query: str, *, max_chars: int = 2000) -> List[str]:
-    """Pick a handful of lines that relate to the query for quick inspection."""
+def _extract_query_answer(result: Any) -> str:
+    """Return a query-focused answer if Crawl4AI produced one."""
 
-    lines = [line.strip() for line in content.splitlines() if line.strip()]
-    lower_query = query.lower()
-    passages: List[str] = []
+    if result is None:
+        return ""
 
-    for line in lines:
-        if lower_query in line.lower():
-            passages.append(line)
-        if len(passages) >= 6:
-            break
+    candidates = []
+    for attr in (
+        "answer",
+        "query_answer",
+        "qa_text",
+        "qa_markdown",
+        "qa_markdown_v2",
+    ):
+        value = getattr(result, attr, None)
+        if isinstance(value, str):
+            candidates.append(value)
 
-    if not passages:
-        passages = lines[:6]
+    for candidate in candidates:
+        normalized = textwrap.dedent(candidate).strip()
+        if normalized:
+            return normalized
 
-    condensed: List[str] = []
-    for passage in passages:
-        width = max(40, max_chars)
-        condensed.append(textwrap.shorten(passage, width=width, placeholder="..."))
-
-    return condensed
+    return ""
 
 
-def _summarize_locally(content: str, query: str, max_sentences: int) -> str:
-    """Create a lightweight extractive summary without an external model."""
+def _summarize_head(content: str, max_sentences: int) -> str:
+    """Provide a brief head summary when the crawler does not answer directly."""
 
     sentences = re.split(r"(?<=[。！？.!?])\s+", content)
     sentences = [s.strip() for s in sentences if s.strip()]
-
-    relevant: List[str] = []
-    lower_query = query.lower()
-    for sentence in sentences:
-        if lower_query in sentence.lower():
-            relevant.append(sentence)
-        if len(relevant) >= max_sentences:
-            break
-
-    if not relevant:
-        relevant = sentences[:max_sentences]
-
-    summary = " ".join(relevant[:max_sentences]).strip()
-    return summary
+    return " ".join(sentences[:max_sentences]).strip()
 
 
 def crawl_and_summarize(
@@ -488,7 +477,7 @@ def crawl_and_summarize(
         warmup = getattr(crawler, "warmup", None)
         if callable(warmup):
             warmup()
-        result = crawler.run(url=url)
+        result = crawler.run(url=url, query=query)
     elif AsyncWebCrawler is not None:
         async def _async_crawl() -> Any:
             async with AsyncWebCrawler(verbose=False) as crawler:
@@ -497,7 +486,7 @@ def crawl_and_summarize(
                     maybe_coroutine = warmup()
                     if inspect.iscoroutine(maybe_coroutine):
                         await maybe_coroutine
-                return await crawler.arun(url=url)
+                return await crawler.arun(url=url, query=query)
 
         result = asyncio.run(_async_crawl())
     else:
@@ -509,15 +498,15 @@ def crawl_and_summarize(
     if not content:
         raise RuntimeError("crawl4ai did not return any textual content for the requested page")
 
-    summary = _summarize_locally(content, query, max_sentences=max_sentences)
-    passages = _select_passages(content, query, max_chars=max_chars)
+    answer = _extract_query_answer(result)
+    summary = answer or _summarize_head(content, max_sentences=max_sentences)
     preview = textwrap.shorten(content, width=max_chars, placeholder="...")
 
     return {
         "url": url,
         "query": query,
         "summary": summary,
-        "matched_passages": passages,
+        "answer": answer,
         "content_preview": preview,
         "content_length": len(content),
     }
