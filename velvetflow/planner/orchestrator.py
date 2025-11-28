@@ -42,6 +42,8 @@ from velvetflow.planner.repair import (
     _repair_with_llm_and_fallback,
 )
 from velvetflow.planner.repair_tools import (
+    fill_loop_exports_defaults,
+    normalize_binding_paths,
     _apply_local_repairs_for_unknown_params,
     fix_empty_edges,
 )
@@ -721,10 +723,33 @@ def plan_workflow_with_two_pass(
             )
             if edge_fix_summary.get("applied"):
                 log_info(
-                    "[AutoRepair] 检测到空边，已自动修复："
+                    "[AutoRepair] 检测到空边，已自动修复：",
                     f"summary={edge_fix_summary}"
                 )
                 current_workflow = Workflow.model_validate(fixed_edges_workflow)
+                last_good_workflow = current_workflow
+
+            loop_exports_workflow, loop_export_summary = fill_loop_exports_defaults(
+                current_workflow.model_dump(by_alias=True),
+                action_registry=action_registry,
+            )
+            if loop_export_summary.get("applied"):
+                log_info(
+                    "[AutoRepair] loop.exports 缺失或不完整，已自动填充：",
+                    f"summary={loop_export_summary}"
+                )
+                current_workflow = Workflow.model_validate(loop_exports_workflow)
+                last_good_workflow = current_workflow
+
+            normalized_workflow, normalize_summary = normalize_binding_paths(
+                current_workflow.model_dump(by_alias=True)
+            )
+            if normalize_summary.get("applied"):
+                log_info(
+                    "[AutoRepair] 已规范化绑定路径，减少进入 LLM 的次数。",
+                    f"summary={normalize_summary}"
+                )
+                current_workflow = Workflow.model_validate(normalized_workflow)
                 last_good_workflow = current_workflow
 
             static_errors = run_lightweight_static_rules(
