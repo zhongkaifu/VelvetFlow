@@ -178,7 +178,9 @@ def _repair_with_llm_and_fallback(
             log_error(
                 f"[AutoRepair] 回退到原始结构失败，将返回空的 fallback workflow：{inner_err}"
             )
-            return Workflow(workflow_name="fallback_workflow", nodes=[], edges=[])
+            return Workflow(
+                workflow_name="fallback_workflow", nodes=[], declared_edges=[]
+            )
 
 
 def repair_workflow_with_llm(
