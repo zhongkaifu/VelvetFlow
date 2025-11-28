@@ -81,6 +81,40 @@ def _find_unregistered_action_nodes(
     return invalid
 
 
+def _evaluate_schema_alignment(
+    node_params: Mapping[str, Any], candidate_schema: Mapping[str, Any]
+) -> tuple[float, List[str], List[str], List[str]]:
+    """Score how well the node params align with the candidate arg_schema."""
+
+    if not isinstance(node_params, Mapping):
+        return 0.0, [], [], ["节点 params 不是映射，无法比较"]
+
+    if not isinstance(candidate_schema, Mapping):
+        return 0.0, [], sorted(node_params.keys()), ["候选 action 缺少 arg_schema，跳过对齐评分"]
+
+    properties = candidate_schema.get("properties")
+    if not isinstance(properties, Mapping):
+        return 0.0, [], sorted(node_params.keys()), ["arg_schema.properties 缺失，跳过对齐评分"]
+
+    provided_keys = set(node_params.keys())
+    schema_keys = set(properties.keys())
+    matched = sorted(provided_keys & schema_keys)
+    unmatched = sorted(provided_keys - schema_keys)
+
+    if not provided_keys:
+        return 0.6, matched, unmatched, ["节点未提供参数键名，给予中等默认置信度"]
+
+    if not schema_keys:
+        return 0.0, matched, unmatched, ["候选 arg_schema 无 properties，无法比对参数键名"]
+
+    coverage = len(matched) / max(len(provided_keys), len(schema_keys))
+    notes: List[str] = []
+    if unmatched:
+        notes.append("节点参数键名在候选 arg_schema 中不存在：" + ",".join(unmatched))
+
+    return coverage, matched, unmatched, notes
+
+
 def _auto_replace_unregistered_actions(
     workflow_dict: Dict[str, Any],
     invalid_nodes: List[Dict[str, str]],
@@ -90,6 +124,8 @@ def _auto_replace_unregistered_actions(
     """Attempt a one-shot auto replacement for unknown action_id to avoid LLM hops."""
 
     changed = False
+    MIN_SEARCH_CONFIDENCE = 0.6
+    MIN_SCHEMA_SCORE = 0.4
 
     for item in invalid_nodes:
         node_id = item.get("id")
@@ -111,14 +147,50 @@ def _auto_replace_unregistered_actions(
             continue
 
         candidates = search_service.search(query=query, top_k=1) if search_service else []
-        candidate_id = candidates[0].get("action_id") if candidates else None
-        if candidate_id and candidate_id in actions_by_id:
-            node["action_id"] = candidate_id
-            changed = True
-            log_info(
-                f"[ActionGuard] 节点 '{node_id}' 的 action_id='{original_action_id}' 未注册，"
-                f"已自动替换为最相近的 '{candidate_id}'。"
+        candidate = candidates[0] if candidates else None
+        candidate_id = candidate.get("action_id") if candidate else None
+        search_confidence = candidate.get("score") if candidate else None
+        if not candidate_id or candidate_id not in actions_by_id:
+            continue
+
+        if search_confidence is None or search_confidence < MIN_SEARCH_CONFIDENCE:
+            log_warn(
+                f"[ActionGuard] 节点 '{node_id}' 的候选动作 '{candidate_id}' 置信度 {search_confidence}"
+                f" 低于阈值 {MIN_SEARCH_CONFIDENCE}，跳过自动替换。"
             )
+            continue
+
+        schema_score, matched_params, unmatched_params, schema_notes = _evaluate_schema_alignment(
+            node.get("params", {}), candidate.get("arg_schema", {})
+        )
+        if schema_score < MIN_SCHEMA_SCORE:
+            log_warn(
+                f"[ActionGuard] 节点 '{node_id}' 的候选动作 '{candidate_id}' 参数匹配度 {schema_score:.2f}"
+                f" 低于阈值 {MIN_SCHEMA_SCORE}，跳过自动替换。"
+            )
+            continue
+
+        node["action_id"] = candidate_id
+        node_meta = node.get("meta") if isinstance(node.get("meta"), Mapping) else {}
+        node_meta = dict(node_meta)
+        node_meta["auto_action_replacement"] = {
+            "reason": "unregistered_action",
+            "original_action_id": original_action_id,
+            "replaced_by": candidate_id,
+            "search_confidence": round(search_confidence, 3) if search_confidence is not None else None,
+            "schema_match_score": round(schema_score, 3),
+            "schema_match_details": {
+                "matched_params": matched_params,
+                "unrecognized_params": unmatched_params,
+                "notes": schema_notes,
+            },
+        }
+        node["meta"] = node_meta
+        changed = True
+        log_info(
+            f"[ActionGuard] 节点 '{node_id}' 的 action_id='{original_action_id}' 未注册，",
+            f"已自动替换为 '{candidate_id}'（search={search_confidence:.2f}, schema={schema_score:.2f}）。"
+        )
 
     if not changed:
         return None

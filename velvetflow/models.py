@@ -97,6 +97,7 @@ class Node:
     action_id: Optional[str] = None
     display_name: Optional[str] = None
     params: Dict[str, Any] = field(default_factory=dict)
+    meta: Dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def model_validate(cls, data: Any) -> "Node":
@@ -129,6 +130,7 @@ class Node:
             raise PydanticValidationError(errors)
 
         params = data.get("params") if isinstance(data.get("params"), Mapping) else {}
+        meta = data.get("meta") if isinstance(data.get("meta"), Mapping) else {}
 
         return cls(
             id=node_id,
@@ -136,6 +138,7 @@ class Node:
             action_id=data.get("action_id"),
             display_name=data.get("display_name"),
             params=dict(params),
+            meta=dict(meta),
         )
 
     def model_dump(self, *, by_alias: bool = False) -> Dict[str, Any]:
@@ -145,6 +148,7 @@ class Node:
             "action_id": self.action_id,
             "display_name": self.display_name,
             "params": self.params,
+            "meta": self.meta,
         }
 
 
