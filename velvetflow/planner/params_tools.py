@@ -125,11 +125,10 @@ def _loop_params_schema() -> Dict[str, Any]:
                 "type": "object",
                 "properties": {
                     "nodes": {"type": "array", "items": {"type": "object"}},
-                    "edges": {"type": "array", "items": {"type": "object"}},
                     "entry": {"type": "string"},
                     "exit": {"type": "string"},
                 },
-                "required": ["nodes", "edges"],
+                "required": ["nodes"],
                 "additionalProperties": True,
             },
             "exports": {

@@ -1,5 +1,6 @@
 """Structure planning logic for the planner."""
 
+import copy
 import json
 import os
 from typing import Any, Dict, List, Mapping, Optional
@@ -21,15 +22,14 @@ from velvetflow.logging_utils import (
 )
 from velvetflow.planner.action_guard import ensure_registered_actions
 from velvetflow.planner.approval import detect_missing_approval_nodes
-from velvetflow.planner.connectivity import ensure_edges_connectivity
 from velvetflow.planner.coverage import (
     check_requirement_coverage_with_llm,
     refine_workflow_structure_with_llm,
 )
-from velvetflow.planner.llm_edges import synthesize_edges_with_llm
 from velvetflow.planner.tools import PLANNER_TOOLS
 from velvetflow.planner.workflow_builder import WorkflowBuilder
 from velvetflow.search import HybridActionSearchService
+from velvetflow.models import infer_edges_from_bindings
 
 LOOP_EXPORT_EDIT_TOOLS = [
     {
@@ -74,6 +74,15 @@ LOOP_EXPORT_EDIT_TOOLS = [
         },
     }
 ]
+
+
+def _attach_inferred_edges(workflow: Dict[str, Any]) -> Dict[str, Any]:
+    """Rebuild derived edges so LLMs can see the implicit wiring."""
+
+    copied = copy.deepcopy(workflow)
+    nodes = copied.get("nodes") if isinstance(copied.get("nodes"), list) else []
+    copied["edges"] = infer_edges_from_bindings(nodes)
+    return copied
 
 
 def _build_action_schema_map(action_registry: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
@@ -562,7 +571,7 @@ def plan_workflow_structure_with_llm(
         "构建方式：\n"
         "1) 使用 set_workflow_meta 设置工作流名称和描述。\n"
         "2) 当需要业务动作时，必须先用 search_business_actions 查询候选；add_node(type='action') 的 action_id 必须取自最近一次 candidates.id。\n"
-        "3) 使用 add_edge 连接节点形成有向图（DAG），包含必要的条件/分支/循环/并行等。\n"
+        "3) 通过节点 params 中的输入/输出引用表达依赖关系，不需要显式绘制 edges。\n"
         "4) 当结构完成时调用 finalize_workflow。\n\n"
         "【非常重要的原则】\n"
         "1. 所有示例（包括后续你在补参阶段看到的示例）都只是为说明“DSL 的写法”和“节点之间如何连线”，\n"
@@ -688,14 +697,6 @@ def plan_workflow_structure_with_llm(
                     )
                     tool_result = {"status": "ok", "type": "node_added", "node_id": args["id"]}
 
-            elif func_name == "add_edge":
-                builder.add_edge(
-                    from_node=args["from_node"],
-                    to_node=args["to_node"],
-                    condition=args.get("condition"),
-                )
-                tool_result = {"status": "ok", "type": "edge_added"}
-
             elif func_name == "finalize_workflow":
                 finalized = True
                 tool_result = {"status": "ok", "type": "finalized", "notes": args.get("notes")}
@@ -713,41 +714,17 @@ def plan_workflow_structure_with_llm(
             log_success("[Planner] 收到 finalize_workflow，结束结构规划。")
             break
 
-    # ---------- 接线 + 连通性补全 ----------
-    skeleton = builder.to_workflow()
-    nodes = skeleton.get("nodes", [])
-    edges = skeleton.get("edges", [])
-
-    if not edges:
-        log_warn("[Planner] 第一阶段没有生成任何 edges，调用 LLM 进行自动接线...")
-        auto_edges = synthesize_edges_with_llm(nodes=nodes, nl_requirement=nl_requirement)
-        if auto_edges:
-            log_info(f"[Planner] LLM 自动生成了 {len(auto_edges)} 条 edges。")
-            skeleton["edges"] = auto_edges
-        else:
-            log_warn("[Planner] LLM 自动接线失败，使用保底线性串联方式生成 edges。")
-            start_nodes = [n for n in nodes if n.get("type") == "start"]
-            end_nodes = [n for n in nodes if n.get("type") == "end"]
-            middle_nodes = [n for n in nodes if n.get("type") not in ("start", "end")]
-
-            ordered = start_nodes + middle_nodes + end_nodes
-            auto_edges = []
-            for i in range(len(ordered) - 1):
-                auto_edges.append({
-                    "from": ordered[i]["id"],
-                    "to": ordered[i + 1]["id"],
-                    "condition": None,
-                })
-            skeleton["edges"] = auto_edges
-
-    skeleton["edges"] = ensure_edges_connectivity(nodes, skeleton["edges"])
+    skeleton = _attach_inferred_edges(builder.to_workflow())
     skeleton = ensure_registered_actions(
         skeleton, action_registry=action_registry, search_service=search_service
     )
+    skeleton = _attach_inferred_edges(skeleton)
 
     # ---------- 覆盖度校验 + 结构改进 ----------
     for refine_round in range(max_coverage_refine_rounds + 1):
         log_section(f"覆盖度校验轮次 {refine_round}")
+        skeleton = _attach_inferred_edges(skeleton)
+
         coverage = check_requirement_coverage_with_llm(
             nl_requirement=nl_requirement,
             workflow=skeleton,
@@ -787,13 +764,10 @@ def plan_workflow_structure_with_llm(
             model=OPENAI_MODEL,
         )
 
-        refined_nodes = refined.get("nodes", [])
-        refined_edges = refined.get("edges", [])
-        refined["edges"] = ensure_edges_connectivity(refined_nodes, refined_edges)
         refined = ensure_registered_actions(
             refined, action_registry=action_registry, search_service=search_service
         )
-        skeleton = refined
+        skeleton = _attach_inferred_edges(refined)
 
     skeleton = _ensure_loop_exports_with_llm(
         workflow=skeleton,

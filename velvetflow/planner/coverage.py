@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional
 from openai import OpenAI
 
 from velvetflow.config import OPENAI_MODEL
+from velvetflow.models import infer_edges_from_bindings
 from velvetflow.logging_utils import (
     child_span,
     log_debug,
@@ -114,7 +115,7 @@ def check_requirement_coverage_with_llm(
         "你是一个严谨的工作流需求覆盖度审查员。\n"
         "给定：\n"
         "1) 用户的自然语言需求 nl_requirement\n"
-        "2) 当前的 workflow（workflow_name/description/nodes/edges）\n\n"
+        "2) 当前的 workflow（workflow_name/description/nodes，以及根据 params 推导的 edges，仅作上下文）\n\n"
         "你的任务：\n"
         "1. 先把 nl_requirement 中的关键子需求拆分成若干个“原子能力”，例如：\n"
         "   - 某个触发方式（定时 / 事件 / 手动等）\n"
@@ -189,7 +190,7 @@ def refine_workflow_structure_with_llm(
         "你是一个工作流覆盖度修补助手。\n"
         "已知：\n"
         "1) 用户需求 nl_requirement\n"
-        "2) 当前 workflow（nodes/edges）\n"
+        "2) 当前 workflow（nodes + 基于 params 推导的 edges，edges 为只读上下文）\n"
         "3) 覆盖度检查中发现的 missing_points\n\n"
         "请通过工具调用直接编辑 workflow：\n"
         "- 必须围绕 missing_points 增补节点或连线，确保需求被覆盖。\n"
@@ -305,11 +306,9 @@ def _normalize_workflow(workflow: Dict[str, Any]) -> Dict[str, Any]:
     normalized.setdefault("workflow_name", "unnamed_workflow")
     normalized.setdefault("description", "")
     normalized.setdefault("nodes", [])
-    normalized.setdefault("edges", [])
-    if not isinstance(normalized["nodes"], list):
-        normalized["nodes"] = []
-    if not isinstance(normalized["edges"], list):
-        normalized["edges"] = []
+    nodes = normalized.get("nodes") if isinstance(normalized.get("nodes"), list) else []
+    normalized["nodes"] = nodes
+    normalized["edges"] = infer_edges_from_bindings(nodes)
     return normalized
 
 

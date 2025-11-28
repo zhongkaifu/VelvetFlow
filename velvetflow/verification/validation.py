@@ -97,15 +97,6 @@ def precheck_loop_body_graphs(workflow_raw: Mapping[str, Any] | Any) -> List[Val
             )
 
         edges = body.get("edges")
-        if isinstance(edges, list) and len(edges) == 0:
-            errors.append(
-                ValidationError(
-                    code="INVALID_LOOP_BODY",
-                    node_id=loop_id,
-                    field="body_subgraph.edges",
-                    message=f"loop 节点 '{loop_id}' 的 body_subgraph.edges 不能为空。",
-                )
-            )
 
         for idx, edge in enumerate(edges or []):
             if not isinstance(edge, Mapping):
@@ -867,15 +858,16 @@ def _check_output_path_against_schema(
         if err:
             return f"路径 '{source_path}' 无效：{err}"
         return None
-
     # 控制节点（如 condition / start / end）没有 action_id，也没有可用的 output_schema。
     # 若下游尝试访问子字段（例如误写了 exports/items），应当直接报错，避免静默跳过校验。
     if not action_id and node_type in {"condition", "start", "end"}:
+        if node_type == "start":
+            return None
         if rest_path:
             path_str = ".".join(rest_path)
             return (
-                f"路径 '{source_path}' 引用的 {node_type} 节点没有 output_schema，"
-                f"无法访问子字段 '{path_str}'。"
+                f"路径 '{source_path}' 引用的 {node_type} 节点没有 output_schema，",
+                f"无法访问子字段 '{path_str}'。",
             )
         return None
 
@@ -1254,15 +1246,22 @@ def validate_completed_workflow(
     # ---------- 图连通性校验 ----------
     start_nodes = [n["id"] for n in nodes if n.get("type") == "start"]
     reachable: set = set()
-    if nodes and start_nodes:
+    if nodes:
         adj: Dict[str, List[str]] = {}
+        to_ids: set = set()
         for e in edges:
             frm = e.get("from")
             to = e.get("to")
             if frm in node_ids and to in node_ids:
                 adj.setdefault(frm, []).append(to)
+                to_ids.add(to)
 
-        dq = deque(start_nodes)
+        # Treat nodes without inbound references as additional roots so workflows
+        # that rely solely on parameter bindings remain connected.
+        inbound_free = [nid for nid in node_ids if nid not in to_ids]
+        candidate_roots = list(dict.fromkeys((start_nodes or []) + inbound_free))
+
+        dq = deque(candidate_roots)
         while dq:
             nid = dq.popleft()
             if nid in reachable:
