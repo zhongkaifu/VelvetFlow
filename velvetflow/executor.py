@@ -1057,6 +1057,10 @@ class DynamicActionExecutor:
                 "accumulator": accumulator,
                 "items": export_items,
                 "aggregates": aggregates_output,
+                "exports": {
+                    "items": export_items,
+                    "aggregates": aggregates_output,
+                },
             }
 
         if loop_kind == "while":
@@ -1110,6 +1114,10 @@ class DynamicActionExecutor:
                 "accumulator": accumulator,
                 "items": export_items,
                 "aggregates": aggregates_output,
+                "exports": {
+                    "items": export_items,
+                    "aggregates": aggregates_output,
+                },
             }
 
         log_warn(f"[loop] 未知 loop_kind={loop_kind}，跳过执行")
