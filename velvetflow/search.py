@@ -235,6 +235,7 @@ class HybridActionSearchService:
 
             hybrid.sort(key=lambda x: x[1], reverse=True)
             top_ids = [aid for aid, _ in hybrid[:top_k]]
+            hybrid_scores = {aid: score for aid, score in hybrid}
 
             results = []
             for aid in top_ids:
@@ -249,6 +250,7 @@ class HybridActionSearchService:
                     "tags": src.get("tags", []),
                     "arg_schema": src.get("arg_schema"),
                     "output_schema": src.get("output_schema"),
+                    "score": hybrid_scores.get(aid),
                 })
 
             duration_ms = (time.perf_counter() - start) * 1000
