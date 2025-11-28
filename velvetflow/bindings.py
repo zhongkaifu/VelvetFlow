@@ -1,6 +1,7 @@
 """Parameter binding resolution for workflow execution."""
 
 import json
+import re
 from typing import Any, Dict, List, Mapping, Optional
 
 from velvetflow.action_registry import get_action_by_id
@@ -405,6 +406,8 @@ class _SafeDict(dict):
 def eval_node_params(node: Node, ctx: BindingContext) -> Dict[str, Any]:
     """遍历 node.params，如果是绑定 DSL，就用 ctx.resolve_binding 解析。"""
 
+    template_pattern = re.compile(r"\{\{\s*([^{}]+?)\s*\}\}|\$\{\{\s*([^{}]+?)\s*\}\}")
+
     resolved = {}
     for k, v in (node.params or {}).items():
         if isinstance(v, dict) and "__from__" in v:
@@ -432,6 +435,7 @@ def eval_node_params(node: Node, ctx: BindingContext) -> Dict[str, Any]:
 
             normalized_v = normalize_reference_path(v)
             head = normalized_v.split(".", 1)[0]
+            # 仅当整个字符串就是绑定路径时才解析；包含插值占位符的混合字符串将保留原样
             if head in ctx.loop_ctx or normalized_v.startswith("loop.") or normalized_v.startswith("result_of."):
                 try:
                     resolved[k] = ctx.get_value(normalized_v)
@@ -440,6 +444,32 @@ def eval_node_params(node: Node, ctx: BindingContext) -> Dict[str, Any]:
                     log_warn(
                         f"[param-resolver] 路径字符串 {v} 解析失败: {e}，使用原值"
                     )
+
+            resolved_with_templates = v
+            replaced = False
+
+            def _replace(match: re.Match[str]) -> str:
+                nonlocal replaced
+                raw_path = match.group(1) or match.group(2)
+                normalized_path = normalize_reference_path(raw_path)
+                head = normalized_path.split(".", 1)[0]
+                if head not in ctx.loop_ctx and not normalized_path.startswith("loop.") and not normalized_path.startswith("result_of."):
+                    return match.group(0)
+                try:
+                    value = ctx.get_value(normalized_path)
+                except Exception as e:
+                    log_warn(
+                        f"[param-resolver] 模板占位符 {match.group(0)} 解析失败: {e}，保留原样"
+                    )
+                    return match.group(0)
+
+                replaced = True
+                return "" if value is None else str(value)
+
+            resolved_with_templates = template_pattern.sub(_replace, v)
+            if replaced:
+                resolved[k] = resolved_with_templates
+                continue
 
             resolved[k] = v
         else:
