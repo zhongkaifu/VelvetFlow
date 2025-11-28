@@ -297,6 +297,7 @@ class Workflow:
     nodes: List[Node]
     workflow_name: str = "unnamed_workflow"
     description: str = ""
+    declared_edges: List[Edge] = field(default_factory=list)
 
     @property
     def edges(self) -> List[Edge]:
@@ -307,7 +308,18 @@ class Workflow:
         cached, ensuring callers never read stale topology after node edits.
         """
 
-        return self._infer_edges()
+        inferred = self._infer_edges()
+        declared = self.declared_edges or []
+        if not declared:
+            return inferred
+
+        existing = {(e.from_node, e.to_node, e.condition) for e in inferred}
+        combined = list(inferred)
+        for edge in declared:
+            key = (edge.from_node, edge.to_node, edge.condition)
+            if key not in existing:
+                combined.append(edge)
+        return combined
 
     def _infer_edges(self) -> List[Edge]:
         """Build edges from parameter bindings declared on nodes.
@@ -387,6 +399,7 @@ class Workflow:
             workflow_name=str(data.get("workflow_name", "unnamed_workflow")),
             description=str(data.get("description", "")),
             nodes=parsed_nodes,
+            declared_edges=parsed_edges,
         )
 
         return workflow.validate_loop_body_subgraphs()

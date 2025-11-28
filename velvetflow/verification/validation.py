@@ -338,25 +338,30 @@ def _validate_nodes_recursive(
 
         # 2) condition 节点
         if ntype == "condition":
-            true_target = n.get("true_to_node")
-            false_target = n.get("false_to_node")
-            for field_name, target in ("true_to_node", true_target), ("false_to_node", false_target):
-                if not target:
+            for field_name in ("true_to_node", "false_to_node"):
+                field_missing = field_name not in n
+                target = n.get(field_name)
+
+                if field_missing:
                     errors.append(
                         ValidationError(
                             code="MISSING_REQUIRED_PARAM",
                             node_id=nid,
                             field=field_name,
-                            message=f"condition 节点 '{nid}' 缺少 {field_name}。",
+                            message=f"condition 节点 '{nid}' 缺少 {field_name} 字段（可填 null 表示分支结束）。",
                         )
                     )
-                elif not isinstance(target, str):
+                    continue
+
+                if target is None:
+                    continue
+                if not isinstance(target, str):
                     errors.append(
                         ValidationError(
                             code="SCHEMA_MISMATCH",
                             node_id=nid,
                             field=field_name,
-                            message=f"condition 节点 '{nid}' 的 {field_name} 需要是字符串。",
+                            message=f"condition 节点 '{nid}' 的 {field_name} 需要是字符串或 null。",
                         )
                     )
                 elif target not in node_ids:

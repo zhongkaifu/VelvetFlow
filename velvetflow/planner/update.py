@@ -50,7 +50,7 @@ def update_workflow_with_llm(
         "约束与建议：\n"
         "1) 优先复用现有节点/边，如需新增节点请保持 id 唯一，并确保入口出口连通。\n"
         "2) 所有 action_id 必须出现在动作库中，并且 params 必须符合对应 arg_schema；必要时修正 display_name 以反映新需求。\n"
-        "3) condition/loop/parallel 节点需要补齐必填字段（如 condition.op/source/value、loop.iter/body_subgraph/exports），并保持引用路径合法。\n"
+        "3) condition/loop/parallel 节点需要补齐必填字段：condition 必须提供 true_to_node/false_to_node（指向真实存在的下游节点，或设置为 null 表示该分支结束），并补齐 op/source/value 等；loop 需包含 iter/body_subgraph/exports 等，引用路径必须合法。\n"
         "4) 允许增删边以满足新需求，但请保持 DAG 合法且没有孤立节点；入口节点通常是 type=start，出口节点通常是 type=end。\n"
         "5) 所有绑定表达式 (__from__/__agg__) 必须与上游 action 的 output_schema 或 loop.exports 对齐，避免访问不存在的字段。\n"
         "6) 若上一步校验未通过，会给出 validation_errors，请务必根据问题逐条修复。\n"

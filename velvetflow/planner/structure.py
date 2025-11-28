@@ -574,8 +574,9 @@ def plan_workflow_structure_with_llm(
         "构建方式：\n"
         "1) 使用 set_workflow_meta 设置工作流名称和描述。\n"
         "2) 当需要业务动作时，必须先用 search_business_actions 查询候选；add_node(type='action') 的 action_id 必须取自最近一次 candidates.id。\n"
-        "3) 通过节点 params 中的输入/输出引用表达依赖关系，不需要显式绘制 edges。\n"
-        "4) 当结构完成时调用 finalize_workflow。\n\n"
+        "3) 如需修改已创建节点（补充 display_name/params/分支指向等），请调用 update_node 并传入需要覆盖的字段列表。\n"
+        "4) condition 节点必须显式提供 true_to_node 和 false_to_node，值可以是节点 id（继续执行）或 null（表示该分支结束）；通过节点 params 中的输入/输出引用表达依赖关系，不需要显式绘制 edges。\n"
+        "5) 当结构完成时调用 finalize_workflow。\n\n"
         "【非常重要的原则】\n"
         "1. 所有示例（包括后续你在补参阶段看到的示例）都只是为说明“DSL 的写法”和“节点之间如何连线”，\n"
         "   不是实际的业务约束，不要在新任务里硬复用这些示例中的业务名或字段名。\n"
@@ -668,6 +669,42 @@ def plan_workflow_structure_with_llm(
             elif func_name == "add_node":
                 node_type = args["type"]
                 action_id = args.get("action_id")
+                true_to_node = args.get("true_to_node")
+                false_to_node = args.get("false_to_node")
+
+                if node_type == "condition":
+                    missing_fields = [
+                        name
+                        for name in ("true_to_node", "false_to_node")
+                        if name not in args
+                    ]
+                    non_str_fields = [
+                        name
+                        for name, value in (
+                            ("true_to_node", true_to_node),
+                            ("false_to_node", false_to_node),
+                        )
+                        if value is not None and not isinstance(value, str)
+                    ]
+
+                    if missing_fields or non_str_fields:
+                        tool_result = {
+                            "status": "error",
+                            "message": (
+                                "condition 节点需要提供 true_to_node/false_to_node 字段，值可为节点 id（继续执行）"
+                                "或 null（表示该分支结束），非字符串/未提供会被拒绝。"
+                            ),
+                            "missing_fields": missing_fields,
+                            "invalid_fields": non_str_fields,
+                        }
+                        messages.append(
+                            {
+                                "role": "tool",
+                                "tool_call_id": tool_call_id,
+                                "content": json.dumps(tool_result, ensure_ascii=False),
+                            }
+                        )
+                        continue
 
                 if node_type == "action":
                     if not last_action_candidates:
@@ -688,6 +725,8 @@ def plan_workflow_structure_with_llm(
                             action_id=action_id,
                             display_name=args.get("display_name"),
                             params=args.get("params") or {},
+                            true_to_node=true_to_node if isinstance(true_to_node, str) else None,
+                            false_to_node=false_to_node if isinstance(false_to_node, str) else None,
                         )
                         tool_result = {"status": "ok", "type": "node_added", "node_id": args["id"]}
                 else:
@@ -697,8 +736,76 @@ def plan_workflow_structure_with_llm(
                         action_id=action_id,
                         display_name=args.get("display_name"),
                         params=args.get("params") or {},
+                        true_to_node=true_to_node if isinstance(true_to_node, str) else None,
+                        false_to_node=false_to_node if isinstance(false_to_node, str) else None,
                     )
                     tool_result = {"status": "ok", "type": "node_added", "node_id": args["id"]}
+
+            elif func_name == "update_node":
+                node_id = args.get("id")
+                updates = args.get("updates")
+
+                if not isinstance(node_id, str):
+                    tool_result = {"status": "error", "message": "update_node 需要提供字符串类型的 id。"}
+                elif node_id not in builder.nodes:
+                    tool_result = {"status": "error", "message": f"节点 {node_id} 尚未创建，无法更新。"}
+                elif not isinstance(updates, list):
+                    tool_result = {
+                        "status": "error",
+                        "message": "updates 必须是 key/value 对象组成的数组。",
+                    }
+                else:
+                    invalid_entries = []
+                    invalid_branch_fields = []
+                    normalized_updates = {}
+                    for idx, entry in enumerate(updates):
+                        if not isinstance(entry, Mapping):
+                            invalid_entries.append(idx)
+                            continue
+
+                        key = entry.get("key")
+                        if not isinstance(key, str):
+                            invalid_entries.append(idx)
+                            continue
+
+                        value = entry.get("value") if "value" in entry else None
+                        if key in {"true_to_node", "false_to_node"} and value is not None and not isinstance(value, str):
+                            invalid_branch_fields.append(key)
+                            continue
+
+                        normalized_updates[key] = value
+
+                    node_type = builder.nodes.get(node_id, {}).get("type")
+                    if invalid_entries:
+                        tool_result = {
+                            "status": "error",
+                            "message": f"updates[{invalid_entries}] 不是合法的 {{key,value}} 对象。",
+                        }
+                    elif invalid_branch_fields:
+                        tool_result = {
+                            "status": "error",
+                            "message": "condition 的 true_to_node/false_to_node 只能是节点 id 或 null。",
+                            "invalid_fields": invalid_branch_fields,
+                        }
+                    elif node_type == "action" and "action_id" in normalized_updates:
+                        new_action_id = normalized_updates.get("action_id")
+                        if not last_action_candidates:
+                            tool_result = {
+                                "status": "error",
+                                "message": "更新 action_id 前请先调用 search_business_actions 以获取候选。",
+                            }
+                        elif new_action_id not in last_action_candidates:
+                            tool_result = {
+                                "status": "error",
+                                "message": "action_id 必须是最近一次 search_business_actions 返回的 candidates.id 之一。",
+                                "allowed_action_ids": last_action_candidates,
+                            }
+                        else:
+                            builder.update_node(node_id, normalized_updates)
+                            tool_result = {"status": "ok", "type": "node_updated", "node_id": node_id}
+                    else:
+                        builder.update_node(node_id, normalized_updates)
+                        tool_result = {"status": "ok", "type": "node_updated", "node_id": node_id}
 
             elif func_name == "finalize_workflow":
                 finalized = True
