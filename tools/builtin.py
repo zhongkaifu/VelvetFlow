@@ -410,6 +410,16 @@ def _extract_crawl4ai_content(result: Any) -> str:
     return ""
 
 
+def _normalize_url(url: str) -> str:
+    """Ensure the URL has a supported scheme, defaulting to HTTPS."""
+
+    trimmed = url.strip()
+    allowed_prefixes = ("http://", "https://", "file://")
+    if not trimmed.lower().startswith(allowed_prefixes):
+        return f"https://{trimmed}"
+    return trimmed
+
+
 def _select_passages(content: str, query: str, *, max_chars: int = 2000) -> List[str]:
     """Pick a handful of lines that relate to the query for quick inspection."""
 
@@ -466,6 +476,8 @@ def crawl_and_summarize(
         raise ValueError("query is required to focus the extraction")
     if max_chars <= 0:
         raise ValueError("max_chars must be positive")
+
+    url = _normalize_url(url)
 
     _load_crawl4ai_module()
     WebCrawler = _resolve_crawl4ai_class("WebCrawler")
