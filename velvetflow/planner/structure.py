@@ -887,6 +887,17 @@ def plan_workflow_structure_with_llm(
                         builder.update_node(node_id, normalized_updates)
                         tool_result = {"status": "ok", "type": "node_updated", "node_id": node_id}
 
+            elif func_name == "remove_node":
+                node_id = args.get("id")
+
+                if not isinstance(node_id, str):
+                    tool_result = {"status": "error", "message": "remove_node 需要提供字符串类型的 id。"}
+                elif node_id not in builder.nodes:
+                    tool_result = {"status": "error", "message": f"节点 {node_id} 尚未创建，无法删除。"}
+                else:
+                    builder.remove_node(node_id)
+                    tool_result = {"status": "ok", "type": "node_removed", "node_id": node_id}
+
             elif func_name == "finalize_workflow":
                 skeleton, coverage = _run_coverage_check(
                     nl_requirement=nl_requirement,

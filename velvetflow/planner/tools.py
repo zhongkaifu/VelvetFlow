@@ -81,10 +81,10 @@ PLANNER_TOOLS = [
             },
         },
     },
-        {
-            "type": "function",
-            "function": {
-                "name": "update_node",
+    {
+        "type": "function",
+        "function": {
+            "name": "update_node",
                 "description": (
                 "更新已创建节点的字段。使用 updates 传入操作列表，每项包含 key/value 与 op（add/modify/remove），"
                 "例如 [{\"op\": \"modify\", \"key\": \"display_name\", \"value\": \"新的名称\"}, {\"op\": \"remove\", \"key\": \"params\"}]。"
@@ -117,6 +117,20 @@ PLANNER_TOOLS = [
                     },
                 },
                 "required": ["id", "updates"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "remove_node",
+            "description": "删除已创建的节点，可用于移除重复或错误节点。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string", "description": "要删除的节点 id"},
+                },
+                "required": ["id"],
             },
         },
     },

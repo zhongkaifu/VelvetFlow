@@ -115,6 +115,13 @@ class WorkflowBuilder:
             else:
                 node[key] = value
 
+    def remove_node(self, node_id: str):
+        if node_id not in self.nodes:
+            log_warn(f"[Builder] 节点 {node_id} 不存在，无法删除。")
+            return
+
+        self.nodes.pop(node_id, None)
+
     def to_workflow(self) -> Dict[str, Any]:
         workflow = {
             "workflow_name": self.workflow_name,
