@@ -10,7 +10,7 @@ from typing import Any, Dict, Iterable, List, Mapping, MutableMapping, Optional,
 from velvetflow.planner.structure import _ensure_loop_items_fields, _fallback_loop_exports
 from velvetflow.logging_utils import log_event, log_info, log_warn
 from velvetflow.models import ValidationError, Workflow
-from velvetflow.reference_utils import normalize_reference_path
+from velvetflow.reference_utils import normalize_reference_path, parse_field_path
 
 
 def _workflow_fingerprint(workflow: Mapping[str, Any]) -> str:
@@ -313,6 +313,152 @@ def normalize_binding_paths(workflow: Mapping[str, Any]) -> Tuple[Mapping[str, A
     return patched, {"applied": changed, "reason": None if changed else "未发现需要规范化的绑定"}
 
 
+def replace_reference_paths(
+    workflow: Mapping[str, Any],
+    *,
+    old: str,
+    new: str,
+    include_edges: bool = True,
+) -> Tuple[Mapping[str, Any], Dict[str, Any]]:
+    """Rewrite node/field references across the workflow in a deterministic way.
+
+    This helper is intended for validation errors that involve multiple nodes,
+    such as missing edge endpoints or parameter bindings pointing to an invalid
+    ``result_of.<node>`` path. It performs a best-effort search-and-replace on
+    reference-like string values while leaving node definitions untouched.
+    """
+
+    patched = copy.deepcopy(workflow)
+    normalized_old = normalize_reference_path(old)
+    normalized_new = normalize_reference_path(new)
+
+    changed = False
+    binding_updates = 0
+    edge_updates = 0
+
+    def _walk(obj: Any, parent_key: str | None = None) -> Any:
+        nonlocal changed, binding_updates, edge_updates
+
+        if isinstance(obj, Mapping):
+            new_obj = obj if isinstance(obj, MutableMapping) else dict(obj)
+            for key, value in list(new_obj.items()):
+                if key == "id":
+                    continue
+                new_obj[key] = _walk(value, key)
+            return new_obj
+
+        if isinstance(obj, list):
+            return [_walk(item, parent_key) for item in obj]
+
+        if isinstance(obj, str):
+            normalized_val = normalize_reference_path(obj)
+
+            if parent_key in {"from", "to"} and include_edges:
+                if normalized_val == normalized_old:
+                    edge_updates += 1
+                    changed = True
+                    return normalized_new
+
+            if normalized_val == normalized_old:
+                binding_updates += 1
+                changed = True
+                return normalized_new
+
+            prefix = f"result_of.{normalized_old}"
+            if normalized_val.startswith(prefix):
+                suffix = normalized_val[len(prefix) :]
+                binding_updates += 1
+                changed = True
+                return f"result_of.{normalized_new}{suffix}"
+
+        return obj
+
+    patched = _walk(patched)
+    summary = {
+        "applied": changed,
+        "binding_updates": binding_updates,
+        "edge_updates": edge_updates,
+        "reason": None if changed else "未发现可替换的引用路径",
+    }
+    return patched, summary
+
+
+def drop_invalid_references(
+    workflow: Mapping[str, Any], *, remove_edges: bool = True
+) -> Tuple[Mapping[str, Any], Dict[str, Any]]:
+    """Remove bindings and edges that point to nonexistent nodes or invalid paths."""
+
+    patched = copy.deepcopy(workflow)
+    nodes = patched.get("nodes") if isinstance(patched.get("nodes"), list) else []
+    node_ids = {n.get("id") for n in nodes if isinstance(n, Mapping) and n.get("id")}
+
+    removed_bindings: List[Dict[str, Any]] = []
+    removed_edges: List[Dict[str, Any]] = []
+    changed = False
+
+    def _clean(obj: Any, path: str = "params") -> Any:
+        nonlocal changed
+
+        if isinstance(obj, Mapping):
+            new_obj = obj if isinstance(obj, MutableMapping) else dict(obj)
+            if "__from__" in obj and isinstance(obj.get("__from__"), str):
+                raw = obj.get("__from__")
+                normalized = normalize_reference_path(raw)
+                try:
+                    parts = parse_field_path(normalized)
+                except Exception:
+                    removed_bindings.append({"path": path, "source": raw, "reason": "非法路径"})
+                    new_obj.pop("__from__", None)
+                    changed = True
+                else:
+                    if len(parts) >= 2 and parts[0] == "result_of":
+                        ref_node = parts[1]
+                        if ref_node not in node_ids:
+                            removed_bindings.append(
+                                {
+                                    "path": path,
+                                    "source": raw,
+                                    "reason": f"节点 {ref_node} 不存在",
+                                }
+                            )
+                            new_obj.pop("__from__", None)
+                            changed = True
+            for key, value in obj.items():
+                child_path = f"{path}.{key}" if path else str(key)
+                new_obj[key] = _clean(value, child_path)
+            return new_obj
+
+        if isinstance(obj, list):
+            return [_clean(value, f"{path}[{idx}]") for idx, value in enumerate(obj)]
+
+        return obj
+
+    patched = _clean(patched)
+
+    if remove_edges:
+        edges = []
+        for edge in patched.get("edges", []) or []:
+            if not isinstance(edge, Mapping):
+                continue
+            frm = edge.get("from")
+            to = edge.get("to")
+            if frm not in node_ids or to not in node_ids:
+                removed_edges.append({"from": frm, "to": to})
+                changed = True
+                continue
+            edges.append(edge)
+        if edges or "edges" in patched:
+            patched["edges"] = edges
+
+    summary = {
+        "applied": changed,
+        "removed_bindings": removed_bindings,
+        "removed_edges": removed_edges,
+        "reason": None if changed else "未发现指向缺失节点的引用",
+    }
+    return patched, summary
+
+
 def repair_loop_body_references(
     workflow: Mapping[str, Any], node_id: str, *, prefer_first_node: bool = True
 ) -> Tuple[Mapping[str, Any], Dict[str, Any]]:
@@ -463,6 +609,27 @@ def apply_repair_tool(
             field_path=str(args.get("field_path", "")),
             value=args.get("value"),
         )
+    elif tool_name == "normalize_binding_paths":
+        patched, summary = normalize_binding_paths(workflow)
+    elif tool_name == "replace_reference_paths":
+        old = args.get("old") if isinstance(args, Mapping) else None
+        new = args.get("new") if isinstance(args, Mapping) else None
+        if not old or not new:
+            patched, summary = workflow, {
+                "applied": False,
+                "reason": "old/new 参数不能为空",
+            }
+        else:
+            patched, summary = replace_reference_paths(
+                workflow,
+                old=str(old),
+                new=str(new),
+                include_edges=bool(args.get("include_edges", True)),
+            )
+    elif tool_name == "drop_invalid_references":
+        patched, summary = drop_invalid_references(
+            workflow, remove_edges=bool(args.get("remove_edges", True))
+        )
     else:
         patched, summary = workflow, {"applied": False, "reason": f"未知工具 {tool_name}"}
 
@@ -547,6 +714,57 @@ REPAIR_TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "normalize_binding_paths",
+            "description": "标准化 __from__ 路径，去除形如 {{result_of.x}} 的模板包装，避免引用解析失败。",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "replace_reference_paths",
+            "description": "批量替换 workflow 中的节点/字段引用（含 edges.from/to 与 params.__from__）。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "old": {
+                        "type": "string",
+                        "description": "需要被替换的旧引用路径或节点 ID（例如 result_of.a.output）",
+                    },
+                    "new": {
+                        "type": "string",
+                        "description": "新的引用路径或节点 ID（例如 result_of.b.output）",
+                    },
+                    "include_edges": {
+                        "type": "boolean",
+                        "description": "是否同时替换 edges.from/to 中的匹配引用，默认为 true。",
+                        "default": True,
+                    },
+                },
+                "required": ["old", "new"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "drop_invalid_references",
+            "description": "移除指向不存在节点/非法路径的绑定与边，避免解析失败。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "remove_edges": {
+                        "type": "boolean",
+                        "description": "是否同时移除引用缺失节点的 edges，默认为 true。",
+                        "default": True,
+                    },
+                },
+            },
+        },
+    },
 ]
 
 
@@ -556,6 +774,9 @@ __all__ = [
     "apply_repair_tool",
     "fill_action_required_params",
     "_apply_local_repairs_for_unknown_params",
+    "normalize_binding_paths",
+    "replace_reference_paths",
+    "drop_invalid_references",
     "fix_loop_body_references",
     "update_node_field",
     "REPAIR_TOOLS",
