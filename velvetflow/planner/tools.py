@@ -205,12 +205,12 @@ PLANNER_TOOLS = [
                     },
                     "sub_graph_nodes": {
                         "type": "array",
-                        "description": "加入 loop.body_subgraph 的已创建节点 id 列表。",
+                        "description": "加入 loop.body_subgraph 的已创建节点 id 列表，禁止放入 loop 节点（不允许嵌套循环）。",
                         "items": {"type": "string"},
                     },
                     "parent_node_id": {
                         "type": ["string", "null"],
-                        "description": "父节点 ID（支持嵌套循环），无父节点则为 null。",
+                        "description": "父节点 ID，不允许指向其他 loop（禁止嵌套循环），无父节点则为 null。",
                     },
                 },
                 "required": ["id"],
@@ -249,12 +249,12 @@ PLANNER_TOOLS = [
                     },
                     "sub_graph_nodes": {
                         "type": "array",
-                        "description": "将已有节点纳入 loop.body_subgraph 的 id 列表。",
+                        "description": "将已有节点纳入 loop.body_subgraph 的 id 列表，禁止包含 loop 节点（不允许嵌套循环）。",
                         "items": {"type": "string"},
                     },
                     "parent_node_id": {
                         "type": ["string", "null"],
-                        "description": "可选的父节点 ID，提供时会覆盖现有的 parent_node_id。",
+                        "description": "可选的父节点 ID，禁止指向 loop 节点（不允许嵌套循环）。",
                     },
                 },
                 "required": ["id", "updates"],
