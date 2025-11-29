@@ -95,6 +95,31 @@ def test_exports_disallowed_outside_loop_body():
     assert any(err.field == "exports" and err.code == "INVALID_SCHEMA" for err in errors)
 
 
+def test_loop_body_nodes_cannot_be_empty():
+    """Loop body graphs must contain at least one node during model validation."""
+
+    workflow = {
+        "workflow_name": "empty_loop_body",
+        "nodes": [
+            {"id": "start", "type": "start"},
+            {"id": "loop_empty", "type": "loop", "params": {"body_subgraph": {"nodes": []}}},
+            {"id": "end", "type": "end"},
+        ],
+        "edges": [
+            {"from": "start", "to": "loop_empty"},
+            {"from": "loop_empty", "to": "end"},
+        ],
+    }
+
+    with pytest.raises(PydanticValidationError) as excinfo:
+        Workflow.model_validate(workflow)
+
+    assert any(
+        err.get("loc") == ("body_subgraph", "nodes")
+        for err in excinfo.value.errors()
+    )
+
+
 def test_loop_body_allows_edge_free_body():
     """Loop body graphs can omit explicit edges when bindings define flow."""
 

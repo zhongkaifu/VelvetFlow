@@ -446,6 +446,17 @@ class Workflow:
             if not isinstance(body_nodes, list):
                 continue
 
+            # body_subgraph 必须至少包含一个节点，否则循环体为空将无法执行。
+            if not body_nodes:
+                raise PydanticValidationError(
+                    [
+                        {
+                            "loc": ("body_subgraph", "nodes"),
+                            "msg": "loop 节点的 body_subgraph.nodes 不能为空。",
+                        }
+                    ]
+                )
+
             try:
                 Workflow.model_validate(
                     {
