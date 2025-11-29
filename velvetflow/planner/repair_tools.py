@@ -251,7 +251,7 @@ def fill_loop_exports_defaults(
                 body = dict(body)
                 body["exports"] = fallback
                 params["body_subgraph"] = body
-                params.pop("exports", None)
+                params["exports"] = fallback
                 node = dict(node)
                 node["params"] = params
                 changed = True
@@ -282,7 +282,7 @@ def fill_loop_exports_defaults(
             body = dict(body)
             body["exports"] = ensured_exports
             params["body_subgraph"] = body
-            params.pop("exports", None)
+            params["exports"] = ensured_exports
             node = dict(node)
             node["params"] = params
             changed = True

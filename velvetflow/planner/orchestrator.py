@@ -52,6 +52,11 @@ from velvetflow.verification import (
     run_lightweight_static_rules,
     validate_completed_workflow,
 )
+from velvetflow.verification.validation import (
+    _get_array_item_schema_from_output,
+    _get_field_schema_from_item,
+    _is_numeric_schema_type,
+)
 from velvetflow.search import HybridActionSearchService
 
 
@@ -270,6 +275,8 @@ def _coerce_value_to_schema_type(value: Any, field_schema: Mapping[str, Any]) ->
 
 def _coerce_condition_param_types(
     workflow: Workflow,
+    *,
+    action_registry: Optional[List[Dict[str, Any]]] = None,
 ) -> tuple[Workflow, List[ValidationError]]:
     """Validate condition params against kind-specific type expectations.
 
@@ -303,6 +310,38 @@ def _coerce_condition_param_types(
     wf_dict = workflow.model_dump(by_alias=True)
     changed = False
 
+    actions_by_id = {
+        a.get("action_id"): a for a in (action_registry or []) if a.get("action_id")
+    }
+    nodes_by_id = {
+        n.get("id"): n for n in iter_workflow_and_loop_body_nodes(wf_dict)
+    }
+
+    def _resolve_field_schema(source: Any, field: Any) -> Optional[Mapping[str, Any]]:
+        if not isinstance(source, (Mapping, str)) or not isinstance(field, str):
+            return None
+
+        source_path = None
+        if isinstance(source, Mapping):
+            from_path = source.get("__from__")
+            if isinstance(from_path, str):
+                source_path = from_path
+        elif isinstance(source, str):
+            source_path = source
+
+        if not source_path:
+            return None
+
+        item_schema = _get_array_item_schema_from_output(
+            source_path, nodes_by_id, actions_by_id, skip_path_check=True
+        )
+        return _get_field_schema_from_item(item_schema, field)
+
+    def _schema_type_label(schema: Any) -> str:
+        if isinstance(schema, list):
+            return "/".join(sorted(str(s) for s in schema))
+        return str(schema)
+
     for node in iter_workflow_and_loop_body_nodes(wf_dict):
         if not isinstance(node, Mapping) or node.get("type") != "condition":
             continue
@@ -312,6 +351,9 @@ def _coerce_condition_param_types(
         kind = params.get("kind") if isinstance(params, Mapping) else None
         if not params or not kind:
             continue
+
+        field_schema = _resolve_field_schema(params.get("source"), params.get("field"))
+        field_schema_type = field_schema.get("type") if isinstance(field_schema, Mapping) else None
 
         for field in kind_numeric_fields.get(kind, []):
             if field not in params:
@@ -360,6 +402,52 @@ def _coerce_condition_param_types(
             if pattern is not None and not isinstance(pattern, str):
                 params["pattern"] = str(pattern)
                 changed = True
+
+        if field_schema_type is not None:
+            numeric_kinds = {
+                "any_greater_than",
+                "all_less_than",
+                "greater_than",
+                "less_than",
+                "between",
+                "max_in_range",
+            }
+            text_kinds = {"contains", "regex_match"}
+
+            if kind in numeric_kinds and not _is_numeric_schema_type(field_schema_type):
+                errors.append(
+                    ValidationError(
+                        code="SCHEMA_MISMATCH",
+                        node_id=nid,
+                        field="kind",
+                        message=(
+                            "condition 节点 '{nid}' 的 field 类型为 {field_type}，应选择字符串/布尔比较类"
+                            " kind（如 equals/not_equals/contains/regex_match），而不是数值比较类 {kind}。"
+                        ).format(
+                            nid=nid,
+                            field_type=_schema_type_label(field_schema_type),
+                            kind=kind,
+                        ),
+                    )
+                )
+
+            if kind in text_kinds and _is_numeric_schema_type(field_schema_type):
+                errors.append(
+                    ValidationError(
+                        code="SCHEMA_MISMATCH",
+                        node_id=nid,
+                        field="kind",
+                        message=(
+                            "condition 节点 '{nid}' 的 field 类型为 {field_type}，应选择数值比较类 kind"
+                            "（如 any_greater_than/all_less_than/greater_than/less_than/between/max_in_range）"
+                            "，而不是字符串匹配类 {kind}。"
+                        ).format(
+                            nid=nid,
+                            field_type=_schema_type_label(field_schema_type),
+                            kind=kind,
+                        ),
+                    )
+                )
 
     if not changed:
         return workflow, errors
@@ -759,7 +847,7 @@ def plan_workflow_with_two_pass(
             log_json("当前 workflow", current_workflow.model_dump(by_alias=True))
 
             current_workflow, coercion_errors = _coerce_condition_param_types(
-                current_workflow
+                current_workflow, action_registry=action_registry
             )
 
             loop_exports_workflow, loop_export_summary = fill_loop_exports_defaults(
