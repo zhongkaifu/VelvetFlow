@@ -20,6 +20,8 @@ from velvetflow.logging_utils import (
 from velvetflow.models import Node, PydanticValidationError, ValidationError, Workflow
 from velvetflow.planner.action_guard import ensure_registered_actions
 from velvetflow.planner.repair_tools import REPAIR_TOOLS, apply_repair_tool
+from velvetflow.planner.tool_catalog import get_llm_toolbox, list_tool_names
+from velvetflow.planner.workflow_builder import WorkflowBuilder
 
 
 def _convert_pydantic_errors(
@@ -77,6 +79,106 @@ def _make_failure_validation_error(message: str) -> ValidationError:
     return ValidationError(
         code="INVALID_SCHEMA", node_id=None, field=None, message=message
     )
+
+
+def _builder_from_workflow(workflow: Mapping[str, Any]) -> WorkflowBuilder:
+    builder = WorkflowBuilder()
+    builder.load_workflow(workflow)
+    return builder
+
+
+def _apply_planner_tool_in_repair(
+    *,
+    builder: WorkflowBuilder,
+    func_name: str,
+    args: Mapping[str, Any],
+    action_registry: List[Mapping[str, Any]],
+    last_action_candidates: List[str],
+):
+    tool_result: Dict[str, Any]
+
+    if func_name == "search_business_actions":
+        query = args.get("query", "")
+        top_k = int(args.get("top_k", 5))
+        lowered = str(query).lower()
+        candidates = []
+        for action in action_registry:
+            if not isinstance(action, Mapping):
+                continue
+            text = " ".join(
+                str(action.get(field, "")) for field in ("name", "description", "domain")
+            ).lower()
+            if lowered in text:
+                candidates.append(
+                    {
+                        "id": action.get("action_id"),
+                        "name": action.get("name", ""),
+                        "description": action.get("description", ""),
+                        "category": action.get("domain") or "general",
+                    }
+                )
+
+        candidates = [c for c in candidates if c.get("id")][:top_k]
+        last_action_candidates[:] = [c["id"] for c in candidates]
+        tool_result = {"status": "ok", "query": query, "candidates": candidates}
+
+    elif func_name == "set_workflow_meta":
+        builder.set_meta(args.get("workflow_name", ""), args.get("description"))
+        tool_result = {"status": "ok", "type": "meta_set"}
+
+    elif func_name == "add_node":
+        node_id = args.get("id")
+        node_type = args.get("type")
+        action_id = args.get("action_id")
+        display_name = args.get("display_name")
+        params = args.get("params")
+
+        if not isinstance(node_id, str) or not isinstance(node_type, str):
+            tool_result = {"status": "error", "message": "add_node 需要提供字符串类型的 id/type。"}
+        elif action_id and last_action_candidates and action_id not in last_action_candidates:
+            tool_result = {
+                "status": "error",
+                "message": "action_id 必须是最近一次 search_business_actions 返回的 candidates.id 之一。",
+                "allowed_action_ids": list(last_action_candidates),
+            }
+        else:
+            builder.add_node(
+                node_id,
+                node_type,
+                action_id if isinstance(action_id, str) else None,
+                display_name if isinstance(display_name, str) else None,
+                params if isinstance(params, Mapping) else {},
+                args.get("true_to_node") if isinstance(args.get("true_to_node"), (str, type(None))) else None,
+                args.get("false_to_node") if isinstance(args.get("false_to_node"), (str, type(None))) else None,
+            )
+            tool_result = {"status": "ok", "type": "node_added", "node_id": node_id}
+
+    elif func_name == "update_node":
+        node_id = args.get("id")
+        updates = args.get("updates")
+        if not isinstance(node_id, str):
+            tool_result = {"status": "error", "message": "update_node 需要提供字符串类型的 id。"}
+        elif not isinstance(updates, list):
+            tool_result = {"status": "error", "message": "updates 必须是数组。"}
+        else:
+            builder.update_node(node_id, updates)
+            tool_result = {"status": "ok", "type": "node_updated", "node_id": node_id}
+
+    elif func_name == "remove_node":
+        node_id = args.get("id")
+        if not isinstance(node_id, str):
+            tool_result = {"status": "error", "message": "remove_node 需要提供字符串类型的 id。"}
+        else:
+            builder.remove_node(node_id)
+            tool_result = {"status": "ok", "type": "node_removed", "node_id": node_id}
+
+    elif func_name == "finalize_workflow":
+        tool_result = {"status": "ok", "type": "finalized", "workflow": builder.to_workflow()}
+
+    else:
+        tool_result = {"status": "error", "message": f"未知工具 {func_name}"}
+
+    return tool_result
 
 
 def _safe_repair_invalid_loop_body(workflow_raw: Mapping[str, Any]) -> Workflow:
@@ -271,13 +373,18 @@ validation_errors 是 JSON 数组，元素包含 code/node_id/field/message。
     ]
 
     working_workflow: Dict[str, Any] = broken_workflow
+    builder = _builder_from_workflow(working_workflow)
+    last_action_candidates: List[str] = []
+    tool_specs = get_llm_toolbox()
+    repair_tool_names = list_tool_names(include_planner=False, include_repair=True)
+    planner_tool_names = list_tool_names(include_planner=True, include_repair=False)
 
     while True:
         with child_span("repair_llm"):
             resp = client.chat.completions.create(
                 model=model,
                 messages=messages,
-                tools=REPAIR_TOOLS,
+                tools=tool_specs,
                 tool_choice="auto",
                 temperature=0.1,
             )
@@ -297,32 +404,48 @@ validation_errors 是 JSON 数组，元素包含 code/node_id/field/message。
                     log_error(f"[repair_workflow_with_llm] 无法解析工具参数: {raw_args}")
                     args = {}
 
-                log_info(f"[repair_workflow_with_llm] 调用修复工具 {func_name}，参数: {args}")
-                patched_workflow, summary = apply_repair_tool(
-                    tool_name=func_name,
-                    args=args,
-                    workflow=working_workflow,
-                    validation_errors=validation_errors,
-                    action_registry=action_registry,
-                )
-                log_info(
-                    "[repair_workflow_with_llm] 工具调用完成："
-                    f"tool={func_name}, args={args}, summary={summary}"
-                )
-                if summary.get("applied"):
-                    working_workflow = patched_workflow
+                if func_name in repair_tool_names:
+                    log_info(f"[repair_workflow_with_llm] 调用修复工具 {func_name}，参数: {args}")
+                    patched_workflow, summary = apply_repair_tool(
+                        tool_name=func_name,
+                        args=args,
+                        workflow=working_workflow,
+                        validation_errors=validation_errors,
+                        action_registry=action_registry,
+                    )
+                    log_info(
+                        "[repair_workflow_with_llm] 工具调用完成："
+                        f"tool={func_name}, args={args}, summary={summary}"
+                    )
+                    if summary.get("applied"):
+                        working_workflow = patched_workflow
+                        builder.load_workflow(working_workflow)
+
+                    tool_payload = {"workflow": working_workflow, "summary": summary}
+
+                elif func_name in planner_tool_names:
+                    log_info(f"[repair_workflow_with_llm] 调用规划工具 {func_name}，参数: {args}")
+                    tool_result = _apply_planner_tool_in_repair(
+                        builder=builder,
+                        func_name=func_name,
+                        args=args,
+                        action_registry=action_registry,
+                        last_action_candidates=last_action_candidates,
+                    )
+                    working_workflow = builder.to_workflow()
+                    tool_payload = {"workflow": working_workflow, "result": tool_result}
+
+                else:
+                    tool_payload = {
+                        "workflow": working_workflow,
+                        "summary": {"applied": False, "reason": f"未知工具 {func_name}"},
+                    }
 
                 messages.append(
                     {
                         "role": "tool",
                         "tool_call_id": tc.id,
-                        "content": json.dumps(
-                            {
-                                "workflow": working_workflow,
-                                "summary": summary,
-                            },
-                            ensure_ascii=False,
-                        ),
+                        "content": json.dumps(tool_payload, ensure_ascii=False),
                     }
                 )
             continue

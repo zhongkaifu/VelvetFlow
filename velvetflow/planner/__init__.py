@@ -5,6 +5,7 @@ from velvetflow.planner.orchestrator import plan_workflow_with_two_pass
 from velvetflow.planner.structure import plan_workflow_structure_with_llm
 from velvetflow.planner.params import fill_params_with_llm
 from velvetflow.planner.repair import repair_workflow_with_llm
+from velvetflow.planner.tool_catalog import get_llm_toolbox, list_tool_names
 from velvetflow.planner.update import update_workflow_with_llm
 from velvetflow.planner.relations import (
     build_node_relations,
@@ -18,6 +19,8 @@ __all__ = [
     "plan_workflow_structure_with_llm",
     "fill_params_with_llm",
     "repair_workflow_with_llm",
+    "get_llm_toolbox",
+    "list_tool_names",
     "update_workflow_with_llm",
     "build_node_relations",
     "get_referenced_nodes",

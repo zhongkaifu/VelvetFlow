@@ -122,6 +122,25 @@ class WorkflowBuilder:
 
         self.nodes.pop(node_id, None)
 
+    def load_workflow(self, workflow: Mapping[str, Any]) -> None:
+        """Load an existing workflow mapping into the builder state."""
+
+        self.workflow_name = str(workflow.get("workflow_name", self.workflow_name))
+        description = workflow.get("description")
+        if isinstance(description, str):
+            self.description = description
+
+        self.nodes = {}
+        for node in workflow.get("nodes", []) or []:
+            if not isinstance(node, Mapping):
+                continue
+            node_id = node.get("id")
+            if not node_id:
+                continue
+
+            # Keep a mutable copy so subsequent updates behave like planner mutations.
+            self.nodes[str(node_id)] = dict(node)
+
     def to_workflow(self) -> Dict[str, Any]:
         workflow = {
             "workflow_name": self.workflow_name,
