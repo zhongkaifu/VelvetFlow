@@ -191,6 +191,69 @@ PLANNER_TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "add_loop_node",
+            "description": "在工作流中新增一个 loop 节点，params.body_subgraph 可留空，稍后补全。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string", "description": "节点唯一 ID"},
+                    "display_name": {"type": "string"},
+                    "params": {
+                        "type": "object",
+                        "description": "循环参数（items/exports/body_subgraph 等），可为空，稍后补全。",
+                        "additionalProperties": True,
+                    },
+                    "parent_node_id": {
+                        "type": ["string", "null"],
+                        "description": "父节点 ID（支持嵌套循环），无父节点则为 null。",
+                    },
+                },
+                "required": ["id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "update_loop_node",
+            "description": "更新已创建的 loop 节点字段，支持与 update_node 相同的 {op,key,value} 列表。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string", "description": "要更新的 loop 节点 id"},
+                    "updates": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "op": {
+                                    "type": "string",
+                                    "enum": ["add", "modify", "remove"],
+                                    "description": "对目标 key 执行的操作，默认为 modify。",
+                                    "default": "modify",
+                                },
+                                "key": {"type": "string"},
+                                "value": {
+                                    "description": "要写入的值，op=remove 时可省略。",
+                                    "nullable": True,
+                                },
+                            },
+                            "required": ["key"],
+                        },
+                        "description": "要更新的字段列表，按顺序覆盖或删除。",
+                    },
+                    "parent_node_id": {
+                        "type": ["string", "null"],
+                        "description": "可选的父节点 ID，提供时会覆盖现有的 parent_node_id。",
+                    },
+                },
+                "required": ["id", "updates"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "finalize_workflow",
             "description": "当你认为结构已经覆盖需求时调用，结束规划阶段。",
             "parameters": {
