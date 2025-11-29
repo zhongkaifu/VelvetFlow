@@ -3,7 +3,6 @@
 import copy
 import json
 import os
-import re
 from typing import Any, Dict, List, Mapping, Optional
 
 from openai import OpenAI
@@ -28,7 +27,6 @@ from velvetflow.planner.workflow_builder import (
     WorkflowBuilder,
     attach_condition_branches,
 )
-from velvetflow.reference_utils import normalize_reference_path
 from velvetflow.search import HybridActionSearchService
 from velvetflow.models import infer_edges_from_bindings
 
@@ -533,134 +531,6 @@ def _build_dependency_feedback_message(
         "当前 workflow 供参考（含推导的 edges）：\n"
         f"{json.dumps(workflow, ensure_ascii=False)}"
     )
-
-
-def _collect_referenced_node_ids(value: Any) -> set[str]:
-    refs: set[str] = set()
-
-    if isinstance(value, Mapping):
-        if "__from__" in value:
-            normalized = normalize_reference_path(value.get("__from__"))
-            if isinstance(normalized, str) and normalized.startswith("result_of."):
-                parts = normalized.split(".")
-                if len(parts) >= 2 and parts[1]:
-                    refs.add(parts[1])
-        for v in value.values():
-            refs.update(_collect_referenced_node_ids(v))
-    elif isinstance(value, list):
-        for item in value:
-            refs.update(_collect_referenced_node_ids(item))
-    elif isinstance(value, str):
-        normalized = normalize_reference_path(value)
-        if normalized.startswith("result_of."):
-            parts = normalized.split(".")
-            if len(parts) >= 2 and parts[1]:
-                refs.add(parts[1])
-        for match in re.findall(r"result_of\.([A-Za-z0-9_-]+)", value):
-            refs.add(match)
-
-    return refs
-
-
-def _validate_modified_nodes(
-    *,
-    builder: WorkflowBuilder,
-    modified_node_ids: List[str],
-    previous_node_ids: set[str],
-) -> List[Dict[str, Any]]:
-    if not modified_node_ids:
-        return []
-
-    workflow = _attach_inferred_edges(builder.to_workflow())
-    nodes = workflow.get("nodes") if isinstance(workflow.get("nodes"), list) else []
-    edges = workflow.get("edges") if isinstance(workflow.get("edges"), list) else []
-    node_ids = {
-        node.get("id")
-        for node in nodes
-        if isinstance(node, Mapping) and isinstance(node.get("id"), str)
-    }
-
-    errors: List[Dict[str, Any]] = []
-
-    for node_id in modified_node_ids:
-        node = builder.nodes.get(node_id)
-        if not isinstance(node, Mapping):
-            continue
-
-        references = _collect_referenced_node_ids(node.get("params"))
-        for branch_field in ("true_to_node", "false_to_node", "parent_node_id"):
-            target = node.get(branch_field)
-            if isinstance(target, str):
-                references.add(target)
-
-        missing_refs = sorted(ref for ref in references if ref not in node_ids)
-        if missing_refs:
-            errors.append(
-                {
-                    "node_id": node_id,
-                    "type": "missing_references",
-                    "message": "节点使用了当前 workflow 中不存在的引用，请先创建被引用的节点或调整引用路径。",
-                    "missing_references": missing_refs,
-                }
-            )
-
-        connected_nodes: set[str] = set()
-        for edge in edges:
-            if not isinstance(edge, Mapping):
-                continue
-            src = edge.get("from")
-            dst = edge.get("to")
-            if isinstance(src, str) and src == node_id and isinstance(dst, str):
-                connected_nodes.add(dst)
-            if isinstance(dst, str) and dst == node_id and isinstance(src, str):
-                connected_nodes.add(src)
-
-        if previous_node_ids and not connected_nodes:
-            errors.append(
-                {
-                    "node_id": node_id,
-                    "type": "missing_dependencies",
-                    "message": "节点缺少与已有节点的依赖或被依赖关系，请通过引用上游结果或被下游节点引用来建立连接。",
-                }
-            )
-        elif previous_node_ids and not any(n in previous_node_ids for n in connected_nodes):
-            errors.append(
-                {
-                    "node_id": node_id,
-                    "type": "missing_dependencies",
-                    "message": "节点仅与新节点相连，没有与已有节点形成依赖关系，请调整引用以连接到已存在的节点。",
-                    "connected_nodes": sorted(connected_nodes),
-                }
-            )
-
-    return errors
-
-
-def _apply_validation_after_tool(
-    *,
-    builder: WorkflowBuilder,
-    modified_node_ids: List[str],
-    previous_nodes_snapshot: Dict[str, Dict[str, Any]],
-    previous_node_ids: set[str],
-    tool_result: Dict[str, Any],
-) -> Dict[str, Any]:
-    validation_errors = _validate_modified_nodes(
-        builder=builder,
-        modified_node_ids=modified_node_ids,
-        previous_node_ids=previous_node_ids,
-    )
-
-    if validation_errors:
-        builder.nodes = previous_nodes_snapshot
-        return {
-            "status": "error",
-            "message": "节点未通过依赖/引用检查，已撤销本次修改，请根据错误信息调整后重试。",
-            "validation_errors": validation_errors,
-        }
-
-    return tool_result
-
-
 def plan_workflow_structure_with_llm(
     nl_requirement: str,
     search_service: HybridActionSearchService,
@@ -756,11 +626,6 @@ def plan_workflow_structure_with_llm(
 
             log_info(f"[Planner] 调用工具: {func_name}({args})")
 
-            nodes_snapshot = copy.deepcopy(builder.nodes)
-            previous_node_ids = set(nodes_snapshot.keys())
-            modified_node_ids: List[str] = []
-            builder_changed = False
-
             if func_name == "search_business_actions":
                 query = args.get("query", "")
                 top_k = int(args.get("top_k", 5))
@@ -824,8 +689,6 @@ def plan_workflow_structure_with_llm(
                         params=cleaned_params,
                         parent_node_id=parent_node_id if isinstance(parent_node_id, str) else None,
                     )
-                    builder_changed = True
-                    modified_node_ids.append(args["id"])
                     removed_node_fields = _sanitize_builder_node_fields(builder, args["id"])
                     if removed_fields or removed_node_fields:
                         tool_result = {
@@ -905,8 +768,6 @@ def plan_workflow_structure_with_llm(
                         params=cleaned_params,
                         parent_node_id=parent_node_id if isinstance(parent_node_id, str) else None,
                     )
-                    builder_changed = True
-                    modified_node_ids.append(args["id"])
                     _attach_sub_graph_nodes(builder, args["id"], sub_graph_nodes)
                     removed_node_fields = _sanitize_builder_node_fields(builder, args["id"])
                     if removed_fields or removed_node_fields:
@@ -1011,8 +872,6 @@ def plan_workflow_structure_with_llm(
                         false_to_node=false_to_node if isinstance(false_to_node, str) else None,
                         parent_node_id=parent_node_id if isinstance(parent_node_id, str) else None,
                     )
-                    builder_changed = True
-                    modified_node_ids.append(args["id"])
                     removed_node_fields = _sanitize_builder_node_fields(builder, args["id"])
                     if removed_fields or removed_node_fields:
                         tool_result = {
@@ -1133,8 +992,6 @@ def plan_workflow_structure_with_llm(
                             )
                             updates["params"] = cleaned_params
                         builder.update_node(node_id, **updates)
-                        builder_changed = True
-                        modified_node_ids.append(node_id)
                         removed_param_fields.extend(
                             _sanitize_builder_node_params(builder, node_id, action_schemas)
                         )
@@ -1228,8 +1085,6 @@ def plan_workflow_structure_with_llm(
                             )
                             updates["params"] = cleaned_params
                         builder.update_node(node_id, **updates)
-                        builder_changed = True
-                        modified_node_ids.append(node_id)
                         removed_param_fields.extend(
                             _sanitize_builder_node_params(builder, node_id, action_schemas)
                         )
@@ -1272,8 +1127,6 @@ def plan_workflow_structure_with_llm(
                             )
                             updates["params"] = cleaned_params
                         builder.update_node(node_id, **updates)
-                        builder_changed = True
-                        modified_node_ids.append(node_id)
                         if func_name == "update_loop_node":
                             _attach_sub_graph_nodes(builder, node_id, sub_graph_nodes)
                         removed_param_fields.extend(
@@ -1367,15 +1220,6 @@ def plan_workflow_structure_with_llm(
 
             else:
                 tool_result = {"status": "error", "message": f"未知工具 {func_name}"}
-
-            if builder_changed:
-                tool_result = _apply_validation_after_tool(
-                    builder=builder,
-                    modified_node_ids=modified_node_ids,
-                    previous_nodes_snapshot=nodes_snapshot,
-                    previous_node_ids=previous_node_ids,
-                    tool_result=tool_result,
-                )
 
             messages.append(
                 {
