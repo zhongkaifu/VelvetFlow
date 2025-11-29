@@ -419,6 +419,14 @@ class DynamicActionExecutor:
         if field is None or field == "":
             return obj
 
+        def _apply_builtin_field(value: Any, name: str) -> Any:
+            if name == "length":
+                try:
+                    return len(value)
+                except Exception:
+                    return None
+            return None
+
         try:
             parts = parse_field_path(field)
         except Exception:
@@ -432,6 +440,16 @@ class DynamicActionExecutor:
                     continue
                 return None
 
+            if isinstance(current, Mapping):
+                if p in current:
+                    current = current.get(p)
+                    continue
+
+            builtin_val = _apply_builtin_field(current, p)
+            if builtin_val is not None:
+                current = builtin_val
+                continue
+
             if isinstance(current, list):
                 return None
 
@@ -443,6 +461,10 @@ class DynamicActionExecutor:
         return current
 
     def _extract_export_values(self, source: Any, field: Optional[str]) -> List[Any]:
+        if field == "length":
+            value = self._get_field_value(source, field)
+            return [value]
+
         if isinstance(source, list):
             values: List[Any] = []
             for item in source:
@@ -452,7 +474,7 @@ class DynamicActionExecutor:
         if isinstance(source, Mapping):
             return [self._get_field_value(source, field)] if field else [source]
 
-        return [source]
+        return [self._get_field_value(source, field)] if field else [source]
 
     def _apply_loop_exports(
         self,
@@ -723,14 +745,15 @@ class DynamicActionExecutor:
             if val is None:
                 return []
 
+            if field == "length":
+                extracted = self._get_field_value(val, field)
+                return [] if extracted is None else [extracted]
+
             # If the source is already a list, normalize each element.
             if isinstance(val, list):
                 extracted: List[Any] = []
                 for item in val:
-                    if field:
-                        extracted.append(self._get_field_value(item, field))
-                    else:
-                        extracted.append(item)
+                    extracted.append(self._get_field_value(item, field) if field else item)
                 return extracted
 
             # For dict sources, allow pulling a specific field.
@@ -738,7 +761,7 @@ class DynamicActionExecutor:
                 return [self._get_field_value(val, field)] if field else [val]
 
             # Fallback to treating the value itself as the comparable payload.
-            return [val]
+            return [self._get_field_value(val, field)] if field else [val]
 
         if kind == "any_greater_than":
             field = params.get("field")

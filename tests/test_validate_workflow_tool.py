@@ -124,7 +124,7 @@ def test_invalid_condition_reference_detected():
     )
 
 
-def test_condition_array_binding_rejects_missing_field():
+def test_condition_array_binding_supports_builtin_length_field():
     workflow = {
         "workflow_name": "temperature_monitor",
         "description": "",
@@ -192,13 +192,10 @@ def test_condition_array_binding_rejects_missing_field():
 
     errors = validate_workflow_data(workflow, ACTION_REGISTRY)
 
-    assert any(
-        err.node_id == "condition_has_warning" and "字段 'length' 不存在" in err.message
-        for err in errors
-    )
+    assert errors == []
 
 
-def test_loop_export_length_reference_rejected_for_plain_string():
+def test_loop_export_length_reference_allowed_for_plain_string():
     workflow = {
         "workflow_name": "health_monitor",
         "description": "",
@@ -264,9 +261,4 @@ def test_loop_export_length_reference_rejected_for_plain_string():
 
     errors = validate_workflow_data(workflow, ACTION_REGISTRY)
 
-    assert any(
-        err.node_id == "generate_warning_report"
-        and err.field == "abnormal_count"
-        and "字段 'length' 不存在" in err.message
-        for err in errors
-    )
+    assert errors == []
