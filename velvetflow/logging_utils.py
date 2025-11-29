@@ -141,7 +141,14 @@ def console_log(level: str, message: str) -> None:
     print(prefix + _format_lines(message))
 
 
-def log_info(message: str) -> None:
+def log_info(*messages: str) -> None:
+    """Log informational messages.
+
+    Accepts multiple message parts for convenience and joins them with spaces
+    before delegating to :func:`console_log`.
+    """
+
+    message = " ".join(str(part) for part in messages) if messages else ""
     console_log("INFO", message)
 
 
