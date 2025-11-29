@@ -956,6 +956,95 @@ class DynamicActionExecutor:
             _log_condition_debug(field, data, condition, params)
             return _return(False, data)
 
+        if kind == "compare":
+            op = params.get("op") or params.get("operator") or "=="
+            target = params.get("value")
+            field = params.get("field")
+            values = _extract_values(data, field)
+
+            def _do_compare(v: Any) -> bool:
+                try:
+                    if op == ">":
+                        return v is not None and v > target
+                    if op == ">=":
+                        return v is not None and v >= target
+                    if op == "<":
+                        return v is not None and v < target
+                    if op == "<=":
+                        return v is not None and v <= target
+                    if op == "!=":
+                        return v != target
+                    if op == "in":
+                        try:
+                            return v in target  # type: ignore[operator]
+                        except Exception:
+                            return False
+                    if op == "not_in":
+                        try:
+                            return v not in target  # type: ignore[operator]
+                        except Exception:
+                            return False
+                    return v == target
+                except Exception as exc:
+                    raise TypeError(
+                        f"[condition:compare] 值 {v!r} 无法使用 op '{op}' 与目标 {target!r} 比较"
+                    ) from exc
+
+            result = any(_do_compare(v) for v in values)
+            condition = {
+                "check": f"any(value {op} target)",
+                "operator": op,
+                "target": target,
+                "values": values,
+            }
+            _log_condition_debug(field, data, condition, params)
+            return _return(result, data, values)
+
+        if kind == "expression":
+            expr = params.get("expression")
+            if expr is None:
+                log_warn("[condition:expression] 未提供 expression，返回 False")
+                condition = {"check": "expression is None"}
+                _log_condition_debug(params.get("field"), data, condition, params)
+                return _return(False, data)
+
+            expr_str = str(expr)
+            field = params.get("field")
+            values = _extract_values(data, field)
+            safe_globals = {
+                "__builtins__": {},
+                "len": len,
+                "sum": sum,
+                "min": min,
+                "max": max,
+                "any": any,
+                "all": all,
+                "abs": abs,
+            }
+
+            def _eval_expr(v: Any) -> bool:
+                try:
+                    return bool(
+                        eval(
+                            expr_str,
+                            safe_globals,
+                            {"value": v, "values": values, "data": data},
+                        )
+                    )
+                except Exception as exc:
+                    log_warn(f"[condition:expression] 执行表达式失败: {exc}")
+                    return False
+
+            targets = values if field else [data]
+            result = any(_eval_expr(v) for v in targets)
+            condition = {
+                "check": expr_str,
+                "values": values,
+                "data": data,
+            }
+            _log_condition_debug(field, data, condition, params)
+            return _return(result, data, values)
+
         if kind == "regex_match":
             pattern = params.get("pattern")
             if pattern is None:

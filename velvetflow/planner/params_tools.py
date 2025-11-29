@@ -62,6 +62,8 @@ def _condition_params_schema() -> Dict[str, Any]:
         "not_empty",
         "is_not_empty",
         "multi_band",
+        "expression",
+        "compare",
     ]
 
     return {
