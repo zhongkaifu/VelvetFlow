@@ -744,10 +744,14 @@ class DynamicActionExecutor:
             values = _extract_values(data, field)
 
             def _is_gt(v: Any) -> bool:
-                try:
-                    return v is not None and v > threshold
-                except Exception:
+                if v is None:
                     return False
+                try:
+                    return v > threshold
+                except Exception as exc:
+                    raise TypeError(
+                        f"[condition:any_greater_than] 值 {v!r} 无法与阈值 {threshold!r} 比较"
+                    ) from exc
 
             result = any(_is_gt(v) for v in values)
             condition = {
@@ -775,8 +779,10 @@ class DynamicActionExecutor:
             def _is_lt(v: Any) -> bool:
                 try:
                     return v < threshold
-                except Exception:
-                    return False
+                except Exception as exc:
+                    raise TypeError(
+                        f"[condition:all_less_than] 值 {v!r} 无法与阈值 {threshold!r} 比较"
+                    ) from exc
 
             result = all(_is_lt(v) for v in values)
             condition = {
@@ -806,10 +812,14 @@ class DynamicActionExecutor:
             values = _extract_values(data, params.get("field"))
 
             def _is_gt(v: Any) -> bool:
-                try:
-                    return v is not None and v > threshold
-                except Exception:
+                if v is None:
                     return False
+                try:
+                    return v > threshold
+                except Exception as exc:
+                    raise TypeError(
+                        f"[condition:greater_than] 值 {v!r} 无法与阈值 {threshold!r} 比较"
+                    ) from exc
 
             result = any(_is_gt(v) for v in values)
             condition = {
@@ -825,10 +835,14 @@ class DynamicActionExecutor:
             values = _extract_values(data, params.get("field"))
 
             def _is_lt(v: Any) -> bool:
-                try:
-                    return v is not None and v < threshold
-                except Exception:
+                if v is None:
                     return False
+                try:
+                    return v < threshold
+                except Exception as exc:
+                    raise TypeError(
+                        f"[condition:less_than] 值 {v!r} 无法与阈值 {threshold!r} 比较"
+                    ) from exc
 
             result = any(_is_lt(v) for v in values)
             condition = {
@@ -847,8 +861,10 @@ class DynamicActionExecutor:
             def _in_range(v: Any) -> bool:
                 try:
                     return v >= min_v and v <= max_v
-                except Exception:
-                    return False
+                except Exception as exc:
+                    raise TypeError(
+                        f"[condition:between] 值 {v!r} 无法与区间 [{min_v!r}, {max_v!r}] 比较"
+                    ) from exc
 
             result = any(_in_range(v) for v in values)
             condition = {

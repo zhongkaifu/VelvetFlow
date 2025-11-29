@@ -426,6 +426,60 @@ def _validate_nodes_recursive(
                                     )
                                 )
 
+                    if kind in {"any_greater_than", "all_less_than", "greater_than", "less_than", "between"}:
+                        threshold = params.get("threshold")
+                        if kind == "between":
+                            min_val = params.get("min")
+                            max_val = params.get("max")
+                            for field_name, val in ("min", min_val), ("max", max_val):
+                                if not isinstance(val, (int, float)):
+                                    errors.append(
+                                        ValidationError(
+                                            code="SCHEMA_MISMATCH",
+                                            node_id=nid,
+                                            field=field_name,
+                                            message=(
+                                                f"condition 节点 '{nid}' 的 {field_name} 必须是数字，用于范围比较。"
+                                            ),
+                                        )
+                                    )
+                        else:
+                            if not isinstance(threshold, (int, float)):
+                                errors.append(
+                                    ValidationError(
+                                        code="SCHEMA_MISMATCH",
+                                        node_id=nid,
+                                        field="threshold",
+                                        message=(
+                                            f"condition 节点 '{nid}' 的 threshold 必须是数字，用于比较。"
+                                        ),
+                                    )
+                                )
+
+                        if kind in {"any_greater_than", "all_less_than"}:
+                            src = params.get("source")
+                            fld = params.get("field")
+                            if isinstance(src, str) and isinstance(fld, str):
+                                item_schema = _get_array_item_schema_from_output(
+                                    src, nodes_by_id, actions_by_id
+                                )
+                                field_schema = _get_field_schema_from_item(item_schema, fld)
+                                if field_schema:
+                                    field_type = field_schema.get("type")
+                                    is_numeric_type = _is_numeric_schema_type(field_type)
+                                    if not is_numeric_type:
+                                        errors.append(
+                                            ValidationError(
+                                                code="SCHEMA_MISMATCH",
+                                                node_id=nid,
+                                                field="field",
+                                                message=(
+                                                    f"condition 节点 '{nid}' 的字段 '{fld}' 类型为 {field_type}，"
+                                                    "无法与数值阈值比较。"
+                                                ),
+                                            )
+                                        )
+
         # 3) loop 节点
         if ntype == "loop":
             body_graph = params.get("body_subgraph") if isinstance(params, Mapping) else None
@@ -1068,6 +1122,53 @@ def _get_array_item_schema_from_output(
         return None
 
     return (schema.get(first_field) or {}).get("items")
+
+
+def _get_field_schema_from_item(
+    item_schema: Optional[Mapping[str, Any]], field: str
+) -> Optional[Mapping[str, Any]]:
+    """Extract the schema definition for a field inside an array item schema."""
+
+    if not item_schema:
+        return None
+
+    try:
+        parts = parse_field_path(field)
+    except Exception:
+        return None
+
+    current: Mapping[str, Any] = item_schema
+    for token in parts:
+        typ = current.get("type")
+
+        if isinstance(token, int):
+            if typ != "array":
+                return None
+            current = current.get("items") or {}
+            continue
+
+        if typ == "array":
+            current = current.get("items") or {}
+
+        if typ in {None, "object"}:
+            props = current.get("properties") or {}
+            if token not in props:
+                return None
+            current = props[token]
+            continue
+
+        return None
+
+    return current
+
+
+def _is_numeric_schema_type(schema_type: Any) -> bool:
+    """Return True if the schema type represents a numeric value."""
+
+    if isinstance(schema_type, list):
+        return any(t in {"number", "integer"} for t in schema_type)
+
+    return schema_type in {"number", "integer"}
 
 
 def _get_field_schema(schema: Mapping[str, Any], field: str) -> Optional[Mapping[str, Any]]:
