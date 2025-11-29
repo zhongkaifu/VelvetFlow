@@ -87,6 +87,27 @@ def _find_unregistered_action_nodes(
     return invalid
 
 
+def _attach_out_params_schema(
+    workflow: Workflow, actions_by_id: Mapping[str, Mapping[str, Any]]
+) -> Workflow:
+    wf_dict = workflow.model_dump(by_alias=True)
+    changed = False
+
+    for node in iter_workflow_and_loop_body_nodes(wf_dict):
+        if not isinstance(node, Mapping) or node.get("type") != "action":
+            continue
+        if isinstance(node.get("out_params_schema"), Mapping):
+            continue
+
+        action_id = node.get("action_id")
+        schema = actions_by_id.get(action_id, {}).get("output_schema") if action_id else None
+        if isinstance(schema, Mapping):
+            node["out_params_schema"] = schema
+            changed = True
+
+    return workflow if not changed else Workflow.model_validate(wf_dict)
+
+
 def _evaluate_schema_alignment(
     node_params: Mapping[str, Any], candidate_schema: Mapping[str, Any]
 ) -> tuple[float, List[str], List[str], List[str]]:
@@ -612,6 +633,7 @@ def _ensure_actions_registered_or_repair(
     guarded = guarded if isinstance(guarded, Workflow) else Workflow.model_validate(guarded)
 
     actions_by_id = _index_actions_by_id(action_registry)
+    guarded = _attach_out_params_schema(guarded, actions_by_id)
     invalid_nodes = _find_unregistered_action_nodes(
         guarded.model_dump(by_alias=True),
         actions_by_id=actions_by_id,
@@ -629,7 +651,7 @@ def _ensure_actions_registered_or_repair(
         log_info(
             "[ActionGuard] 已基于 display_name/action_id 的相似度完成自动替换，进入一次性校验。"
         )
-        return auto_repaired
+        return _attach_out_params_schema(auto_repaired, actions_by_id)
 
     validation_errors = [
         ValidationError(
@@ -653,7 +675,8 @@ def _ensure_actions_registered_or_repair(
         search_service=search_service,
         reason=reason,
     )
-    return repaired if isinstance(repaired, Workflow) else Workflow.model_validate(repaired)
+    final_workflow = repaired if isinstance(repaired, Workflow) else Workflow.model_validate(repaired)
+    return _attach_out_params_schema(final_workflow, actions_by_id)
 
 
 def plan_workflow_with_two_pass(

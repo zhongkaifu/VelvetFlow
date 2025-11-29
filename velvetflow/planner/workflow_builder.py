@@ -77,6 +77,7 @@ class WorkflowBuilder:
         action_id: Optional[str],
         display_name: Optional[str],
         params: Optional[Dict[str, Any]],
+        out_params_schema: Optional[Dict[str, Any]] = None,
         true_to_node: Optional[str] = None,
         false_to_node: Optional[str] = None,
     ):
@@ -88,6 +89,7 @@ class WorkflowBuilder:
             "action_id": action_id,
             "display_name": display_name,
             "params": params or {},
+            "out_params_schema": out_params_schema,
             "true_to_node": true_to_node,
             "false_to_node": false_to_node,
         }
