@@ -65,8 +65,8 @@ PLANNER_TOOLS = [
                     "display_name": {"type": "string"},
                     "out_params_schema": {
                         "type": "object",
-                        "description": "action 节点的输出参数 Schema，字段列出可引用的 result_of 输出。",
-                        "additionalProperties": True,
+                        "description": "仅适用于 action 节点的输出参数 Schema，condition 节点没有该属性；格式为 {\"参数名\": \"类型\"}，仅需列出业务 action 输出参数的名称和类型，不必包含额外信息；字段列出可引用的 result_of 输出。",
+                        "additionalProperties": {"type": "string"},
                     },
                     "params": {
                         "type": "object",
@@ -86,14 +86,15 @@ PLANNER_TOOLS = [
             },
         },
     },
-    {
-        "type": "function",
-        "function": {
-            "name": "update_node",
+        {
+            "type": "function",
+            "function": {
+                "name": "update_node",
                 "description": (
-                "更新已创建节点的字段。使用 updates 传入操作列表，每项包含 key/value 与 op（add/modify/remove），"
-                "例如 [{\"op\": \"modify\", \"key\": \"display_name\", \"value\": \"新的名称\"}, {\"op\": \"remove\", \"key\": \"params\"}]。"
-                "对于 condition 节点，true_to_node/false_to_node 的值可为节点 id 或 null（表示该分支结束）。"
+                    "更新已创建节点的字段。使用 updates 传入操作列表，每项包含 key/value 与 op（add/modify/remove），"
+                    "例如 [{\"op\": \"modify\", \"key\": \"display_name\", \"value\": \"新的名称\"}, {\"op\": \"remove\", \"key\": \"params\"}]。"
+                    "更新后请检查与该节点有关联的上下游节点是否也需要同步调整，以保持依赖关系和参数引用一致。"
+                    "对于 condition 节点，true_to_node/false_to_node 的值可为节点 id 或 null（表示该分支结束）。"
                 ),
                 "parameters": {
                     "type": "object",
