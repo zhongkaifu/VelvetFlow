@@ -285,7 +285,7 @@ class BindingContext:
         if not action:
             raise ValueError(f"__from__ 引用的节点 '{node_id}' 缺少合法的 action_id")
 
-        output_schema = action.get("output_schema")
+        output_schema = node.out_params_schema or action.get("output_schema")
         arg_schema = action.get("arg_schema")
         field_path = parts[2:]
         if not field_path:

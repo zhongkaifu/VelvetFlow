@@ -63,6 +63,11 @@ PLANNER_TOOLS = [
                         "nullable": True,
                     },
                     "display_name": {"type": "string"},
+                    "out_params_schema": {
+                        "type": "object",
+                        "description": "action 节点的输出参数 Schema，字段列出可引用的 result_of 输出。",
+                        "additionalProperties": True,
+                    },
                     "params": {
                         "type": "object",
                         "description": "节点参数，可为空，但稍后会在第二阶段补全。",

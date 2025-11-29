@@ -13,6 +13,25 @@ def _index_actions_by_id(action_registry: List[Dict[str, Any]]) -> Dict[str, Dic
     return {a["action_id"]: a for a in action_registry}
 
 
+def _get_node_output_schema(
+    node: Mapping[str, Any] | None, actions_by_id: Mapping[str, Mapping[str, Any]]
+) -> Optional[Mapping[str, Any]]:
+    if isinstance(node, Mapping):
+        node_schema = node.get("out_params_schema")
+        if isinstance(node_schema, Mapping):
+            return node_schema
+
+        action_id = node.get("action_id")
+        if isinstance(action_id, str):
+            action_def = actions_by_id.get(action_id)
+            if isinstance(action_def, Mapping):
+                output_schema = action_def.get("output_schema")
+                if isinstance(output_schema, Mapping):
+                    return output_schema
+
+    return None
+
+
 def _maybe_decode_binding_string(raw: str) -> Optional[Any]:
     """Attempt to parse a JSON-like binding stored as string.
 
@@ -711,17 +730,9 @@ def _validate_nodes_recursive(
                             )
                         elif isinstance(from_node, str) and body_nodes:
                             target_node = body_node_map.get(from_node)
-                            action_id = (
-                                target_node.get("action_id")
-                                if isinstance(target_node, Mapping)
-                                else None
+                            output_schema = _get_node_output_schema(
+                                target_node, actions_by_id
                             )
-                            action_def = (
-                                actions_by_id.get(action_id)
-                                if isinstance(action_id, str)
-                                else None
-                            )
-                            output_schema = (action_def or {}).get("output_schema")
 
                             if not isinstance(output_schema, Mapping):
                                 errors.append(
@@ -1002,7 +1013,7 @@ def _check_output_path_against_schema(
     if not action_def:
         return f"路径 '{source_path}' 引用的节点 '{node_id}' 的 action_id='{action_id}' 不在 Action Registry 中。"
 
-    output_schema = action_def.get("output_schema")
+    output_schema = _get_node_output_schema(node, actions_by_id)
     arg_schema = action_def.get("arg_schema")
 
     if not rest_path:
@@ -1178,11 +1189,8 @@ def _get_array_item_schema_from_output(
         props = schema.get("properties") or {}
         return (props.get(first_field) or {}).get("items") if first_field in props else None
 
-    action_def = actions_by_id.get(node.get("action_id")) if node else None
-    if not action_def:
-        return None
-
-    schema = (action_def.get("output_schema") or {}).get("properties", {})
+    schema_obj = _get_node_output_schema(node, actions_by_id) or {}
+    schema = schema_obj.get("properties", {}) if isinstance(schema_obj, Mapping) else {}
     if first_field not in schema:
         return None
 
@@ -1328,13 +1336,7 @@ def _get_loop_items_schema_from_exports(
         None,
     )
 
-    action_def = None
-    if isinstance(src_node, Mapping):
-        action_id = src_node.get("action_id")
-        if isinstance(action_id, str):
-            action_def = actions_by_id.get(action_id)
-
-    output_schema = (action_def or {}).get("output_schema") if action_def else None
+    output_schema = _get_node_output_schema(src_node, actions_by_id)
 
     item_props: Dict[str, Any] = {}
     for fld in fields:

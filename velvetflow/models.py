@@ -236,6 +236,14 @@ class Node:
             errors.append({"loc": ("action_id",), "msg": "action_id 必须是字符串"})
 
         if node_type == "action":
+            out_params_schema = data.get("out_params_schema")
+            if out_params_schema is not None and not isinstance(out_params_schema, Mapping):
+                errors.append(
+                    {
+                        "loc": ("out_params_schema",),
+                        "msg": "out_params_schema 必须是对象",
+                    }
+                )
             for branch_field in ("true_to_node", "false_to_node"):
                 if branch_field in data and data.get(branch_field) is not None:
                     errors.append(
@@ -251,6 +259,7 @@ class Node:
                 id=node_id,
                 action_id=action_id if isinstance(action_id, str) else None,
                 display_name=data.get("display_name"),
+                out_params_schema=out_params_schema if isinstance(out_params_schema, Mapping) else None,
                 params=dict(params),
             )
 
@@ -299,6 +308,12 @@ class ActionNode(Node):
     """Executable action node."""
 
     type: Literal["action"] = "action"
+    out_params_schema: Optional[Dict[str, Any]] = None
+
+    def model_dump(self, *, by_alias: bool = False) -> Dict[str, Any]:
+        data = super().model_dump(by_alias=by_alias)
+        data["out_params_schema"] = self.out_params_schema
+        return data
 
 
 @dataclass
