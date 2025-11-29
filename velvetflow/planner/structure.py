@@ -530,9 +530,29 @@ def plan_workflow_structure_with_llm(
 
             elif func_name == "add_loop_node":
                 parent_node_id = args.get("parent_node_id")
+                loop_kind = args.get("loop_kind")
+                source = args.get("source")
+                item_alias = args.get("item_alias")
                 sub_graph_nodes, sub_graph_error = _normalize_sub_graph_nodes(
                     args.get("sub_graph_nodes"), builder=builder
                 )
+
+                missing_fields = [
+                    name
+                    for name, value in (
+                        ("loop_kind", loop_kind),
+                        ("source", source),
+                        ("item_alias", item_alias),
+                    )
+                    if value is None
+                ]
+                invalid_fields = []
+                if loop_kind is not None and loop_kind not in {"for_each", "while"}:
+                    invalid_fields.append("loop_kind")
+                if source is not None and not isinstance(source, (str, Mapping)):
+                    invalid_fields.append("source")
+                if item_alias is not None and not isinstance(item_alias, str):
+                    invalid_fields.append("item_alias")
 
                 if parent_node_id is not None and not isinstance(parent_node_id, str):
                     tool_result = {
@@ -545,16 +565,29 @@ def plan_workflow_structure_with_llm(
                         "message": "不允许在 loop 里面再创建 loop（禁止嵌套循环）。",
                         "parent_node_id": parent_node_id,
                     }
+                elif missing_fields or invalid_fields:
+                    tool_result = {
+                        "status": "error",
+                        "message": "loop 节点需要提供合法的 loop_kind/source/item_alias 参数。",
+                        "missing_fields": missing_fields,
+                        "invalid_fields": invalid_fields,
+                    }
                 elif sub_graph_error:
                     tool_result = {"status": "error", **sub_graph_error}
                 else:
+                    params = args.get("params") or {}
+                    params.update({
+                        "loop_kind": loop_kind,
+                        "source": source,
+                        "item_alias": item_alias,
+                    })
                     builder.add_node(
                         node_id=args["id"],
                         node_type="loop",
                         action_id=None,
                         display_name=args.get("display_name"),
                         out_params_schema=None,
-                        params=args.get("params") or {},
+                        params=params,
                         parent_node_id=parent_node_id if isinstance(parent_node_id, str) else None,
                     )
                     _attach_sub_graph_nodes(builder, args["id"], sub_graph_nodes)
@@ -808,8 +841,8 @@ def plan_workflow_structure_with_llm(
                     )
                     messages.append({"role": "system", "content": feedback_message})
                     if coverage_retry > max_coverage_refine_rounds:
-                    log_warn("已达到覆盖度补全上限，仍有缺失点，结束规划阶段。")
-                    finalized = True
+                        log_warn("已达到覆盖度补全上限，仍有缺失点，结束规划阶段。")
+                        finalized = True
 
                 continue
 
