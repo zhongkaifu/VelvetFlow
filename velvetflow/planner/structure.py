@@ -68,6 +68,34 @@ LOOP_PARAM_FIELDS = {
     "exports",
 }
 
+ACTION_NODE_FIELDS = {
+    "id",
+    "type",
+    "action_id",
+    "display_name",
+    "params",
+    "out_params_schema",
+    "parent_node_id",
+}
+
+CONDITION_NODE_FIELDS = {
+    "id",
+    "type",
+    "display_name",
+    "params",
+    "true_to_node",
+    "false_to_node",
+    "parent_node_id",
+}
+
+LOOP_NODE_FIELDS = {
+    "id",
+    "type",
+    "display_name",
+    "params",
+    "parent_node_id",
+}
+
 def _attach_inferred_edges(workflow: Dict[str, Any]) -> Dict[str, Any]:
     """Rebuild derived edges so LLMs can see the implicit wiring."""
 
@@ -167,6 +195,30 @@ def _sanitize_builder_node_params(
         node["params"] = cleaned
 
     return removed
+
+
+def _sanitize_builder_node_fields(builder: WorkflowBuilder, node_id: str) -> List[str]:
+    node = builder.nodes.get(node_id)
+    if not isinstance(node, Mapping):
+        return []
+
+    node_type = node.get("type")
+    allowed_fields: Optional[set[str]] = None
+    if node_type == "action":
+        allowed_fields = set(ACTION_NODE_FIELDS)
+    elif node_type == "condition":
+        allowed_fields = set(CONDITION_NODE_FIELDS)
+    elif node_type == "loop":
+        allowed_fields = set(LOOP_NODE_FIELDS)
+
+    if not allowed_fields:
+        return []
+
+    removed_keys = [key for key in list(node.keys()) if key not in allowed_fields]
+    for key in removed_keys:
+        node.pop(key, None)
+
+    return removed_keys
 
 
 def _build_action_schema_map(action_registry: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
@@ -627,11 +679,13 @@ def plan_workflow_structure_with_llm(
                         params=cleaned_params,
                         parent_node_id=parent_node_id if isinstance(parent_node_id, str) else None,
                     )
-                    if removed_fields:
+                    removed_node_fields = _sanitize_builder_node_fields(builder, args["id"])
+                    if removed_fields or removed_node_fields:
                         tool_result = {
                             "status": "error",
-                            "message": "action 节点的 params 仅支持 arg_schema 中定义的字段，已移除不支持的字段。",
-                            "removed_fields": removed_fields,
+                            "message": "action 节点仅支持 id/type/action_id/display_name/params/out_params_schema 字段，params 仅支持 arg_schema 字段，已移除不支持的字段。",
+                            "removed_param_fields": removed_fields,
+                            "removed_node_fields": removed_node_fields,
                             "node_id": args["id"],
                         }
                     else:
@@ -705,11 +759,13 @@ def plan_workflow_structure_with_llm(
                         parent_node_id=parent_node_id if isinstance(parent_node_id, str) else None,
                     )
                     _attach_sub_graph_nodes(builder, args["id"], sub_graph_nodes)
-                    if removed_fields:
+                    removed_node_fields = _sanitize_builder_node_fields(builder, args["id"])
+                    if removed_fields or removed_node_fields:
                         tool_result = {
                             "status": "error",
                             "message": "loop 节点的 params 仅支持 loop_kind/source/condition/item_alias/body_subgraph/exports。",
                             "removed_fields": removed_fields,
+                            "removed_node_fields": removed_node_fields,
                             "node_id": args["id"],
                         }
                     else:
@@ -806,11 +862,13 @@ def plan_workflow_structure_with_llm(
                         false_to_node=false_to_node if isinstance(false_to_node, str) else None,
                         parent_node_id=parent_node_id if isinstance(parent_node_id, str) else None,
                     )
-                    if removed_fields:
+                    removed_node_fields = _sanitize_builder_node_fields(builder, args["id"])
+                    if removed_fields or removed_node_fields:
                         tool_result = {
                             "status": "error",
                             "message": "condition 节点的 params 仅支持 kind/source/field/value/threshold/min/max/bands。",
                             "removed_fields": removed_fields,
+                            "removed_node_fields": removed_node_fields,
                             "node_id": args["id"],
                         }
                     else:
@@ -818,7 +876,6 @@ def plan_workflow_structure_with_llm(
 
             elif func_name in {"update_action_node", "update_condition_node", "update_loop_node"}:
                 node_id = args.get("id")
-                updates = args.get("updates")
                 parent_node_id = args.get("parent_node_id")
                 sub_graph_nodes, sub_graph_error = _normalize_sub_graph_nodes(
                     args.get("sub_graph_nodes"), builder=builder
@@ -857,117 +914,221 @@ def plan_workflow_structure_with_llm(
                     }
                 elif sub_graph_error:
                     tool_result = {"status": "error", **sub_graph_error}
-                elif not isinstance(updates, list):
-                    tool_result = {
-                        "status": "error",
-                        "message": "updates 必须是 {op,key,value} 对象组成的数组。",
-                    }
                 else:
-                    invalid_entries = []
-                    invalid_branch_fields = []
-                    invalid_ops = []
-                    normalized_updates = []
-                    for idx, entry in enumerate(updates):
-                        if not isinstance(entry, Mapping):
-                            invalid_entries.append(idx)
-                            continue
+                    removed_param_fields: List[str] = []
+                    removed_node_fields: List[str] = []
 
-                        op = entry.get("op", "modify")
-                        if op not in {"add", "modify", "remove"}:
-                            invalid_ops.append(idx)
-                            continue
-
-                        key = entry.get("key")
-                        if not isinstance(key, str):
-                            invalid_entries.append(idx)
-                            continue
-
-                        value = entry.get("value") if "value" in entry else None
-                        if (
-                            expected_type == "condition"
-                            and op != "remove"
-                            and key in {"true_to_node", "false_to_node"}
-                            and value is not None
-                            and not isinstance(value, str)
-                        ):
-                            invalid_branch_fields.append(key)
-                            continue
-
-                        normalized_updates.append({"op": op, "key": key, "value": value})
-
-                    if "parent_node_id" in args:
-                        normalized_updates.append(
-                            {
-                                "op": "modify",
-                                "key": "parent_node_id",
-                                "value": parent_node_id,
-                            }
-                        )
-
-                    if invalid_entries:
-                        tool_result = {
-                            "status": "error",
-                            "message": f"updates[{invalid_entries}] 不是合法的 {{op,key,value}} 对象。",
-                        }
-                    elif invalid_ops:
-                        tool_result = {
-                            "status": "error",
-                            "message": f"updates[{invalid_ops}] 包含不支持的 op（仅支持 add/modify/remove）。",
-                        }
-                    elif invalid_branch_fields:
-                        tool_result = {
-                            "status": "error",
-                            "message": "condition 的 true_to_node/false_to_node 只能是节点 id 或 null。",
-                            "invalid_fields": invalid_branch_fields,
-                        }
-                    elif expected_type == "action" and any(
-                        entry.get("op", "modify") != "remove" and entry.get("key") == "action_id"
-                        for entry in normalized_updates
-                    ):
-                        new_action_id = next(
-                            entry.get("value")
-                            for entry in normalized_updates
-                            if entry.get("op", "modify") != "remove" and entry.get("key") == "action_id"
-                        )
-                        if not last_action_candidates:
+                    if func_name == "update_action_node":
+                        new_action_id = args.get("action_id") if "action_id" in args else None
+                        new_params = args.get("params") if "params" in args else None
+                        if "params" in args and not isinstance(new_params, Mapping):
                             tool_result = {
                                 "status": "error",
-                                "message": "更新 action_id 前请先调用 search_business_actions 以获取候选。",
+                                "message": "action 节点的 params 需要是对象。",
                             }
-                        elif new_action_id not in last_action_candidates:
-                            tool_result = {
-                                "status": "error",
-                                "message": "action_id 必须是最近一次 search_business_actions 返回的 candidates.id 之一。",
-                                "allowed_action_ids": last_action_candidates,
-                            }
-                        else:
-                            builder.update_node(node_id, normalized_updates)
-                            removed_fields = _sanitize_builder_node_params(
-                                builder, node_id, action_schemas
+                            messages.append(
+                                {
+                                    "role": "tool",
+                                    "tool_call_id": tool_call_id,
+                                    "content": json.dumps(tool_result, ensure_ascii=False),
+                                }
                             )
-                            if func_name == "update_loop_node":
-                                _attach_sub_graph_nodes(builder, node_id, sub_graph_nodes)
-                            if removed_fields:
+                            continue
+                        if "action_id" in args:
+                            if not last_action_candidates:
                                 tool_result = {
                                     "status": "error",
-                                    "message": "节点 params 包含不支持的字段，已自动移除，请按规范字段重试。",
-                                    "removed_fields": removed_fields,
-                                    "node_id": node_id,
+                                    "message": "更新 action_id 前请先调用 search_business_actions 以获取候选。",
                                 }
-                            else:
-                                tool_result = {"status": "ok", "type": "node_updated", "node_id": node_id}
-                    else:
-                        builder.update_node(node_id, normalized_updates)
-                        removed_fields = _sanitize_builder_node_params(
-                            builder, node_id, action_schemas
+                                messages.append(
+                                    {
+                                        "role": "tool",
+                                        "tool_call_id": tool_call_id,
+                                        "content": json.dumps(tool_result, ensure_ascii=False),
+                                    }
+                                )
+                                continue
+                            if new_action_id not in last_action_candidates:
+                                tool_result = {
+                                    "status": "error",
+                                    "message": "action_id 必须是最近一次 search_business_actions 返回的 candidates.id 之一。",
+                                    "allowed_action_ids": last_action_candidates,
+                                }
+                                messages.append(
+                                    {
+                                        "role": "tool",
+                                        "tool_call_id": tool_call_id,
+                                        "content": json.dumps(tool_result, ensure_ascii=False),
+                                    }
+                                )
+                                continue
+                        updates: Dict[str, Any] = {}
+                        if "display_name" in args:
+                            updates["display_name"] = args.get("display_name")
+                        if "out_params_schema" in args:
+                            updates["out_params_schema"] = args.get("out_params_schema")
+                        if "action_id" in args:
+                            updates["action_id"] = new_action_id
+                        if "parent_node_id" in args:
+                            updates["parent_node_id"] = parent_node_id
+                        if "params" in args:
+                            cleaned_params, removed_param_fields = _filter_supported_params(
+                                node_type="action",
+                                params=new_params or {},
+                                action_schemas=action_schemas,
+                                action_id=new_action_id
+                                if isinstance(new_action_id, str)
+                                else builder.nodes.get(node_id, {}).get("action_id"),
+                            )
+                            updates["params"] = cleaned_params
+                        builder.update_node(node_id, **updates)
+                        removed_param_fields.extend(
+                            _sanitize_builder_node_params(builder, node_id, action_schemas)
                         )
-                        if func_name == "update_loop_node":
-                            _attach_sub_graph_nodes(builder, node_id, sub_graph_nodes)
-                        if removed_fields:
+                        removed_node_fields = _sanitize_builder_node_fields(builder, node_id)
+                        if removed_param_fields or removed_node_fields:
                             tool_result = {
                                 "status": "error",
-                                "message": "节点 params 包含不支持的字段，已自动移除，请按规范字段重试。",
-                                "removed_fields": removed_fields,
+                                "message": "action 节点仅支持 id/type/action_id/display_name/params/out_params_schema 字段，params 仅支持 arg_schema 字段，已移除不支持的字段。",
+                                "removed_param_fields": removed_param_fields,
+                                "removed_node_fields": removed_node_fields,
+                                "node_id": node_id,
+                            }
+                        else:
+                            tool_result = {"status": "ok", "type": "node_updated", "node_id": node_id}
+                    elif func_name == "update_condition_node":
+                        new_params = args.get("params") if "params" in args else None
+                        if "params" in args and not isinstance(new_params, Mapping):
+                            tool_result = {
+                                "status": "error",
+                                "message": "condition 节点的 params 需要是对象。",
+                            }
+                            messages.append(
+                                {
+                                    "role": "tool",
+                                    "tool_call_id": tool_call_id,
+                                    "content": json.dumps(tool_result, ensure_ascii=False),
+                                }
+                            )
+                            continue
+                        if "true_to_node" in args and args.get("true_to_node") is not None and not isinstance(args.get("true_to_node"), str):
+                            tool_result = {
+                                "status": "error",
+                                "message": "condition 的 true_to_node 只能是节点 id 或 null。",
+                                "invalid_fields": ["true_to_node"],
+                            }
+                            messages.append(
+                                {
+                                    "role": "tool",
+                                    "tool_call_id": tool_call_id,
+                                    "content": json.dumps(tool_result, ensure_ascii=False),
+                                }
+                            )
+                            continue
+                        if "false_to_node" in args and args.get("false_to_node") is not None and not isinstance(args.get("false_to_node"), str):
+                            tool_result = {
+                                "status": "error",
+                                "message": "condition 的 false_to_node 只能是节点 id 或 null。",
+                                "invalid_fields": ["false_to_node"],
+                            }
+                            messages.append(
+                                {
+                                    "role": "tool",
+                                    "tool_call_id": tool_call_id,
+                                    "content": json.dumps(tool_result, ensure_ascii=False),
+                                }
+                            )
+                            continue
+
+                        updates: Dict[str, Any] = {}
+                        if "display_name" in args:
+                            updates["display_name"] = args.get("display_name")
+                        if "true_to_node" in args:
+                            updates["true_to_node"] = args.get("true_to_node")
+                        if "false_to_node" in args:
+                            updates["false_to_node"] = args.get("false_to_node")
+                        if "parent_node_id" in args:
+                            updates["parent_node_id"] = parent_node_id
+                        if "params" in args:
+                            normalized_params = dict(new_params or {})
+                            existing_kind = builder.nodes.get(node_id, {}).get("params", {}).get("kind")
+                            params_kind = normalized_params.get("kind", existing_kind)
+                            if params_kind and params_kind not in CONDITION_ALLOWED_KINDS:
+                                tool_result = {
+                                    "status": "error",
+                                    "message": "condition 节点需要提供合法的 kind。",
+                                    "invalid_fields": ["kind"],
+                                    "allowed_kinds": sorted(CONDITION_ALLOWED_KINDS),
+                                }
+                                messages.append(
+                                    {
+                                        "role": "tool",
+                                        "tool_call_id": tool_call_id,
+                                        "content": json.dumps(tool_result, ensure_ascii=False),
+                                    }
+                                )
+                                continue
+                            cleaned_params, removed_param_fields = _filter_supported_params(
+                                node_type="condition",
+                                params={**normalized_params, "kind": params_kind} if params_kind else normalized_params,
+                                action_schemas=action_schemas,
+                            )
+                            updates["params"] = cleaned_params
+                        builder.update_node(node_id, **updates)
+                        removed_param_fields.extend(
+                            _sanitize_builder_node_params(builder, node_id, action_schemas)
+                        )
+                        removed_node_fields = _sanitize_builder_node_fields(builder, node_id)
+                        if removed_param_fields or removed_node_fields:
+                            tool_result = {
+                                "status": "error",
+                                "message": "condition 节点仅支持 id/type/display_name/params/true_to_node/false_to_node 字段，params 仅支持 kind/source/field/value/threshold/min/max/bands，已移除不支持的字段。",
+                                "removed_fields": removed_param_fields,
+                                "removed_node_fields": removed_node_fields,
+                                "node_id": node_id,
+                            }
+                        else:
+                            tool_result = {"status": "ok", "type": "node_updated", "node_id": node_id}
+                    else:  # update_loop_node
+                        new_params = args.get("params") if "params" in args else None
+                        if "params" in args and not isinstance(new_params, Mapping):
+                            tool_result = {
+                                "status": "error",
+                                "message": "loop 节点的 params 需要是对象。",
+                            }
+                            messages.append(
+                                {
+                                    "role": "tool",
+                                    "tool_call_id": tool_call_id,
+                                    "content": json.dumps(tool_result, ensure_ascii=False),
+                                }
+                            )
+                            continue
+                        updates: Dict[str, Any] = {}
+                        if "display_name" in args:
+                            updates["display_name"] = args.get("display_name")
+                        if "parent_node_id" in args:
+                            updates["parent_node_id"] = parent_node_id
+                        if "params" in args:
+                            cleaned_params, removed_param_fields = _filter_supported_params(
+                                node_type="loop",
+                                params=new_params or {},
+                                action_schemas=action_schemas,
+                            )
+                            updates["params"] = cleaned_params
+                        builder.update_node(node_id, **updates)
+                        if func_name == "update_loop_node":
+                            _attach_sub_graph_nodes(builder, node_id, sub_graph_nodes)
+                        removed_param_fields.extend(
+                            _sanitize_builder_node_params(builder, node_id, action_schemas)
+                        )
+                        removed_node_fields = _sanitize_builder_node_fields(builder, node_id)
+                        if removed_param_fields or removed_node_fields:
+                            tool_result = {
+                                "status": "error",
+                                "message": "loop 节点仅支持 id/type/display_name/params 字段，params 仅支持 loop_kind/source/condition/item_alias/body_subgraph/exports，已移除不支持的字段。",
+                                "removed_fields": removed_param_fields,
+                                "removed_node_fields": removed_node_fields,
                                 "node_id": node_id,
                             }
                         else:

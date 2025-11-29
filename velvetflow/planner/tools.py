@@ -157,40 +157,27 @@ PLANNER_TOOLS = [
         "function": {
             "name": "update_action_node",
             "description": (
-                "更新已创建的 action 节点字段。使用 updates 传入操作列表（同 update_node 旧接口），"
+                "更新已创建的 action 节点字段，支持直接覆盖 display_name/params/out_params_schema/action_id，"
                 "如需变更 action_id，请先调用 search_business_actions 以获取候选；可同时通过 parent_node_id 指定新的父节点。"
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "id": {"type": "string", "description": "要更新的 action 节点 id"},
-                    "updates": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "op": {
-                                    "type": "string",
-                                    "enum": ["add", "modify", "remove"],
-                                    "description": "对目标 key 执行的操作，默认为 modify。",
-                                    "default": "modify",
-                                },
-                                "key": {"type": "string"},
-                                "value": {
-                                    "description": "要写入的值，op=remove 时可省略。",
-                                    "nullable": True,
-                                },
-                            },
-                            "required": ["key"],
-                        },
-                        "description": "要更新的字段列表，按顺序覆盖或删除。",
+                    "display_name": {"type": "string"},
+                    "params": {
+                        "type": "object",
+                        "description": "action 入参，仅支持 arg_schema 中定义的字段。",
+                        "additionalProperties": True,
                     },
+                    "out_params_schema": {"type": "object"},
+                    "action_id": {"type": "string"},
                     "parent_node_id": {
                         "type": ["string", "null"],
                         "description": "可选的父节点 ID，提供时会覆盖现有的 parent_node_id。",
                     },
                 },
-                "required": ["id", "updates"],
+                "required": ["id"],
             },
         },
     },
@@ -199,40 +186,51 @@ PLANNER_TOOLS = [
         "function": {
             "name": "update_condition_node",
             "description": (
-                "更新已创建的 condition 节点字段。使用 updates 传入操作列表（同 update_node 旧接口），"
+                "更新已创建的 condition 节点字段，可直接覆盖 display_name/params/true_to_node/false_to_node，"
                 "true_to_node/false_to_node 的值可为节点 id 或 null；可通过 parent_node_id 指定新的父节点。"
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "id": {"type": "string", "description": "要更新的 condition 节点 id"},
-                    "updates": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "op": {
-                                    "type": "string",
-                                    "enum": ["add", "modify", "remove"],
-                                    "description": "对目标 key 执行的操作，默认为 modify。",
-                                    "default": "modify",
-                                },
-                                "key": {"type": "string"},
-                                "value": {
-                                    "description": "要写入的值，op=remove 时可省略。",
-                                    "nullable": True,
-                                },
+                    "display_name": {"type": "string"},
+                    "params": {
+                        "type": "object",
+                        "description": (
+                            "condition 参数，仅支持 kind/source/field/value/threshold/min/max/bands，"
+                            "多余字段将被忽略并视为非法。"
+                        ),
+                        "properties": {
+                            "kind": {"type": "string"},
+                            "source": {
+                                "anyOf": [
+                                    {"type": "string"},
+                                    {"type": "object", "additionalProperties": True},
+                                ]
                             },
-                            "required": ["key"],
+                            "field": {"type": ["string", "null"]},
+                            "value": {},
+                            "threshold": {},
+                            "min": {},
+                            "max": {},
+                            "bands": {"type": ["array", "object"]},
                         },
-                        "description": "要更新的字段列表，按顺序覆盖或删除。",
+                        "additionalProperties": False,
+                    },
+                    "true_to_node": {
+                        "type": ["string", "null"],
+                        "description": "条件为真时跳转的目标节点 id，或 null 表示该分支结束。",
+                    },
+                    "false_to_node": {
+                        "type": ["string", "null"],
+                        "description": "条件为假时跳转的目标节点 id，或 null 表示该分支结束。",
                     },
                     "parent_node_id": {
                         "type": ["string", "null"],
                         "description": "可选的父节点 ID，提供时会覆盖现有的 parent_node_id。",
                     },
                 },
-                "required": ["id", "updates"],
+                "required": ["id"],
             },
         },
     },
@@ -305,31 +303,39 @@ PLANNER_TOOLS = [
         "type": "function",
         "function": {
             "name": "update_loop_node",
-            "description": "更新已创建的 loop 节点字段，支持与 update_node 相同的 {op,key,value} 列表。",
+            "description": "更新已创建的 loop 节点字段，可直接覆盖 display_name/params，并可调整子图归属。",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "id": {"type": "string", "description": "要更新的 loop 节点 id"},
-                    "updates": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "op": {
-                                    "type": "string",
-                                    "enum": ["add", "modify", "remove"],
-                                    "description": "对目标 key 执行的操作，默认为 modify。",
-                                    "default": "modify",
-                                },
-                                "key": {"type": "string"},
-                                "value": {
-                                    "description": "要写入的值，op=remove 时可省略。",
-                                    "nullable": True,
-                                },
+                    "display_name": {"type": "string"},
+                    "params": {
+                        "type": "object",
+                        "description": (
+                            "循环参数，仅支持 loop_kind/source/condition/item_alias/body_subgraph/exports 字段，"
+                            "多余字段将被忽略并视为非法。"
+                        ),
+                        "properties": {
+                            "loop_kind": {"type": "string", "enum": ["for_each", "while"]},
+                            "source": {
+                                "description": "for_each 迭代来源，支持绑定或 result_of 路径。",
+                                "anyOf": [
+                                    {"type": "string"},
+                                    {"type": "object", "additionalProperties": True},
+                                ],
                             },
-                            "required": ["key"],
+                            "condition": {
+                                "description": "while 循环退出条件，支持绑定或 result_of 路径。",
+                                "anyOf": [
+                                    {"type": "string"},
+                                    {"type": "object", "additionalProperties": True},
+                                ],
+                            },
+                            "item_alias": {"type": "string"},
+                            "body_subgraph": {"type": "object"},
+                            "exports": {"type": "object"},
                         },
-                        "description": "要更新的字段列表，按顺序覆盖或删除。",
+                        "additionalProperties": False,
                     },
                     "sub_graph_nodes": {
                         "type": "array",
@@ -341,7 +347,7 @@ PLANNER_TOOLS = [
                         "description": "可选的父节点 ID，禁止指向 loop 节点（不允许嵌套循环）。",
                     },
                 },
-                "required": ["id", "updates"],
+                "required": ["id"],
             },
         },
     },

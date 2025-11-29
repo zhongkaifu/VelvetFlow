@@ -20,14 +20,8 @@ def test_builder_update_node_overrides_fields():
 
     builder.update_node(
         "notify",
-        [
-            {"op": "modify", "key": "display_name", "value": "Updated notify"},
-            {
-                "op": "modify",
-                "key": "params",
-                "value": {"message": "new", "channel": "email"},
-            },
-        ],
+        display_name="Updated notify",
+        params={"message": "new", "channel": "email"},
     )
 
     wf = builder.to_workflow()
@@ -49,13 +43,7 @@ def test_builder_update_node_allows_branch_overrides():
         false_to_node="no",
     )
 
-    builder.update_node(
-        "check",
-        [
-            {"op": "modify", "key": "true_to_node", "value": None},
-            {"op": "modify", "key": "false_to_node", "value": "end"},
-        ],
-    )
+    builder.update_node("check", true_to_node=None, false_to_node="end")
 
     wf = builder.to_workflow()
     check = _find(wf["nodes"], "check")
@@ -64,7 +52,7 @@ def test_builder_update_node_allows_branch_overrides():
     assert check["false_to_node"] == "end"
 
 
-def test_builder_update_node_supports_remove():
+def test_builder_update_node_supports_null_override():
     builder = WorkflowBuilder()
     builder.add_node(
         node_id="notify",
@@ -74,19 +62,13 @@ def test_builder_update_node_supports_remove():
         params={"message": "old"},
     )
 
-    builder.update_node(
-        "notify",
-        [
-            {"op": "remove", "key": "display_name"},
-            {"op": "remove", "key": "params"},
-        ],
-    )
+    builder.update_node("notify", display_name=None, params=None)
 
     wf = builder.to_workflow()
     notify = _find(wf["nodes"], "notify")
 
-    assert "display_name" not in notify
-    assert "params" not in notify
+    assert notify.get("display_name") is None
+    assert notify.get("params") is None
 
 
 def test_builder_tracks_parent_node_id():
@@ -100,12 +82,7 @@ def test_builder_tracks_parent_node_id():
         parent_node_id="loop_1",
     )
 
-    builder.update_node(
-        "notify",
-        [
-            {"op": "modify", "key": "parent_node_id", "value": "loop_2"},
-        ],
-    )
+    builder.update_node("notify", parent_node_id="loop_2")
 
     wf = builder.to_workflow()
     notify = _find(wf["nodes"], "notify")
@@ -156,9 +133,7 @@ def test_updating_parent_moves_node_into_loop_body():
         params={},
     )
 
-    builder.update_node(
-        "task", [{"op": "modify", "key": "parent_node_id", "value": "loop_1"}]
-    )
+    builder.update_node("task", parent_node_id="loop_1")
 
     workflow = builder.to_workflow()
     loop_node = _find(workflow["nodes"], "loop_1")
