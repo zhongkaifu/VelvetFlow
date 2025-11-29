@@ -213,7 +213,25 @@ PLANNER_TOOLS = [
                             "threshold": {},
                             "min": {},
                             "max": {},
-                            "bands": {"type": ["array", "object"]},
+                            "bands": {
+                                "description": "分段阈值配置，允许数组或对象形式。",
+                                "anyOf": [
+                                    {
+                                        "type": "array",
+                                        "items": {
+                                            "type": "object",
+                                            "properties": {
+                                                "min": {"type": "number"},
+                                                "max": {"type": "number"},
+                                                "label": {"type": "string"},
+                                            },
+                                            "required": ["min", "max"],
+                                            "additionalProperties": False,
+                                        },
+                                    },
+                                    {"type": "object", "additionalProperties": True},
+                                ],
+                            },
                         },
                         "additionalProperties": False,
                     },
