@@ -96,12 +96,13 @@ def _attach_out_params_schema(
     for node in iter_workflow_and_loop_body_nodes(wf_dict):
         if not isinstance(node, Mapping) or node.get("type") != "action":
             continue
-        if isinstance(node.get("out_params_schema"), Mapping):
-            continue
 
         action_id = node.get("action_id")
         schema = actions_by_id.get(action_id, {}).get("output_schema") if action_id else None
-        if isinstance(schema, Mapping):
+        if not isinstance(schema, Mapping):
+            continue
+
+        if node.get("out_params_schema") != schema:
             node["out_params_schema"] = schema
             changed = True
 
