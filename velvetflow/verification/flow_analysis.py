@@ -108,30 +108,6 @@ class WorkflowStaticAnalyzer:
                     )
                 )
 
-        # Ensure every reachable node can eventually reach an end node.
-        end_nodes = [nid for nid, n in nodes_by_id.items() if n.get("type") == "end"]
-        if end_nodes:
-            reachable_to_end = set()
-            dq = deque(end_nodes)
-            while dq:
-                current = dq.popleft()
-                if current in reachable_to_end:
-                    continue
-                reachable_to_end.add(current)
-                for pred in reverse.get(current, []):
-                    dq.append(pred)
-
-            for nid in nodes_by_id:
-                if nid not in reachable_to_end:
-                    issues.append(
-                        ValidationError(
-                            code="CONTROL_FLOW_VIOLATION",
-                            node_id=nid,
-                            field=None,
-                            message="该节点没有到达 end 节点的路径，可能形成死路。",
-                        )
-                    )
-
         return issues
 
     def _strongly_connected_components(

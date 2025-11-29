@@ -287,71 +287,6 @@ def fill_loop_exports_defaults(
     return patched, {"applied": changed, "reason": None if changed else "无修复项"}
 
 
-def connect_dangling_nodes_to_end(
-    workflow: Mapping[str, Any], *, end_node_id: str | None = None
-) -> Tuple[Mapping[str, Any], Dict[str, Any]]:
-    """Ensure every node can reach an ``end`` node.
-
-    When callers omit explicit edges, the static analyzer flags nodes that
-    cannot reach ``end`` and nodes whose outputs are never consumed. This helper
-    creates a concrete ``end`` node if missing and adds a terminal edge from any
-    node without outgoing edges to that ``end`` node so the workflow remains
-    well-formed.
-    """
-
-    patched = copy.deepcopy(workflow)
-    nodes = patched.get("nodes") if isinstance(patched.get("nodes"), list) else []
-    edges = patched.get("edges") if isinstance(patched.get("edges"), list) else []
-
-    if not nodes:
-        return patched, {"applied": False, "reason": "workflow 缺少 nodes"}
-
-    end_id = next((n.get("id") for n in nodes if n.get("type") == "end"), None)
-    if not end_id:
-        end_id = end_node_id or "end"
-        existing_ids = {n.get("id") for n in nodes if isinstance(n, Mapping)}
-        suffix = 1
-        while end_id in existing_ids:
-            end_id = f"end_{suffix}"
-            suffix += 1
-        nodes.append({"id": end_id, "type": "end"})
-        patched["nodes"] = nodes
-
-    existing_edges = set()
-    for e in edges:
-        if not isinstance(e, Mapping):
-            continue
-        existing_edges.add((e.get("from"), e.get("to"), e.get("condition")))
-
-    outgoing_counts: Dict[str, int] = {}
-    for frm, to, _ in existing_edges:
-        if not frm or not to:
-            continue
-        outgoing_counts[frm] = outgoing_counts.get(frm, 0) + 1
-
-    added_edges = 0
-    for node in nodes:
-        if not isinstance(node, Mapping):
-            continue
-        nid = node.get("id")
-        if not nid or nid == end_id:
-            continue
-        if outgoing_counts.get(nid):
-            continue
-        edge = {"from": nid, "to": end_id}
-        if (nid, end_id, None) not in existing_edges:
-            edges.append(edge)
-            added_edges += 1
-
-    patched["edges"] = edges
-
-    return patched, {
-        "applied": bool(added_edges),
-        "added_edges": added_edges,
-        "end_node_id": end_id,
-    }
-
-
 def normalize_binding_paths(workflow: Mapping[str, Any]) -> Tuple[Mapping[str, Any], Dict[str, Any]]:
     """Normalize __from__ bindings that are wrapped in templates or whitespace."""
 
@@ -517,10 +452,6 @@ def apply_repair_tool(
         patched, summary = repair_loop_body_references(
             workflow, node_id=node_id, prefer_first_node=bool(args.get("prefer_first_node", True))
         )
-    elif tool_name == "connect_dangling_nodes_to_end":
-        patched, summary = connect_dangling_nodes_to_end(
-            workflow, end_node_id=args.get("end_node_id") if isinstance(args, Mapping) else None
-        )
     elif tool_name == "fill_action_required_params":
         patched, summary = fill_action_required_params(
             workflow, node_id=node_id or "", action_registry=action_registry
@@ -584,22 +515,6 @@ REPAIR_TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "connect_dangling_nodes_to_end",
-            "description": "为所有没有出边的节点添加指向 end 的边，必要时创建 end 节点。",  # noqa: E501
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "end_node_id": {
-                        "type": "string",
-                        "description": "可选 end 节点 ID（默认 end，若冲突会自动加后缀）",  # noqa: E501
-                    },
-                },
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
             "name": "fill_action_required_params",
             "description": "根据动作 arg_schema 自动填充必填字段的占位值，并尝试做基本类型矫正。",
             "parameters": {
@@ -637,7 +552,6 @@ REPAIR_TOOLS = [
 
 __all__ = [
     "fill_loop_exports_defaults",
-    "connect_dangling_nodes_to_end",
     "normalize_binding_paths",
     "apply_repair_tool",
     "fill_action_required_params",
