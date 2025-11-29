@@ -240,17 +240,12 @@ def fill_loop_exports_defaults(
         body_nodes = [bn for bn in body.get("nodes", []) or [] if isinstance(bn, Mapping) and bn.get("id")]
         body_ids = [bn.get("id") for bn in body_nodes if isinstance(bn.get("id"), str)]
 
-        exports = body.get("exports") if isinstance(body, Mapping) else None
-        if not isinstance(exports, Mapping):
-            exports = params.get("exports") if isinstance(params.get("exports"), Mapping) else None
+        exports = params.get("exports") if isinstance(params.get("exports"), Mapping) else None
         fallback = _fallback_loop_exports(node, actions_by_id)
 
         if not isinstance(exports, Mapping) or not exports:
             if fallback:
                 params = dict(params)
-                body = dict(body)
-                body["exports"] = fallback
-                params["body_subgraph"] = body
                 params["exports"] = fallback
                 node = dict(node)
                 node["params"] = params
@@ -279,9 +274,6 @@ def fill_loop_exports_defaults(
         )
         if ensured_exports != exports:
             params = dict(params)
-            body = dict(body)
-            body["exports"] = ensured_exports
-            params["body_subgraph"] = body
             params["exports"] = ensured_exports
             node = dict(node)
             node["params"] = params

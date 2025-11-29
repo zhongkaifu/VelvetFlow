@@ -499,8 +499,8 @@ def test_while_loop_requires_condition():
     )
 
 
-def test_loop_exports_should_not_duplicate_outside_body():
-    """loop exports 只应在 body_subgraph 内声明，重复定义会导致校验失败。"""
+def test_loop_exports_should_not_live_in_body_subgraph():
+    """loop exports 应放在 params.exports，出现在 body_subgraph 时应报错。"""
 
     workflow = {
         "workflow_name": "重复 exports 示例",
@@ -535,9 +535,6 @@ def test_loop_exports_should_not_duplicate_outside_body():
                             "items": {"from_node": "summarize_news", "fields": ["summary"]},
                         },
                     },
-                    "exports": {
-                        "items": {"from_node": "summarize_news", "fields": ["summary"]},
-                    },
                 },
             },
         ],
@@ -549,7 +546,7 @@ def test_loop_exports_should_not_duplicate_outside_body():
     assert any(
         e.code == "INVALID_SCHEMA"
         and e.node_id == "loop_check_temperatures"
-        and e.field == "exports"
+        and e.field == "body_subgraph.exports"
         for e in errors
     )
 
