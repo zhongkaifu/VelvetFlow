@@ -56,8 +56,15 @@ def index_loop_body_nodes(workflow: Mapping[str, Any]) -> Dict[str, str]:
             continue
         loop_id = node.get("id")
         params = node.get("params") or {}
-        body = params.get("body_subgraph") or {}
-        for child in body.get("nodes", []) or []:
+        body = params.get("body_subgraph")
+        if isinstance(body, Mapping):
+            body_nodes = body.get("nodes") or []
+        elif isinstance(body, list):
+            body_nodes = body
+        else:
+            body_nodes = []
+
+        for child in body_nodes or []:
             if isinstance(child, Mapping) and isinstance(child.get("id"), str):
                 body_to_loop[child["id"]] = loop_id
     return body_to_loop
@@ -73,8 +80,17 @@ def iter_workflow_and_loop_body_nodes(workflow: Mapping[str, Any]) -> Iterable[M
             yield node
             if node.get("type") == "loop":
                 params = node.get("params") or {}
-                body = params.get("body_subgraph") or {}
-                body_nodes = body.get("nodes") or []
+                body = params.get("body_subgraph")
+                if isinstance(body, Mapping):
+                    body_nodes = body.get("nodes") or []
+                elif isinstance(body, list):
+                    # Some callers supply the loop body directly as a list of nodes
+                    # rather than wrapping it in a mapping. Accept both forms to avoid
+                    # attribute errors during traversal.
+                    body_nodes = body
+                else:
+                    body_nodes = []
+
                 if isinstance(body_nodes, list):
                     yield from _iter_nodes(body_nodes)
 
