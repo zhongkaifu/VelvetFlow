@@ -253,7 +253,7 @@ def _validate_nodes_recursive(
             def _walk_params_for_template_refs(obj: Any, path_prefix: str = ""):
                 if isinstance(obj, str):
                     normalized = normalize_reference_path(obj)
-                    if isinstance(normalized, str) and normalized != obj:
+                    if isinstance(normalized, str):
                         parts = normalized.split(".")
                         alias = parts[0] if parts else None
 
@@ -272,7 +272,7 @@ def _validate_nodes_recursive(
                                         ),
                                     )
                                 )
-                        elif isinstance(normalized, str) and normalized.startswith("result_of."):
+                        if normalized.startswith("result_of."):
                             schema_err = _check_output_path_against_schema(
                                 normalized, nodes_by_id, actions_by_id, loop_body_parents
                             )

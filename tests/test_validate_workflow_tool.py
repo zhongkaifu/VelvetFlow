@@ -156,12 +156,6 @@ def test_condition_array_binding_rejects_missing_field():
                                 },
                             }
                         ],
-                        "exports": {
-                            "items": {
-                                "from_node": "add_to_warning_list",
-                                "fields": ["employee_id", "last_temperature", "status"],
-                            }
-                        },
                         "entry": "add_to_warning_list",
                         "exit": "add_to_warning_list",
                     },
@@ -200,5 +194,79 @@ def test_condition_array_binding_rejects_missing_field():
 
     assert any(
         err.node_id == "condition_has_warning" and "字段 'length' 不存在" in err.message
+        for err in errors
+    )
+
+
+def test_loop_export_length_reference_rejected_for_plain_string():
+    workflow = {
+        "workflow_name": "health_monitor",
+        "description": "",
+        "nodes": [
+            {"id": "start", "type": "start"},
+            {
+                "id": "fetch_temperatures",
+                "type": "action",
+                "action_id": "hr.get_today_temperatures.v1",
+                "params": {"date": "today"},
+            },
+            {
+                "id": "loop_employees",
+                "type": "loop",
+                "params": {
+                    "loop_kind": "for_each",
+                    "source": {"__from__": "result_of.fetch_temperatures.data"},
+                    "item_alias": "employee",
+                    "body_subgraph": {
+                        "nodes": [
+                            {
+                                "id": "add_to_warning_list",
+                                "type": "action",
+                                "action_id": "hr.update_employee_health_profile.v1",
+                                "params": {
+                                    "employee_id": "employee.employee_id",
+                                    "last_temperature": "employee.temperature",
+                                    "status": "high_temperature",
+                                },
+                            }
+                        ],
+                        "entry": "add_to_warning_list",
+                        "exit": "add_to_warning_list",
+                    },
+                    "exports": {
+                        "items": {
+                            "from_node": "add_to_warning_list",
+                            "fields": ["employee_id", "last_temperature", "status"],
+                            "mode": "collect",
+                        }
+                    },
+                },
+            },
+            {
+                "id": "generate_warning_report",
+                "type": "action",
+                "action_id": "hr.record_health_event.v1",
+                "params": {
+                    "event_type": "健康预警报告",
+                    "date": {"__from__": "result_of.fetch_temperatures.date"},
+                    "abnormal_count": "result_of.loop_employees.exports.items.length",
+                },
+            },
+            {"id": "end", "type": "end"},
+        ],
+        "edges": [
+            {"from": "start", "to": "fetch_temperatures"},
+            {"from": "fetch_temperatures", "to": "loop_employees"},
+            {"from": "loop_employees", "to": "generate_warning_report"},
+            {"from": "generate_warning_report", "to": "end"},
+        ],
+    }
+
+    errors = validate_workflow_data(workflow, ACTION_REGISTRY)
+
+    assert any(
+        err.node_id == "generate_warning_report"
+        and err.field == "abnormal_count"
+        and "字段 'length' 不存在" in err.message
         for err in errors
     )
