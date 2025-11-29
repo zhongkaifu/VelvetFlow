@@ -124,14 +124,14 @@ def _validate_nodes_recursive(
         action_id = n.get("action_id")
         params = n.get("params", {})
 
-        # exports 只能用于 loop.body_subgraph
+        # exports 只能用于 loop 节点
         if "exports" in params and ntype != "loop":
             errors.append(
                 ValidationError(
                     code="INVALID_SCHEMA",
                     node_id=nid,
                     field="exports",
-                    message="exports 仅允许出现在 loop 节点上，用于暴露 body_subgraph 结果。",
+                    message="exports 仅允许出现在 loop 节点上，用于暴露子图结果。",
                 )
             )
 
@@ -551,18 +551,16 @@ def _validate_nodes_recursive(
                         message="loop 节点定义 exports 时必须提供 body_subgraph。",
                     )
                 )
-            if isinstance(body_exports, Mapping) and "exports" in params:
+            if isinstance(body_exports, Mapping):
                 errors.append(
                     ValidationError(
                         code="INVALID_SCHEMA",
                         node_id=nid,
-                        field="exports",
-                        message=(
-                            "loop 节点的 exports 应定义在 body_subgraph 内，"
-                            "请移除 params.exports 以避免重复。"
-                        ),
+                        field="body_subgraph.exports",
+                        message="loop.exports 应定义在 params.exports，请从 body_subgraph 中移除。",
                     )
                 )
+
 
             loop_kind = (params or {}).get("loop_kind")
             if not loop_kind:
@@ -670,9 +668,11 @@ def _validate_nodes_recursive(
 
             # exports 静态校验
             body_graph = params.get("body_subgraph") if isinstance(params, Mapping) else None
-            exports = body_graph.get("exports") if isinstance(body_graph, Mapping) else None
-            if not isinstance(exports, Mapping):
-                exports = params.get("exports") if isinstance(params, dict) else None
+            exports = params.get("exports") if isinstance(params, dict) else None
+            if not isinstance(exports, Mapping) and isinstance(body_graph, Mapping):
+                body_exports = body_graph.get("exports")
+                if isinstance(body_exports, Mapping):
+                    exports = body_exports
 
             if not isinstance(exports, Mapping):
                 errors.append(

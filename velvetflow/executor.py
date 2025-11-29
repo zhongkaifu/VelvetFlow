@@ -1069,7 +1069,9 @@ class DynamicActionExecutor:
         body_exports = (
             body_graph.get("exports") if isinstance(body_graph, Mapping) else None
         )
-        exports = body_exports if isinstance(body_exports, Mapping) else params.get("exports")
+        exports = params.get("exports") if isinstance(params, Mapping) else None
+        if not isinstance(exports, Mapping) and isinstance(body_exports, Mapping):
+            exports = body_exports
         items_spec = exports.get("items") if isinstance(exports, Mapping) else None
         aggregates_spec = exports.get("aggregates") if isinstance(exports, Mapping) else None
         export_items: List[Dict[str, Any]] = []
