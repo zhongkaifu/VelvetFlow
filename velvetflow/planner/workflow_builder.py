@@ -58,6 +58,9 @@ def attach_condition_branches(workflow: Dict[str, Any]) -> Dict[str, Any]:
     return copied
 
 
+_UNSET = object()
+
+
 class WorkflowBuilder:
     """Mutable builder used by the planner to accumulate nodes."""
 
@@ -76,9 +79,9 @@ class WorkflowBuilder:
         self,
         node_id: str,
         node_type: str,
-        action_id: Optional[str],
-        display_name: Optional[str],
-        params: Optional[Dict[str, Any]],
+        action_id: Optional[str] = None,
+        display_name: Optional[str] = None,
+        params: Optional[Dict[str, Any]] = None,
         out_params_schema: Optional[Dict[str, Any]] = None,
         true_to_node: Optional[str] = None,
         false_to_node: Optional[str] = None,
@@ -86,40 +89,56 @@ class WorkflowBuilder:
     ):
         if node_id in self.nodes:
             log_warn(f"[Builder] 节点 {node_id} 已存在，将覆盖。")
-        self.nodes[node_id] = {
-            "id": node_id,
-            "type": node_type,
-            "action_id": action_id,
-            "display_name": display_name,
-            "params": params or {},
-            "out_params_schema": out_params_schema,
-            "true_to_node": true_to_node,
-            "false_to_node": false_to_node,
-            "parent_node_id": parent_node_id,
-        }
+        node: Dict[str, Any] = {"id": node_id, "type": node_type}
+        if node_type == "action":
+            node.update(
+                {
+                    "action_id": action_id,
+                    "display_name": display_name,
+                    "params": params or {},
+                    "out_params_schema": out_params_schema,
+                    "parent_node_id": parent_node_id,
+                }
+            )
+        elif node_type == "condition":
+            node.update(
+                {
+                    "display_name": display_name,
+                    "params": params or {},
+                    "true_to_node": true_to_node,
+                    "false_to_node": false_to_node,
+                    "parent_node_id": parent_node_id,
+                }
+            )
+        elif node_type == "loop":
+            node.update(
+                {
+                    "display_name": display_name,
+                    "params": params or {},
+                    "parent_node_id": parent_node_id,
+                }
+            )
+        else:
+            node.update(
+                {
+                    "display_name": display_name,
+                    "params": params or {},
+                    "parent_node_id": parent_node_id,
+                }
+            )
 
-    def update_node(self, node_id: str, updates: Mapping[str, Any]):
+        self.nodes[node_id] = node
+
+    def update_node(self, node_id: str, **fields: Any):
         node = self.nodes.get(node_id)
         if not isinstance(node, dict):
             log_warn(f"[Builder] 节点 {node_id} 不存在，无法更新。")
             return
 
-        if isinstance(updates, Mapping):
-            entries = [
-                {"op": "modify", "key": key, "value": value} for key, value in updates.items()
-            ]
-        else:
-            entries = list(updates)
-
-        for entry in entries:
-            op = entry.get("op", "modify")
-            key = entry.get("key")
-            value = entry.get("value") if "value" in entry else None
-
-            if op == "remove":
-                node.pop(key, None)
-            else:
-                node[key] = value
+        for key, value in fields.items():
+            if value is _UNSET:
+                continue
+            node[key] = value
 
     def to_workflow(self) -> Dict[str, Any]:
         # 深拷贝节点，避免在转换过程中污染 builder 内部状态。
