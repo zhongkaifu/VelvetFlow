@@ -3,7 +3,7 @@
 import json
 import os
 from dataclasses import asdict
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 from openai import OpenAI
 
@@ -79,6 +79,45 @@ def _make_failure_validation_error(message: str) -> ValidationError:
     )
 
 
+def _summarize_validation_errors_for_llm(
+    errors: Sequence[ValidationError],
+) -> str:
+    """Convert validation errors to an LLM-friendly, human-readable summary."""
+
+    if not errors:
+        return "未提供可用的错误信息。"
+
+    lines: List[str] = []
+    loop_hints: List[str] = []
+    for idx, err in enumerate(errors, start=1):
+        locations = []
+        if err.node_id:
+            locations.append(f"节点 {err.node_id}")
+        if err.field:
+            locations.append(f"字段 {err.field}")
+
+        location = f"（{', '.join(locations)}）" if locations else ""
+        lines.append(f"{idx}. [{err.code}]{location}：{err.message}")
+
+        # 提供针对 loop 节点的额外修复提示，帮助模型快速定位核心问题
+        if err.field and (
+            "loop_kind" in err.field
+            or err.field.startswith("exports.items")
+            or err.field in {"source", "item_alias"}
+        ):
+            loop_hints.append(
+                "- loop 节点需同时包含 params.loop_kind（for_each/while）、params.source、"
+                "params.item_alias；exports.items.fields 只能包含 body_subgraph 或 source 元素 schema 中存在的字段"
+            )
+
+    if loop_hints:
+        lines.append("")
+        lines.append("Loop 修复提示：")
+        lines.extend(sorted(set(loop_hints)))
+
+    return "\n".join(lines)
+
+
 def _safe_repair_invalid_loop_body(workflow_raw: Mapping[str, Any]) -> Workflow:
     """Best-effort patch for loop body graphs with missing nodes.
 
@@ -144,11 +183,14 @@ def _repair_with_llm_and_fallback(
     reason: str,
 ) -> Workflow:
     log_info(f"[AutoRepair] {reason}，将错误上下文提交给 LLM 尝试修复。")
+
+    error_summary = _summarize_validation_errors_for_llm(validation_errors)
     try:
         repaired_raw = repair_workflow_with_llm(
             broken_workflow=broken_workflow,
             validation_errors=validation_errors,
             action_registry=action_registry,
+            error_summary=error_summary,
             model=OPENAI_MODEL,
         )
         repaired = Workflow.model_validate(repaired_raw)
@@ -187,6 +229,7 @@ def repair_workflow_with_llm(
     broken_workflow: Dict[str, Any],
     validation_errors: List[ValidationError],
     action_registry: List[Dict[str, Any]],
+    error_summary: str | None = None,
     model: str = OPENAI_MODEL,
 ) -> Dict[str, Any]:
     client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
@@ -262,6 +305,7 @@ validation_errors 是 JSON 数组，元素包含 code/node_id/field/message。
             "content": json.dumps(
                 {
                     "workflow": broken_workflow,
+                    "validation_error_summary": error_summary,
                     "validation_errors": [asdict(e) for e in validation_errors],
                     "action_schemas": action_schemas,
                 },
