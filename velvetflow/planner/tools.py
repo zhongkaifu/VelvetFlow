@@ -128,20 +128,6 @@ PLANNER_TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "remove_node",
-            "description": "删除已创建的节点，可用于移除重复或错误节点。",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "id": {"type": "string", "description": "要删除的节点 id"},
-                },
-                "required": ["id"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
             "name": "finalize_workflow",
             "description": "当你认为结构已经覆盖需求时调用，结束规划阶段。",
             "parameters": {

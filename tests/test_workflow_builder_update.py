@@ -89,17 +89,3 @@ def test_builder_update_node_supports_remove():
     assert "params" not in notify
 
 
-def test_builder_remove_node():
-    builder = WorkflowBuilder()
-    builder.add_node(
-        node_id="notify",
-        node_type="action",
-        action_id="hr.notify.v1",
-        display_name="Notify",
-        params={"message": "old"},
-    )
-
-    builder.remove_node("notify")
-
-    wf = builder.to_workflow()
-    assert wf["nodes"] == []
