@@ -490,6 +490,26 @@ def plan_workflow_structure_with_llm(
                     )
                     tool_result = {"status": "ok", "type": "node_added", "node_id": args["id"]}
 
+            elif func_name == "add_loop_node":
+                parent_node_id = args.get("parent_node_id")
+
+                if parent_node_id is not None and not isinstance(parent_node_id, str):
+                    tool_result = {
+                        "status": "error",
+                        "message": "parent_node_id 需要是字符串或 null。",
+                    }
+                else:
+                    builder.add_node(
+                        node_id=args["id"],
+                        node_type="loop",
+                        action_id=None,
+                        display_name=args.get("display_name"),
+                        out_params_schema=None,
+                        params=args.get("params") or {},
+                        parent_node_id=parent_node_id if isinstance(parent_node_id, str) else None,
+                    )
+                    tool_result = {"status": "ok", "type": "node_added", "node_id": args["id"]}
+
             elif func_name == "add_condition_node":
                 true_to_node = args.get("true_to_node")
                 false_to_node = args.get("false_to_node")
@@ -547,11 +567,17 @@ def plan_workflow_structure_with_llm(
                     )
                     tool_result = {"status": "ok", "type": "node_added", "node_id": args["id"]}
 
-            elif func_name in {"update_action_node", "update_condition_node"}:
+            elif func_name in {"update_action_node", "update_condition_node", "update_loop_node"}:
                 node_id = args.get("id")
                 updates = args.get("updates")
                 parent_node_id = args.get("parent_node_id")
-                expected_type = "action" if func_name == "update_action_node" else "condition"
+                expected_type = (
+                    "action"
+                    if func_name == "update_action_node"
+                    else "condition"
+                    if func_name == "update_condition_node"
+                    else "loop"
+                )
 
                 if not isinstance(node_id, str):
                     tool_result = {"status": "error", "message": f"{func_name} 需要提供字符串类型的 id。"}
@@ -594,7 +620,8 @@ def plan_workflow_structure_with_llm(
 
                         value = entry.get("value") if "value" in entry else None
                         if (
-                            op != "remove"
+                            expected_type == "condition"
+                            and op != "remove"
                             and key in {"true_to_node", "false_to_node"}
                             and value is not None
                             and not isinstance(value, str)
