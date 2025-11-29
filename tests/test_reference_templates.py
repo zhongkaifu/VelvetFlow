@@ -148,6 +148,43 @@ def test_get_value_supports_list_index_fields():
     assert ctx.get_value("result_of.search_recipes.results[0].snippet") == "first"
 
 
+def test_loop_context_allows_fully_qualified_paths():
+    workflow = Workflow.model_validate(
+        {
+            "nodes": [
+                {
+                    "id": "loop_check_each_employee",
+                    "type": "loop",
+                    "params": {"item_alias": "current_item"},
+                }
+            ],
+            "edges": [],
+        }
+    )
+
+    loop_ctx = {"current_item": {"temperature": 39.2}, "index": 0, "size": 1}
+    ctx = BindingContext(
+        workflow,
+        {},
+        loop_ctx=loop_ctx,
+        loop_id="loop_check_each_employee",
+    )
+
+    node = Node(
+        id="check",
+        type="condition",
+        params={
+            "value": "loop_check_each_employee.current_item.temperature",
+            "message": "体温：{{loop_check_each_employee.current_item.temperature}}",
+        },
+    )
+
+    params = eval_node_params(node, ctx)
+
+    assert params["value"] == 39.2
+    assert params["message"] == "体温：39.2"
+
+
 def test_schema_validation_supports_index_paths():
     schema = {
         "type": "object",

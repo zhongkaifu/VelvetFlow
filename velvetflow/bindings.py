@@ -19,10 +19,12 @@ class BindingContext:
         *,
         extra_nodes: Optional[Mapping[str, Node]] = None,
         loop_ctx: Optional[Dict[str, Any]] = None,
+        loop_id: Optional[str] = None,
     ):
         self.workflow = workflow
         self.results = results  # node_id -> result object
         self.loop_ctx = loop_ctx or {}
+        self.loop_id = loop_id
         self._nodes = {n.id: n for n in workflow.nodes}
         if extra_nodes:
             self._nodes.update(extra_nodes)
@@ -338,7 +340,11 @@ class BindingContext:
             else:
                 resolved_parts.append(str(token))
 
-        if parts[0] == "loop":
+        if self.loop_id and parts[0] == self.loop_id:
+            cur = self.loop_ctx
+            _append_token(parts[0])
+            rest = parts[1:]
+        elif parts[0] == "loop":
             cur: Any = self.loop_ctx
             _append_token("loop")
             for p in parts[1:]:
@@ -352,7 +358,7 @@ class BindingContext:
                 raise KeyError(f"{_fmt_path(str(p))}: 在 loop_ctx 中找不到字段")
             return cur
 
-        if parts[0] in self.loop_ctx:
+        elif parts[0] in self.loop_ctx:
             cur = self.loop_ctx[parts[0]]
             _append_token(parts[0])
             rest = parts[1:]
@@ -470,7 +476,12 @@ def eval_node_params(node: Node, ctx: BindingContext) -> Dict[str, Any]:
             normalized_v = normalize_reference_path(v)
             head = normalized_v.split(".", 1)[0]
             # 仅当整个字符串就是绑定路径时才解析；包含插值占位符的混合字符串将保留原样
-            if head in ctx.loop_ctx or normalized_v.startswith("loop.") or normalized_v.startswith("result_of."):
+            if (
+                head in ctx.loop_ctx
+                or head == ctx.loop_id
+                or normalized_v.startswith("loop.")
+                or normalized_v.startswith("result_of.")
+            ):
                 try:
                     resolved[k] = ctx.get_value(normalized_v)
                     continue
@@ -487,7 +498,12 @@ def eval_node_params(node: Node, ctx: BindingContext) -> Dict[str, Any]:
                 raw_path = match.group(1) or match.group(2)
                 normalized_path = normalize_reference_path(raw_path)
                 head = normalized_path.split(".", 1)[0]
-                if head not in ctx.loop_ctx and not normalized_path.startswith("loop.") and not normalized_path.startswith("result_of."):
+                if (
+                    head not in ctx.loop_ctx
+                    and head != ctx.loop_id
+                    and not normalized_path.startswith("loop.")
+                    and not normalized_path.startswith("result_of.")
+                ):
                     return match.group(0)
                 try:
                     value = ctx.get_value(normalized_path)
