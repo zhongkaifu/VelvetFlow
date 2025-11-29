@@ -81,6 +81,9 @@ def _make_failure_validation_error(message: str) -> ValidationError:
 
 def _summarize_validation_errors_for_llm(
     errors: Sequence[ValidationError],
+    *,
+    workflow: Mapping[str, Any] | None = None,
+    action_registry: Sequence[Mapping[str, Any]] | None = None,
 ) -> str:
     """Convert validation errors to an LLM-friendly, human-readable summary."""
 
@@ -89,6 +92,25 @@ def _summarize_validation_errors_for_llm(
 
     lines: List[str] = []
     loop_hints: List[str] = []
+    schema_hints: List[str] = []
+
+    action_map: Dict[str, Mapping[str, Any]] = {}
+    node_to_action: Dict[str, str] = {}
+    if action_registry:
+        action_map = {
+            str(a.get("action_id")): a
+            for a in action_registry
+            if isinstance(a, Mapping) and a.get("action_id")
+        }
+
+    if workflow and isinstance(workflow, Mapping):
+        for n in workflow.get("nodes", []) or []:
+            if not isinstance(n, Mapping):
+                continue
+            node_id = n.get("id")
+            action_id = n.get("action_id") if n.get("type") == "action" else None
+            if isinstance(node_id, str) and isinstance(action_id, str):
+                node_to_action[node_id] = action_id
     for idx, err in enumerate(errors, start=1):
         locations = []
         if err.node_id:
@@ -109,6 +131,27 @@ def _summarize_validation_errors_for_llm(
                 "- loop 节点需同时包含 params.loop_kind（for_each/while）、params.source、"
                 "params.item_alias；exports.items.fields 只能包含 body_subgraph 或 source 元素 schema 中存在的字段"
             )
+
+        if err.node_id and err.field:
+            action_id = node_to_action.get(err.node_id)
+            action_def = action_map.get(action_id) if action_id else None
+            properties = (
+                action_def.get("arg_schema", {}).get("properties")
+                if isinstance(action_def, Mapping)
+                else None
+            )
+            if isinstance(properties, Mapping) and err.field in properties:
+                field_schema = properties.get(err.field)
+                if isinstance(field_schema, Mapping):
+                    expected_type = field_schema.get("type") or field_schema.get("anyOf")
+                    schema_hints.append(
+                        f"- 动作 {action_id} 的字段 {err.field} 期望类型/结构：{expected_type}，请按 schema 修正。"
+                    )
+
+    if schema_hints:
+        lines.append("")
+        lines.append("Schema 提示：")
+        lines.extend(sorted(set(schema_hints)))
 
     if loop_hints:
         lines.append("")
@@ -184,7 +227,11 @@ def _repair_with_llm_and_fallback(
 ) -> Workflow:
     log_info(f"[AutoRepair] {reason}，将错误上下文提交给 LLM 尝试修复。")
 
-    error_summary = _summarize_validation_errors_for_llm(validation_errors)
+    error_summary = _summarize_validation_errors_for_llm(
+        validation_errors,
+        workflow=broken_workflow,
+        action_registry=action_registry,
+    )
     try:
         repaired_raw = repair_workflow_with_llm(
             broken_workflow=broken_workflow,
@@ -290,6 +337,7 @@ validation_errors 是 JSON 数组，元素包含 code/node_id/field/message。
 
 7. 修改范围尽量最小化：
    - 当有多种修复方式时，优先选择改动最小、语义最接近原意的方案（如只改一个字段名，而不是重写整个 params）。
+   - 当 validation_error_summary 提供 Schema 提示或路径信息时，优先按提示矫正字段类型/结构，避免多轮重复犯错。
 
 8. 输出要求：
    - 保持顶层结构：workflow_name/description/nodes/edges 不变（仅节点内部内容可调整）；
