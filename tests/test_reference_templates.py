@@ -9,6 +9,7 @@ if str(ROOT_DIR) not in sys.path:
 from validate_workflow import validate_workflow_data
 from velvetflow.bindings import BindingContext, eval_node_params
 from velvetflow.models import Node, Workflow, infer_edges_from_bindings
+from velvetflow.verification.validation import _schema_path_error
 
 ACTION_REGISTRY = json.loads(
     (Path(__file__).parent.parent / "velvetflow" / "business_actions.json").read_text(
@@ -133,3 +134,29 @@ def test_eval_params_renders_interpolated_templates():
 
     assert params["text"] == "结合Nvidia新闻总结：N1，Google新闻总结：G1"
     assert params["subject"] == "demo"
+
+
+def test_get_value_supports_list_index_fields():
+    workflow = Workflow.model_validate(
+        {"nodes": [{"id": "search_recipes", "type": "action"}], "edges": []}
+    )
+    ctx = BindingContext(
+        workflow,
+        {"search_recipes": {"results": [{"snippet": "first"}, {"snippet": "second"}]}},
+    )
+
+    assert ctx.get_value("result_of.search_recipes.results[0].snippet") == "first"
+
+
+def test_schema_validation_supports_index_paths():
+    schema = {
+        "type": "object",
+        "properties": {
+            "results": {
+                "type": "array",
+                "items": {"type": "object", "properties": {"snippet": {"type": "string"}}},
+            }
+        },
+    }
+
+    assert _schema_path_error(schema, ["results", 0, "snippet"]) is None

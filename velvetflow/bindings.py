@@ -8,7 +8,7 @@ from velvetflow.action_registry import get_action_by_id
 from velvetflow.loop_dsl import build_loop_output_schema
 from velvetflow.logging_utils import log_warn
 from velvetflow.models import Node, Workflow
-from velvetflow.reference_utils import normalize_reference_path
+from velvetflow.reference_utils import normalize_reference_path, parse_field_path
 
 
 class BindingContext:
@@ -205,7 +205,7 @@ class BindingContext:
 
         return binding
 
-    def _schema_has_path(self, schema: Mapping[str, Any], fields: List[str]) -> bool:
+    def _schema_has_path(self, schema: Mapping[str, Any], fields: List[Any]) -> bool:
         if not isinstance(schema, Mapping):
             return False
 
@@ -214,6 +214,13 @@ class BindingContext:
         while idx < len(fields):
             name = fields[idx]
             typ = current.get("type")
+
+            if isinstance(name, int):
+                if typ != "array":
+                    return False
+                current = current.get("items") or {}
+                idx += 1
+                continue
 
             if typ == "array":
                 current = current.get("items") or {}
@@ -242,8 +249,12 @@ class BindingContext:
         if not isinstance(src_path, str) or not src_path.startswith("result_of."):
             return
 
-        parts = src_path.split(".")
-        if len(parts) < 2:
+        try:
+            parts = parse_field_path(src_path)
+        except Exception:
+            raise ValueError(f"__from__ 路径 '{src_path}' 不是合法的 result_of 引用")
+
+        if len(parts) < 2 or parts[0] != "result_of":
             raise ValueError(f"__from__ 路径 '{src_path}' 不是合法的 result_of 引用")
 
         node_id = parts[1]
@@ -308,35 +319,49 @@ class BindingContext:
         if not path:
             raise KeyError("空路径")
 
-        parts = path.split(".")
+        try:
+            parts = parse_field_path(path)
+        except Exception:
+            raise KeyError("空路径")
+
         resolved_parts: List[str] = []
 
         def _fmt_path(extra: Optional[str] = None) -> str:
-            if extra is None:
-                return ".".join(resolved_parts)
-            return ".".join([*resolved_parts, extra])
+            path_parts = resolved_parts.copy()
+            if extra is not None:
+                path_parts.append(extra)
+            return ".".join(path_parts)
+
+        def _append_token(token: Any) -> None:
+            if isinstance(token, int) and resolved_parts:
+                resolved_parts[-1] = f"{resolved_parts[-1]}[{token}]"
+            else:
+                resolved_parts.append(str(token))
 
         if parts[0] == "loop":
             cur: Any = self.loop_ctx
-            resolved_parts.append("loop")
+            _append_token("loop")
             for p in parts[1:]:
+                if isinstance(p, int):
+                    raise KeyError("loop_ctx 顶层不支持列表索引访问")
+
                 if isinstance(cur, dict) and p in cur:
                     cur = cur[p]
-                    resolved_parts.append(p)
+                    _append_token(p)
                     continue
-                raise KeyError(f"{_fmt_path(p)}: 在 loop_ctx 中找不到字段")
+                raise KeyError(f"{_fmt_path(str(p))}: 在 loop_ctx 中找不到字段")
             return cur
 
         if parts[0] in self.loop_ctx:
             cur = self.loop_ctx[parts[0]]
-            resolved_parts.append(parts[0])
+            _append_token(parts[0])
             rest = parts[1:]
         elif parts[0] == "result_of" and len(parts) >= 2:
             first_key = parts[1]
             if first_key not in self.results:
                 raise KeyError(f"result_of.{first_key}: 上游节点未执行或没有结果")
             cur = self.results[first_key]
-            resolved_parts.extend(["result_of", first_key])
+            resolved_parts.extend(["result_of", str(first_key)])
             rest = parts[2:]
             node = self._nodes.get(first_key)
             if node and node.type == "loop" and rest and rest[0] == "exports":
@@ -346,17 +371,26 @@ class BindingContext:
             if parts[0] not in context:
                 raise KeyError(f"{parts[0]}: 上下文中不存在")
             cur = context[parts[0]]
-            resolved_parts.append(parts[0])
+            _append_token(parts[0])
             rest = parts[1:]
 
         for p in rest:
+            if isinstance(p, int):
+                if isinstance(cur, list):
+                    if p < 0 or p >= len(cur):
+                        raise KeyError(f"{_fmt_path()}[{p}]: 列表索引越界")
+                    cur = cur[p]
+                    _append_token(p)
+                    continue
+                raise TypeError(f"{_fmt_path()}: 当前值类型为 {type(cur).__name__}，不支持索引 {p}")
+
             if isinstance(cur, dict):
                 if p not in cur:
                     raise KeyError(
                         f"{_fmt_path(p)}: 字段不存在，当前可用键: {sorted(cur.keys())}"
                     )
                 cur = cur[p]
-                resolved_parts.append(p)
+                _append_token(p)
                 continue
 
             if isinstance(cur, list):
@@ -377,7 +411,7 @@ class BindingContext:
 
                 if extracted:
                     cur = extracted
-                    resolved_parts.append(p)
+                    _append_token(p)
                     continue
 
                 details = []

@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Mapping, Optional
 
 from velvetflow.loop_dsl import build_loop_output_schema, index_loop_body_nodes
 from velvetflow.models import ValidationError, Workflow
-from velvetflow.reference_utils import normalize_reference_path
+from velvetflow.reference_utils import normalize_reference_path, parse_field_path
 
 
 def _index_actions_by_id(action_registry: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
@@ -837,7 +837,11 @@ def _check_output_path_against_schema(
     if not isinstance(source_path, str):
         return f"source/__from__ 应该是字符串，但收到类型: {type(source_path)}"
 
-    parts = source_path.split(".")
+    try:
+        parts = parse_field_path(source_path)
+    except Exception:
+        return f"source/__from__ 不是合法的路径字符串: {source_path}"
+
     if len(parts) < 2 or parts[0] != "result_of":
         return None
 
@@ -917,17 +921,19 @@ def _check_output_path_against_schema(
     return None
 
 
-def _schema_path_error(schema: Mapping[str, Any], fields: List[str]) -> Optional[str]:
-    """Check whether a dotted field path exists in a JSON schema."""
+def _schema_path_error(schema: Mapping[str, Any], fields: List[Any]) -> Optional[str]:
+    """Check whether a dotted/Indexed field path exists in a JSON schema."""
 
     if not isinstance(schema, Mapping):
         return "output_schema 不是对象，无法校验字段路径。"
 
-    # 字段列表可能已经按点拆分，也可能仍然包含带点的路径（例如来自 params.field）。
-    normalized_fields: List[str] = []
+    normalized_fields: List[Any] = []
     for f in fields:
         if isinstance(f, str):
-            normalized_fields.extend(part for part in f.split(".") if part)
+            try:
+                normalized_fields.extend(parse_field_path(f))
+            except Exception:
+                normalized_fields.append(f)
         else:
             normalized_fields.append(f)
 
@@ -936,6 +942,13 @@ def _schema_path_error(schema: Mapping[str, Any], fields: List[str]) -> Optional
     while idx < len(normalized_fields):
         name = normalized_fields[idx]
         typ = current.get("type")
+
+        if isinstance(name, int):
+            if typ != "array":
+                return f"字段路径 '{'.'.join(map(str, normalized_fields))}' 与 schema 类型 '{typ}' 不匹配（期望 array）。"
+            current = current.get("items") or {}
+            idx += 1
+            continue
 
         if typ == "array":
             current = current.get("items") or {}
@@ -952,7 +965,7 @@ def _schema_path_error(schema: Mapping[str, Any], fields: List[str]) -> Optional
         if idx == len(normalized_fields) - 1:
             return None
 
-        return f"字段路径 '{'.'.join(normalized_fields)}' 与 schema 类型 '{typ}' 不匹配（期望 object/array）。"
+        return f"字段路径 '{'.'.join(map(str, normalized_fields))}' 与 schema 类型 '{typ}' 不匹配（期望 object/array）。"
 
     return None
 
@@ -1016,12 +1029,20 @@ def _get_array_item_schema_from_output(
     if err:
         return None
 
-    parts = normalized_source.split(".")
+    try:
+        parts = parse_field_path(normalized_source)
+    except Exception:
+        return None
+
     if len(parts) < 2 or parts[0] != "result_of":
         return None
 
     node_id = parts[1]
-    first_field = parts[2] if len(parts) >= 3 else None
+    first_field = None
+    for token in parts[2:]:
+        if isinstance(token, str):
+            first_field = token
+            break
     node = nodes_by_id.get(node_id)
     node_type = node.get("type") if node else None
     if node_type == "loop":
@@ -1056,13 +1077,22 @@ def _get_field_schema(schema: Mapping[str, Any], field: str) -> Optional[Mapping
         return None
 
     current: Mapping[str, Any] = schema
-    parts = field.split(".")
+    try:
+        parts = parse_field_path(field)
+    except Exception:
+        return None
 
     for part in parts:
         if not isinstance(current, Mapping):
             return None
 
         current_type = current.get("type")
+        if isinstance(part, int):
+            if current_type != "array":
+                return None
+            current = current.get("items") or {}
+            continue
+
         if current_type == "array":
             current = current.get("items") or {}
             current_type = current.get("type") if isinstance(current, Mapping) else None
