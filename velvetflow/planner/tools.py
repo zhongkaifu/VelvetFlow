@@ -203,6 +203,11 @@ PLANNER_TOOLS = [
                         "description": "循环参数（items/exports/body_subgraph 等），可为空，稍后补全。",
                         "additionalProperties": True,
                     },
+                    "sub_graph_nodes": {
+                        "type": "array",
+                        "description": "加入 loop.body_subgraph 的已创建节点 id 列表。",
+                        "items": {"type": "string"},
+                    },
                     "parent_node_id": {
                         "type": ["string", "null"],
                         "description": "父节点 ID（支持嵌套循环），无父节点则为 null。",
@@ -241,6 +246,11 @@ PLANNER_TOOLS = [
                             "required": ["key"],
                         },
                         "description": "要更新的字段列表，按顺序覆盖或删除。",
+                    },
+                    "sub_graph_nodes": {
+                        "type": "array",
+                        "description": "将已有节点纳入 loop.body_subgraph 的 id 列表。",
+                        "items": {"type": "string"},
                     },
                     "parent_node_id": {
                         "type": ["string", "null"],
