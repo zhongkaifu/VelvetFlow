@@ -48,6 +48,26 @@ CONDITION_ALLOWED_KINDS = {
     "compare",
 }
 
+CONDITION_PARAM_FIELDS = {
+    "kind",
+    "source",
+    "field",
+    "value",
+    "threshold",
+    "min",
+    "max",
+    "bands",
+}
+
+LOOP_PARAM_FIELDS = {
+    "loop_kind",
+    "source",
+    "condition",
+    "item_alias",
+    "body_subgraph",
+    "exports",
+}
+
 def _attach_inferred_edges(workflow: Dict[str, Any]) -> Dict[str, Any]:
     """Rebuild derived edges so LLMs can see the implicit wiring."""
 
@@ -92,6 +112,61 @@ def _attach_sub_graph_nodes(builder: WorkflowBuilder, loop_id: str, node_ids: Li
         node = builder.nodes.get(nid)
         if isinstance(node, dict):
             node["parent_node_id"] = loop_id
+
+
+def _filter_supported_params(
+    *,
+    node_type: str,
+    params: Any,
+    action_schemas: Mapping[str, Mapping[str, Any]],
+    action_id: Optional[str] = None,
+) -> tuple[Dict[str, Any], List[str]]:
+    """Keep only supported param fields for the given node type.
+
+    Returns the sanitized params dict and a list of removed field names.
+    """
+
+    if not isinstance(params, Mapping):
+        return {}, []
+
+    allowed_fields: Optional[set[str]] = None
+    if node_type == "condition":
+        allowed_fields = set(CONDITION_PARAM_FIELDS)
+    elif node_type == "loop":
+        allowed_fields = set(LOOP_PARAM_FIELDS)
+    elif node_type == "action" and action_id:
+        schema = action_schemas.get(action_id, {}) if isinstance(action_id, str) else {}
+        properties = schema.get("arg_schema", {}).get("properties") if isinstance(schema.get("arg_schema"), Mapping) else None
+        if isinstance(properties, Mapping):
+            allowed_fields = set(properties.keys())
+
+    if not allowed_fields:
+        return dict(params), []
+
+    cleaned: Dict[str, Any] = {k: v for k, v in params.items() if k in allowed_fields}
+    removed = [k for k in params if k not in allowed_fields]
+    return cleaned, removed
+
+
+def _sanitize_builder_node_params(
+    builder: WorkflowBuilder, node_id: str, action_schemas: Mapping[str, Mapping[str, Any]]
+) -> List[str]:
+    node = builder.nodes.get(node_id)
+    if not isinstance(node, Mapping):
+        return []
+
+    params = node.get("params") or {}
+    cleaned, removed = _filter_supported_params(
+        node_type=str(node.get("type")),
+        params=params,
+        action_schemas=action_schemas,
+        action_id=node.get("action_id") if isinstance(node.get("action_id"), str) else None,
+    )
+
+    if removed:
+        node["params"] = cleaned
+
+    return removed
 
 
 def _build_action_schema_map(action_registry: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
@@ -404,6 +479,7 @@ def plan_workflow_structure_with_llm(
 ) -> Dict[str, Any]:
     client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
     builder = WorkflowBuilder()
+    action_schemas = _build_action_schema_map(action_registry)
     last_action_candidates: List[str] = []
 
     system_prompt = (
@@ -535,16 +611,31 @@ def plan_workflow_structure_with_llm(
                         "message": "parent_node_id 需要是字符串或 null。",
                     }
                 else:
+                    original_params = args.get("params") or {}
+                    cleaned_params, removed_fields = _filter_supported_params(
+                        node_type="action",
+                        params=original_params,
+                        action_schemas=action_schemas,
+                        action_id=action_id,
+                    )
                     builder.add_node(
                         node_id=args["id"],
                         node_type="action",
                         action_id=action_id,
                         display_name=args.get("display_name"),
                         out_params_schema=args.get("out_params_schema"),
-                        params=args.get("params") or {},
+                        params=cleaned_params,
                         parent_node_id=parent_node_id if isinstance(parent_node_id, str) else None,
                     )
-                    tool_result = {"status": "ok", "type": "node_added", "node_id": args["id"]}
+                    if removed_fields:
+                        tool_result = {
+                            "status": "error",
+                            "message": "action 节点的 params 仅支持 arg_schema 中定义的字段，已移除不支持的字段。",
+                            "removed_fields": removed_fields,
+                            "node_id": args["id"],
+                        }
+                    else:
+                        tool_result = {"status": "ok", "type": "node_added", "node_id": args["id"]}
 
             elif func_name == "add_loop_node":
                 parent_node_id = args.get("parent_node_id")
@@ -599,17 +690,30 @@ def plan_workflow_structure_with_llm(
                         "source": source,
                         "item_alias": item_alias,
                     })
+                    cleaned_params, removed_fields = _filter_supported_params(
+                        node_type="loop",
+                        params=params,
+                        action_schemas=action_schemas,
+                    )
                     builder.add_node(
                         node_id=args["id"],
                         node_type="loop",
                         action_id=None,
                         display_name=args.get("display_name"),
                         out_params_schema=None,
-                        params=params,
+                        params=cleaned_params,
                         parent_node_id=parent_node_id if isinstance(parent_node_id, str) else None,
                     )
                     _attach_sub_graph_nodes(builder, args["id"], sub_graph_nodes)
-                    tool_result = {"status": "ok", "type": "node_added", "node_id": args["id"]}
+                    if removed_fields:
+                        tool_result = {
+                            "status": "error",
+                            "message": "loop 节点的 params 仅支持 loop_kind/source/condition/item_alias/body_subgraph/exports。",
+                            "removed_fields": removed_fields,
+                            "node_id": args["id"],
+                        }
+                    else:
+                        tool_result = {"status": "ok", "type": "node_added", "node_id": args["id"]}
 
             elif func_name == "add_condition_node":
                 true_to_node = args.get("true_to_node")
@@ -686,18 +790,31 @@ def plan_workflow_structure_with_llm(
                     }
                 else:
                     normalized_params["kind"] = condition_kind
+                    cleaned_params, removed_fields = _filter_supported_params(
+                        node_type="condition",
+                        params=normalized_params,
+                        action_schemas=action_schemas,
+                    )
                     builder.add_node(
                         node_id=args["id"],
                         node_type="condition",
                         action_id=None,
                         display_name=args.get("display_name"),
                         out_params_schema=None,
-                        params=normalized_params,
+                        params=cleaned_params,
                         true_to_node=true_to_node if isinstance(true_to_node, str) else None,
                         false_to_node=false_to_node if isinstance(false_to_node, str) else None,
                         parent_node_id=parent_node_id if isinstance(parent_node_id, str) else None,
                     )
-                    tool_result = {"status": "ok", "type": "node_added", "node_id": args["id"]}
+                    if removed_fields:
+                        tool_result = {
+                            "status": "error",
+                            "message": "condition 节点的 params 仅支持 kind/source/field/value/threshold/min/max/bands。",
+                            "removed_fields": removed_fields,
+                            "node_id": args["id"],
+                        }
+                    else:
+                        tool_result = {"status": "ok", "type": "node_added", "node_id": args["id"]}
 
             elif func_name in {"update_action_node", "update_condition_node", "update_loop_node"}:
                 node_id = args.get("id")
@@ -825,14 +942,36 @@ def plan_workflow_structure_with_llm(
                             }
                         else:
                             builder.update_node(node_id, normalized_updates)
+                            removed_fields = _sanitize_builder_node_params(
+                                builder, node_id, action_schemas
+                            )
                             if func_name == "update_loop_node":
                                 _attach_sub_graph_nodes(builder, node_id, sub_graph_nodes)
-                            tool_result = {"status": "ok", "type": "node_updated", "node_id": node_id}
+                            if removed_fields:
+                                tool_result = {
+                                    "status": "error",
+                                    "message": "节点 params 包含不支持的字段，已自动移除，请按规范字段重试。",
+                                    "removed_fields": removed_fields,
+                                    "node_id": node_id,
+                                }
+                            else:
+                                tool_result = {"status": "ok", "type": "node_updated", "node_id": node_id}
                     else:
                         builder.update_node(node_id, normalized_updates)
+                        removed_fields = _sanitize_builder_node_params(
+                            builder, node_id, action_schemas
+                        )
                         if func_name == "update_loop_node":
                             _attach_sub_graph_nodes(builder, node_id, sub_graph_nodes)
-                        tool_result = {"status": "ok", "type": "node_updated", "node_id": node_id}
+                        if removed_fields:
+                            tool_result = {
+                                "status": "error",
+                                "message": "节点 params 包含不支持的字段，已自动移除，请按规范字段重试。",
+                                "removed_fields": removed_fields,
+                                "node_id": node_id,
+                            }
+                        else:
+                            tool_result = {"status": "ok", "type": "node_updated", "node_id": node_id}
 
             elif func_name == "finalize_workflow":
                 skeleton, coverage = _run_coverage_check(
