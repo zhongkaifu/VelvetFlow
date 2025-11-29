@@ -620,3 +620,68 @@ def test_condition_cannot_reference_missing_loop_export_field():
         for e in errors
     )
 
+
+def test_condition_field_on_loop_item_alias_should_be_allowed():
+    """Loop body aliases represent single objects and should allow field access."""
+
+    workflow = {
+        "workflow_name": "员工体温健康预警工作流",
+        "nodes": [
+            {
+                "id": "get_temperatures",
+                "type": "action",
+                "action_id": "hr.get_today_temperatures.v1",
+                "params": {"date": "today"},
+            },
+            {
+                "id": "loop_check_each_employee",
+                "type": "loop",
+                "params": {
+                    "loop_kind": "for_each",
+                    "source": "result_of.get_temperatures.data",
+                    "item_alias": "employee_temp",
+                    "body_subgraph": {
+                        "nodes": [
+                            {
+                                "id": "condition_temp_high",
+                                "type": "condition",
+                                "display_name": "体温是否超过38度",
+                                "params": {
+                                    "kind": "any_greater_than",
+                                    "source": "employee_temp",
+                                    "field": "temperature",
+                                    "threshold": 38,
+                                },
+                                "true_to_node": "add_to_warning_list",
+                                "false_to_node": None,
+                            },
+                            {
+                                "id": "add_to_warning_list",
+                                "type": "action",
+                                "display_name": "加入健康预警列表",
+                                "action_id": "hr.update_employee_health_profile.v1",
+                                "params": {
+                                    "employee_id": "employee_temp.employee_id",
+                                    "last_temperature": "employee_temp.temperature",
+                                    "status": "预警",
+                                },
+                            },
+                        ],
+                        "entry": "condition_temp_high",
+                        "exit": "add_to_warning_list",
+                    },
+                },
+            },
+        ],
+        "edges": [{"from": "get_temperatures", "to": "loop_check_each_employee"}],
+    }
+
+    errors = validate_workflow_data(workflow, ACTION_REGISTRY)
+
+    assert not any(
+        e.code == "SCHEMA_MISMATCH"
+        and e.node_id == "condition_temp_high"
+        and e.field == "field"
+        for e in errors
+    )
+
