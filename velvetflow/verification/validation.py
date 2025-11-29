@@ -409,11 +409,43 @@ def _validate_nodes_recursive(
                                 )
                             )
 
+                    source_ref = params.get("source")
+                    source_path: Optional[str] = None
+                    if isinstance(source_ref, Mapping):
+                        source_err = validate_param_binding(source_ref)
+                        if source_err:
+                            errors.append(
+                                ValidationError(
+                                    code="SCHEMA_MISMATCH",
+                                    node_id=nid,
+                                    field="source",
+                                    message=(
+                                        f"condition 节点 '{nid}' 的 source 绑定无效：{source_err}"
+                                    ),
+                                )
+                            )
+                        elif isinstance(source_ref.get("__from__"), str):
+                            source_path = source_ref["__from__"]
+                    elif isinstance(source_ref, str):
+                        source_path = source_ref
+                    elif source_ref is not None:
+                        errors.append(
+                            ValidationError(
+                                code="SCHEMA_MISMATCH",
+                                node_id=nid,
+                                field="source",
+                                message=(
+                                    f"condition 节点 '{nid}' 的 source 类型无效，期望字符串或包含 __from__ 的对象，收到 {type(source_ref)}"
+                                ),
+                            )
+                        )
+
                     if kind in {"any_greater_than", "all_less_than", "contains"}:
-                        src = params.get("source")
                         fld = params.get("field")
-                        if isinstance(src, str) and isinstance(fld, str):
-                            item_err = _check_array_item_field(src, fld, nodes_by_id, actions_by_id)
+                        if isinstance(source_path, str) and isinstance(fld, str):
+                            item_err = _check_array_item_field(
+                                source_path, fld, nodes_by_id, actions_by_id
+                            )
                             if item_err:
                                 errors.append(
                                     ValidationError(
@@ -457,11 +489,10 @@ def _validate_nodes_recursive(
                                 )
 
                         if kind in {"any_greater_than", "all_less_than"}:
-                            src = params.get("source")
                             fld = params.get("field")
-                            if isinstance(src, str) and isinstance(fld, str):
+                            if isinstance(source_path, str) and isinstance(fld, str):
                                 item_schema = _get_array_item_schema_from_output(
-                                    src, nodes_by_id, actions_by_id
+                                    source_path, nodes_by_id, actions_by_id
                                 )
                                 field_schema = _get_field_schema_from_item(item_schema, fld)
                                 if field_schema:

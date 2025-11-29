@@ -122,3 +122,83 @@ def test_invalid_condition_reference_detected():
     assert any(
         err.code == "SCHEMA_MISMATCH" and "exports.items" in err.message for err in errors
     )
+
+
+def test_condition_array_binding_rejects_missing_field():
+    workflow = {
+        "workflow_name": "temperature_monitor",
+        "description": "",
+        "nodes": [
+            {"id": "start", "type": "start"},
+            {
+                "id": "get_temperatures",
+                "type": "action",
+                "action_id": "hr.get_today_temperatures.v1",
+                "params": {"date": "today"},
+            },
+            {
+                "id": "loop_check_temperature",
+                "type": "loop",
+                "params": {
+                    "loop_kind": "for_each",
+                    "source": {"__from__": "result_of.get_temperatures.data"},
+                    "item_alias": "employee",
+                    "body_subgraph": {
+                        "nodes": [
+                            {
+                                "id": "add_to_warning_list",
+                                "type": "action",
+                                "action_id": "hr.update_employee_health_profile.v1",
+                                "params": {
+                                    "employee_id": "employee.employee_id",
+                                    "last_temperature": "employee.temperature",
+                                    "status": "high_temperature",
+                                },
+                            }
+                        ],
+                        "exports": {
+                            "items": {
+                                "from_node": "add_to_warning_list",
+                                "fields": ["employee_id", "last_temperature", "status"],
+                            }
+                        },
+                        "entry": "add_to_warning_list",
+                        "exit": "add_to_warning_list",
+                    },
+                    "exports": {
+                        "items": {
+                            "from_node": "add_to_warning_list",
+                            "fields": ["employee_id", "last_temperature", "status"],
+                            "mode": "collect",
+                        }
+                    },
+                },
+            },
+            {
+                "id": "condition_has_warning",
+                "type": "condition",
+                "params": {
+                    "kind": "any_greater_than",
+                    "source": {"__from__": "result_of.loop_check_temperature.items"},
+                    "field": "length",
+                    "threshold": 1,
+                },
+                "true_to_node": "end",
+                "false_to_node": "end",
+            },
+            {"id": "end", "type": "end"},
+        ],
+        "edges": [
+            {"from": "start", "to": "get_temperatures"},
+            {"from": "get_temperatures", "to": "loop_check_temperature"},
+            {"from": "loop_check_temperature", "to": "condition_has_warning"},
+            {"from": "condition_has_warning", "to": "end"},
+        ],
+    }
+
+    errors = validate_workflow_data(workflow, ACTION_REGISTRY)
+
+    assert any(
+        err.node_id == "condition_has_warning" and "字段 'length' 不存在" in err.message
+        for err in errors
+    )
