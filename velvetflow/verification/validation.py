@@ -8,6 +8,26 @@ from velvetflow.loop_dsl import build_loop_output_schema, index_loop_body_nodes
 from velvetflow.models import ValidationError, Workflow
 from velvetflow.reference_utils import normalize_reference_path, parse_field_path
 
+CONDITION_PARAM_FIELDS = {
+    "kind",
+    "source",
+    "field",
+    "value",
+    "threshold",
+    "min",
+    "max",
+    "bands",
+}
+
+LOOP_PARAM_FIELDS = {
+    "loop_kind",
+    "source",
+    "condition",
+    "item_alias",
+    "body_subgraph",
+    "exports",
+}
+
 
 def _index_actions_by_id(action_registry: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
     return {a["action_id"]: a for a in action_registry}
@@ -56,6 +76,40 @@ def _maybe_decode_binding_string(raw: str) -> Optional[Any]:
         return parsed
 
     return None
+
+
+def _filter_params_by_supported_fields(
+    *,
+    node: Mapping[str, Any],
+    actions_by_id: Mapping[str, Mapping[str, Any]],
+) -> List[str]:
+    params = node.get("params")
+    if not isinstance(params, Mapping):
+        return []
+
+    node_type = node.get("type")
+    allowed_fields: set[str] | None = None
+
+    if node_type == "condition":
+        allowed_fields = set(CONDITION_PARAM_FIELDS)
+    elif node_type == "loop":
+        allowed_fields = set(LOOP_PARAM_FIELDS)
+    elif node_type == "action":
+        action_id = node.get("action_id")
+        action_def = actions_by_id.get(action_id) if isinstance(action_id, str) else None
+        properties = (action_def or {}).get("arg_schema", {}).get("properties")
+        if isinstance(properties, Mapping):
+            allowed_fields = set(properties.keys())
+
+    if not allowed_fields:
+        return []
+
+    removed = [key for key in params if key not in allowed_fields]
+    if removed:
+        node_params = {k: v for k, v in params.items() if k in allowed_fields}
+        node["params"] = node_params
+
+    return removed
 
 
 def precheck_loop_body_graphs(workflow_raw: Mapping[str, Any] | Any) -> List[ValidationError]:
@@ -1459,6 +1513,22 @@ def validate_completed_workflow(
     loop_body_parents = index_loop_body_nodes(workflow)
     node_ids = set(nodes_by_id.keys())
     actions_by_id = _index_actions_by_id(action_registry)
+
+    for node in nodes:
+        if not isinstance(node, Mapping):
+            continue
+        removed_fields = _filter_params_by_supported_fields(
+            node=node, actions_by_id=actions_by_id
+        )
+        for field in removed_fields:
+            errors.append(
+                ValidationError(
+                    code="UNKNOWN_PARAM",
+                    node_id=node.get("id"),
+                    field=field,
+                    message="节点 params 包含不支持的字段，已在校验阶段移除。",
+                )
+            )
 
     # ---------- edges 校验 ----------
     for e in edges:
