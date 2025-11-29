@@ -544,6 +544,18 @@ def _validate_nodes_recursive(
 
         # 3) loop 节点
         if ntype == "loop":
+            if nid in loop_body_parents:
+                parent_loop = loop_body_parents.get(nid)
+                errors.append(
+                    ValidationError(
+                        code="INVALID_SCHEMA",
+                        node_id=nid,
+                        field="parent_node_id",
+                        message=(
+                            f"不允许嵌套循环：loop 节点 '{nid}' 位于父循环 '{parent_loop}' 的 body_subgraph 中。"
+                        ),
+                    )
+                )
             body_graph = params.get("body_subgraph") if isinstance(params, Mapping) else None
             body_exports = body_graph.get("exports") if isinstance(body_graph, Mapping) else None
             if "exports" in params and not isinstance(body_graph, Mapping):
