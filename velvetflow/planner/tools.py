@@ -276,6 +276,14 @@ PLANNER_TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "dump_model",
+            "description": "输出当前 workflow 的完整 DSL（含 nodes/edges），便于分析下一步规划。",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
 ]
 
 __all__ = ["PLANNER_TOOLS"]
