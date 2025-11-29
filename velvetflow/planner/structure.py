@@ -173,6 +173,18 @@ def _filter_supported_params(
 
     cleaned: Dict[str, Any] = {k: v for k, v in params.items() if k in allowed_fields}
     removed = [k for k in params if k not in allowed_fields]
+
+    if node_type == "loop" and "exports" in cleaned and isinstance(cleaned["exports"], Mapping):
+        cleaned_exports: Dict[str, Any] = {}
+        removed_exports: List[str] = []
+        for key, value in cleaned["exports"].items():
+            if key in {"items", "aggregates"}:
+                cleaned_exports[key] = value
+            else:
+                removed_exports.append(key)
+        cleaned["exports"] = cleaned_exports
+        removed.extend([f"exports.{key}" for key in removed_exports])
+
     return cleaned, removed
 
 
@@ -763,7 +775,7 @@ def plan_workflow_structure_with_llm(
                     if removed_fields or removed_node_fields:
                         tool_result = {
                             "status": "error",
-                            "message": "loop 节点的 params 仅支持 loop_kind/source/condition/item_alias/body_subgraph/exports。",
+                            "message": "loop 节点的 params 仅支持 loop_kind/source/condition/item_alias/body_subgraph/exports，且 exports 只能包含 items/aggregates。",
                             "removed_fields": removed_fields,
                             "removed_node_fields": removed_node_fields,
                             "node_id": args["id"],
@@ -1126,7 +1138,7 @@ def plan_workflow_structure_with_llm(
                         if removed_param_fields or removed_node_fields:
                             tool_result = {
                                 "status": "error",
-                                "message": "loop 节点仅支持 id/type/display_name/params 字段，params 仅支持 loop_kind/source/condition/item_alias/body_subgraph/exports，已移除不支持的字段。",
+                                "message": "loop 节点仅支持 id/type/display_name/params 字段，params 仅支持 loop_kind/source/condition/item_alias/body_subgraph/exports，且 exports 只能包含 items/aggregates，已移除不支持的字段。",
                                 "removed_fields": removed_param_fields,
                                 "removed_node_fields": removed_node_fields,
                                 "node_id": node_id,

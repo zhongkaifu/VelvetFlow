@@ -280,7 +280,10 @@ PLANNER_TOOLS = [
                     },
                     "params": {
                         "type": "object",
-                        "description": "循环参数，仅支持 loop_kind/source/condition/item_alias/body_subgraph/exports 字段。",
+                        "description": (
+                            "循环参数，仅支持 loop_kind/source/condition/item_alias/body_subgraph/exports 字段，"
+                            "其中 exports 只能包含 items/aggregates，其他字段会被删除并报错。"
+                        ),
                         "properties": {
                             "loop_kind": {"type": "string", "enum": ["for_each", "while"]},
                             "source": {
@@ -299,7 +302,75 @@ PLANNER_TOOLS = [
                             },
                             "item_alias": {"type": "string"},
                             "body_subgraph": {"type": "object"},
-                            "exports": {"type": "object"},
+                            "exports": {
+                                "type": "object",
+                                "description": "循环输出定义，仅支持 items 与 aggregates。",
+                                "properties": {
+                                    "items": {
+                                        "type": "object",
+                                        "description": "每轮收集的字段定义，必须引用 body_subgraph 中的节点。",
+                                        "properties": {
+                                            "from_node": {
+                                                "type": "string",
+                                                "description": "循环体内要暴露输出的节点 id（body_subgraph.nodes 中的节点）。",
+                                            },
+                                            "fields": {
+                                                "type": "array",
+                                                "minItems": 1,
+                                                "description": "要收集的字段列表，非空字符串数组。",
+                                                "items": {"type": "string"},
+                                            },
+                                            "mode": {
+                                                "type": "string",
+                                                "enum": ["collect", "first", "last"],
+                                                "description": "收集模式：collect/first/last。",
+                                            },
+                                        },
+                                        "required": ["from_node", "fields"],
+                                        "additionalProperties": False,
+                                    },
+                                    "aggregates": {
+                                        "type": "array",
+                                        "description": "可选的聚合定义数组。",
+                                        "items": {
+                                            "type": "object",
+                                            "properties": {
+                                                "name": {"type": "string", "description": "聚合结果名称。"},
+                                                "from_node": {
+                                                    "type": "string",
+                                                    "description": "循环体内参与聚合的节点 id。",
+                                                },
+                                                "kind": {
+                                                    "type": "string",
+                                                    "enum": [
+                                                        "count",
+                                                        "count_if",
+                                                        "max",
+                                                        "min",
+                                                        "sum",
+                                                        "avg",
+                                                    ],
+                                                    "description": "聚合类型。",
+                                                },
+                                                "source": {
+                                                    "description": "聚合来源路径。",
+                                                    "anyOf": [
+                                                        {"type": "string"},
+                                                        {"type": "object", "additionalProperties": True},
+                                                    ],
+                                                },
+                                                "expr": {
+                                                    "type": "object",
+                                                    "description": "聚合表达式，count_if 需要 field/op/value，其他需要 field。",
+                                                },
+                                            },
+                                            "required": ["name", "from_node", "kind", "source", "expr"],
+                                            "additionalProperties": False,
+                                        },
+                                    },
+                                },
+                                "additionalProperties": False,
+                            },
                         },
                         "additionalProperties": False,
                     },
@@ -331,7 +402,7 @@ PLANNER_TOOLS = [
                         "type": "object",
                         "description": (
                             "循环参数，仅支持 loop_kind/source/condition/item_alias/body_subgraph/exports 字段，"
-                            "多余字段将被忽略并视为非法。"
+                            "其中 exports 只能包含 items/aggregates，其他字段会被删除并报错。"
                         ),
                         "properties": {
                             "loop_kind": {"type": "string", "enum": ["for_each", "while"]},
@@ -351,7 +422,75 @@ PLANNER_TOOLS = [
                             },
                             "item_alias": {"type": "string"},
                             "body_subgraph": {"type": "object"},
-                            "exports": {"type": "object"},
+                            "exports": {
+                                "type": "object",
+                                "description": "循环输出定义，仅支持 items 与 aggregates。",
+                                "properties": {
+                                    "items": {
+                                        "type": "object",
+                                        "description": "每轮收集的字段定义，必须引用 body_subgraph 中的节点。",
+                                        "properties": {
+                                            "from_node": {
+                                                "type": "string",
+                                                "description": "循环体内要暴露输出的节点 id（body_subgraph.nodes 中的节点）。",
+                                            },
+                                            "fields": {
+                                                "type": "array",
+                                                "minItems": 1,
+                                                "description": "要收集的字段列表，非空字符串数组。",
+                                                "items": {"type": "string"},
+                                            },
+                                            "mode": {
+                                                "type": "string",
+                                                "enum": ["collect", "first", "last"],
+                                                "description": "收集模式：collect/first/last。",
+                                            },
+                                        },
+                                        "required": ["from_node", "fields"],
+                                        "additionalProperties": False,
+                                    },
+                                    "aggregates": {
+                                        "type": "array",
+                                        "description": "可选的聚合定义数组。",
+                                        "items": {
+                                            "type": "object",
+                                            "properties": {
+                                                "name": {"type": "string", "description": "聚合结果名称。"},
+                                                "from_node": {
+                                                    "type": "string",
+                                                    "description": "循环体内参与聚合的节点 id。",
+                                                },
+                                                "kind": {
+                                                    "type": "string",
+                                                    "enum": [
+                                                        "count",
+                                                        "count_if",
+                                                        "max",
+                                                        "min",
+                                                        "sum",
+                                                        "avg",
+                                                    ],
+                                                    "description": "聚合类型。",
+                                                },
+                                                "source": {
+                                                    "description": "聚合来源路径。",
+                                                    "anyOf": [
+                                                        {"type": "string"},
+                                                        {"type": "object", "additionalProperties": True},
+                                                    ],
+                                                },
+                                                "expr": {
+                                                    "type": "object",
+                                                    "description": "聚合表达式，count_if 需要 field/op/value，其他需要 field。",
+                                                },
+                                            },
+                                            "required": ["name", "from_node", "kind", "source", "expr"],
+                                            "additionalProperties": False,
+                                        },
+                                    },
+                                },
+                                "additionalProperties": False,
+                            },
                         },
                         "additionalProperties": False,
                     },
