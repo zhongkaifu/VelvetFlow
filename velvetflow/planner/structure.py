@@ -808,10 +808,23 @@ def plan_workflow_structure_with_llm(
                     )
                     messages.append({"role": "system", "content": feedback_message})
                     if coverage_retry > max_coverage_refine_rounds:
-                        log_warn("已达到覆盖度补全上限，仍有缺失点，结束规划阶段。")
-                        finalized = True
+                    log_warn("已达到覆盖度补全上限，仍有缺失点，结束规划阶段。")
+                    finalized = True
 
                 continue
+
+            elif func_name == "dump_model":
+                workflow_snapshot = _attach_inferred_edges(builder.to_workflow())
+                latest_skeleton = workflow_snapshot
+                tool_result = {
+                    "status": "ok",
+                    "type": "dump_model",
+                    "summary": {
+                        "node_count": len(workflow_snapshot.get("nodes") or []),
+                        "edge_count": len(workflow_snapshot.get("edges") or []),
+                    },
+                    "workflow": workflow_snapshot,
+                }
 
             else:
                 tool_result = {"status": "error", "message": f"未知工具 {func_name}"}
