@@ -18,7 +18,6 @@ def test_executor_advances_from_action_to_loop():
                     "type": "action",
                     "action_id": "hr.get_today_temperatures.v1",
                     "params": {"date": "2024-06-07"},
-                    "true_to_node": "loop_check_temperature",
                 },
                 {
                     "id": "loop_check_temperature",
@@ -61,6 +60,7 @@ def test_executor_advances_from_action_to_loop():
                     },
                 },
             ],
+            "edges": [{"from": "get_temperatures", "to": "loop_check_temperature"}],
         }
     )
 
