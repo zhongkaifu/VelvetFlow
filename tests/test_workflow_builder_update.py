@@ -89,3 +89,27 @@ def test_builder_update_node_supports_remove():
     assert "params" not in notify
 
 
+def test_builder_tracks_parent_node_id():
+    builder = WorkflowBuilder()
+    builder.add_node(
+        node_id="notify",
+        node_type="action",
+        action_id="hr.notify.v1",
+        display_name="Notify",
+        params={},
+        parent_node_id="loop_1",
+    )
+
+    builder.update_node(
+        "notify",
+        [
+            {"op": "modify", "key": "parent_node_id", "value": "loop_2"},
+        ],
+    )
+
+    wf = builder.to_workflow()
+    notify = _find(wf["nodes"], "notify")
+
+    assert notify["parent_node_id"] == "loop_2"
+
+

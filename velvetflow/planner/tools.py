@@ -7,7 +7,7 @@ PLANNER_TOOLS = [
             "name": "search_business_actions",
             "description": (
                 "在海量业务动作库中按自然语言查询可用动作。返回 candidates 列表，"
-                "后续 add_node(type='action') 时 action_id 必须取自最近一次 candidates.id。"
+                "后续 add_action_node 时 action_id 必须取自最近一次 candidates.id。"
             ),
             "parameters": {
                 "type": "object",
@@ -37,35 +37,23 @@ PLANNER_TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "add_node",
+            "name": "add_action_node",
             "description": (
-                "在工作流中新增一个节点。\n"
-                "- type='action'：请先调用 search_business_actions 选出合适的 action_id。\n"
-                "  action_id 必须是最近一次 search_business_actions 返回的 candidates.id 之一。\n"
-                "- type='condition'：请在 params 中使用结构化条件，例如：\n"
-                "  {\"kind\": \"any_greater_than\", \"source\": \"result_of.some_node.items\", \"field\": \"value\", \"threshold\": 10 }\n"
-                "或 {\"kind\": \"equals\", \"source\": \"result_of.some_node.count\", \"value\": 0 }，也可以使用 between/not_equals/multi_band 等枚举。\n"
-                "  必须同时提供 true_to_node 和 false_to_node，可为节点 id（继续执行）或 null（该分支结束）。\n"
-                "- type='loop'：params 需要提供 loop_kind(for_each/while)、source/condition、item_alias、body_subgraph(nodes) 等。\n"
-                "- 节点依赖关系通过 params 中的 result_of 引用自动推导，edges 会被隐式记录为上下文，无需手工 add_edge。"
+                "在工作流中新增一个 action 节点。请先调用 search_business_actions 选出合适的 action_id，"
+                "action_id 必须是最近一次 search_business_actions 返回的 candidates.id 之一。"
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "id": {"type": "string", "description": "节点唯一 ID"},
-                    "type": {
-                        "type": "string",
-                        "enum": ["start", "end", "action", "condition", "loop", "parallel"],
-                    },
                     "action_id": {
                         "type": "string",
-                        "description": "type='action' 时指定 action_id。",
-                        "nullable": True,
+                        "description": "action 节点对应的业务动作 ID。",
                     },
                     "display_name": {"type": "string"},
                     "out_params_schema": {
                         "type": "object",
-                        "description": "仅适用于 action 节点的输出参数 Schema，condition 节点没有该属性；格式为 {\"参数名\": \"类型\"}，仅需列出业务 action 输出参数的名称和类型，不必包含额外信息；字段列出可引用的 result_of 输出。",
+                        "description": "action 节点的输出参数 Schema，格式为 {\"参数名\": \"类型\"}。",
                         "additionalProperties": {"type": "string"},
                     },
                     "params": {
@@ -73,33 +61,61 @@ PLANNER_TOOLS = [
                         "description": "节点参数，可为空，但稍后会在第二阶段补全。",
                         "additionalProperties": True,
                     },
-                    "true_to_node": {
+                    "parent_node_id": {
                         "type": ["string", "null"],
-                        "description": "condition 节点为真时跳转的目标节点 id，或 null 表示该分支结束（type=condition 必填）",
-                    },
-                    "false_to_node": {
-                        "type": ["string", "null"],
-                        "description": "condition 节点为假时跳转的目标节点 id，或 null 表示该分支结束（type=condition 必填）",
+                        "description": "父节点 ID（例如循环/并行等子图的宿主节点），无父节点则为 null。",
                     },
                 },
-                "required": ["id", "type"],
+                "required": ["id", "action_id"],
             },
         },
     },
-        {
-            "type": "function",
-            "function": {
-                "name": "update_node",
-                "description": (
-                    "更新已创建节点的字段。使用 updates 传入操作列表，每项包含 key/value 与 op（add/modify/remove），"
-                    "例如 [{\"op\": \"modify\", \"key\": \"display_name\", \"value\": \"新的名称\"}, {\"op\": \"remove\", \"key\": \"params\"}]。"
-                    "更新后请检查与该节点有关联的上下游节点是否也需要同步调整，以保持依赖关系和参数引用一致。"
-                    "对于 condition 节点，true_to_node/false_to_node 的值可为节点 id 或 null（表示该分支结束）。"
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "id": {"type": "string", "description": "要更新的节点 id"},
+    {
+        "type": "function",
+        "function": {
+            "name": "add_condition_node",
+            "description": (
+                "在工作流中新增一个 condition 节点，请使用结构化条件参数，并显式提供 true/false 分支目标。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string", "description": "节点唯一 ID"},
+                    "display_name": {"type": "string"},
+                    "params": {
+                        "type": "object",
+                        "description": "condition 的结构化参数，例如 {\"kind\": \"equals\", ...}。",
+                        "additionalProperties": True,
+                    },
+                    "true_to_node": {
+                        "type": ["string", "null"],
+                        "description": "条件为真时跳转的目标节点 id，或 null 表示该分支结束。",
+                    },
+                    "false_to_node": {
+                        "type": ["string", "null"],
+                        "description": "条件为假时跳转的目标节点 id，或 null 表示该分支结束。",
+                    },
+                    "parent_node_id": {
+                        "type": ["string", "null"],
+                        "description": "父节点 ID（例如循环/并行等子图的宿主节点），无父节点则为 null。",
+                    },
+                },
+                "required": ["id", "params", "true_to_node", "false_to_node"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "update_action_node",
+            "description": (
+                "更新已创建的 action 节点字段。使用 updates 传入操作列表（同 update_node 旧接口），"
+                "如需变更 action_id，请先调用 search_business_actions 以获取候选；可同时通过 parent_node_id 指定新的父节点。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string", "description": "要更新的 action 节点 id"},
                     "updates": {
                         "type": "array",
                         "items": {
@@ -120,6 +136,52 @@ PLANNER_TOOLS = [
                             "required": ["key"],
                         },
                         "description": "要更新的字段列表，按顺序覆盖或删除。",
+                    },
+                    "parent_node_id": {
+                        "type": ["string", "null"],
+                        "description": "可选的父节点 ID，提供时会覆盖现有的 parent_node_id。",
+                    },
+                },
+                "required": ["id", "updates"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "update_condition_node",
+            "description": (
+                "更新已创建的 condition 节点字段。使用 updates 传入操作列表（同 update_node 旧接口），"
+                "true_to_node/false_to_node 的值可为节点 id 或 null；可通过 parent_node_id 指定新的父节点。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string", "description": "要更新的 condition 节点 id"},
+                    "updates": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "op": {
+                                    "type": "string",
+                                    "enum": ["add", "modify", "remove"],
+                                    "description": "对目标 key 执行的操作，默认为 modify。",
+                                    "default": "modify",
+                                },
+                                "key": {"type": "string"},
+                                "value": {
+                                    "description": "要写入的值，op=remove 时可省略。",
+                                    "nullable": True,
+                                },
+                            },
+                            "required": ["key"],
+                        },
+                        "description": "要更新的字段列表，按顺序覆盖或删除。",
+                    },
+                    "parent_node_id": {
+                        "type": ["string", "null"],
+                        "description": "可选的父节点 ID，提供时会覆盖现有的 parent_node_id。",
                     },
                 },
                 "required": ["id", "updates"],

@@ -80,6 +80,7 @@ class WorkflowBuilder:
         out_params_schema: Optional[Dict[str, Any]] = None,
         true_to_node: Optional[str] = None,
         false_to_node: Optional[str] = None,
+        parent_node_id: Optional[str] = None,
     ):
         if node_id in self.nodes:
             log_warn(f"[Builder] 节点 {node_id} 已存在，将覆盖。")
@@ -92,6 +93,7 @@ class WorkflowBuilder:
             "out_params_schema": out_params_schema,
             "true_to_node": true_to_node,
             "false_to_node": false_to_node,
+            "parent_node_id": parent_node_id,
         }
 
     def update_node(self, node_id: str, updates: Mapping[str, Any]):

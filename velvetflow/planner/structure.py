@@ -356,8 +356,8 @@ def plan_workflow_structure_with_llm(
         "系统中有一个 Action Registry，包含大量业务动作，你只能通过 search_business_actions 查询。\n"
         "构建方式：\n"
         "1) 使用 set_workflow_meta 设置工作流名称和描述。\n"
-        "2) 当需要业务动作时，必须先用 search_business_actions 查询候选；add_node(type='action') 的 action_id 必须取自最近一次 candidates.id。\n"
-        "3) 如需修改已创建节点（补充 display_name/params/分支指向等），请调用 update_node 并传入需要覆盖的字段列表；调用后务必检查上下游关联节点是否也需要同步更新以保持一致性。\n"
+        "2) 当需要业务动作时，必须先用 search_business_actions 查询候选；add_action_node 的 action_id 必须取自最近一次 candidates.id。\n"
+        "3) 如需修改已创建节点（补充 display_name/params/分支指向/父节点等），请调用 update_action_node 或 update_condition_node 并传入需要覆盖的字段列表；调用后务必检查上下游关联节点是否也需要同步更新以保持一致性。\n"
         "4) condition 节点必须显式提供 true_to_node 和 false_to_node，值可以是节点 id（继续执行）或 null（表示该分支结束）；通过节点 params 中的输入/输出引用表达依赖关系，不需要显式绘制 edges。\n"
         "5) 当结构完成时调用 finalize_workflow。\n\n"
         "特别注意：只有 action 节点需要 out_params_schema，condition 节点没有该属性；out_params_schema 的格式应为 {\"参数名\": \"类型\"}，仅需列出业务 action 输出参数的名称与类型，不要添加额外描述或示例。\n\n"
@@ -458,91 +458,115 @@ def plan_workflow_structure_with_llm(
                 builder.set_meta(args.get("workflow_name", ""), args.get("description"))
                 tool_result = {"status": "ok", "type": "meta_set"}
 
-            elif func_name == "add_node":
-                node_type = args["type"]
+            elif func_name == "add_action_node":
                 action_id = args.get("action_id")
-                true_to_node = args.get("true_to_node")
-                false_to_node = args.get("false_to_node")
+                parent_node_id = args.get("parent_node_id")
 
-                if node_type == "condition":
-                    missing_fields = [
-                        name
-                        for name in ("true_to_node", "false_to_node")
-                        if name not in args
-                    ]
-                    non_str_fields = [
-                        name
-                        for name, value in (
-                            ("true_to_node", true_to_node),
-                            ("false_to_node", false_to_node),
-                        )
-                        if value is not None and not isinstance(value, str)
-                    ]
-
-                    if missing_fields or non_str_fields:
-                        tool_result = {
-                            "status": "error",
-                            "message": (
-                                "condition 节点需要提供 true_to_node/false_to_node 字段，值可为节点 id（继续执行）"
-                                "或 null（表示该分支结束），非字符串/未提供会被拒绝。"
-                            ),
-                            "missing_fields": missing_fields,
-                            "invalid_fields": non_str_fields,
-                        }
-                        messages.append(
-                            {
-                                "role": "tool",
-                                "tool_call_id": tool_call_id,
-                                "content": json.dumps(tool_result, ensure_ascii=False),
-                            }
-                        )
-                        continue
-
-                if node_type == "action":
-                    if not last_action_candidates:
-                        tool_result = {
-                            "status": "error",
-                            "message": "action 节点必须在调用 search_business_actions 之后创建，请先查询候选动作。",
-                        }
-                    elif action_id not in last_action_candidates:
-                        tool_result = {
-                            "status": "error",
-                            "message": "action_id 必须是最近一次 search_business_actions 返回的 candidates.id 之一。",
-                            "allowed_action_ids": last_action_candidates,
-                        }
-                    else:
-                        builder.add_node(
-                            node_id=args["id"],
-                            node_type=node_type,
-                            action_id=action_id,
-                            display_name=args.get("display_name"),
-                            out_params_schema=args.get("out_params_schema"),
-                            params=args.get("params") or {},
-                            true_to_node=true_to_node if isinstance(true_to_node, str) else None,
-                            false_to_node=false_to_node if isinstance(false_to_node, str) else None,
-                        )
-                        tool_result = {"status": "ok", "type": "node_added", "node_id": args["id"]}
+                if not last_action_candidates:
+                    tool_result = {
+                        "status": "error",
+                        "message": "action 节点必须在调用 search_business_actions 之后创建，请先查询候选动作。",
+                    }
+                elif action_id not in last_action_candidates:
+                    tool_result = {
+                        "status": "error",
+                        "message": "action_id 必须是最近一次 search_business_actions 返回的 candidates.id 之一。",
+                        "allowed_action_ids": last_action_candidates,
+                    }
+                elif parent_node_id is not None and not isinstance(parent_node_id, str):
+                    tool_result = {
+                        "status": "error",
+                        "message": "parent_node_id 需要是字符串或 null。",
+                    }
                 else:
                     builder.add_node(
                         node_id=args["id"],
-                        node_type=node_type,
+                        node_type="action",
                         action_id=action_id,
                         display_name=args.get("display_name"),
                         out_params_schema=args.get("out_params_schema"),
                         params=args.get("params") or {},
-                        true_to_node=true_to_node if isinstance(true_to_node, str) else None,
-                        false_to_node=false_to_node if isinstance(false_to_node, str) else None,
+                        parent_node_id=parent_node_id if isinstance(parent_node_id, str) else None,
                     )
                     tool_result = {"status": "ok", "type": "node_added", "node_id": args["id"]}
 
-            elif func_name == "update_node":
+            elif func_name == "add_condition_node":
+                true_to_node = args.get("true_to_node")
+                false_to_node = args.get("false_to_node")
+                parent_node_id = args.get("parent_node_id")
+
+                missing_fields = [
+                    name
+                    for name in ("true_to_node", "false_to_node")
+                    if name not in args
+                ]
+                non_str_fields = [
+                    name
+                    for name, value in (
+                        ("true_to_node", true_to_node),
+                        ("false_to_node", false_to_node),
+                    )
+                    if value is not None and not isinstance(value, str)
+                ]
+
+                if missing_fields or non_str_fields:
+                    tool_result = {
+                        "status": "error",
+                        "message": (
+                            "condition 节点需要提供 true_to_node/false_to_node 字段，值可为节点 id（继续执行）"
+                            "或 null（表示该分支结束），非字符串/未提供会被拒绝。"
+                        ),
+                        "missing_fields": missing_fields,
+                        "invalid_fields": non_str_fields,
+                    }
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tool_call_id,
+                            "content": json.dumps(tool_result, ensure_ascii=False),
+                        }
+                    )
+                    continue
+
+                if parent_node_id is not None and not isinstance(parent_node_id, str):
+                    tool_result = {
+                        "status": "error",
+                        "message": "parent_node_id 需要是字符串或 null。",
+                    }
+                else:
+                    builder.add_node(
+                        node_id=args["id"],
+                        node_type="condition",
+                        action_id=None,
+                        display_name=args.get("display_name"),
+                        out_params_schema=None,
+                        params=args.get("params") or {},
+                        true_to_node=true_to_node if isinstance(true_to_node, str) else None,
+                        false_to_node=false_to_node if isinstance(false_to_node, str) else None,
+                        parent_node_id=parent_node_id if isinstance(parent_node_id, str) else None,
+                    )
+                    tool_result = {"status": "ok", "type": "node_added", "node_id": args["id"]}
+
+            elif func_name in {"update_action_node", "update_condition_node"}:
                 node_id = args.get("id")
                 updates = args.get("updates")
+                parent_node_id = args.get("parent_node_id")
+                expected_type = "action" if func_name == "update_action_node" else "condition"
 
                 if not isinstance(node_id, str):
-                    tool_result = {"status": "error", "message": "update_node 需要提供字符串类型的 id。"}
+                    tool_result = {"status": "error", "message": f"{func_name} 需要提供字符串类型的 id。"}
                 elif node_id not in builder.nodes:
                     tool_result = {"status": "error", "message": f"节点 {node_id} 尚未创建，无法更新。"}
+                elif builder.nodes.get(node_id, {}).get("type") != expected_type:
+                    tool_result = {
+                        "status": "error",
+                        "message": f"节点 {node_id} 类型不是 {expected_type}，无法使用 {func_name}。",
+                    }
+                elif parent_node_id is not None and not isinstance(parent_node_id, str):
+                    tool_result = {
+                        "status": "error",
+                        "message": "parent_node_id 需要是字符串或 null。",
+                    }
                 elif not isinstance(updates, list):
                     tool_result = {
                         "status": "error",
@@ -580,7 +604,15 @@ def plan_workflow_structure_with_llm(
 
                         normalized_updates.append({"op": op, "key": key, "value": value})
 
-                    node_type = builder.nodes.get(node_id, {}).get("type")
+                    if "parent_node_id" in args:
+                        normalized_updates.append(
+                            {
+                                "op": "modify",
+                                "key": "parent_node_id",
+                                "value": parent_node_id,
+                            }
+                        )
+
                     if invalid_entries:
                         tool_result = {
                             "status": "error",
@@ -597,7 +629,7 @@ def plan_workflow_structure_with_llm(
                             "message": "condition 的 true_to_node/false_to_node 只能是节点 id 或 null。",
                             "invalid_fields": invalid_branch_fields,
                         }
-                    elif node_type == "action" and any(
+                    elif expected_type == "action" and any(
                         entry.get("op", "modify") != "remove" and entry.get("key") == "action_id"
                         for entry in normalized_updates
                     ):
