@@ -429,6 +429,8 @@ def _validate_nodes_recursive(
                             source_path = source_ref["__from__"]
                     elif isinstance(source_ref, str):
                         source_path = source_ref
+                    elif isinstance(source_ref, (int, float, bool)):
+                        pass
                     elif source_ref is not None:
                         errors.append(
                             ValidationError(
