@@ -190,3 +190,46 @@ def test_executor_prefers_explicit_branch_over_edges_for_null_target():
     assert "check" in results
     assert "t_branch" not in results
     assert "f_branch" not in results
+
+
+def test_string_null_target_stops_branch():
+    workflow_dict = {
+        "workflow_name": "string_null_branch_demo",
+        "description": "",
+        "nodes": [
+            {"id": "start", "type": "start"},
+            {
+                "id": "check",
+                "type": "condition",
+                "params": {"kind": "equals", "source": True, "value": True},
+                "true_to_node": "null",
+                "false_to_node": "notify",
+            },
+            {
+                "id": "notify",
+                "type": "action",
+                "action_id": "hr.notify_human.v1",
+                "params": {},
+            },
+        ],
+        "edges": [
+            {"from": "start", "to": "check"},
+            {"from": "check", "to": "null", "condition": True},
+            {"from": "check", "to": "notify", "condition": False},
+        ],
+    }
+
+    workflow = Workflow.model_validate(workflow_dict)
+    executor = DynamicActionExecutor(
+        workflow,
+        simulations={
+            "hr.notify_human.v1": {
+                "result": {"status": "simulated", "branch": "notified"}
+            }
+        },
+    )
+
+    results = executor.run()
+
+    assert "check" in results
+    assert "notify" not in results

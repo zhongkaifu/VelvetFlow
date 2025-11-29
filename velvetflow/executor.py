@@ -261,6 +261,8 @@ class DynamicActionExecutor:
             branch_key = "true_to_node" if cond_value else "false_to_node"
             if branch_key in node_def:
                 branch_target = node_def.get(branch_key)
+                if branch_target in {None, "null"}:
+                    return []
                 if isinstance(branch_target, str):
                     return [branch_target]
                 return []
@@ -281,7 +283,7 @@ class DynamicActionExecutor:
                 res.append(e.to_node if hasattr(e, "to_node") else e.get("to"))
             elif cond_label is not None and cond == cond_label:
                 res.append(e.to_node if hasattr(e, "to_node") else e.get("to"))
-        return [r for r in res if r]
+        return [r for r in res if r not in {None, "null"}]
 
     def _render_template(self, value: Any, params: Mapping[str, Any]) -> Any:
         if isinstance(value, str):

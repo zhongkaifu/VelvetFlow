@@ -335,7 +335,7 @@ def _validate_nodes_recursive(
                     )
                     continue
 
-                if target is None:
+                if target is None or target == "null":
                     continue
                 if not isinstance(target, str):
                     errors.append(

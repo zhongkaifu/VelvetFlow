@@ -483,8 +483,11 @@ class Workflow:
 
         if parsed_edges:
             node_ids = {n.id for n in parsed_nodes}
+            special_targets = {"null"}
             for e in parsed_edges:
-                if e.from_node not in node_ids or e.to_node not in node_ids:
+                missing_from = e.from_node not in node_ids
+                missing_to = e.to_node not in node_ids and e.to_node not in special_targets
+                if missing_from or missing_to:
                     raise ValueError(
                         f"边 {e.model_dump(by_alias=True)} 引用了不存在的节点，已知节点: {sorted(node_ids)}"
                     )
