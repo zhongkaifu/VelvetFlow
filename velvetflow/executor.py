@@ -20,6 +20,7 @@ from velvetflow.logging_utils import (
     log_warn,
     use_trace_context,
 )
+from velvetflow.reference_utils import parse_field_path
 from velvetflow.models import Node, ValidationError, Workflow, infer_edges_from_bindings
 from tools import get_registered_tool
 
@@ -416,16 +417,20 @@ class DynamicActionExecutor:
         if field is None or field == "":
             return obj
 
-        parts = field.split(".")
+        try:
+            parts = parse_field_path(field)
+        except Exception:
+            return None
+
         current: Any = obj
         for p in parts:
+            if isinstance(p, int):
+                if isinstance(current, list) and 0 <= p < len(current):
+                    current = current[p]
+                    continue
+                return None
+
             if isinstance(current, list):
-                if p.isdigit():
-                    try:
-                        current = current[int(p)]
-                        continue
-                    except Exception:
-                        return None
                 return None
 
             if isinstance(current, Mapping):

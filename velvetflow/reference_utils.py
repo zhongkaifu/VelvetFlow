@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import Any, List, Union
 
 
 _REFERENCE_PATTERNS = [
@@ -34,3 +34,48 @@ def normalize_reference_path(path: Any) -> Any:
             return match.group("path").strip()
 
     return path
+
+
+def parse_field_path(path: str) -> List[Union[str, int]]:
+    """Split dotted/bracket paths (e.g., ``a[0].b``) into tokens.
+
+    Returns a list of strings and integers representing object keys and list
+    indices. Invalid fragments (such as missing brackets or non-numeric
+    indices) will raise ``ValueError``.
+    """
+
+    if not isinstance(path, str) or not path:
+        raise ValueError("path must be non-empty string")
+
+    tokens: List[Union[str, int]] = []
+
+    for segment in path.split("."):
+        if segment == "":
+            raise ValueError("empty path segment")
+
+        cursor = 0
+        while cursor < len(segment):
+            bracket_pos = segment.find("[", cursor)
+            if bracket_pos == -1:
+                tokens.append(segment[cursor:])
+                cursor = len(segment)
+                continue
+
+            if bracket_pos > cursor:
+                tokens.append(segment[cursor:bracket_pos])
+
+            end_bracket = segment.find("]", bracket_pos)
+            if end_bracket == -1:
+                raise ValueError(f"missing closing bracket in segment '{segment}'")
+
+            index_literal = segment[bracket_pos + 1 : end_bracket]
+            if not index_literal.isdigit():
+                raise ValueError(f"list index must be integer in segment '{segment}'")
+
+            tokens.append(int(index_literal))
+            cursor = end_bracket + 1
+
+        if not tokens:
+            raise ValueError("no tokens parsed from path")
+
+    return tokens
