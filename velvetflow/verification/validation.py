@@ -483,6 +483,7 @@ def _validate_nodes_recursive(
         # 3) loop 节点
         if ntype == "loop":
             body_graph = params.get("body_subgraph") if isinstance(params, Mapping) else None
+            body_exports = body_graph.get("exports") if isinstance(body_graph, Mapping) else None
             if "exports" in params and not isinstance(body_graph, Mapping):
                 errors.append(
                     ValidationError(
@@ -490,6 +491,18 @@ def _validate_nodes_recursive(
                         node_id=nid,
                         field="exports",
                         message="loop 节点定义 exports 时必须提供 body_subgraph。",
+                    )
+                )
+            if isinstance(body_exports, Mapping) and "exports" in params:
+                errors.append(
+                    ValidationError(
+                        code="INVALID_SCHEMA",
+                        node_id=nid,
+                        field="exports",
+                        message=(
+                            "loop 节点的 exports 应定义在 body_subgraph 内，"
+                            "请移除 params.exports 以避免重复。"
+                        ),
                     )
                 )
 
@@ -1075,13 +1088,16 @@ def _get_array_item_schema_from_output(
     nodes_by_id: Dict[str, Dict[str, Any]],
     actions_by_id: Dict[str, Dict[str, Any]],
     loop_body_parents: Optional[Mapping[str, str]] = None,
+    *,
+    skip_path_check: bool = False,
 ) -> Optional[Mapping[str, Any]]:
     normalized_source = normalize_reference_path(source)
-    err = _check_output_path_against_schema(
-        normalized_source, nodes_by_id, actions_by_id, loop_body_parents
-    )
-    if err:
-        return None
+    if not skip_path_check:
+        err = _check_output_path_against_schema(
+            normalized_source, nodes_by_id, actions_by_id, loop_body_parents
+        )
+        if err:
+            return None
 
     try:
         parts = parse_field_path(normalized_source)
@@ -1288,11 +1304,22 @@ def _check_array_item_field(
     actions_by_id: Dict[str, Dict[str, Any]],
     loop_body_parents: Optional[Mapping[str, str]] = None,
 ) -> Optional[str]:
+    normalized_source = normalize_reference_path(source)
+    path_error = _check_output_path_against_schema(
+        normalized_source, nodes_by_id, actions_by_id, loop_body_parents
+    )
+    if path_error:
+        return path_error
+
     item_schema = _get_array_item_schema_from_output(
-        source, nodes_by_id, actions_by_id, loop_body_parents
+        normalized_source,
+        nodes_by_id,
+        actions_by_id,
+        loop_body_parents,
+        skip_path_check=True,
     )
     if not item_schema:
-        return None
+        return f"路径 '{normalized_source}' 不是数组输出，无法访问字段 '{field}'。"
 
     return _schema_path_error(item_schema, [field])
 
