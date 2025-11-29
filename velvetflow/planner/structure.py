@@ -565,6 +565,50 @@ def _prepare_skeleton_for_coverage(
     return _attach_inferred_edges(skeleton)
 
 
+def _find_nodes_without_upstream(workflow: Mapping[str, Any]) -> List[Dict[str, Any]]:
+    nodes = workflow.get("nodes") if isinstance(workflow.get("nodes"), list) else []
+    edges = workflow.get("edges") if isinstance(workflow.get("edges"), list) else []
+
+    indegree = {}
+    for node in nodes:
+        if isinstance(node, Mapping) and isinstance(node.get("id"), str):
+            indegree[node["id"]] = 0
+
+    for edge in edges:
+        if not isinstance(edge, Mapping):
+            continue
+        target = edge.get("to")
+        if isinstance(target, str) and target in indegree:
+            indegree[target] += 1
+
+    dangling: List[Dict[str, Any]] = []
+    for node in nodes:
+        if not isinstance(node, Mapping):
+            continue
+
+        node_id = node.get("id")
+        node_type = node.get("type")
+        if not isinstance(node_id, str) or not isinstance(node_type, str):
+            continue
+
+        if node_type in {"start", "end", "exit"}:
+            continue
+
+        if indegree.get(node_id, 0) == 0:
+            dangling.append(
+                {
+                    "id": node_id,
+                    "type": node_type,
+                    "action_id": node.get("action_id")
+                    if isinstance(node.get("action_id"), str)
+                    else None,
+                    "display_name": node.get("display_name"),
+                }
+            )
+
+    return dangling
+
+
 def _run_coverage_check(
     *,
     nl_requirement: str,
@@ -608,12 +652,26 @@ def _build_coverage_feedback_message(
     )
 
 
+def _build_dependency_feedback_message(
+    *, workflow: Mapping[str, Any], nodes_without_upstream: List[Mapping[str, Any]]
+) -> str:
+    return (
+        "检测到以下节点没有任何上游依赖（不包含 start/end/exit），"
+        "请检查是否遗漏了对相关节点结果的引用或绑定。如果需要，请继续使用规划工具补充；"
+        "如果确认这些节点应该独立存在，请在 finalize_workflow.notes 中简单说明原因。\n"
+        f"- nodes_without_upstream: {json.dumps(nodes_without_upstream, ensure_ascii=False)}\n"
+        "当前 workflow 供参考（含推导的 edges）：\n"
+        f"{json.dumps(workflow, ensure_ascii=False)}"
+    )
+
+
 def plan_workflow_structure_with_llm(
     nl_requirement: str,
     search_service: HybridActionSearchService,
     action_registry: List[Dict[str, Any]],
     max_rounds: int = 10,
     max_coverage_refine_rounds: int = 2,
+    max_dependency_refine_rounds: int = 1,
 ) -> Dict[str, Any]:
     client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
     builder = WorkflowBuilder()
@@ -655,6 +713,7 @@ def plan_workflow_structure_with_llm(
     latest_skeleton: Dict[str, Any] = {}
     latest_coverage: Dict[str, Any] = {}
     coverage_retry = 0
+    dependency_retry = 0
     total_rounds = max_rounds + max_coverage_refine_rounds
 
     # ---------- 结构规划（多轮 tool-calling） ----------
@@ -908,11 +967,14 @@ def plan_workflow_structure_with_llm(
                 latest_skeleton = skeleton
                 latest_coverage = coverage
                 is_covered = bool(coverage.get("is_covered", False))
+                nodes_without_upstream = _find_nodes_without_upstream(skeleton)
+                needs_dependency_review = bool(nodes_without_upstream)
                 tool_result = {
                     "status": "ok" if is_covered else "needs_more_coverage",
                     "type": "finalized",
                     "notes": args.get("notes"),
                     "coverage": coverage,
+                    "nodes_without_upstream": nodes_without_upstream,
                 }
                 messages.append(
                     {
@@ -922,9 +984,27 @@ def plan_workflow_structure_with_llm(
                     }
                 )
 
+                if needs_dependency_review:
+                    dependency_retry += 1
+                    log_info(
+                        "[Planner] 存在无上游依赖的节点，将提示 LLM 检查是否遗漏引用。",
+                        f"nodes={nodes_without_upstream}",
+                    )
+                    dependency_feedback = _build_dependency_feedback_message(
+                        workflow=skeleton, nodes_without_upstream=nodes_without_upstream
+                    )
+                    messages.append({"role": "system", "content": dependency_feedback})
+
                 if is_covered:
-                    finalized = True
-                    log_success("[Planner] 覆盖度检查通过，结束结构规划。")
+                    if needs_dependency_review and dependency_retry <= max_dependency_refine_rounds:
+                        log_info("🔧 覆盖度通过，但需要进一步检查无上游依赖的节点，继续规划。")
+                    else:
+                        finalized = True
+                        log_success("[Planner] 覆盖度检查通过，结束结构规划。")
+                        if needs_dependency_review and dependency_retry > max_dependency_refine_rounds:
+                            log_warn(
+                                "已超过无上游依赖节点检查次数，继续后续流程。"
+                            )
                 else:
                     coverage_retry += 1
                     log_info("🔧 覆盖度检查未通过，将继续使用规划工具完善。")
