@@ -188,15 +188,16 @@ def infer_edges_from_bindings(nodes: Iterable[Any]) -> List[Dict[str, Any]]:
 
 @dataclass
 class Node:
-    """A workflow node definition."""
+    """Base workflow node definition.
+
+    Concrete node types derive from this class to attach their own fields.
+    """
 
     id: str
     type: str
     action_id: Optional[str] = None
     display_name: Optional[str] = None
     params: Dict[str, Any] = field(default_factory=dict)
-    true_to_node: Optional[str] = None
-    false_to_node: Optional[str] = None
 
     @classmethod
     def model_validate(cls, data: Any) -> "Node":
@@ -230,21 +231,57 @@ class Node:
 
         params = data.get("params") if isinstance(data.get("params"), Mapping) else {}
 
-        true_to_node = data.get("true_to_node")
-        false_to_node = data.get("false_to_node")
-        if true_to_node is not None and not isinstance(true_to_node, str):
-            errors.append({"loc": ("true_to_node",), "msg": "true_to_node 必须是字符串"})
-        if false_to_node is not None and not isinstance(false_to_node, str):
-            errors.append({"loc": ("false_to_node",), "msg": "false_to_node 必须是字符串"})
+        action_id = data.get("action_id")
+        if action_id is not None and not isinstance(action_id, str):
+            errors.append({"loc": ("action_id",), "msg": "action_id 必须是字符串"})
+
+        if node_type == "action":
+            for branch_field in ("true_to_node", "false_to_node"):
+                if branch_field in data and data.get(branch_field) is not None:
+                    errors.append(
+                        {
+                            "loc": (branch_field,),
+                            "msg": "action 节点不支持 true/false 分支字段",
+                        }
+                    )
+            if errors:
+                raise PydanticValidationError(errors)
+
+            return ActionNode(
+                id=node_id,
+                action_id=action_id if isinstance(action_id, str) else None,
+                display_name=data.get("display_name"),
+                params=dict(params),
+            )
+
+        if node_type == "condition":
+            true_to_node = data.get("true_to_node")
+            false_to_node = data.get("false_to_node")
+            if true_to_node is not None and not isinstance(true_to_node, str):
+                errors.append({"loc": ("true_to_node",), "msg": "true_to_node 必须是字符串"})
+            if false_to_node is not None and not isinstance(false_to_node, str):
+                errors.append({"loc": ("false_to_node",), "msg": "false_to_node 必须是字符串"})
+
+            if errors:
+                raise PydanticValidationError(errors)
+
+            return ConditionNode(
+                id=node_id,
+                display_name=data.get("display_name"),
+                params=dict(params),
+                true_to_node=true_to_node if isinstance(true_to_node, str) else None,
+                false_to_node=false_to_node if isinstance(false_to_node, str) else None,
+            )
+
+        if errors:
+            raise PydanticValidationError(errors)
 
         return cls(
             id=node_id,
             type=node_type,
-            action_id=data.get("action_id"),
+            action_id=action_id if isinstance(action_id, str) else None,
             display_name=data.get("display_name"),
             params=dict(params),
-            true_to_node=true_to_node if isinstance(true_to_node, str) else None,
-            false_to_node=false_to_node if isinstance(false_to_node, str) else None,
         )
 
     def model_dump(self, *, by_alias: bool = False) -> Dict[str, Any]:
@@ -254,9 +291,31 @@ class Node:
             "action_id": self.action_id,
             "display_name": self.display_name,
             "params": self.params,
+        }
+
+
+@dataclass
+class ActionNode(Node):
+    """Executable action node."""
+
+    type: Literal["action"] = "action"
+
+
+@dataclass
+class ConditionNode(Node):
+    """Branching condition node."""
+
+    type: Literal["condition"] = "condition"
+    true_to_node: Optional[str] = None
+    false_to_node: Optional[str] = None
+
+    def model_dump(self, *, by_alias: bool = False) -> Dict[str, Any]:
+        data = super().model_dump(by_alias=by_alias)
+        data.update({
             "true_to_node": self.true_to_node,
             "false_to_node": self.false_to_node,
-        }
+        })
+        return data
 
 
 @dataclass
