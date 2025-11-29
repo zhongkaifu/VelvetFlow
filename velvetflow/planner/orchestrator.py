@@ -442,6 +442,66 @@ def _apply_local_repairs_for_missing_params(
         return None
 
 
+def _apply_local_repairs_for_schema_mismatch(
+    current_workflow: Workflow,
+    validation_errors: List[ValidationError],
+    action_registry: List[Dict[str, Any]],
+) -> Optional[Workflow]:
+    """Coerce obvious类型不匹配的 action 参数，减少进入 LLM 的次数。"""
+
+    actions_by_id = _index_actions_by_id(action_registry)
+    workflow_dict = current_workflow.model_dump(by_alias=True)
+    nodes: List[Dict[str, Any]] = [
+        n for n in workflow_dict.get("nodes", []) if isinstance(n, Mapping)
+    ]
+    nodes_by_id: Dict[str, Dict[str, Any]] = {n.get("id"): n for n in nodes}
+
+    changed = False
+
+    for err in validation_errors:
+        if err.code != "SCHEMA_MISMATCH" or not err.node_id or not err.field:
+            continue
+
+        node = nodes_by_id.get(err.node_id)
+        if not node or node.get("type") != "action":
+            continue
+
+        action_id = node.get("action_id")
+        action_def = actions_by_id.get(action_id)
+        if not action_def:
+            continue
+
+        properties = (
+            action_def.get("arg_schema", {}).get("properties")
+            if isinstance(action_def, Mapping)
+            else None
+        )
+        if not isinstance(properties, Mapping):
+            continue
+
+        field_schema = properties.get(err.field)
+        if not isinstance(field_schema, Mapping):
+            continue
+
+        params = node.get("params")
+        if not isinstance(params, dict) or err.field not in params:
+            continue
+
+        coerced = _coerce_value_to_schema_type(params[err.field], field_schema)
+        if coerced is not None and coerced != params[err.field]:
+            params[err.field] = coerced
+            changed = True
+
+    if not changed:
+        return None
+
+    try:
+        return Workflow.model_validate(workflow_dict)
+    except Exception as exc:  # noqa: BLE001
+        log_warn(f"[AutoRepair] schema 类型矫正失败：{exc}")
+        return None
+
+
 def _ensure_actions_registered_or_repair(
     workflow: Workflow,
     action_registry: List[Dict[str, Any]],
@@ -785,8 +845,14 @@ def plan_workflow_with_two_pass(
                     validation_errors=errors,
                     action_registry=action_registry,
                 )
+            if locally_repaired is None:
+                locally_repaired = _apply_local_repairs_for_schema_mismatch(
+                    current_workflow=current_workflow,
+                    validation_errors=errors,
+                    action_registry=action_registry,
+                )
             if locally_repaired is not None:
-                log_info("[AutoRepair] 检测到可预测的字段缺失/多余问题，已在本地修正并重新校验。")
+                log_info("[AutoRepair] 检测到可预测的字段缺失/多余/类型不匹配问题，已在本地修正并重新校验。")
                 current_workflow = locally_repaired
                 last_good_workflow = current_workflow
 
