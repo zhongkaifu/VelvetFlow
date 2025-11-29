@@ -3,7 +3,7 @@
 import json
 from collections import deque
 from contextlib import contextmanager
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Any, Dict, List, Mapping, Optional, Set
 
 from velvetflow.loop_dsl import build_loop_output_schema, index_loop_body_nodes
 from velvetflow.models import ValidationError, Workflow
@@ -1212,12 +1212,7 @@ def _check_output_path_against_schema(
     return None
 
 
-def _schema_path_error(schema: Mapping[str, Any], fields: List[Any]) -> Optional[str]:
-    """Check whether a dotted/Indexed field path exists in a JSON schema."""
-
-    if not isinstance(schema, Mapping):
-        return "output_schema 不是对象，无法校验字段路径。"
-
+def _normalize_field_tokens(fields: List[Any]) -> List[Any]:
     normalized_fields: List[Any] = []
     for f in fields:
         if isinstance(f, str):
@@ -1227,6 +1222,83 @@ def _schema_path_error(schema: Mapping[str, Any], fields: List[Any]) -> Optional
                 normalized_fields.append(f)
         else:
             normalized_fields.append(f)
+
+    return normalized_fields
+
+
+def _get_builtin_field_schema(schema: Mapping[str, Any], field: str) -> Optional[Mapping[str, Any]]:
+    if not isinstance(schema, Mapping):
+        return None
+
+    if field != "length":
+        return None
+
+    typ = schema.get("type")
+    types: Set[Any] = set()
+    if isinstance(typ, list):
+        types.update(typ)
+    elif typ is not None:
+        types.add(typ)
+
+    supports_length = not types or any(t in {"array", "object", "string"} for t in types)
+    if supports_length:
+        return {"type": "integer"}
+
+    return None
+
+
+def _walk_schema_with_tokens(
+    schema: Mapping[str, Any], normalized_fields: List[Any]
+) -> Optional[Mapping[str, Any]]:
+    if not isinstance(schema, Mapping):
+        return None
+
+    current: Mapping[str, Any] = schema
+    idx = 0
+    while idx < len(normalized_fields):
+        name = normalized_fields[idx]
+        typ = current.get("type")
+
+        if isinstance(name, int):
+            if typ != "array":
+                return None
+            current = current.get("items") or {}
+            idx += 1
+            continue
+
+        builtin_schema = _get_builtin_field_schema(current, name)
+        if builtin_schema is not None:
+            current = builtin_schema
+            idx += 1
+            continue
+
+        if typ == "array":
+            current = current.get("items") or {}
+            continue
+
+        if typ == "object" or typ is None:
+            props = current.get("properties") or {}
+            current = props.get(name)
+            if current is None:
+                return None
+            idx += 1
+            continue
+
+        if idx == len(normalized_fields) - 1:
+            return current
+
+        return None
+
+    return current
+
+
+def _schema_path_error(schema: Mapping[str, Any], fields: List[Any]) -> Optional[str]:
+    """Check whether a dotted/Indexed field path exists in a JSON schema."""
+
+    if not isinstance(schema, Mapping):
+        return "output_schema 不是对象，无法校验字段路径。"
+
+    normalized_fields = _normalize_field_tokens(fields)
 
     current: Mapping[str, Any] = schema
     idx = 0
@@ -1238,6 +1310,12 @@ def _schema_path_error(schema: Mapping[str, Any], fields: List[Any]) -> Optional
             if typ != "array":
                 return f"字段路径 '{'.'.join(map(str, normalized_fields))}' 与 schema 类型 '{typ}' 不匹配（期望 array）。"
             current = current.get("items") or {}
+            idx += 1
+            continue
+
+        builtin_schema = _get_builtin_field_schema(current, name)
+        if builtin_schema is not None:
+            current = builtin_schema
             idx += 1
             continue
 
@@ -1366,6 +1444,41 @@ def _get_array_item_schema_from_output(
         return None
 
     return (schema.get(first_field) or {}).get("items")
+
+
+def _get_output_schema_at_path(
+    source: str,
+    nodes_by_id: Dict[str, Dict[str, Any]],
+    actions_by_id: Dict[str, Dict[str, Any]],
+    loop_body_parents: Optional[Mapping[str, str]] = None,
+) -> Optional[Mapping[str, Any]]:
+    normalized_source = normalize_reference_path(source)
+    try:
+        parts = parse_field_path(normalized_source)
+    except Exception:
+        return None
+
+    if len(parts) < 2 or parts[0] != "result_of":
+        return None
+
+    node_id = parts[1]
+    rest_path = parts[2:]
+    node = nodes_by_id.get(node_id)
+    node_type = node.get("type") if node else None
+
+    if node_type == "loop":
+        params = node.get("params") if isinstance(node, Mapping) else {}
+        loop_schema = build_loop_output_schema(params or {})
+        if not loop_schema:
+            return None
+
+        effective_path = rest_path[1:] if rest_path and rest_path[0] == "exports" else rest_path
+        return _walk_schema_with_tokens(
+            loop_schema, _normalize_field_tokens(list(effective_path))
+        )
+
+    schema_obj = _get_node_output_schema(node, actions_by_id) or {}
+    return _walk_schema_with_tokens(schema_obj, _normalize_field_tokens(list(rest_path)))
 
 
 def _get_field_schema_from_item(
@@ -1538,6 +1651,24 @@ def _check_array_item_field(
     )
     if path_error:
         return path_error
+
+    if field == "length":
+        container_schema = _get_output_schema_at_path(
+            normalized_source, nodes_by_id, actions_by_id, loop_body_parents
+        )
+        if container_schema is None:
+            item_schema = _get_array_item_schema_from_output(
+                normalized_source,
+                nodes_by_id,
+                actions_by_id,
+                loop_body_parents,
+                skip_path_check=True,
+            )
+            if item_schema is not None:
+                container_schema = {"type": "array", "items": item_schema}
+
+        if _get_builtin_field_schema(container_schema or {}, field) is not None:
+            return None
 
     item_schema = _get_array_item_schema_from_output(
         normalized_source,
