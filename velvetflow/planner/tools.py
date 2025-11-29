@@ -196,8 +196,26 @@ PLANNER_TOOLS = [
                     "display_name": {"type": "string"},
                     "params": {
                         "type": "object",
-                        "description": "condition 参数，仅支持 kind/source/field/value/threshold/min/max/bands。",
-                        "additionalProperties": True,
+                        "description": (
+                            "condition 参数，仅支持 kind/source/field/value/threshold/min/max/bands，"
+                            "多余字段将被忽略并视为非法。"
+                        ),
+                        "properties": {
+                            "kind": {"type": "string"},
+                            "source": {
+                                "anyOf": [
+                                    {"type": "string"},
+                                    {"type": "object", "additionalProperties": True},
+                                ]
+                            },
+                            "field": {"type": ["string", "null"]},
+                            "value": {},
+                            "threshold": {},
+                            "min": {},
+                            "max": {},
+                            "bands": {"type": ["array", "object"]},
+                        },
+                        "additionalProperties": False,
                     },
                     "true_to_node": {
                         "type": ["string", "null"],
@@ -293,8 +311,31 @@ PLANNER_TOOLS = [
                     "display_name": {"type": "string"},
                     "params": {
                         "type": "object",
-                        "description": "循环参数，仅支持 loop_kind/source/condition/item_alias/body_subgraph/exports 字段。",
-                        "additionalProperties": True,
+                        "description": (
+                            "循环参数，仅支持 loop_kind/source/condition/item_alias/body_subgraph/exports 字段，"
+                            "多余字段将被忽略并视为非法。"
+                        ),
+                        "properties": {
+                            "loop_kind": {"type": "string", "enum": ["for_each", "while"]},
+                            "source": {
+                                "description": "for_each 迭代来源，支持绑定或 result_of 路径。",
+                                "anyOf": [
+                                    {"type": "string"},
+                                    {"type": "object", "additionalProperties": True},
+                                ],
+                            },
+                            "condition": {
+                                "description": "while 循环退出条件，支持绑定或 result_of 路径。",
+                                "anyOf": [
+                                    {"type": "string"},
+                                    {"type": "object", "additionalProperties": True},
+                                ],
+                            },
+                            "item_alias": {"type": "string"},
+                            "body_subgraph": {"type": "object"},
+                            "exports": {"type": "object"},
+                        },
+                        "additionalProperties": False,
                     },
                     "sub_graph_nodes": {
                         "type": "array",
