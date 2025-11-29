@@ -498,3 +498,125 @@ def test_while_loop_requires_condition():
         for e in errors
     )
 
+
+def test_loop_exports_should_not_duplicate_outside_body():
+    """loop exports 只应在 body_subgraph 内声明，重复定义会导致校验失败。"""
+
+    workflow = {
+        "workflow_name": "重复 exports 示例",
+        "nodes": [
+            {
+                "id": "search_news",
+                "type": "action",
+                "action_id": "common.search_news.v1",
+                "params": {"query": "Nvidia"},
+            },
+            {
+                "id": "loop_check_temperatures",
+                "type": "loop",
+                "params": {
+                    "loop_kind": "for_each",
+                    "source": "result_of.search_news.results",
+                    "item_alias": "news_item",
+                    "body_subgraph": {
+                        "nodes": [
+                            {
+                                "id": "summarize_news",
+                                "type": "action",
+                                "action_id": "common.summarize.v1",
+                                "params": {"text": "fixed"},
+                            },
+                            {"id": "exit", "type": "end"},
+                        ],
+                        "edges": [{"from": "summarize_news", "to": "exit"}],
+                        "entry": "summarize_news",
+                        "exit": "exit",
+                        "exports": {
+                            "items": {"from_node": "summarize_news", "fields": ["summary"]},
+                        },
+                    },
+                    "exports": {
+                        "items": {"from_node": "summarize_news", "fields": ["summary"]},
+                    },
+                },
+            },
+        ],
+        "edges": [{"from": "search_news", "to": "loop_check_temperatures"}],
+    }
+
+    errors = validate_workflow_data(workflow, ACTION_REGISTRY)
+
+    assert any(
+        e.code == "INVALID_SCHEMA"
+        and e.node_id == "loop_check_temperatures"
+        and e.field == "exports"
+        for e in errors
+    )
+
+
+def test_condition_cannot_reference_missing_loop_export_field():
+    """条件节点引用 loop exports 下不存在的字段时应报错。"""
+
+    workflow = {
+        "workflow_name": "体温检测",
+        "nodes": [
+            {
+                "id": "fetch_news",
+                "type": "action",
+                "action_id": "common.search_news.v1",
+                "params": {"query": "health"},
+            },
+            {
+                "id": "loop_check_temperatures",
+                "type": "loop",
+                "params": {
+                    "loop_kind": "for_each",
+                    "source": "result_of.fetch_news.results",
+                    "item_alias": "news_item",
+                    "body_subgraph": {
+                        "nodes": [
+                            {
+                                "id": "summarize_news",
+                                "type": "action",
+                                "action_id": "common.summarize.v1",
+                                "params": {"text": "stable"},
+                            },
+                            {"id": "exit", "type": "end"},
+                        ],
+                        "edges": [{"from": "summarize_news", "to": "exit"}],
+                        "entry": "summarize_news",
+                        "exit": "exit",
+                    },
+                    "exports": {
+                        "items": {"from_node": "summarize_news", "fields": ["summary"]},
+                    },
+                },
+            },
+            {
+                "id": "condition_any_warning",
+                "type": "condition",
+                "true_to_node": None,
+                "false_to_node": None,
+                "params": {
+                    "kind": "any_greater_than",
+                    "source": "result_of.loop_check_temperatures.exports",
+                    "field": "status",
+                    "threshold": 1,
+                },
+            },
+        ],
+        "edges": [
+            {"from": "fetch_news", "to": "loop_check_temperatures"},
+            {"from": "loop_check_temperatures", "to": "condition_any_warning"},
+        ],
+    }
+
+    errors = validate_workflow_data(workflow, ACTION_REGISTRY)
+
+    assert any(
+        e.code == "SCHEMA_MISMATCH"
+        and e.node_id == "condition_any_warning"
+        and e.field == "field"
+        for e in errors
+    )
+
