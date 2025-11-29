@@ -221,6 +221,7 @@ def _validate_nodes_recursive(
                                             nodes_by_id,
                                             actions_by_id,
                                             loop_body_parents,
+                                            alias_schemas,
                                         )
                                         if item_err:
                                             errors.append(
@@ -444,7 +445,12 @@ def _validate_nodes_recursive(
                         fld = params.get("field")
                         if isinstance(source_path, str) and isinstance(fld, str):
                             item_err = _check_array_item_field(
-                                source_path, fld, nodes_by_id, actions_by_id
+                                source_path,
+                                fld,
+                                nodes_by_id,
+                                actions_by_id,
+                                loop_body_parents,
+                                alias_schemas,
                             )
                             if item_err:
                                 errors.append(
@@ -1334,8 +1340,14 @@ def _check_array_item_field(
     nodes_by_id: Dict[str, Dict[str, Any]],
     actions_by_id: Dict[str, Dict[str, Any]],
     loop_body_parents: Optional[Mapping[str, str]] = None,
+    alias_schemas: Optional[Mapping[str, Mapping[str, Any]]] = None,
 ) -> Optional[str]:
     normalized_source = normalize_reference_path(source)
+
+    alias_schema = (alias_schemas or {}).get(normalized_source)
+    if alias_schema:
+        return _schema_path_error(alias_schema, [field])
+
     path_error = _check_output_path_against_schema(
         normalized_source, nodes_by_id, actions_by_id, loop_body_parents
     )
