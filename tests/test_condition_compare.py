@@ -33,12 +33,14 @@ def _build_workflow(condition_params, true_node_id="t_branch", false_node_id="f_
     )
 
 
-def test_condition_expression_executes_true_branch():
+def test_condition_compare_executes_true_branch():
     workflow = _build_workflow(
         {
-            "kind": "expression",
-            "source": [1, 2, 3, 4],
-            "expression": "len(value) >= 4",
+            "kind": "compare",
+            "source": {"score": 8},
+            "field": "score",
+            "op": ">=",
+            "value": 5,
         }
     )
 

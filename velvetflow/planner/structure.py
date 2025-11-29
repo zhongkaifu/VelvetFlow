@@ -30,6 +30,24 @@ from velvetflow.planner.workflow_builder import (
 from velvetflow.search import HybridActionSearchService
 from velvetflow.models import infer_edges_from_bindings
 
+
+CONDITION_ALLOWED_KINDS = {
+    "list_not_empty",
+    "any_greater_than",
+    "equals",
+    "contains",
+    "not_equals",
+    "greater_than",
+    "less_than",
+    "between",
+    "all_less_than",
+    "is_empty",
+    "not_empty",
+    "is_not_empty",
+    "multi_band",
+    "compare",
+}
+
 def _attach_inferred_edges(workflow: Dict[str, Any]) -> Dict[str, Any]:
     """Rebuild derived edges so LLMs can see the implicit wiring."""
 
@@ -597,26 +615,47 @@ def plan_workflow_structure_with_llm(
                 true_to_node = args.get("true_to_node")
                 false_to_node = args.get("false_to_node")
                 parent_node_id = args.get("parent_node_id")
+                condition_kind = args.get("kind")
+                params = args.get("params")
 
                 missing_fields = [
                     name
-                    for name in ("true_to_node", "false_to_node")
+                    for name in ("kind", "true_to_node", "false_to_node")
                     if name not in args
                 ]
                 non_str_fields = [
                     name
                     for name, value in (
+                        ("kind", condition_kind),
                         ("true_to_node", true_to_node),
                         ("false_to_node", false_to_node),
                     )
                     if value is not None and not isinstance(value, str)
                 ]
 
+                params_error: Optional[Dict[str, Any]] = None
+                normalized_params: Dict[str, Any] = {}
+                if isinstance(params, Mapping):
+                    normalized_params = dict(params)
+                    params_kind = params.get("kind")
+                    if params_kind is not None and params_kind != condition_kind:
+                        params_error = {
+                            "status": "error",
+                            "message": "params.kind 与 kind 参数不一致，请确保两者相同。",
+                            "params_kind": params_kind,
+                            "kind": condition_kind,
+                        }
+                elif params is not None:
+                    params_error = {
+                        "status": "error",
+                        "message": "condition 节点的 params 需要是对象。",
+                    }
+
                 if missing_fields or non_str_fields:
                     tool_result = {
                         "status": "error",
                         "message": (
-                            "condition 节点需要提供 true_to_node/false_to_node 字段，值可为节点 id（继续执行）"
+                            "condition 节点需要提供 kind 以及 true_to_node/false_to_node 字段，分支跳转可为节点 id（继续执行）"
                             "或 null（表示该分支结束），非字符串/未提供会被拒绝。"
                         ),
                         "missing_fields": missing_fields,
@@ -631,19 +670,29 @@ def plan_workflow_structure_with_llm(
                     )
                     continue
 
-                if parent_node_id is not None and not isinstance(parent_node_id, str):
+                if not isinstance(condition_kind, str) or condition_kind not in CONDITION_ALLOWED_KINDS:
+                    tool_result = {
+                        "status": "error",
+                        "message": "condition 节点需要提供合法的 kind。",
+                        "invalid_fields": ["kind"],
+                        "allowed_kinds": sorted(CONDITION_ALLOWED_KINDS),
+                    }
+                elif params_error:
+                    tool_result = params_error
+                elif parent_node_id is not None and not isinstance(parent_node_id, str):
                     tool_result = {
                         "status": "error",
                         "message": "parent_node_id 需要是字符串或 null。",
                     }
                 else:
+                    normalized_params["kind"] = condition_kind
                     builder.add_node(
                         node_id=args["id"],
                         node_type="condition",
                         action_id=None,
                         display_name=args.get("display_name"),
                         out_params_schema=None,
-                        params=args.get("params") or {},
+                        params=normalized_params,
                         true_to_node=true_to_node if isinstance(true_to_node, str) else None,
                         false_to_node=false_to_node if isinstance(false_to_node, str) else None,
                         parent_node_id=parent_node_id if isinstance(parent_node_id, str) else None,
