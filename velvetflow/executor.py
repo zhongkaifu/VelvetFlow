@@ -1185,7 +1185,11 @@ class DynamicActionExecutor:
                 if isinstance(item_alias, str) and item_alias:
                     loop_ctx[item_alias] = item
                 loop_binding = BindingContext(
-                    self.workflow, binding_ctx.results, extra_nodes=extra_node_models, loop_ctx=loop_ctx
+                    self.workflow,
+                    binding_ctx.results,
+                    extra_nodes=extra_node_models,
+                    loop_ctx=loop_ctx,
+                    loop_id=node.get("id"),
                 )
                 self._execute_graph(
                     {
@@ -1240,7 +1244,11 @@ class DynamicActionExecutor:
                     "accumulator": accumulator,
                 }
                 loop_binding = BindingContext(
-                    self.workflow, binding_ctx.results, extra_nodes=extra_node_models, loop_ctx=loop_ctx
+                    self.workflow,
+                    binding_ctx.results,
+                    extra_nodes=extra_node_models,
+                    loop_ctx=loop_ctx,
+                    loop_id=node.get("id"),
                 )
                 self._execute_graph(
                     {
