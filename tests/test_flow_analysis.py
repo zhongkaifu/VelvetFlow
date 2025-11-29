@@ -82,7 +82,7 @@ def test_property_and_security_checks():
     assert "PROPERTY_VIOLATION" in codes
 
 
-def test_unused_output_is_reported():
+def test_unused_output_is_allowed():
     actions = [{"action_id": "noop", "arg_schema": {}, "output_schema": {}}]
     workflow = {
         "nodes": [
@@ -99,4 +99,4 @@ def test_unused_output_is_reported():
     analyzer = WorkflowStaticAnalyzer(actions)
     issues = analyzer.analyze(workflow)
 
-    assert any(err.code == "DATA_FLOW_VIOLATION" for err in issues)
+    assert not any(err.code == "DATA_FLOW_VIOLATION" for err in issues)

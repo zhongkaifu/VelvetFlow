@@ -1,14 +1,14 @@
 """Control/data-flow and property analysis for workflows.
 
 This module applies compiler-inspired static analysis to detect structural
-problems (dead cycles, missing exits), data-flow smells (unused outputs,
-unsatisfied dependencies), non-functional contract violations (timeouts,
+problems (dead cycles, missing exits), data-flow smells (unsatisfied
+dependencies), non-functional contract violations (timeouts,
 retries/idempotency), and simple security/compliance risks (sensitive data
 leaking to external domains without explicit opt-in).
 """
 from __future__ import annotations
 
-from collections import defaultdict, deque
+from collections import defaultdict
 from typing import Any, Dict, Iterable, List, Mapping, MutableMapping, Optional, Sequence, Tuple
 
 from velvetflow.dsl_spec import BindingLexer
@@ -156,34 +156,6 @@ class WorkflowStaticAnalyzer:
     ) -> List[ValidationError]:
         issues: List[ValidationError] = []
 
-        adjacency: Dict[str, List[str]] = defaultdict(list)
-        inbound: Dict[str, int] = defaultdict(int)
-        for src, dst in edges:
-            adjacency[src].append(dst)
-            inbound[dst] += 1
-
-        reachable = self._reachable_from_roots(nodes_by_id, adjacency, inbound)
-
-        consumers: MutableMapping[str, int] = defaultdict(int)
-        for src, dst in edges:
-            if dst in nodes_by_id:
-                consumers[src] += 1
-
-        implicit_outputs = {"end", "loop"}
-        for nid, node in nodes_by_id.items():
-            if nid not in reachable:
-                continue
-            ntype = node.get("type")
-            if consumers.get(nid, 0) == 0 and ntype not in implicit_outputs:
-                issues.append(
-                    ValidationError(
-                        code="DATA_FLOW_VIOLATION",
-                        node_id=nid,
-                        field=None,
-                        message="节点输出未被任何下游消费，可能是冗余或遗漏了依赖。",
-                    )
-                )
-
         for nid, node in nodes_by_id.items():
             params = node.get("params") if isinstance(node, Mapping) else None
             for src in self._iter_binding_sources(params):
@@ -201,26 +173,6 @@ class WorkflowStaticAnalyzer:
                         )
 
         return issues
-
-    def _reachable_from_roots(
-        self,
-        nodes_by_id: Mapping[str, Mapping[str, Any]],
-        adjacency: Mapping[str, List[str]],
-        inbound: Mapping[str, int],
-    ) -> set[str]:
-        roots = [nid for nid, n in nodes_by_id.items() if n.get("type") == "start"]
-        if not roots:
-            roots = [nid for nid in nodes_by_id if inbound.get(nid, 0) == 0]
-        dq = deque(roots)
-        reachable: set[str] = set()
-        while dq:
-            nid = dq.popleft()
-            if nid in reachable:
-                continue
-            reachable.add(nid)
-            for nxt in adjacency.get(nid, []):
-                dq.append(nxt)
-        return reachable
 
     def _iter_binding_sources(self, params: Any) -> Iterable[str]:
         if isinstance(params, Mapping):
