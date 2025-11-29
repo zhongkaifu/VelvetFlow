@@ -1066,7 +1066,10 @@ class DynamicActionExecutor:
         accumulator = params.get("accumulator") or {}
         max_iterations = params.get("max_iterations") or 100
         iterations: List[Dict[str, Any]] = []
-        exports = params.get("exports") if isinstance(params, Mapping) else {}
+        body_exports = (
+            body_graph.get("exports") if isinstance(body_graph, Mapping) else None
+        )
+        exports = body_exports if isinstance(body_exports, Mapping) else params.get("exports")
         items_spec = exports.get("items") if isinstance(exports, Mapping) else None
         aggregates_spec = exports.get("aggregates") if isinstance(exports, Mapping) else None
         export_items: List[Dict[str, Any]] = []

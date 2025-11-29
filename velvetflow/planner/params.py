@@ -130,7 +130,16 @@ def _summarize_node_outputs(
     node: Node, action_schemas: Mapping[str, Dict[str, Any]]
 ) -> List[str]:
     if node.type == "loop":
-        exports = node.params.get("exports") if isinstance(node.params, Mapping) else {}
+        body_graph = (
+            node.params.get("body_subgraph") if isinstance(node.params, Mapping) else None
+        )
+        exports = (
+            body_graph.get("exports")
+            if isinstance(body_graph, Mapping)
+            else node.params.get("exports")
+            if isinstance(node.params, Mapping)
+            else {}
+        )
         fields: List[str] = []
         if isinstance(exports, Mapping):
             items = exports.get("items")
