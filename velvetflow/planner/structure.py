@@ -1205,6 +1205,10 @@ def plan_workflow_structure_with_llm(
                 if has_validation_errors:
                     validation_retry += 1
                     log_warn("[Planner] 工作流校验未通过，将错误反馈给 LLM 继续修正。")
+                    log_json(
+                        "Workflow 校验错误详情",
+                        [asdict(err) for err in validation_errors],
+                    )
                     validation_feedback = _build_validation_feedback_message(
                         errors=validation_errors, workflow=skeleton
                     )
