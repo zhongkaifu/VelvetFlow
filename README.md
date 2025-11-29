@@ -33,6 +33,8 @@ VelvetFlow (repo root)
   - `verification/validation.py` 做最终静态校验（必填字段、节点连通性、Schema 对齐）；失败则多轮调用修复直到通过或达到上限。
 - **DSL 模型与校验**：`models.py` 定义 Node/Edge/Workflow，并校验节点类型、边引用合法性、loop 子图 Schema 等；提供 `ValidationError` 以在修复阶段统一描述错误。
 - **参数绑定 DSL**：`bindings.py` 支持 `__from__` 引用上游结果，`__agg__` 支持 `identity/count/count_if/format_join/filter_map/pipeline`，并校验引用路径是否存在于动作输出/输入或 loop exports。
+- **编译式 IR 统一与优化**：`velvetflow/ir.py` 将 JSON/YAML/DSL/GUI 前端描述归一为中间表示（IR），在执行前进行常量折叠、公共子表达式消除、纯净节点裁剪，并计算可并行拓扑层级；同时提供 Argo/Airflow/K8s/自研执行器的目标清单生成，减少多端编排重复劳动。
+- **静态控制/数据流与安全分析**：`verification/flow_analysis.py` 基于编译原理的强连通分量、数据流与属性检查，检测无出口循环、死路、冗余输出、重试/幂等性冲突以及敏感数据跨域泄漏风险。
 - **执行器**：`executor.py` 的 `DynamicActionExecutor` 会先校验 action_id 是否在注册表中，再执行拓扑排序确保连通；支持 condition 节点（如 list_not_empty/equals/contains/greater_than/between 等）与 loop 节点（body_subgraph + exports.items/aggregates 收集迭代与聚合结果），并结合 `simulation_data.json` 模拟动作返回。日志输出使用 `logging_utils.py`。
 - **可视化**：`visualization.py` 提供 `render_workflow_dag`，支持 Unicode 字体回退，将 Workflow 渲染为 JPEG DAG。
 
@@ -78,7 +80,7 @@ VelvetFlow (repo root)
 下面先将原本的一步式描述拆分为更细的流水线，再用流程图展示端到端构建：
 
 1. **需求接收与环境准备**：获取自然语言需求，并加载业务动作库以初始化混合检索服务。
-2. **结构规划 + 覆盖度校验（LLM）**：调用 `plan_workflow_structure_with_llm` 通过 `planner/tools.py` 提供的工具集多轮构建 `nodes/edges/entry/exit` 骨架。每当模型调用 `finalize_workflow` 时会立即触发 `check_requirement_coverage_with_llm`，如果发现 `missing_points` 会将缺失点和当前 workflow 以 system 消息反馈给模型，继续使用 `PLANNER_TOOLS` 修补直至覆盖或达到 `max_coverage_refine_rounds` 上限。【F:velvetflow/planner/structure.py†L631-L960】【F:velvetflow/planner/tools.py†L1-L107】【F:velvetflow/planner/coverage.py†L13-L118】
+2. **结构规划 + 覆盖度校验（LLM）**：调用 `plan_workflow_structure_with_llm` 通过合并后的工具集多轮构建 `nodes/edges/entry/exit` 骨架。每当模型调用 `finalize_workflow` 时会立即触发 `check_requirement_coverage_with_llm`，如果发现 `missing_points` 会将缺失点和当前 workflow 以 system 消息反馈给模型，继续使用共享的工具箱修补直至覆盖或达到 `max_coverage_refine_rounds` 上限。【F:velvetflow/planner/structure.py†L631-L960】【F:velvetflow/planner/tool_catalog.py†L1-L85】【F:velvetflow/planner/coverage.py†L13-L118】
 3. **参数补全（LLM）**：在已通过的骨架上调用 `fill_params_with_llm` 补齐各节点 `params/exports/bindings`，生成完整的工作流字典。
 4. **多轮校验与自修复（LLM）**：
    - 首次校验未通过时，记录 `ValidationError` 列表。
@@ -134,6 +136,8 @@ LLM 相关节点说明：
 
 ## Workflow DSL 速查
 下面的 JSON 结构是 VelvetFlow 规划/执行都遵循的 DSL。理解这些字段有助于手写、调试或修复 LLM 产出的 workflow。
+
+完整的 EBNF 与词法/语义约束请见 [`docs/workflow_grammar.md`](docs/workflow_grammar.md)，可直接用于 IDE 补全、格式化和离线校验。
 
 ### 顶层结构
 ```jsonc

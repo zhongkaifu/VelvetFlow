@@ -4,6 +4,8 @@ import json
 from collections import deque
 from typing import Any, Dict, List, Mapping, Optional
 
+from velvetflow.verification.flow_analysis import WorkflowStaticAnalyzer
+from velvetflow.verification.semantics import WorkflowSemanticAnalyzer
 from velvetflow.loop_dsl import build_loop_output_schema, index_loop_body_nodes
 from velvetflow.models import ValidationError, Workflow
 from velvetflow.reference_utils import normalize_reference_path
@@ -1294,6 +1296,16 @@ def validate_completed_workflow(
 
     # ---------- 节点校验（含 loop body） ----------
     _validate_nodes_recursive(nodes, nodes_by_id, actions_by_id, loop_body_parents, errors)
+
+    # ---------- 语义与类型校验 ----------
+    if not errors:
+        analyzer = WorkflowSemanticAnalyzer(action_registry)
+        errors.extend(analyzer.analyze(workflow))
+
+    # ---------- 控制流/数据流/属性/安全校验 ----------
+    if not errors:
+        flow_analyzer = WorkflowStaticAnalyzer(action_registry)
+        errors.extend(flow_analyzer.analyze(workflow))
 
     return errors
 

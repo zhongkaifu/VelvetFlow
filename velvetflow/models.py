@@ -60,6 +60,10 @@ class ValidationError:
         "INVALID_SCHEMA",
         "INVALID_LOOP_BODY",
         "STATIC_RULES_SUMMARY",
+        "CONTROL_FLOW_VIOLATION",
+        "DATA_FLOW_VIOLATION",
+        "PROPERTY_VIOLATION",
+        "SECURITY_VIOLATION",
     ]
     node_id: Optional[str]
     field: Optional[str]
@@ -500,6 +504,17 @@ class Workflow:
             body_nodes = body_graph.get("nodes")
             if not isinstance(body_nodes, list):
                 continue
+
+            # body_subgraph 必须至少包含一个节点，否则循环体为空将无法执行。
+            if not body_nodes:
+                raise PydanticValidationError(
+                    [
+                        {
+                            "loc": ("body_subgraph", "nodes"),
+                            "msg": "loop 节点的 body_subgraph.nodes 不能为空。",
+                        }
+                    ]
+                )
 
             try:
                 Workflow.model_validate(

@@ -22,7 +22,7 @@ from velvetflow.logging_utils import (
 from velvetflow.planner.action_guard import ensure_registered_actions
 from velvetflow.planner.approval import detect_missing_approval_nodes
 from velvetflow.planner.coverage import check_requirement_coverage_with_llm
-from velvetflow.planner.tools import PLANNER_TOOLS
+from velvetflow.planner.tool_catalog import get_llm_toolbox, list_tool_names
 from velvetflow.planner.workflow_builder import (
     WorkflowBuilder,
     attach_condition_branches,
@@ -82,6 +82,29 @@ def _attach_inferred_edges(workflow: Dict[str, Any]) -> Dict[str, Any]:
     nodes = copied.get("nodes") if isinstance(copied.get("nodes"), list) else []
     copied["edges"] = infer_edges_from_bindings(nodes)
     return attach_condition_branches(copied)
+
+
+def _apply_repair_tool_in_planning(
+    *,
+    builder: WorkflowBuilder,
+    tool_name: str,
+    args: Mapping[str, Any],
+    action_registry: List[Dict[str, Any]],
+):
+    from velvetflow.planner.repair_tools import apply_repair_tool
+
+    patched_workflow, summary = apply_repair_tool(
+        tool_name=tool_name,
+        args=args,
+        workflow=builder.to_workflow(),
+        validation_errors=[],
+        action_registry=action_registry,
+    )
+
+    if summary.get("applied"):
+        builder.load_workflow(patched_workflow)
+
+    return summary
 
 
 def _build_action_schema_map(action_registry: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
@@ -676,6 +699,8 @@ def plan_workflow_structure_with_llm(
     client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
     builder = WorkflowBuilder()
     last_action_candidates: List[str] = []
+    planner_tools = get_llm_toolbox()
+    repair_tool_names = list_tool_names(include_planner=False, include_repair=True)
 
     system_prompt = (
         "你是一个通用业务工作流编排助手。\n"
@@ -723,7 +748,7 @@ def plan_workflow_structure_with_llm(
             resp = client.chat.completions.create(
                 model=OPENAI_MODEL,
                 messages=messages,
-                tools=PLANNER_TOOLS,
+                tools=planner_tools,
                 tool_choice="auto",
                 temperature=0.2,
             )
@@ -1017,6 +1042,21 @@ def plan_workflow_structure_with_llm(
                         finalized = True
 
                 continue
+
+            elif func_name in repair_tool_names:
+                summary = _apply_repair_tool_in_planning(
+                    builder=builder,
+                    tool_name=func_name,
+                    args=args,
+                    action_registry=action_registry,
+                )
+
+                tool_result = {
+                    "status": "ok" if summary.get("applied") else "noop",
+                    "type": "repair_applied",
+                    "summary": summary,
+                    "workflow": builder.to_workflow(),
+                }
 
             else:
                 tool_result = {"status": "error", "message": f"未知工具 {func_name}"}
