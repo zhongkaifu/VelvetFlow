@@ -39,6 +39,40 @@ def _attach_inferred_edges(workflow: Dict[str, Any]) -> Dict[str, Any]:
     return attach_condition_branches(copied)
 
 
+def _normalize_sub_graph_nodes(
+    raw: Any, *, builder: WorkflowBuilder
+) -> tuple[List[str], Optional[Dict[str, Any]]]:
+    """Validate and normalize a list of node ids to attach to a loop body."""
+
+    if raw is None:
+        return [], None
+
+    if not isinstance(raw, list):
+        return [], {"message": "sub_graph_nodes 需要是节点 id 的数组。"}
+
+    non_str_indices = [idx for idx, value in enumerate(raw) if not isinstance(value, str)]
+    normalized = [value for value in raw if isinstance(value, str)]
+    missing_nodes = [nid for nid in normalized if nid not in builder.nodes]
+
+    if non_str_indices or missing_nodes:
+        return [], {
+            "message": "sub_graph_nodes 应为已创建节点的 id 字符串列表。",
+            "invalid_indices": non_str_indices,
+            "missing_nodes": missing_nodes,
+        }
+
+    return normalized, None
+
+
+def _attach_sub_graph_nodes(builder: WorkflowBuilder, loop_id: str, node_ids: List[str]):
+    """Mark the given nodes as belonging to the loop's body_subgraph."""
+
+    for nid in node_ids:
+        node = builder.nodes.get(nid)
+        if isinstance(node, dict):
+            node["parent_node_id"] = loop_id
+
+
 def _build_action_schema_map(action_registry: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
     action_schemas: Dict[str, Dict[str, Any]] = {}
     for action in action_registry:
@@ -492,12 +526,17 @@ def plan_workflow_structure_with_llm(
 
             elif func_name == "add_loop_node":
                 parent_node_id = args.get("parent_node_id")
+                sub_graph_nodes, sub_graph_error = _normalize_sub_graph_nodes(
+                    args.get("sub_graph_nodes"), builder=builder
+                )
 
                 if parent_node_id is not None and not isinstance(parent_node_id, str):
                     tool_result = {
                         "status": "error",
                         "message": "parent_node_id 需要是字符串或 null。",
                     }
+                elif sub_graph_error:
+                    tool_result = {"status": "error", **sub_graph_error}
                 else:
                     builder.add_node(
                         node_id=args["id"],
@@ -508,6 +547,7 @@ def plan_workflow_structure_with_llm(
                         params=args.get("params") or {},
                         parent_node_id=parent_node_id if isinstance(parent_node_id, str) else None,
                     )
+                    _attach_sub_graph_nodes(builder, args["id"], sub_graph_nodes)
                     tool_result = {"status": "ok", "type": "node_added", "node_id": args["id"]}
 
             elif func_name == "add_condition_node":
@@ -571,6 +611,9 @@ def plan_workflow_structure_with_llm(
                 node_id = args.get("id")
                 updates = args.get("updates")
                 parent_node_id = args.get("parent_node_id")
+                sub_graph_nodes, sub_graph_error = _normalize_sub_graph_nodes(
+                    args.get("sub_graph_nodes"), builder=builder
+                )
                 expected_type = (
                     "action"
                     if func_name == "update_action_node"
@@ -593,6 +636,8 @@ def plan_workflow_structure_with_llm(
                         "status": "error",
                         "message": "parent_node_id 需要是字符串或 null。",
                     }
+                elif sub_graph_error:
+                    tool_result = {"status": "error", **sub_graph_error}
                 elif not isinstance(updates, list):
                     tool_result = {
                         "status": "error",
@@ -678,9 +723,13 @@ def plan_workflow_structure_with_llm(
                             }
                         else:
                             builder.update_node(node_id, normalized_updates)
+                            if func_name == "update_loop_node":
+                                _attach_sub_graph_nodes(builder, node_id, sub_graph_nodes)
                             tool_result = {"status": "ok", "type": "node_updated", "node_id": node_id}
                     else:
                         builder.update_node(node_id, normalized_updates)
+                        if func_name == "update_loop_node":
+                            _attach_sub_graph_nodes(builder, node_id, sub_graph_nodes)
                         tool_result = {"status": "ok", "type": "node_updated", "node_id": node_id}
 
             elif func_name == "finalize_workflow":
