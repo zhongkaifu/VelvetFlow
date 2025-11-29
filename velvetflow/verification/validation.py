@@ -391,6 +391,8 @@ def _validate_nodes_recursive(
                         "not_empty",
                         "is_not_empty",
                         "multi_band",
+                        "expression",
+                        "compare",
                     }
                     if kind not in allowed_kinds:
                         errors.append(
@@ -415,6 +417,8 @@ def _validate_nodes_recursive(
                         "is_empty": ["source"],
                         "not_empty": ["source"],
                         "is_not_empty": ["source"],
+                        "expression": ["expression"],
+                        "compare": ["source", "value"],
                     }
                     for field in required_fields_map.get(kind, []):
                         if field not in params:
