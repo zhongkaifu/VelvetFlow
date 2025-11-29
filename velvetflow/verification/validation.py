@@ -2,6 +2,7 @@
 
 import json
 from collections import deque
+from contextlib import contextmanager
 from typing import Any, Dict, List, Mapping, Optional
 
 from velvetflow.loop_dsl import build_loop_output_schema, index_loop_body_nodes
@@ -27,6 +28,81 @@ LOOP_PARAM_FIELDS = {
     "body_subgraph",
     "exports",
 }
+
+
+class _RepairingErrorList(list):
+    """Record validation errors while stripping offending fields in-place.
+
+    校验阶段如果发现字段错误，会直接删除触发错误的字段，再返回错误信息给 LLM，方便
+    通过工具重新生成该字段。通过 ``contextualize`` 设置上下文时，会尝试根据上下文
+    信息（当前节点或边）删除对应字段。
+    """
+
+    def __init__(self, workflow: Mapping[str, Any]):
+        super().__init__()
+        self._context: Optional[Mapping[str, Any]] = None
+
+    @contextmanager
+    def contextualize(self, ctx: Mapping[str, Any]):
+        prev = self._context
+        self._context = ctx
+        try:
+            yield
+        finally:
+            self._context = prev
+
+    def set_context(self, ctx: Optional[Mapping[str, Any]]):
+        self._context = ctx
+
+    def append(self, error: ValidationError):  # type: ignore[override]
+        self._repair(error)
+        return super().append(error)
+
+    def extend(self, values):  # type: ignore[override]
+        for val in values:
+            self.append(val)
+
+    def _repair(self, error: ValidationError) -> None:
+        ctx = self._context or {}
+        if not isinstance(ctx, Mapping):
+            return
+
+        field = getattr(error, "field", None)
+        if not field:
+            return
+
+        target = ctx.get("node") or ctx.get("edge")
+        if isinstance(target, Mapping):
+            self._remove_field(target, field)
+
+    def _remove_field(self, container: Mapping[str, Any], field: str) -> None:
+        try:
+            parts = parse_field_path(field)
+        except Exception:
+            return
+
+        if not parts:
+            return
+
+        current: Any = container
+        for part in parts[:-1]:
+            if isinstance(part, int):
+                if isinstance(current, list) and 0 <= part < len(current):
+                    current = current[part]
+                else:
+                    return
+            else:
+                if isinstance(current, Mapping):
+                    current = current.get(part)
+                else:
+                    return
+
+        last = parts[-1]
+        if isinstance(last, int):
+            if isinstance(current, list) and 0 <= last < len(current):
+                current.pop(last)
+        elif isinstance(current, dict):
+            current.pop(last, None)
 
 
 def _index_actions_by_id(action_registry: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
@@ -112,6 +188,26 @@ def _filter_params_by_supported_fields(
     return removed
 
 
+def _strip_illegal_exports(node: Mapping[str, Any]) -> bool:
+    """Remove ``params.exports`` from non-loop nodes to avoid repeated errors.
+
+    校验阶段如果发现非 loop 节点携带 ``exports`` 字段，会直接删除该字段并返回
+    ``ValidationError``，提示 LLM 使用合适的工具重新生成合法的 exports。这样可以
+    避免错误字段阻塞后续修复流程。返回值表示是否执行了删除动作。
+    """
+
+    if node.get("type") == "loop":
+        return False
+
+    params = node.get("params")
+    if not isinstance(params, Mapping) or "exports" not in params:
+        return False
+
+    new_params = {k: v for k, v in params.items() if k != "exports"}
+    node["params"] = new_params
+    return True
+
+
 def precheck_loop_body_graphs(workflow_raw: Mapping[str, Any] | Any) -> List[ValidationError]:
     """Detect loop body graphs that refer to nonexistent nodes.
 
@@ -172,6 +268,9 @@ def _validate_nodes_recursive(
     for n in nodes or []:
         if not isinstance(n, Mapping):
             continue
+
+        if hasattr(errors, "set_context"):
+            errors.set_context({"node": n})
 
         nid = n.get("id")
         ntype = n.get("type")
@@ -982,6 +1081,10 @@ def _validate_nodes_recursive(
                         message=f"parallel 节点 '{nid}' 需要非空 branches 列表。",
                     )
                 )
+
+        if hasattr(errors, "set_context"):
+            errors.set_context(None)
+
 def _collect_param_bindings(obj: Any, prefix: str = "") -> List[Dict[str, str]]:
     """Collect bindings that carry a __from__ reference for lightweight checks."""
 
@@ -1504,7 +1607,7 @@ def validate_completed_workflow(
     workflow: Dict[str, Any],
     action_registry: List[Dict[str, Any]],
 ) -> List[ValidationError]:
-    errors: List[ValidationError] = []
+    errors: List[ValidationError] = _RepairingErrorList(workflow)
 
     nodes = workflow.get("nodes", [])
     edges = workflow.get("edges", [])
@@ -1517,6 +1620,19 @@ def validate_completed_workflow(
     for node in nodes:
         if not isinstance(node, Mapping):
             continue
+        errors.set_context({"node": node})
+        if _strip_illegal_exports(node):
+            errors.append(
+                ValidationError(
+                    code="INVALID_SCHEMA",
+                    node_id=node.get("id"),
+                    field="exports",
+                    message=(
+                        "检测到非 loop 节点携带 exports，已删除该字段，请使用工具在合法位置重"
+                        "新生成 exports。"
+                    ),
+                )
+            )
         removed_fields = _filter_params_by_supported_fields(
             node=node, actions_by_id=actions_by_id
         )
@@ -1529,11 +1645,13 @@ def validate_completed_workflow(
                     message="节点 params 包含不支持的字段，已在校验阶段移除。",
                 )
             )
+        errors.set_context(None)
 
     # ---------- edges 校验 ----------
     for e in edges:
         frm = e.get("from")
         to = e.get("to")
+        errors.set_context({"edge": e})
         if frm not in node_ids:
             errors.append(
                 ValidationError(
@@ -1552,6 +1670,7 @@ def validate_completed_workflow(
                     message=f"Edge from '{frm}' -> '{to}' 中，to 节点不存在。",
                 )
             )
+        errors.set_context(None)
 
     # ---------- 图连通性校验 ----------
     start_nodes = [n["id"] for n in nodes if n.get("type") == "start"]
@@ -1582,6 +1701,7 @@ def validate_completed_workflow(
                     dq.append(nxt)
 
         for nid in node_ids - reachable:
+            errors.set_context({"node": nodes_by_id.get(nid, {})})
             errors.append(
                 ValidationError(
                     code="DISCONNECTED_GRAPH",
@@ -1590,6 +1710,7 @@ def validate_completed_workflow(
                     message=f"节点 '{nid}' 无法从 start 节点到达。",
                 )
             )
+            errors.set_context(None)
 
     # ---------- 节点校验（含 loop body） ----------
     _validate_nodes_recursive(nodes, nodes_by_id, actions_by_id, loop_body_parents, errors)
