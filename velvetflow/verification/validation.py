@@ -648,7 +648,11 @@ def _validate_nodes_recursive(
                         )
 
             # exports 静态校验
-            exports = params.get("exports") if isinstance(params, dict) else None
+            body_graph = params.get("body_subgraph") if isinstance(params, Mapping) else None
+            exports = body_graph.get("exports") if isinstance(body_graph, Mapping) else None
+            if not isinstance(exports, Mapping):
+                exports = params.get("exports") if isinstance(params, dict) else None
+
             if not isinstance(exports, Mapping):
                 errors.append(
                     ValidationError(
@@ -661,7 +665,6 @@ def _validate_nodes_recursive(
             else:
                 body_nodes: List[str] = []
                 body_node_map: Dict[str, Mapping[str, Any]] = {}
-                body_graph = params.get("body_subgraph") or {}
                 if isinstance(body_graph, Mapping):
                     body_node_map = {
                         bn.get("id"):
@@ -1155,7 +1158,14 @@ def _get_array_item_schema_from_output(
     if node_type == "loop":
         loop_params = node.get("params") or {}
         if first_field == "items":
-            items_spec = (loop_params.get("exports") or {}).get("items")
+            body_exports = (
+                (loop_params.get("body_subgraph") or {}).get("exports")
+                if isinstance(loop_params, Mapping)
+                else None
+            )
+            items_spec = (body_exports or loop_params.get("exports") or {}).get(
+                "items"
+            )
             items_schema = _get_loop_items_schema_from_exports(
                 items_spec, node, nodes_by_id, actions_by_id
             )

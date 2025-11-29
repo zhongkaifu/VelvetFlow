@@ -12,7 +12,10 @@ def build_loop_output_schema(loop_params: Mapping[str, Any]) -> Optional[Dict[st
     if not isinstance(loop_params, Mapping):
         return None
 
-    exports = loop_params.get("exports")
+    body_graph = loop_params.get("body_subgraph") if isinstance(loop_params, Mapping) else None
+    exports = body_graph.get("exports") if isinstance(body_graph, Mapping) else None
+    if not exports:
+        exports = loop_params.get("exports")
     if not isinstance(exports, Mapping):
         return None
 
