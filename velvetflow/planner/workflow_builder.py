@@ -1,8 +1,10 @@
 """Utilities for building workflow skeletons during planning."""
 
+import copy
 from typing import Any, Dict, Mapping, Optional
 
 from velvetflow.logging_utils import log_warn
+from velvetflow.loop_dsl import iter_workflow_and_loop_body_nodes
 from velvetflow.models import infer_edges_from_bindings
 
 
@@ -120,15 +122,48 @@ class WorkflowBuilder:
                 node[key] = value
 
     def to_workflow(self) -> Dict[str, Any]:
+        # 深拷贝节点，避免在转换过程中污染 builder 内部状态。
+        node_copies: list[Dict[str, Any]] = [copy.deepcopy(n) for n in self.nodes.values()]
+        loop_lookup: Dict[str, Dict[str, Any]] = {}
+
+        for node in node_copies:
+            node_id = node.get("id")
+            if not isinstance(node_id, str):
+                continue
+            if node.get("type") == "loop":
+                loop_lookup[node_id] = node
+
+        root_nodes: list[Dict[str, Any]] = []
+
+        for node in node_copies:
+            parent_id = node.get("parent_node_id") if isinstance(node.get("parent_node_id"), str) else None
+            parent_loop = loop_lookup.get(parent_id) if parent_id else None
+
+            if parent_loop:
+                params = parent_loop.get("params") if isinstance(parent_loop.get("params"), dict) else {}
+                parent_loop["params"] = params
+
+                body = params.get("body_subgraph") if isinstance(params.get("body_subgraph"), dict) else {}
+                params["body_subgraph"] = body
+
+                body_nodes = body.get("nodes") if isinstance(body.get("nodes"), list) else []
+                body["nodes"] = body_nodes
+
+                body_nodes.append(node)
+            else:
+                if node.get("type") in {"action", "condition", "loop"}:
+                    node["parent_node_id"] = None
+                root_nodes.append(node)
+
         workflow = {
             "workflow_name": self.workflow_name,
             "description": self.description,
-            "nodes": list(self.nodes.values()),
+            "nodes": root_nodes,
         }
         # Provide implicitly derived edges as read-only context for downstream
         # tools/LLM refinement while keeping the source of truth in param
-        # bindings.
-        workflow["edges"] = infer_edges_from_bindings(self.nodes.values())
+        # bindings. 遍历主图与 loop 子图的所有节点，确保子图中的引用同样被纳入。 
+        workflow["edges"] = infer_edges_from_bindings(iter_workflow_and_loop_body_nodes(workflow))
         return attach_condition_branches(workflow)
 
 
