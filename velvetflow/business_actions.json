@@ -767,5 +767,83 @@
       ]
     },
     "enabled": true
+  },
+  {
+    "action_id": "common.scrape_web_page.v1",
+    "name": "Scrape and analyze web page",
+    "domain": "common",
+    "description": "Download a web page and analyze its contents against a natural-language request.",
+    "tool_name": "scrape_web_page",
+    "tags": [
+      "web",
+      "scrape",
+      "analysis"
+    ],
+    "arg_schema": {
+      "type": "object",
+      "properties": {
+        "url": {
+          "type": "string"
+        },
+        "user_request": {
+          "type": "string"
+        },
+        "llm_instruction": {
+          "type": "string"
+        },
+        "llm_provider": {
+          "type": "string",
+          "default": "openai/gpt-4o-mini"
+        }
+      },
+      "required": [
+        "url",
+        "user_request"
+      ]
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        },
+        "analysis": {
+          "oneOf": [
+            {
+              "type": "object"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "markdown": {
+          "type": "string"
+        },
+        "attempts": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "llm_used": {
+          "type": "boolean"
+        },
+        "llm_provider": {
+          "type": "string"
+        },
+        "user_request": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "status",
+        "url"
+      ]
+    },
+    "enabled": true
   }
 ]
