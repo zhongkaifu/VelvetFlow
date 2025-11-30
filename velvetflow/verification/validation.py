@@ -1,9 +1,10 @@
 """Static validation helpers for VelvetFlow workflows."""
 
 import json
+import re
 from collections import deque
 from contextlib import contextmanager
-from typing import Any, Dict, List, Mapping, Optional, Set
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Set
 
 from velvetflow.loop_dsl import build_loop_output_schema, index_loop_body_nodes
 from velvetflow.models import ValidationError, Workflow
@@ -28,6 +29,8 @@ LOOP_PARAM_FIELDS = {
     "body_subgraph",
     "exports",
 }
+
+_TEMPLATE_REF_PATTERN = re.compile(r"\{\{\s*([^{}]+?)\s*\}\}|\$\{\{\s*([^{}]+?)\s*\}\}")
 
 
 class _RepairingErrorList(list):
@@ -186,6 +189,19 @@ def _filter_params_by_supported_fields(
         node["params"] = node_params
 
     return removed
+
+
+def _iter_template_references(text: str) -> Iterable[str]:
+    """Yield templated reference paths (``{{foo.bar}}`` or ``${{foo.bar}}``) from text."""
+
+    if not isinstance(text, str):
+        return []
+
+    return (
+        (match.group(1) or match.group(2) or "").strip()
+        for match in _TEMPLATE_REF_PATTERN.finditer(text)
+        if match.group(1) or match.group(2)
+    )
 
 
 def _strip_illegal_exports(node: Mapping[str, Any]) -> bool:
@@ -424,6 +440,57 @@ def _validate_nodes_recursive(
             # 模板引用静态校验（例如 "{{news_item.title}}"）
             def _walk_params_for_template_refs(obj: Any, path_prefix: str = ""):
                 if isinstance(obj, str):
+                    template_refs = list(_iter_template_references(obj))
+
+                    if template_refs:
+                        for ref in template_refs:
+                            normalized_ref = normalize_reference_path(ref)
+                            if not isinstance(normalized_ref, str):
+                                continue
+
+                            parts = normalized_ref.split(".") if normalized_ref else []
+                            alias = parts[0] if parts else None
+                            context_suffix = (
+                                f"。模板上下文：{obj}"
+                                if obj and obj.strip() != f"{{{{{ref}}}}}"
+                                else ""
+                            )
+
+                            if alias_schemas and alias in alias_schemas:
+                                alias_schema = alias_schemas.get(alias)
+                                err = _schema_path_error(alias_schema or {}, parts[1:])
+                                if err:
+                                    errors.append(
+                                        ValidationError(
+                                            code="SCHEMA_MISMATCH",
+                                            node_id=nid,
+                                            field=path_prefix or "params",
+                                            message=(
+                                                f"action 节点 '{nid}' 的参数模板（{path_prefix or '<root>'}）"
+                                                f"中的 '{{{{{ref}}}}}' 引用无效：别名 '{alias}' {err}{context_suffix}"
+                                            ),
+                                        )
+                                    )
+                                continue
+
+                            if normalized_ref.startswith("result_of."):
+                                schema_err = _check_output_path_against_schema(
+                                    normalized_ref, nodes_by_id, actions_by_id, loop_body_parents
+                                )
+                                if schema_err:
+                                    errors.append(
+                                        ValidationError(
+                                            code="SCHEMA_MISMATCH",
+                                            node_id=nid,
+                                            field=path_prefix or "params",
+                                            message=(
+                                                f"action 节点 '{nid}' 的参数模板（{path_prefix or '<root>'}）"
+                                                f"中的 '{{{{{ref}}}}}' 引用无效：{schema_err}{context_suffix}"
+                                            ),
+                                        )
+                                    )
+                        return
+
                     normalized = normalize_reference_path(obj)
                     if isinstance(normalized, str):
                         parts = normalized.split(".")
