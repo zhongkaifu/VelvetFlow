@@ -90,7 +90,9 @@ def _summarize_validation_errors_for_llm(
     if not errors:
         return "未提供可用的错误信息。"
 
-    lines: List[str] = []
+    lines: List[str] = [
+        "请逐条修复下列校验错误（必须全部清零才能继续，系统只有有限的自动修复轮次）："
+    ]
     loop_hints: List[str] = []
     schema_hints: List[str] = []
 
@@ -150,12 +152,12 @@ def _summarize_validation_errors_for_llm(
 
     if schema_hints:
         lines.append("")
-        lines.append("Schema 提示：")
+        lines.append("Schema 提示（按提示修改可减少重复校验）：")
         lines.extend(sorted(set(schema_hints)))
 
     if loop_hints:
         lines.append("")
-        lines.append("Loop 修复提示：")
+        lines.append("Loop 修复提示（补齐必填字段/字段名需与 source schema 对齐）：")
         lines.extend(sorted(set(loop_hints)))
 
     return "\n".join(lines)
@@ -339,11 +341,15 @@ validation_errors 是 JSON 数组，元素包含 code/node_id/field/message。
    - 当有多种修复方式时，优先选择改动最小、语义最接近原意的方案（如只改一个字段名，而不是重写整个 params）。
    - 当 validation_error_summary 提供 Schema 提示或路径信息时，优先按提示矫正字段类型/结构，避免多轮重复犯错。
 
-8. 输出要求：
+8. 修复回合有限且必须闭环：
+   - 系统会在有限轮次内重新校验；如果你忽略任何一条 validation_error，流程将直接进入下一轮甚至终止。
+   - 请逐条对照 validation_errors，把所有问题修到为 0 再输出结果，避免留存隐患。
+
+9. 输出要求：
    - 保持顶层结构：workflow_name/description/nodes/edges 不变（仅节点内部内容可调整）；
    - 节点的 id/type 不变；
    - 返回修复后的 workflow JSON，只返回 JSON 对象本身，不要包含代码块标记。
-9. 可用工具：当你需要结构化修改时，优先调用提供的工具（无 LLM 依赖、结果确定），用来修复 loop body 引用、补齐必填参数或写入指定字段。
+10. 可用工具：当你需要结构化修改时，优先调用提供的工具（无 LLM 依赖、结果确定），用来修复 loop body 引用、补齐必填参数或写入指定字段。
 """
 
     messages = [
