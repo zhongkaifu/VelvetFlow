@@ -82,6 +82,42 @@ def test_eval_params_parses_json_string_bindings():
     assert params["text"] == "新闻一\n新闻二"
 
 
+def test_eval_params_resolves_nested_binding_in_dict():
+    workflow = Workflow.model_validate(
+        {
+            "nodes": [
+                {"id": "process_recipes", "type": "action", "params": {}},
+                {"id": "notify", "type": "action", "params": {}},
+            ],
+            "edges": [],
+        }
+    )
+    ctx = BindingContext(
+        workflow,
+        {
+            "process_recipes": {
+                "results": {
+                    "monday": ["早餐", "午餐", "晚餐"],
+                }
+            }
+        },
+    )
+
+    node = Node(
+        id="notify",
+        type="action",
+        params={
+            "context": {
+                "weekly_menu": {"__from__": "result_of.process_recipes.results"}
+            }
+        },
+    )
+
+    params = eval_node_params(node, ctx)
+
+    assert params["context"]["weekly_menu"] == {"monday": ["早餐", "午餐", "晚餐"]}
+
+
 def test_format_join_prefers_named_fields_without_value_placeholder():
     workflow = Workflow.model_validate({"nodes": [{"id": "start", "type": "start"}], "edges": []})
     ctx = BindingContext(
