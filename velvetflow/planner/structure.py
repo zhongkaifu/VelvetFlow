@@ -3,6 +3,7 @@
 import copy
 import json
 import os
+import re
 from typing import Any, Dict, List, Mapping, Optional
 
 from openai import OpenAI
@@ -84,6 +85,9 @@ ACTION_NODE_FIELDS = {
     "out_params_schema",
     "parent_node_id",
 }
+
+
+_INLINE_FROM_PATTERN = re.compile(r"^__from__\.(?P<path>.+)$")
 
 CONDITION_NODE_FIELDS = {
     "id",
@@ -238,6 +242,39 @@ def _sanitize_builder_node_fields(builder: WorkflowBuilder, node_id: str) -> Lis
         node.pop(key, None)
 
     return removed_keys
+
+
+def _normalize_inline_from_references(builder: WorkflowBuilder) -> bool:
+    """Convert legacy __from__.path strings into {{path}} templates in-place."""
+
+    changed = False
+
+    def _walk(obj: Any) -> Any:
+        nonlocal changed
+        if isinstance(obj, Mapping):
+            mutable = obj if isinstance(obj, dict) else dict(obj)
+            for key, value in mutable.items():
+                mutable[key] = _walk(value)
+            if mutable is not obj:
+                changed = True
+            return mutable
+        if isinstance(obj, list):
+            new_list = [_walk(item) for item in obj]
+            if new_list is not obj:
+                changed = True
+            return new_list
+        if isinstance(obj, str):
+            match = _INLINE_FROM_PATTERN.match(obj.strip())
+            if match:
+                changed = True
+                return f"{{{{{match.group('path').strip()}}}}}"
+        return obj
+
+    for node_id, node in list(builder.nodes.items()):
+        if isinstance(node, Mapping):
+            builder.nodes[node_id] = _walk(node)
+
+    return changed
 
 
 def _build_action_schema_map(action_registry: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
@@ -797,6 +834,7 @@ def plan_workflow_structure_with_llm(
                 args = {}
 
             log_info(f"[Planner] 调用工具: {func_name}({args})")
+            normalized_from_refs = False
 
             if func_name == "search_business_actions":
                 query = args.get("query", "")
@@ -861,6 +899,7 @@ def plan_workflow_structure_with_llm(
                         params=cleaned_params,
                         parent_node_id=parent_node_id if isinstance(parent_node_id, str) else None,
                     )
+                    normalized_from_refs = _normalize_inline_from_references(builder)
                     removed_node_fields = _sanitize_builder_node_fields(builder, args["id"])
                     if removed_fields or removed_node_fields:
                         tool_result = {
@@ -941,6 +980,7 @@ def plan_workflow_structure_with_llm(
                         parent_node_id=parent_node_id if isinstance(parent_node_id, str) else None,
                     )
                     _attach_sub_graph_nodes(builder, args["id"], sub_graph_nodes)
+                    normalized_from_refs = _normalize_inline_from_references(builder)
                     removed_node_fields = _sanitize_builder_node_fields(builder, args["id"])
                     if removed_fields or removed_node_fields:
                         tool_result = {
@@ -1044,6 +1084,7 @@ def plan_workflow_structure_with_llm(
                         false_to_node=false_to_node if isinstance(false_to_node, str) else None,
                         parent_node_id=parent_node_id if isinstance(parent_node_id, str) else None,
                     )
+                    normalized_from_refs = _normalize_inline_from_references(builder)
                     removed_node_fields = _sanitize_builder_node_fields(builder, args["id"])
                     if removed_fields or removed_node_fields:
                         tool_result = {
@@ -1168,6 +1209,7 @@ def plan_workflow_structure_with_llm(
                             _sanitize_builder_node_params(builder, node_id, action_schemas)
                         )
                         removed_node_fields = _sanitize_builder_node_fields(builder, node_id)
+                        normalized_from_refs = _normalize_inline_from_references(builder)
                         if removed_param_fields or removed_node_fields:
                             tool_result = {
                                 "status": "error",
@@ -1261,6 +1303,7 @@ def plan_workflow_structure_with_llm(
                             _sanitize_builder_node_params(builder, node_id, action_schemas)
                         )
                         removed_node_fields = _sanitize_builder_node_fields(builder, node_id)
+                        normalized_from_refs = _normalize_inline_from_references(builder)
                         if removed_param_fields or removed_node_fields:
                             tool_result = {
                                 "status": "error",
@@ -1305,6 +1348,7 @@ def plan_workflow_structure_with_llm(
                             _sanitize_builder_node_params(builder, node_id, action_schemas)
                         )
                         removed_node_fields = _sanitize_builder_node_fields(builder, node_id)
+                        normalized_from_refs = _normalize_inline_from_references(builder)
                         if removed_param_fields or removed_node_fields:
                             tool_result = {
                                 "status": "error",
@@ -1317,6 +1361,7 @@ def plan_workflow_structure_with_llm(
                             tool_result = {"status": "ok", "type": "node_updated", "node_id": node_id}
 
             elif func_name == "finalize_workflow":
+                normalized_from_refs = _normalize_inline_from_references(builder)
                 skeleton, coverage = _run_coverage_check(
                     nl_requirement=nl_requirement,
                     builder=builder,
@@ -1354,6 +1399,8 @@ def plan_workflow_structure_with_llm(
                         for err in validation_errors
                     ],
                 }
+                if normalized_from_refs and isinstance(tool_result, dict):
+                    tool_result["normalized_from_references"] = True
                 messages.append(
                     {
                         "role": "tool",
@@ -1419,6 +1466,8 @@ def plan_workflow_structure_with_llm(
             else:
                 tool_result = {"status": "error", "message": f"未知工具 {func_name}"}
 
+            if normalized_from_refs and isinstance(tool_result, dict):
+                tool_result.setdefault("normalized_from_references", True)
             messages.append(
                 {
                     "role": "tool",
