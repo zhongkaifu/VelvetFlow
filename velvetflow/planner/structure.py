@@ -3,7 +3,8 @@
 import copy
 import json
 import os
-from typing import Any, Dict, List, Mapping, Optional
+from dataclasses import asdict
+from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 from openai import OpenAI
 
@@ -23,12 +24,13 @@ from velvetflow.planner.action_guard import ensure_registered_actions
 from velvetflow.planner.approval import detect_missing_approval_nodes
 from velvetflow.planner.coverage import check_requirement_coverage_with_llm
 from velvetflow.planner.tools import PLANNER_TOOLS
+from velvetflow.verification import validate_completed_workflow
 from velvetflow.planner.workflow_builder import (
     WorkflowBuilder,
     attach_condition_branches,
 )
 from velvetflow.search import HybridActionSearchService
-from velvetflow.models import infer_edges_from_bindings
+from velvetflow.models import ValidationError, infer_edges_from_bindings
 
 
 CONDITION_ALLOWED_KINDS = {
@@ -519,6 +521,27 @@ def _build_coverage_feedback_message(
         f"{json.dumps(workflow, ensure_ascii=False)}"
     )
 
+def _build_validation_feedback_message(
+    *, errors: Sequence[ValidationError], workflow: Mapping[str, Any]
+) -> str:
+    lines = [
+        "Workflow 校验未通过，请继续使用规划工具修复后再次调用 finalize_workflow。",
+        "错误列表：",
+    ]
+
+    for idx, err in enumerate(errors, start=1):
+        locations = []
+        if err.node_id:
+            locations.append(f"节点 {err.node_id}")
+        if err.field:
+            locations.append(f"字段 {err.field}")
+        location = f"（{', '.join(locations)}）" if locations else ""
+        lines.append(f"{idx}. [{err.code}]{location}：{err.message}")
+
+    lines.append("\n当前 workflow 供参考（含推导的 edges）：")
+    lines.append(json.dumps(workflow, ensure_ascii=False))
+    return "\n".join(lines)
+
 
 def _build_dependency_feedback_message(
     *, workflow: Mapping[str, Any], nodes_without_upstream: List[Mapping[str, Any]]
@@ -571,7 +594,7 @@ def plan_workflow_structure_with_llm(
         "你必须确保工作流结构能够完全覆盖用户自然语言需求中的每个子任务，而不是只覆盖前半部分：\n"
         "例如，如果需求包含：触发 + 查询 + 筛选 + 总结 + 通知，你不能只实现触发 + 查询，\n"
         "必须在结构里显式包含筛选、总结、通知等对应节点和数据流。\n"
-        "调用 finalize_workflow 后系统会立即对照 nl_requirement 做覆盖度检查；如果发现 missing_points 会把缺失点和当前 workflow 反馈给你，请继续用规划工具修补后再次 finalize。"
+        "调用 finalize_workflow 后系统会立即对照 nl_requirement 做覆盖度检查并执行 workflow 校验；如果发现 missing_points 或校验错误，会把缺失点/错误列表和当前 workflow 反馈给你，请继续用规划工具修补后再次 finalize。"
     )
 
     messages: List[Dict[str, Any]] = [
@@ -583,6 +606,7 @@ def plan_workflow_structure_with_llm(
     latest_skeleton: Dict[str, Any] = {}
     latest_coverage: Dict[str, Any] = {}
     coverage_retry = 0
+    validation_retry = 0
     dependency_retry = 0
     total_rounds = max_rounds + max_coverage_refine_rounds
 
@@ -1153,15 +1177,22 @@ def plan_workflow_structure_with_llm(
                 )
                 latest_skeleton = skeleton
                 latest_coverage = coverage
+                validation_errors = validate_completed_workflow(
+                    skeleton, action_registry=action_registry
+                )
                 is_covered = bool(coverage.get("is_covered", False))
                 nodes_without_upstream = _find_nodes_without_upstream(skeleton)
                 needs_dependency_review = bool(nodes_without_upstream)
+                has_validation_errors = bool(validation_errors)
                 tool_result = {
-                    "status": "ok" if is_covered else "needs_more_coverage",
+                    "status": "ok"
+                    if is_covered and not has_validation_errors
+                    else "needs_revision",
                     "type": "finalized",
                     "notes": args.get("notes"),
                     "coverage": coverage,
                     "nodes_without_upstream": nodes_without_upstream,
+                    "validation_errors": [asdict(e) for e in validation_errors],
                 }
                 messages.append(
                     {
@@ -1170,6 +1201,19 @@ def plan_workflow_structure_with_llm(
                         "content": json.dumps(tool_result, ensure_ascii=False),
                     }
                 )
+
+                if has_validation_errors:
+                    validation_retry += 1
+                    log_warn("[Planner] 工作流校验未通过，将错误反馈给 LLM 继续修正。")
+                    log_json(
+                        "Workflow 校验错误详情",
+                        [asdict(err) for err in validation_errors],
+                    )
+                    validation_feedback = _build_validation_feedback_message(
+                        errors=validation_errors, workflow=skeleton
+                    )
+                    messages.append({"role": "system", "content": validation_feedback})
+                    continue
 
                 if needs_dependency_review:
                     dependency_retry += 1
@@ -1204,7 +1248,6 @@ def plan_workflow_structure_with_llm(
                         finalized = True
 
                 continue
-
             elif func_name == "dump_model":
                 workflow_snapshot = _attach_inferred_edges(builder.to_workflow())
                 latest_skeleton = workflow_snapshot
