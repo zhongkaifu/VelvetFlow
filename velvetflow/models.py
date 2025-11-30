@@ -75,6 +75,7 @@ class ParamBinding:
         "identity",
         "count",
         "count_if",
+        "join",
         "filter_map",
         "format_join",
         "pipeline",

@@ -187,7 +187,8 @@ LLM 相关节点说明：
 - `__from__`: 必填，指向上游结果或循环上下文，形如 `result_of.<node_id>.<path>`。如果节点是 loop，还可以写 `loop.item` 或 `loop.index`。
 - `__agg__`: 聚合/变换方式，默认 `identity`。支持：
   - `count` / `count_if`：统计列表长度，`count_if` 还能用 `field`+`op`+`value` 过滤。
-  - `format_join`: 将列表/单值按 `format` 模板渲染并用 `sep` 拼接。
+  - `join`: 直接用 `separator`（或 `sep`）把字符串列表拼接成一个字符串。
+  - `format_join`: 将列表/单值按 `format` 模板渲染并用 `sep` 拼接，`format` 中应直接写字段名占位符（如 `{name}`、`{score}`），不再支持 `{value}`。
   - `filter_map`: 先过滤再映射/格式化，适合从列表提取子字段并合并成字符串。
   - `pipeline`: 以 `steps` 数组串联多个 `filter`/`format_join` 变换，便于描述更复杂的处理链条。
 - 直接字符串路径：`"params": {"threshold": "loop.index"}` 这类纯字符串也会尝试解析为上下文路径；解析失败会保留原值并在日志给出警告。

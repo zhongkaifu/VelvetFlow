@@ -1359,6 +1359,7 @@ def validate_param_binding(binding: Any) -> Optional[str]:
         "avg",
         "max",
         "min",
+        "join",
         "format_join",
         "count_if",
         "pipeline",

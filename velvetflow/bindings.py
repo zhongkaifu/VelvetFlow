@@ -32,21 +32,25 @@ class BindingContext:
     def resolve_binding(self, binding: dict) -> Any:
         """解析 __from__, __agg__, pipeline 等绑定 DSL。"""
 
-        def _render(val: Any, fmt: str, field: Optional[str] = None) -> str:
+        def _render(val: Any, fmt: Optional[str], field: Optional[str] = None) -> str:
             if isinstance(val, Mapping):
                 selected = val.get(field) if field else val
                 data: Mapping[str, Any] = _SafeDict(val)
-                data.setdefault("value", selected)
-            else:
-                selected = val
-                data = _SafeDict({"value": selected})
-            try:
-                return fmt.format_map(data)
-            except Exception:
+                if fmt:
+                    try:
+                        return fmt.format_map(data)
+                    except Exception:
+                        pass
+                return "" if selected is None else str(selected)
+
+            # 非字典元素：直接字符串化或用默认字段选择
+            selected = val
+            if fmt:
                 try:
-                    return fmt.replace("{value}", str(selected))
+                    return fmt.format_map(_SafeDict({}))
                 except Exception:
-                    return str(selected)
+                    pass
+            return "" if selected is None else str(selected)
 
         if not isinstance(binding, dict) or "__from__" not in binding:
             return binding
@@ -98,10 +102,22 @@ class BindingContext:
                     continue
             return count
 
+        if agg == "join":
+            sep = binding.get("separator")
+            if sep is None:
+                sep = binding.get("sep", "")
+            if not isinstance(sep, str):
+                sep = str(sep)
+
+            if isinstance(data, list):
+                return sep.join("" if v is None else str(v) for v in data)
+
+            return "" if data is None else str(data)
+
         if agg == "format_join":
-            fmt = binding.get("format", "{value}")
-            sep = binding.get("sep", "\n")
             field = binding.get("field")
+            fmt = binding.get("format") or (f"{{{field}}}" if field else None)
+            sep = binding.get("sep", "\n")
 
             if not isinstance(data, list):
                 return _render(data, fmt, field)
@@ -116,7 +132,7 @@ class BindingContext:
             filter_op = binding.get("filter_op", "==")
             filter_value = binding.get("filter_value")
             map_field = binding.get("map_field")
-            fmt = binding.get("format", "{value}")
+            fmt = binding.get("format") or (f"{{{map_field}}}" if map_field else None)
             sep = binding.get("sep", "\n")
 
             if not isinstance(data, list):
@@ -192,9 +208,9 @@ class BindingContext:
                     current = filtered
 
                 elif op == "format_join":
-                    fmt = step.get("format", "{value}")
-                    sep = step.get("sep", "\n")
                     field = step.get("field")
+                    fmt = step.get("format") or (f"{{{field}}}" if field else None)
+                    sep = step.get("sep", "\n")
 
                     if not isinstance(current, list):
                         return _render(current, fmt, field)
