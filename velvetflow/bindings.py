@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Mapping, Optional
 from velvetflow.action_registry import get_action_by_id
 from velvetflow.loop_dsl import build_loop_output_schema
 from velvetflow.logging_utils import log_warn
-from velvetflow.models import Node, Workflow
+from velvetflow.models import ALLOWED_PARAM_AGGREGATORS, Node, Workflow
 from velvetflow.reference_utils import normalize_reference_path, parse_field_path
 
 
@@ -59,6 +59,10 @@ class BindingContext:
         self._validate_result_reference(src_path)
         data = self._get_from_context(src_path)
         agg = binding.get("__agg__", "identity")
+        if agg not in ALLOWED_PARAM_AGGREGATORS:
+            raise ValueError(
+                f"__agg__ 取值非法（{agg}），允许值：{', '.join(ALLOWED_PARAM_AGGREGATORS)}"
+            )
 
         if agg == "identity":
             return data

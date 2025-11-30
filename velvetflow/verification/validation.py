@@ -7,7 +7,7 @@ from contextlib import contextmanager
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set
 
 from velvetflow.loop_dsl import build_loop_output_schema, index_loop_body_nodes
-from velvetflow.models import ValidationError, Workflow
+from velvetflow.models import ALLOWED_PARAM_AGGREGATORS, ValidationError, Workflow
 from velvetflow.reference_utils import normalize_reference_path, parse_field_path
 
 CONDITION_PARAM_FIELDS = {
@@ -1533,21 +1533,12 @@ def validate_param_binding(binding: Any) -> Optional[str]:
     elif not isinstance(source_path, str):
         return "__from__ 必须是字符串或字符串数组"
 
-    allowed_aggs = {
-        "identity",
-        "count",
-        "sum",
-        "avg",
-        "max",
-        "min",
-        "join",
-        "format_join",
-        "count_if",
-        "pipeline",
-    }
+    allowed_aggs = set(ALLOWED_PARAM_AGGREGATORS)
     agg = binding.get("__agg__", "identity")
     if agg not in allowed_aggs:
-        return f"__agg__ 不支持值 {agg}"
+        return (
+            f"__agg__ 不支持值 {agg}，可选值：{', '.join(ALLOWED_PARAM_AGGREGATORS)}"
+        )
 
     if agg == "count_if":
         if "field" not in binding or "op" not in binding or "value" not in binding:
