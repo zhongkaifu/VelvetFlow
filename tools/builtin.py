@@ -2,8 +2,10 @@ from __future__ import annotations
 
 """A small set of real, ready-to-use business tools."""
 
+import asyncio
 import html
 import json
+import os
 import re
 import textwrap
 import urllib.parse
@@ -11,8 +13,10 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from html.parser import HTMLParser
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional, Tuple
+from typing import Any, Awaitable, Callable, Dict, List, Mapping, Optional, Tuple
 
+from crawl4ai import AsyncWebCrawler, BrowserConfig, CacheMode, CrawlerRunConfig, LLMConfig
+from crawl4ai.extraction_strategy import LLMExtractionStrategy
 from openai import OpenAI
 
 from velvetflow.config import OPENAI_MODEL
@@ -470,6 +474,116 @@ def summarize(text: str, max_sentences: int = 3) -> Dict[str, Any]:
     return {"summary": summary, "sentence_count": len(sentences)}
 
 
+def _run_coroutine(factory: Callable[[], Awaitable[Any]]) -> Any:
+    """Safely execute an async coroutine factory from sync code."""
+
+    try:
+        return asyncio.run(factory())
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(factory())
+        finally:
+            loop.close()
+
+
+def scrape_web_page(
+    url: str,
+    user_request: str,
+    *,
+    llm_instruction: Optional[str] = None,
+    llm_provider: str = "openai/gpt-4o-mini",
+) -> Dict[str, Any]:
+    """Download and analyze a web page according to a natural-language request."""
+
+    if not url:
+        raise ValueError("url is required for scraping")
+    if not user_request:
+        raise ValueError("user_request is required for scraping")
+
+    instruction = llm_instruction or textwrap.dedent(
+        f"""
+        You are a web analysis agent. Read the page content and analyze it for the user's request.
+        User request: {user_request}
+
+        Return JSON with fields:
+        - summary: a concise overview of the page relevant to the user request
+        - key_points: bullet points highlighting important facts or insights
+        - relevance: short explanation of how the content addresses the request
+        """
+    ).strip()
+
+    api_token = os.getenv("OPENAI_API_KEY")
+    use_llm = bool(api_token)
+
+    async def _scrape() -> tuple[Any, List[Dict[str, Any]]]:
+        browser_conf = BrowserConfig(headless=True, verbose=False)
+        attempts: List[Dict[str, Any]] = []
+
+        async with AsyncWebCrawler(config=browser_conf) as crawler:
+            if use_llm:
+                llm_conf = LLMConfig(provider=llm_provider, api_token=api_token)
+                llm_strategy = LLMExtractionStrategy(
+                    llm_config=llm_conf,
+                    schema=None,
+                    extraction_type="text",
+                    instruction=instruction,
+                    input_format="markdown",
+                    verbose=False,
+                )
+                llm_run = CrawlerRunConfig(
+                    cache_mode=CacheMode.BYPASS, extraction_strategy=llm_strategy
+                )
+                llm_result = await crawler.arun(url=url, config=llm_run)
+                attempts.append(
+                    {
+                        "method": "llm_extraction",
+                        "success": llm_result.success,
+                        "status_code": llm_result.status_code,
+                        "error": llm_result.error_message,
+                    }
+                )
+                if llm_result.success:
+                    return llm_result, attempts
+
+            fallback_run = CrawlerRunConfig(cache_mode=CacheMode.BYPASS)
+            fallback_result = await crawler.arun(url=url, config=fallback_run)
+            attempts.append(
+                {
+                    "method": "raw_scrape",
+                    "success": fallback_result.success,
+                    "status_code": fallback_result.status_code,
+                    "error": fallback_result.error_message,
+                }
+            )
+            return fallback_result, attempts
+
+    result, attempts = _run_coroutine(_scrape)
+
+    raw_content = result.extracted_content or ""
+    analysis: Any
+    try:
+        analysis = json.loads(raw_content) if isinstance(raw_content, str) else raw_content
+    except json.JSONDecodeError:
+        analysis = raw_content.strip() if isinstance(raw_content, str) else raw_content
+
+    if not analysis and getattr(result, "markdown", None):
+        analysis = result.markdown
+
+    status = "ok" if result.success else "error"
+
+    return {
+        "status": status,
+        "url": url,
+        "analysis": analysis,
+        "markdown": getattr(result, "markdown", "") or "",
+        "attempts": attempts,
+        "llm_used": use_llm,
+        "llm_provider": llm_provider if use_llm else None,
+        "user_request": user_request,
+    }
+
+
 def register_builtin_tools() -> None:
     """Register all built-in tools in the global registry."""
 
@@ -595,8 +709,26 @@ def register_builtin_tools() -> None:
                 "properties": {
                     "text": {"type": "string"},
                     "max_sentences": {"type": "integer", "default": 3},
+            },
+            "required": ["text"],
+        },
+    )
+)
+
+    register_tool(
+        Tool(
+            name="scrape_web_page",
+            description="Download a web page and analyze it per a natural-language request.",
+            function=scrape_web_page,
+            args_schema={
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string"},
+                    "user_request": {"type": "string"},
+                    "llm_instruction": {"type": "string", "nullable": True},
+                    "llm_provider": {"type": "string", "default": "openai/gpt-4o-mini"},
                 },
-                "required": ["text"],
+                "required": ["url", "user_request"],
             },
         )
     )
@@ -611,4 +743,5 @@ __all__ = [
     "list_files",
     "read_file",
     "summarize",
+    "scrape_web_page",
 ]
