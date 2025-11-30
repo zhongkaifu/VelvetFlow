@@ -464,18 +464,22 @@ def eval_node_params(node: Node, ctx: BindingContext) -> Dict[str, Any]:
 
     template_pattern = re.compile(r"\{\{\s*([^{}]+?)\s*\}\}|\$\{\{\s*([^{}]+?)\s*\}\}")
 
-    resolved = {}
-    for k, v in (node.params or {}).items():
-        if isinstance(v, dict) and "__from__" in v:
-            try:
-                resolved_value = ctx.resolve_binding(v)
-            except Exception as e:
-                log_warn(f"[param-resolver] 解析参数 {k} 失败: {e}，使用原值")
-                resolved[k] = v
-            else:
-                resolved[k] = resolved_value
-        elif isinstance(v, str):
-            str_val = v.strip()
+    def _resolve(value: Any, path: str = "") -> Any:
+        if isinstance(value, dict):
+            if "__from__" in value:
+                try:
+                    return ctx.resolve_binding(value)
+                except Exception as e:
+                    log_warn(f"[param-resolver] 解析参数 {path or '<root>'} 失败: {e}，使用原值")
+                    return value
+
+            return {k: _resolve(v, f"{path}.{k}" if path else k) for k, v in value.items()}
+
+        if isinstance(value, list):
+            return [_resolve(v, f"{path}[{idx}]") for idx, v in enumerate(value)]
+
+        if isinstance(value, str):
+            str_val = value.strip()
             # 允许 text 等字段以字符串形式携带绑定表达式（常见于外部序列化后传入）
             if str_val.startswith("{") and str_val.endswith("}") and "__from__" in str_val:
                 try:
@@ -484,12 +488,11 @@ def eval_node_params(node: Node, ctx: BindingContext) -> Dict[str, Any]:
                     parsed = None
                 if isinstance(parsed, dict) and "__from__" in parsed:
                     try:
-                        resolved[k] = ctx.resolve_binding(parsed)
-                        continue
+                        return ctx.resolve_binding(parsed)
                     except Exception as e:
-                        log_warn(f"[param-resolver] 字符串绑定 {v} 解析失败: {e}，使用原值")
+                        log_warn(f"[param-resolver] 字符串绑定 {value} 解析失败: {e}，使用原值")
 
-            normalized_v = normalize_reference_path(v)
+            normalized_v = normalize_reference_path(value)
             head = normalized_v.split(".", 1)[0]
             # 仅当整个字符串就是绑定路径时才解析；包含插值占位符的混合字符串将保留原样
             if (
@@ -499,14 +502,13 @@ def eval_node_params(node: Node, ctx: BindingContext) -> Dict[str, Any]:
                 or normalized_v.startswith("result_of.")
             ):
                 try:
-                    resolved[k] = ctx.get_value(normalized_v)
-                    continue
+                    return ctx.get_value(normalized_v)
                 except Exception as e:
                     log_warn(
-                        f"[param-resolver] 路径字符串 {v} 解析失败: {e}，使用原值"
+                        f"[param-resolver] 路径字符串 {value} 解析失败: {e}，使用原值"
                     )
 
-            resolved_with_templates = v
+            resolved_with_templates = value
             replaced = False
 
             def _replace(match: re.Match[str]) -> str:
@@ -532,13 +534,13 @@ def eval_node_params(node: Node, ctx: BindingContext) -> Dict[str, Any]:
                 replaced = True
                 return "" if value is None else str(value)
 
-            resolved_with_templates = template_pattern.sub(_replace, v)
+            resolved_with_templates = template_pattern.sub(_replace, value)
             if replaced:
-                resolved[k] = resolved_with_templates
-                continue
+                return resolved_with_templates
 
-            resolved[k] = v
-        else:
-            resolved[k] = v
-    return resolved
+            return value
+
+        return value
+
+    return {k: _resolve(v, k) for k, v in (node.params or {}).items()}
 
