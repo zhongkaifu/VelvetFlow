@@ -585,7 +585,7 @@ def _validate_nodes_recursive(
                             )
 
                     source_ref = params.get("source")
-                    source_path: Optional[str] = None
+                    source_paths: List[str] = []
                     if isinstance(source_ref, Mapping):
                         source_err = validate_param_binding(source_ref)
                         if source_err:
@@ -600,9 +600,43 @@ def _validate_nodes_recursive(
                                 )
                             )
                         elif isinstance(source_ref.get("__from__"), str):
-                            source_path = source_ref["__from__"]
+                            source_paths.append(source_ref["__from__"])
                     elif isinstance(source_ref, str):
-                        source_path = source_ref
+                        source_paths.append(source_ref)
+                    elif isinstance(source_ref, list):
+                        for idx, item in enumerate(source_ref):
+                            if isinstance(item, Mapping):
+                                item_err = validate_param_binding(item)
+                                if item_err:
+                                    errors.append(
+                                        ValidationError(
+                                            code="SCHEMA_MISMATCH",
+                                            node_id=nid,
+                                            field="source",
+                                            message=(
+                                                f"condition 节点 '{nid}' 的 source[{idx}] 绑定无效：{item_err}"
+                                            ),
+                                        )
+                                    )
+                                    continue
+                                if isinstance(item.get("__from__"), str):
+                                    source_paths.append(item["__from__"])
+                            elif isinstance(item, str):
+                                source_paths.append(item)
+                            elif isinstance(item, (int, float, bool)):
+                                continue
+                            elif item is not None:
+                                errors.append(
+                                    ValidationError(
+                                        code="SCHEMA_MISMATCH",
+                                        node_id=nid,
+                                        field="source",
+                                        message=(
+                                            "condition 节点 '{nid}' 的 source[{idx}] 类型无效，期望字符串或包含 __from__ 的对象，收到 {typ}"
+                                            .format(nid=nid, idx=idx, typ=type(item))
+                                        ),
+                                    )
+                                )
                     elif isinstance(source_ref, (int, float, bool)):
                         pass
                     elif source_ref is not None:
@@ -619,26 +653,27 @@ def _validate_nodes_recursive(
 
                     if kind in {"any_greater_than", "all_less_than", "contains"}:
                         fld = params.get("field")
-                        if isinstance(source_path, str) and isinstance(fld, str):
-                            item_err = _check_array_item_field(
-                                source_path,
-                                fld,
-                                nodes_by_id,
-                                actions_by_id,
-                                loop_body_parents,
-                                alias_schemas,
-                            )
-                            if item_err:
-                                errors.append(
-                                    ValidationError(
-                                        code="SCHEMA_MISMATCH",
-                                        node_id=nid,
-                                        field="field",
-                                        message=(
-                                            f"condition 节点 '{nid}' 的 field='{fld}' 无效：{item_err}"
-                                        ),
-                                    )
+                        if isinstance(fld, str):
+                            for source_path in source_paths:
+                                item_err = _check_array_item_field(
+                                    source_path,
+                                    fld,
+                                    nodes_by_id,
+                                    actions_by_id,
+                                    loop_body_parents,
+                                    alias_schemas,
                                 )
+                                if item_err:
+                                    errors.append(
+                                        ValidationError(
+                                            code="SCHEMA_MISMATCH",
+                                            node_id=nid,
+                                            field="field",
+                                            message=(
+                                                f"condition 节点 '{nid}' 的 field='{fld}' 无效：{item_err}"
+                                            ),
+                                        )
+                                    )
 
                     if kind in {"any_greater_than", "all_less_than", "greater_than", "less_than", "between"}:
                         threshold = params.get("threshold")
