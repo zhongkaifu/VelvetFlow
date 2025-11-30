@@ -64,6 +64,18 @@ def test_validate_workflow_missing_required_param():
     assert any(e.code == "MISSING_REQUIRED_PARAM" for e in errors)
 
 
+def test_validate_workflow_empty_param_value_flagged():
+    workflow = _basic_workflow({"email_content": "   "})
+
+    errors = validate_workflow_data(workflow, ACTION_REGISTRY)
+
+    assert errors, "Expected validation to flag empty param value"
+    assert any(
+        e.code == "EMPTY_PARAM_VALUE" and e.field == "params.email_content"
+        for e in errors
+    )
+
+
 def test_validate_workflow_unknown_param():
     workflow = _basic_workflow({"email_content": "hello", "date_filter": "today"})
 

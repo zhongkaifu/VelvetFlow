@@ -60,6 +60,7 @@ class ValidationError:
         "INVALID_SCHEMA",
         "INVALID_LOOP_BODY",
         "STATIC_RULES_SUMMARY",
+        "EMPTY_PARAM_VALUE",
     ]
     node_id: Optional[str]
     field: Optional[str]
