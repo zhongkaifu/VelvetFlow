@@ -19,6 +19,12 @@ from velvetflow.logging_utils import (
     log_success,
     log_warn,
 )
+from velvetflow.models import (
+    PydanticValidationError,
+    ValidationError,
+    Workflow,
+    infer_edges_from_bindings,
+)
 from velvetflow.planner.action_guard import ensure_registered_actions
 from velvetflow.planner.approval import detect_missing_approval_nodes
 from velvetflow.planner.coverage import check_requirement_coverage_with_llm
@@ -28,7 +34,8 @@ from velvetflow.planner.workflow_builder import (
     attach_condition_branches,
 )
 from velvetflow.search import HybridActionSearchService
-from velvetflow.models import infer_edges_from_bindings
+from velvetflow.verification import precheck_loop_body_graphs, validate_completed_workflow
+from velvetflow.planner.update import update_workflow_with_llm
 
 
 CONDITION_ALLOWED_KINDS = {
@@ -529,6 +536,135 @@ def _build_dependency_feedback_message(
         "如果确认这些节点应该独立存在，请在 finalize_workflow.notes 中简单说明原因。\n"
         f"- nodes_without_upstream: {json.dumps(nodes_without_upstream, ensure_ascii=False)}\n"
         "当前 workflow 供参考（含推导的 edges）：\n"
+        f"{json.dumps(workflow, ensure_ascii=False)}"
+    )
+
+
+def _format_validation_errors(errors: List[ValidationError]) -> str:
+    lines = []
+    for idx, err in enumerate(errors, start=1):
+        location_bits = []
+        if err.node_id:
+            location_bits.append(f"node={err.node_id}")
+        if err.field:
+            location_bits.append(f"field={err.field}")
+        location = f"（{', '.join(location_bits)}）" if location_bits else ""
+        lines.append(f"{idx}. [{err.code}]{location} {err.message}")
+    return "\n".join(lines)
+
+
+def _convert_pydantic_errors_for_structure(
+    workflow_raw: Mapping[str, Any], error: PydanticValidationError
+) -> List[ValidationError]:
+    nodes = []
+    if isinstance(workflow_raw, dict):
+        nodes = workflow_raw.get("nodes") or []
+
+    def _node_id_from_index(index: int):
+        if 0 <= index < len(nodes):
+            node = nodes[index]
+            if isinstance(node, Mapping):
+                return node.get("id")
+        return None
+
+    validation_errors: List[ValidationError] = []
+    for err in error.errors():
+        loc = err.get("loc", ()) or ()
+        msg = err.get("msg", "")
+
+        node_id = None
+        field = None
+
+        if loc:
+            if loc[0] == "nodes" and len(loc) >= 2 and isinstance(loc[1], int):
+                node_id = _node_id_from_index(loc[1])
+                if len(loc) >= 3:
+                    field = str(loc[2])
+            elif loc[0] == "edges" and len(loc) >= 2 and isinstance(loc[1], int):
+                if len(loc) >= 3 and isinstance(loc[-1], str):
+                    field = str(loc[-1])
+                else:
+                    field = "edges"
+            else:
+                field = ".".join(str(part) for part in loc)
+
+        validation_errors.append(
+            ValidationError(
+                code="INVALID_SCHEMA",
+                node_id=node_id,
+                field=field,
+                message=msg,
+            )
+        )
+
+    return validation_errors
+
+
+def _validate_workflow_structure(
+    *, workflow: Mapping[str, Any], action_registry: List[Dict[str, Any]]
+) -> List[ValidationError]:
+    precheck_errors = precheck_loop_body_graphs(workflow)
+    if precheck_errors:
+        return precheck_errors
+
+    try:
+        workflow_model = Workflow.model_validate(workflow)
+    except PydanticValidationError as exc:
+        return _convert_pydantic_errors_for_structure(workflow, exc)
+    except Exception as exc:  # pragma: no cover - best-effort guard
+        return [
+            ValidationError(
+                code="INVALID_SCHEMA", node_id=None, field=None, message=str(exc)
+            )
+        ]
+
+    normalized = workflow_model.model_dump(by_alias=True)
+    return validate_completed_workflow(normalized, action_registry)
+
+
+def _auto_repair_workflow(
+    *,
+    workflow: Mapping[str, Any],
+    nl_requirement: str,
+    action_registry: List[Dict[str, Any]],
+) -> tuple[Dict[str, Any], List[ValidationError], bool]:
+    errors = _validate_workflow_structure(workflow=workflow, action_registry=action_registry)
+    if not errors:
+        return dict(workflow), [], False
+
+    log_warn("[Planner] workflow 校验未通过，尝试自动修复后重新检查。")
+    try:
+        repaired = update_workflow_with_llm(
+            workflow,
+            requirement=nl_requirement,
+            action_registry=action_registry,
+            validation_errors=errors,
+        )
+    except Exception as exc:  # noqa: BLE001 - surface for planner loop
+        log_warn(f"[Planner] 自动修复失败，保留原始 workflow：{exc}")
+        return dict(workflow), errors, False
+
+    repaired_errors = _validate_workflow_structure(
+        workflow=repaired, action_registry=action_registry
+    )
+    if repaired_errors:
+        log_warn("[Planner] 自动修复后仍有校验错误，交给 LLM 继续修补。")
+        return repaired, repaired_errors, True
+
+    log_success("[Planner] 自动修复后 workflow 校验通过。")
+    return repaired, [], True
+
+
+def _build_validation_feedback_message(
+    *,
+    errors: List[ValidationError],
+    workflow: Mapping[str, Any],
+) -> str:
+    return (
+        "workflow 校验未通过，请根据下列问题继续使用规划工具修复后再次调用 finalize_workflow。\n"
+        f"- validation_errors: {json.dumps([err.__dict__ for err in errors], ensure_ascii=False)}\n"
+        f"- readable_summary:\n{_format_validation_errors(errors)}\n"
+        "当前 workflow（含推导的 edges）供参考：\n"
         f"{json.dumps(workflow, ensure_ascii=False)}"
     )
 def plan_workflow_structure_with_llm(
@@ -1151,17 +1287,36 @@ def plan_workflow_structure_with_llm(
                     action_registry=action_registry,
                     search_service=search_service,
                 )
-                latest_skeleton = skeleton
+                validated_workflow, validation_errors, auto_repaired = _auto_repair_workflow(
+                    workflow=skeleton,
+                    nl_requirement=nl_requirement,
+                    action_registry=action_registry,
+                )
+                latest_skeleton = validated_workflow
                 latest_coverage = coverage
                 is_covered = bool(coverage.get("is_covered", False))
-                nodes_without_upstream = _find_nodes_without_upstream(skeleton)
+                nodes_without_upstream = _find_nodes_without_upstream(validated_workflow)
                 needs_dependency_review = bool(nodes_without_upstream)
                 tool_result = {
-                    "status": "ok" if is_covered else "needs_more_coverage",
+                    "status": (
+                        "needs_validation_repair"
+                        if validation_errors
+                        else ("ok" if is_covered else "needs_more_coverage")
+                    ),
                     "type": "finalized",
                     "notes": args.get("notes"),
                     "coverage": coverage,
                     "nodes_without_upstream": nodes_without_upstream,
+                    "auto_repair_applied": auto_repaired,
+                    "validation_errors": [
+                        {
+                            "code": err.code,
+                            "node_id": err.node_id,
+                            "field": err.field,
+                            "message": err.message,
+                        }
+                        for err in validation_errors
+                    ],
                 }
                 messages.append(
                     {
@@ -1178,21 +1333,11 @@ def plan_workflow_structure_with_llm(
                         f"nodes={nodes_without_upstream}",
                     )
                     dependency_feedback = _build_dependency_feedback_message(
-                        workflow=skeleton, nodes_without_upstream=nodes_without_upstream
+                        workflow=validated_workflow, nodes_without_upstream=nodes_without_upstream
                     )
                     messages.append({"role": "system", "content": dependency_feedback})
 
-                if is_covered:
-                    if needs_dependency_review and dependency_retry <= max_dependency_refine_rounds:
-                        log_info("🔧 覆盖度通过，但需要进一步检查无上游依赖的节点，继续规划。")
-                    else:
-                        finalized = True
-                        log_success("[Planner] 覆盖度检查通过，结束结构规划。")
-                        if needs_dependency_review and dependency_retry > max_dependency_refine_rounds:
-                            log_warn(
-                                "已超过无上游依赖节点检查次数，继续后续流程。"
-                            )
-                else:
+                if not is_covered:
                     coverage_retry += 1
                     log_info("🔧 覆盖度检查未通过，将继续使用规划工具完善。")
                     feedback_message = _build_coverage_feedback_message(
@@ -1202,6 +1347,23 @@ def plan_workflow_structure_with_llm(
                     if coverage_retry > max_coverage_refine_rounds:
                         log_warn("已达到覆盖度补全上限，仍有缺失点，结束规划阶段。")
                         finalized = True
+
+                if validation_errors:
+                    validation_feedback = _build_validation_feedback_message(
+                        errors=validation_errors, workflow=validated_workflow
+                    )
+                    messages.append({"role": "system", "content": validation_feedback})
+
+                if is_covered and not validation_errors:
+                    if needs_dependency_review and dependency_retry <= max_dependency_refine_rounds:
+                        log_info("🔧 覆盖度通过，但需要进一步检查无上游依赖的节点，继续规划。")
+                    else:
+                        finalized = True
+                        log_success("[Planner] 覆盖度检查通过，结束结构规划。")
+                        if needs_dependency_review and dependency_retry > max_dependency_refine_rounds:
+                            log_warn(
+                                "已超过无上游依赖节点检查次数，继续后续流程。"
+                            )
 
                 continue
 
