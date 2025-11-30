@@ -41,14 +41,14 @@ def _build_workflow_with_list_source():
             {
                 "id": "summarize_nvidia_news",
                 "type": "action",
-                "action_id": "hr.notify_human.v1",
-                "params": {"message": "nvidia news"},
+                "action_id": "productivity.compose_outlook_email.v1",
+                "params": {"email_content": "nvidia news"},
             },
             {
                 "id": "summarize_google_news",
                 "type": "action",
-                "action_id": "hr.notify_human.v1",
-                "params": {"message": "google news"},
+                "action_id": "productivity.compose_outlook_email.v1",
+                "params": {"email_content": "google news"},
             },
             {
                 "id": "check_all_summarized",
@@ -66,8 +66,8 @@ def _build_workflow_with_list_source():
             {
                 "id": "notify_summary",
                 "type": "action",
-                "action_id": "hr.notify_human.v1",
-                "params": {"message": "send summaries"},
+                "action_id": "productivity.compose_outlook_email.v1",
+                "params": {"email_content": "send summaries"},
             },
         ],
         "edges": [
@@ -92,7 +92,7 @@ def test_executor_resolves_multiple_condition_sources():
     executor = DynamicActionExecutor(
         workflow,
         simulations={
-            "hr.notify_human.v1": {
+            "productivity.compose_outlook_email.v1": {
                 "result": {"summary": "summary content", "status": "simulated"}
             }
         },

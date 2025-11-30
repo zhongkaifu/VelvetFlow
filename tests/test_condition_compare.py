@@ -19,14 +19,14 @@ def _build_workflow(condition_params, true_node_id="t_branch", false_node_id="f_
                 {
                     "id": true_node_id,
                     "type": "action",
-                    "action_id": "hr.notify_human.v1",
-                    "params": {},
+                    "action_id": "productivity.compose_outlook_email.v1",
+                    "params": {"email_content": "true branch"},
                 },
                 {
                     "id": false_node_id,
                     "type": "action",
-                    "action_id": "hr.notify_human.v1",
-                    "params": {},
+                    "action_id": "productivity.compose_outlook_email.v1",
+                    "params": {"email_content": "false branch"},
                 },
             ],
         }
@@ -46,7 +46,9 @@ def test_condition_compare_executes_true_branch():
 
     executor = DynamicActionExecutor(
         workflow,
-        simulations={"hr.notify_human.v1": {"result": {"status": "simulated"}}},
+        simulations={
+            "productivity.compose_outlook_email.v1": {"result": {"status": "simulated"}}
+        },
     )
 
     results = executor.run()
@@ -68,7 +70,9 @@ def test_condition_compare_supports_custom_operator():
 
     executor = DynamicActionExecutor(
         workflow,
-        simulations={"hr.notify_human.v1": {"result": {"status": "simulated"}}},
+        simulations={
+            "productivity.compose_outlook_email.v1": {"result": {"status": "simulated"}}
+        },
     )
 
     results = executor.run()

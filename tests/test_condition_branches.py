@@ -19,8 +19,18 @@ def test_attach_condition_branches_populates_branch_targets():
         "description": "",
         "nodes": [
             {"id": "check", "type": "condition", "params": {}},
-            {"id": "yes", "type": "action", "action_id": "hr.notify_human.v1", "params": {}},
-            {"id": "no", "type": "action", "action_id": "hr.notify_human.v1", "params": {}},
+            {
+                "id": "yes",
+                "type": "action",
+                "action_id": "productivity.compose_outlook_email.v1",
+                "params": {"email_content": "yes branch"},
+            },
+            {
+                "id": "no",
+                "type": "action",
+                "action_id": "productivity.compose_outlook_email.v1",
+                "params": {"email_content": "no branch"},
+            },
         ],
         "edges": [
             {"from": "check", "to": "yes", "condition": True},
@@ -51,14 +61,20 @@ def test_executor_respects_condition_branch_targets():
             {
                 "id": "notify_yes",
                 "type": "action",
-                "action_id": "hr.notify_human.v1",
-                "params": {"from_condition": {"__from__": "result_of.check.condition_result"}},
+                "action_id": "productivity.compose_outlook_email.v1",
+                "params": {
+                    "from_condition": {"__from__": "result_of.check.condition_result"},
+                    "email_content": "condition true",
+                },
             },
             {
                 "id": "notify_no",
                 "type": "action",
-                "action_id": "hr.notify_human.v1",
-                "params": {"from_condition": {"__from__": "result_of.check.condition_result"}},
+                "action_id": "productivity.compose_outlook_email.v1",
+                "params": {
+                    "from_condition": {"__from__": "result_of.check.condition_result"},
+                    "email_content": "condition false",
+                },
             },
         ],
     }
@@ -67,7 +83,7 @@ def test_executor_respects_condition_branch_targets():
     executor = DynamicActionExecutor(
         workflow,
         simulations={
-            "hr.notify_human.v1": {"result": {"status": "simulated", "branch": "notified"}}
+            "productivity.compose_outlook_email.v1": {"result": {"status": "simulated", "branch": "notified"}}
         },
     )
 
@@ -160,14 +176,14 @@ def test_executor_prefers_explicit_branch_over_edges_for_null_target():
             {
                 "id": "t_branch",
                 "type": "action",
-                "action_id": "hr.notify_human.v1",
-                "params": {},
+                "action_id": "productivity.compose_outlook_email.v1",
+                "params": {"email_content": "true branch"},
             },
             {
                 "id": "f_branch",
                 "type": "action",
-                "action_id": "hr.notify_human.v1",
-                "params": {},
+                "action_id": "productivity.compose_outlook_email.v1",
+                "params": {"email_content": "false branch"},
             },
         ],
         "edges": [
@@ -181,7 +197,7 @@ def test_executor_prefers_explicit_branch_over_edges_for_null_target():
     executor = DynamicActionExecutor(
         workflow,
         simulations={
-            "hr.notify_human.v1": {"result": {"status": "simulated", "branch": "notified"}}
+            "productivity.compose_outlook_email.v1": {"result": {"status": "simulated", "branch": "notified"}}
         },
     )
 
@@ -208,8 +224,8 @@ def test_string_null_target_stops_branch():
             {
                 "id": "notify",
                 "type": "action",
-                "action_id": "hr.notify_human.v1",
-                "params": {},
+                "action_id": "productivity.compose_outlook_email.v1",
+                "params": {"email_content": "notify"},
             },
         ],
         "edges": [
@@ -223,7 +239,7 @@ def test_string_null_target_stops_branch():
     executor = DynamicActionExecutor(
         workflow,
         simulations={
-            "hr.notify_human.v1": {
+            "productivity.compose_outlook_email.v1": {
                 "result": {"status": "simulated", "branch": "notified"}
             }
         },
