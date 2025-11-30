@@ -24,7 +24,12 @@ def _basic_workflow(params: dict) -> dict:
         "description": "",
         "nodes": [
             {"id": "start", "type": "start"},
-            {"id": "notify", "type": "action", "action_id": "hr.notify_human.v1", "params": params},
+            {
+                "id": "notify",
+                "type": "action",
+                "action_id": "productivity.compose_outlook_email.v1",
+                "params": params,
+            },
             {"id": "end", "type": "end"},
         ],
         "edges": [
@@ -35,7 +40,7 @@ def _basic_workflow(params: dict) -> dict:
 
 
 def test_validate_workflow_success():
-    workflow = _basic_workflow({"message": "hello"})
+    workflow = _basic_workflow({"email_content": "hello"})
 
     errors = validate_workflow_data(workflow, ACTION_REGISTRY)
 
@@ -52,7 +57,7 @@ def test_validate_workflow_missing_required_param():
 
 
 def test_validate_workflow_unknown_param():
-    workflow = _basic_workflow({"message": "hello", "date_filter": "today"})
+    workflow = _basic_workflow({"email_content": "hello", "date_filter": "today"})
 
     errors = validate_workflow_data(workflow, ACTION_REGISTRY)
 
@@ -62,7 +67,7 @@ def test_validate_workflow_unknown_param():
 
 def test_local_repair_removes_unknown_param():
     workflow = Workflow.model_validate(
-        _basic_workflow({"message": "hello", "date_filter": "today"})
+        _basic_workflow({"email_content": "hello", "date_filter": "today"})
     )
     validation_errors = [
         ValidationError(

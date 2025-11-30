@@ -1,47 +1,5 @@
 [
   {
-    "action_id": "hr.notify_human.v1",
-    "name": "Notify HR about an event",
-    "domain": "hr",
-    "description": "Send a notification to HR staff about an important event, via IM/email.",
-    "tags": [
-      "notify",
-      "hr",
-      "alert"
-    ],
-    "arg_schema": {
-      "type": "object",
-      "properties": {
-        "subject": {
-          "type": "string"
-        },
-        "message": {
-          "type": "string"
-        },
-        "severity": {
-          "type": "string",
-          "enum": [
-            "low",
-            "medium",
-            "high"
-          ]
-        }
-      },
-      "required": [
-        "message"
-      ]
-    },
-    "output_schema": {
-      "type": "object",
-      "properties": {
-        "status": {
-          "type": "string"
-        }
-      }
-    },
-    "enabled": true
-  },
-  {
     "action_id": "hr.record_health_event.v1",
     "name": "Record a business event",
     "domain": "hr",
@@ -217,37 +175,6 @@
         "incident_id": {
           "type": "string"
         },
-        "status": {
-          "type": "string"
-        }
-      }
-    },
-    "enabled": true
-  },
-  {
-    "action_id": "ops.notify_oncall.v1",
-    "name": "Notify oncall engineer",
-    "domain": "ops",
-    "description": "Notify the oncall engineer about a critical incident.",
-    "tags": [
-      "notify",
-      "oncall",
-      "ops"
-    ],
-    "arg_schema": {
-      "type": "object",
-      "properties": {
-        "message": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "message"
-      ]
-    },
-    "output_schema": {
-      "type": "object",
-      "properties": {
         "status": {
           "type": "string"
         }
@@ -835,6 +762,45 @@
         "results"
       ]
     },
+    "enabled": true
+  },
+  {
+    "action_id": "productivity.compose_outlook_email.v1",
+    "name": "Open Outlook and compose an email",
+    "domain": "productivity",
+    "description": "Automatically open the local Outlook client, create a new email draft, and paste provided content into the body.",
+    "tags": [
+      "outlook",
+      "email",
+      "productivity"
+    ],
+    "arg_schema": {
+      "type": "object",
+      "properties": {
+        "email_content": {
+          "type": "string",
+          "description": "The full email body to insert into a newly created Outlook draft."
+        }
+      },
+      "required": [
+        "email_content"
+      ]
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "status"
+      ]
+    },
+    "tool_name": "compose_outlook_email",
     "enabled": true
   }
 ]

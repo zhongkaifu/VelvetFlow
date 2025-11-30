@@ -190,9 +190,9 @@ def test_loop_body_action_missing_required_param_is_caught():
             {
                 "id": "notify_user",
                 "type": "action",
-                "action_id": "hr.notify_human.v1",
+                "action_id": "productivity.compose_outlook_email.v1",
                 "params": {
-                    "message": {
+                    "email_content": {
                         "__from__": "result_of.loop_news.items",
                         "__agg__": "format_join",
                         "format": "{summary}",

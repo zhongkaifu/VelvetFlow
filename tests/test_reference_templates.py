@@ -42,10 +42,9 @@ def test_validation_accepts_templated_result_reference():
             {
                 "id": "notify",
                 "type": "action",
-                "action_id": "hr.notify_human.v1",
+                "action_id": "productivity.compose_outlook_email.v1",
                 "params": {
-                    "message": {"__from__": "${{result_of.start.status}}"},
-                    "subject": "demo",
+                    "email_content": {"__from__": "${{result_of.start.status}}"}
                 },
             },
             {"id": "end", "type": "end"},

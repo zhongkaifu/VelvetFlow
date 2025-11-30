@@ -12,9 +12,9 @@ def test_executor_inferrs_edges_from_bindings_when_missing():
                 {
                     "id": "combine",
                     "type": "action",
-                    "action_id": "hr.notify_human.v1",
+                    "action_id": "productivity.compose_outlook_email.v1",
                     "params": {
-                        "text": "value={{result_of.producer.output}}",
+                        "email_content": "value={{result_of.producer.output}}",
                     },
                 },
                 {
@@ -32,12 +32,12 @@ def test_executor_inferrs_edges_from_bindings_when_missing():
         workflow,
         simulations={
             "ops.create_incident.v1": {"result": {"output": "P"}},
-            "hr.notify_human.v1": {"result": {"status": "combined"}},
+            "productivity.compose_outlook_email.v1": {"result": {"status": "combined"}},
         },
     )
 
     results = executor.run()
 
     # combine 节点应在 producer 之后执行，模板被替换为 producer 的输出
-    assert results["combine"]["params"]["text"] == "value=P"
+    assert results["combine"]["params"]["email_content"] == "value=P"
 

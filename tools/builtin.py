@@ -503,6 +503,55 @@ def summarize(text: str, max_sentences: int = 3) -> Dict[str, Any]:
     return {"summary": summary, "sentence_count": len(sentences)}
 
 
+def compose_outlook_email(email_content: str) -> Dict[str, str]:
+    """Open Outlook, start a new draft, and paste the provided HTML body."""
+
+    if not isinstance(email_content, str) or not email_content.strip():
+        raise ValueError("email_content must be a non-empty string")
+
+    if os.name != "nt":  # Outlook automation only available on Windows
+        raise RuntimeError(
+            "Outlook automation requires a Windows host with Microsoft Outlook installed."
+        )
+
+    try:
+        import pythoncom  # type: ignore
+        import win32com.client  # type: ignore
+    except ImportError as exc:  # pragma: no cover - environment-specific
+        raise RuntimeError(
+            "pywin32 is required for Outlook automation. Install it with 'pip install pywin32'."
+        ) from exc
+
+    co_initialized = False
+    try:
+        pythoncom.CoInitialize()
+        co_initialized = True
+
+        try:
+            outlook = win32com.client.Dispatch("Outlook.Application")
+        except Exception as exc:  # pragma: no cover - relies on Outlook installation
+            raise RuntimeError(f"Failed to start Outlook: {exc}") from exc
+
+        try:
+            mail_item = outlook.CreateItem(0)  # 0 == olMailItem
+            mail_item.Display()  # Bring up the draft window for user visibility
+            mail_item.HTMLBody = email_content.strip() + (mail_item.HTMLBody or "")
+        except Exception as exc:  # pragma: no cover - relies on Outlook COM APIs
+            raise RuntimeError(f"Failed to compose Outlook email: {exc}") from exc
+
+    finally:
+        if co_initialized:
+            try:
+                pythoncom.CoUninitialize()
+            except Exception:
+                pass
+
+    return {
+        "status": "success",
+        "message": "Outlook opened, new draft created, and content inserted.",
+    }
+
+
 def _run_coroutine(factory: Callable[[], Awaitable[Any]]) -> Any:
     """Safely execute an async coroutine factory from sync code."""
 
@@ -816,6 +865,23 @@ def register_builtin_tools() -> None:
 
     register_tool(
         Tool(
+            name="compose_outlook_email",
+            description=(
+                "Launch Outlook, open a new draft, and fill in the provided email content."
+            ),
+            function=compose_outlook_email,
+            args_schema={
+                "type": "object",
+                "properties": {
+                    "email_content": {"type": "string"},
+                },
+                "required": ["email_content"],
+            },
+        )
+    )
+
+    register_tool(
+        Tool(
             name="scrape_web_page",
             description="Download a web page and analyze it per a natural-language request.",
             function=scrape_web_page,
@@ -845,5 +911,6 @@ __all__ = [
     "list_files",
     "read_file",
     "summarize",
+    "compose_outlook_email",
     "scrape_web_page",
 ]

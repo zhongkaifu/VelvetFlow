@@ -24,7 +24,7 @@ def build_loop_workflow(action_id: str) -> Workflow:
                                 "id": "loop_action",
                                 "type": "action",
                                 "action_id": action_id,
-                                "params": {"value": {"__from__": "loop.item"}},
+                                "params": {"email_content": {"__from__": "loop.item"}},
                             }
                         ],
                         "edges": [],
@@ -32,7 +32,7 @@ def build_loop_workflow(action_id: str) -> Workflow:
                     "exports": {
                         "items": {
                             "from_node": "loop_action",
-                            "fields": ["value"],
+                            "fields": ["email_content"],
                         }
                     },
                 },
@@ -45,16 +45,22 @@ def build_loop_workflow(action_id: str) -> Workflow:
 
 
 def test_loop_body_results_are_cleared_between_iterations():
-    action_id = "hr.notify_human.v1"
+    action_id = "productivity.compose_outlook_email.v1"
     workflow = build_loop_workflow(action_id)
     executor = DynamicActionExecutor(
-        workflow, simulations={action_id: {"result": {"value": "{{value}}"}}}
+        workflow,
+        simulations={
+            action_id: {"result": {"status": "simulated", "email_content": "{{email_content}}"}}
+        },
     )
 
     results = executor.run()
 
     assert "loop_action" not in results
-    assert results["loop"]["items"] == [{"value": "1"}, {"value": "2"}]
+    assert results["loop"]["items"] == [
+        {"email_content": "1"},
+        {"email_content": "2"},
+    ]
 
 
 def test_condition_branch_inside_loop_body_uses_true_target():
@@ -80,8 +86,8 @@ def test_condition_branch_inside_loop_body_uses_true_target():
                             {
                                 "id": "t_branch",
                                 "type": "action",
-                                "action_id": "hr.notify_human.v1",
-                                "params": {},
+                                "action_id": "productivity.compose_outlook_email.v1",
+                                "params": {"email_content": "flag true"},
                             },
                         ],
                     },
@@ -98,7 +104,10 @@ def test_condition_branch_inside_loop_body_uses_true_target():
 
     workflow = Workflow.model_validate(workflow_dict)
     executor = DynamicActionExecutor(
-        workflow, simulations={"hr.notify_human.v1": {"result": {"branch": "true_taken"}}}
+        workflow,
+        simulations={
+            "productivity.compose_outlook_email.v1": {"result": {"branch": "true_taken"}}
+        },
     )
 
     results = executor.run()
