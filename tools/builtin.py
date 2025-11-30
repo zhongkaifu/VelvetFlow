@@ -503,11 +503,14 @@ def summarize(text: str, max_sentences: int = 3) -> Dict[str, Any]:
     return {"summary": summary, "sentence_count": len(sentences)}
 
 
-def compose_outlook_email(email_content: str) -> Dict[str, str]:
+def compose_outlook_email(email_content: str, emailTo: Optional[str] = None) -> Dict[str, str]:
     """Open Outlook, start a new draft, and paste the provided HTML body."""
 
     if not isinstance(email_content, str) or not email_content.strip():
         raise ValueError("email_content must be a non-empty string")
+
+    if emailTo is not None and (not isinstance(emailTo, str) or not emailTo.strip()):
+        raise ValueError("emailTo must be a non-empty string when provided")
 
     if os.name != "nt":  # Outlook automation only available on Windows
         raise RuntimeError(
@@ -535,6 +538,8 @@ def compose_outlook_email(email_content: str) -> Dict[str, str]:
         try:
             mail_item = outlook.CreateItem(0)  # 0 == olMailItem
             mail_item.Display()  # Bring up the draft window for user visibility
+            if emailTo:
+                mail_item.To = emailTo.strip()
             mail_item.HTMLBody = email_content.strip() + (mail_item.HTMLBody or "")
         except Exception as exc:  # pragma: no cover - relies on Outlook COM APIs
             raise RuntimeError(f"Failed to compose Outlook email: {exc}") from exc
@@ -874,6 +879,7 @@ def register_builtin_tools() -> None:
                 "type": "object",
                 "properties": {
                     "email_content": {"type": "string"},
+                    "emailTo": {"type": "string"},
                 },
                 "required": ["email_content"],
             },

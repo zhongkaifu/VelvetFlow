@@ -780,6 +780,10 @@
         "email_content": {
           "type": "string",
           "description": "The full email body to insert into a newly created Outlook draft."
+        },
+        "emailTo": {
+          "type": "string",
+          "description": "The recipient email address to populate in the Outlook draft."
         }
       },
       "required": [

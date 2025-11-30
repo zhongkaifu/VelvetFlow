@@ -47,6 +47,14 @@ def test_validate_workflow_success():
     assert errors == []
 
 
+def test_validate_workflow_with_optional_email_to():
+    workflow = _basic_workflow({"email_content": "hello", "emailTo": "user@example.com"})
+
+    errors = validate_workflow_data(workflow, ACTION_REGISTRY)
+
+    assert errors == []
+
+
 def test_validate_workflow_missing_required_param():
     workflow = _basic_workflow({})
 
