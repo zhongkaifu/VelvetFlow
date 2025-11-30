@@ -379,18 +379,41 @@ def _validate_nodes_recursive(
                             )
 
                         source = obj.get("__from__")
+                        sources: List[str] = []
+
                         if isinstance(source, str):
+                            sources = [source]
+                        elif isinstance(source, list):
+                            for idx, item in enumerate(source):
+                                if isinstance(item, str):
+                                    sources.append(item)
+                                else:
+                                    errors.append(
+                                        ValidationError(
+                                            code="INVALID_SCHEMA",
+                                            node_id=nid,
+                                            field=path_prefix or "params",
+                                            message=(
+                                                f"action 节点 '{nid}' 的参数绑定（{path_prefix or '<root>'}）"
+                                                f"的 __from__[{idx}] 类型无效，期望字符串。"
+                                            ),
+                                        )
+                                    )
+
+                        for src_idx, src in enumerate(sources):
                             schema_err = _check_output_path_against_schema(
-                                source, nodes_by_id, actions_by_id, loop_body_parents
+                                src, nodes_by_id, actions_by_id, loop_body_parents
                             )
                             if schema_err:
+                                suffix = f"[{src_idx}]" if len(sources) > 1 else ""
                                 errors.append(
                                     ValidationError(
                                         code="SCHEMA_MISMATCH",
                                         node_id=nid,
                                         field=path_prefix or "params",
                                         message=(
-                                            f"action 节点 '{nid}' 的参数绑定（{path_prefix or '<root>'}）引用无效：{schema_err}"
+                                            f"action 节点 '{nid}' 的参数绑定（{path_prefix or '<root>'}）引用无效"
+                                            f"{suffix}：{schema_err}"
                                         ),
                                     )
                                 )
@@ -403,25 +426,30 @@ def _validate_nodes_recursive(
                                         continue
                                     if step.get("op") == "filter":
                                         fld = step.get("field")
-                                        item_err = _check_array_item_field(
-                                            source,
-                                            fld,
-                                            nodes_by_id,
-                                            actions_by_id,
-                                            loop_body_parents,
-                                            alias_schemas,
-                                        )
-                                        if item_err:
-                                            errors.append(
-                                                ValidationError(
-                                                    code="SCHEMA_MISMATCH",
-                                                    node_id=nid,
-                                                    field=f"{path_prefix or 'params'}.pipeline.steps[{idx}].field",
-                                                    message=(
-                                                        f"action 节点 '{nid}' 的参数绑定（{path_prefix or '<root>'}）中 pipeline.steps[{idx}].field='{fld}' 无效：{item_err}"
-                                                    ),
-                                                )
+                                        for src_idx, src in enumerate(sources or [source]):
+                                            if not isinstance(src, str):
+                                                continue
+                                            item_err = _check_array_item_field(
+                                                src,
+                                                fld,
+                                                nodes_by_id,
+                                                actions_by_id,
+                                                loop_body_parents,
+                                                alias_schemas,
                                             )
+                                            if item_err:
+                                                suffix = f"[{src_idx}]" if len(sources) > 1 else ""
+                                                errors.append(
+                                                    ValidationError(
+                                                        code="SCHEMA_MISMATCH",
+                                                        node_id=nid,
+                                                        field=f"{path_prefix or 'params'}.pipeline.steps[{idx}].field",
+                                                        message=(
+                                                            f"action 节点 '{nid}' 的参数绑定（{path_prefix or '<root>'}）中 pipeline.steps[{idx}].field='{fld}'"
+                                                            f" 无效{suffix}：{item_err}"
+                                                        ),
+                                                    )
+                                                )
 
                     for k, v in obj.items():
                         new_prefix = f"{path_prefix}.{k}" if path_prefix else k
@@ -1451,8 +1479,13 @@ def validate_param_binding(binding: Any) -> Optional[str]:
         return "缺少 __from__ 字段"
 
     source_path = binding["__from__"]
-    if not isinstance(source_path, str):
-        return "__from__ 必须是字符串"
+    if isinstance(source_path, list):
+        if not source_path:
+            return "__from__ 不应为空数组"
+        if any(not isinstance(item, str) for item in source_path):
+            return "__from__ 数组元素必须是字符串"
+    elif not isinstance(source_path, str):
+        return "__from__ 必须是字符串或字符串数组"
 
     allowed_aggs = {
         "identity",
@@ -1963,11 +1996,18 @@ def validate_param_binding_and_schema(binding: Mapping[str, Any], workflow: Dict
         return binding_err
 
     src = binding.get("__from__")
-    return (
-        _check_output_path_against_schema(src, nodes_by_id, actions_by_id, loop_body_parents)
-        if isinstance(src, str)
-        else None
-    )
+    if isinstance(src, str):
+        return _check_output_path_against_schema(src, nodes_by_id, actions_by_id, loop_body_parents)
+    if isinstance(src, list):
+        for item in src:
+            if not isinstance(item, str):
+                return "__from__ 数组元素必须是字符串"
+            err = _check_output_path_against_schema(
+                item, nodes_by_id, actions_by_id, loop_body_parents
+            )
+            if err:
+                return err
+    return None
 
 
 __all__ = [
