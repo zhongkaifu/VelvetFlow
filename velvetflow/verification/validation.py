@@ -4,7 +4,7 @@ import json
 import re
 from collections import deque
 from contextlib import contextmanager
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Set
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set
 
 from velvetflow.loop_dsl import build_loop_output_schema, index_loop_body_nodes
 from velvetflow.models import ValidationError, Workflow
@@ -157,6 +157,31 @@ def _maybe_decode_binding_string(raw: str) -> Optional[Any]:
     return None
 
 
+def _iter_empty_param_fields(obj: Any, path_prefix: str = "params") -> Iterable[str]:
+    """Yield parameter paths whose values are empty strings.
+
+    构建阶段有时会生成占位的空字符串参数，这些字段在执行前需要补齐。为了
+    便于后续交给 LLM 修复，这里收集字段路径（如 ``params.query`` 或
+    ``params.items[0]``）。
+    """
+
+    if isinstance(obj, str):
+        if obj.strip() == "":
+            yield path_prefix
+        return
+
+    if isinstance(obj, Mapping):
+        for key, value in obj.items():
+            next_prefix = f"{path_prefix}.{key}" if path_prefix else str(key)
+            yield from _iter_empty_param_fields(value, next_prefix)
+        return
+
+    if isinstance(obj, Sequence) and not isinstance(obj, (bytes, str)):
+        for idx, item in enumerate(obj):
+            next_prefix = f"{path_prefix}[{idx}]" if path_prefix else f"[{idx}]"
+            yield from _iter_empty_param_fields(item, next_prefix)
+
+
 def _filter_params_by_supported_fields(
     *,
     node: Mapping[str, Any],
@@ -292,6 +317,27 @@ def _validate_nodes_recursive(
         ntype = n.get("type")
         action_id = n.get("action_id")
         params = n.get("params", {})
+
+        empty_fields = list(_iter_empty_param_fields(params))
+        for path in empty_fields:
+            context_parts = []
+            if ntype:
+                context_parts.append(f"type={ntype}")
+            if action_id:
+                context_parts.append(f"action_id={action_id}")
+            context_hint = f"（{', '.join(context_parts)}）" if context_parts else ""
+
+            errors.append(
+                ValidationError(
+                    code="EMPTY_PARAM_VALUE",
+                    node_id=nid,
+                    field=path,
+                    message=(
+                        f"节点 '{nid}' 的参数 '{path}' 值为空，请结合上下文补全真实值或绑定来源{context_hint}。"
+                        "可参考输入/输出 schema 使用工具进行修复。"
+                    ),
+                )
+            )
 
         # exports 只能用于 loop 节点
         if "exports" in params and ntype != "loop":
