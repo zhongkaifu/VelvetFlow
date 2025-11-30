@@ -3,6 +3,7 @@
 import copy
 import json
 import os
+import re
 from typing import Any, Dict, List, Mapping, Optional
 
 from openai import OpenAI
@@ -19,6 +20,12 @@ from velvetflow.logging_utils import (
     log_success,
     log_warn,
 )
+from velvetflow.models import (
+    PydanticValidationError,
+    ValidationError,
+    Workflow,
+    infer_edges_from_bindings,
+)
 from velvetflow.planner.action_guard import ensure_registered_actions
 from velvetflow.planner.approval import detect_missing_approval_nodes
 from velvetflow.planner.coverage import check_requirement_coverage_with_llm
@@ -28,7 +35,8 @@ from velvetflow.planner.workflow_builder import (
     attach_condition_branches,
 )
 from velvetflow.search import HybridActionSearchService
-from velvetflow.models import infer_edges_from_bindings
+from velvetflow.verification import precheck_loop_body_graphs, validate_completed_workflow
+from velvetflow.planner.update import update_workflow_with_llm
 
 
 CONDITION_ALLOWED_KINDS = {
@@ -77,6 +85,9 @@ ACTION_NODE_FIELDS = {
     "out_params_schema",
     "parent_node_id",
 }
+
+
+_INLINE_FROM_PATTERN = re.compile(r"^__from__\.(?P<path>.+)$")
 
 CONDITION_NODE_FIELDS = {
     "id",
@@ -231,6 +242,39 @@ def _sanitize_builder_node_fields(builder: WorkflowBuilder, node_id: str) -> Lis
         node.pop(key, None)
 
     return removed_keys
+
+
+def _normalize_inline_from_references(builder: WorkflowBuilder) -> bool:
+    """Convert legacy __from__.path strings into {{path}} templates in-place."""
+
+    changed = False
+
+    def _walk(obj: Any) -> Any:
+        nonlocal changed
+        if isinstance(obj, Mapping):
+            mutable = obj if isinstance(obj, dict) else dict(obj)
+            for key, value in mutable.items():
+                mutable[key] = _walk(value)
+            if mutable is not obj:
+                changed = True
+            return mutable
+        if isinstance(obj, list):
+            new_list = [_walk(item) for item in obj]
+            if new_list is not obj:
+                changed = True
+            return new_list
+        if isinstance(obj, str):
+            match = _INLINE_FROM_PATTERN.match(obj.strip())
+            if match:
+                changed = True
+                return f"{{{{{match.group('path').strip()}}}}}"
+        return obj
+
+    for node_id, node in list(builder.nodes.items()):
+        if isinstance(node, Mapping):
+            builder.nodes[node_id] = _walk(node)
+
+    return changed
 
 
 def _build_action_schema_map(action_registry: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
@@ -531,6 +575,171 @@ def _build_dependency_feedback_message(
         "当前 workflow 供参考（含推导的 edges）：\n"
         f"{json.dumps(workflow, ensure_ascii=False)}"
     )
+
+
+def _format_validation_errors(errors: List[ValidationError]) -> str:
+    lines = []
+    for idx, err in enumerate(errors, start=1):
+        location_bits = []
+        if err.node_id:
+            location_bits.append(f"node={err.node_id}")
+        if err.field:
+            location_bits.append(f"field={err.field}")
+        location = f"（{', '.join(location_bits)}）" if location_bits else ""
+        lines.append(f"{idx}. [{err.code}]{location} {err.message}")
+    return "\n".join(lines)
+
+
+def _convert_pydantic_errors_for_structure(
+    workflow_raw: Mapping[str, Any], error: PydanticValidationError
+) -> List[ValidationError]:
+    nodes = []
+    if isinstance(workflow_raw, dict):
+        nodes = workflow_raw.get("nodes") or []
+
+    def _node_id_from_index(index: int):
+        if 0 <= index < len(nodes):
+            node = nodes[index]
+            if isinstance(node, Mapping):
+                return node.get("id")
+        return None
+
+    validation_errors: List[ValidationError] = []
+    for err in error.errors():
+        loc = err.get("loc", ()) or ()
+        msg = err.get("msg", "")
+
+        node_id = None
+        field = None
+
+        if loc:
+            if loc[0] == "nodes" and len(loc) >= 2 and isinstance(loc[1], int):
+                node_id = _node_id_from_index(loc[1])
+                if len(loc) >= 3:
+                    field = str(loc[2])
+            elif loc[0] == "edges" and len(loc) >= 2 and isinstance(loc[1], int):
+                if len(loc) >= 3 and isinstance(loc[-1], str):
+                    field = str(loc[-1])
+                else:
+                    field = "edges"
+            else:
+                field = ".".join(str(part) for part in loc)
+
+        validation_errors.append(
+            ValidationError(
+                code="INVALID_SCHEMA",
+                node_id=node_id,
+                field=field,
+                message=msg,
+            )
+        )
+
+    return validation_errors
+
+
+def _validate_workflow_structure(
+    *, workflow: Mapping[str, Any], action_registry: List[Dict[str, Any]]
+) -> List[ValidationError]:
+    empty_param_errors: List[ValidationError] = []
+    nodes = workflow.get("nodes") if isinstance(workflow, Mapping) else None
+    if isinstance(nodes, list):
+        for node in nodes:
+            if not isinstance(node, Mapping):
+                continue
+            params = node.get("params") if isinstance(node.get("params"), Mapping) else None
+            if not params:
+                continue
+
+            for key, value in params.items():
+                if value is None:
+                    empty_param_errors.append(
+                        ValidationError(
+                            code="EMPTY_PARAM_VALUE",
+                            node_id=node.get("id") if isinstance(node.get("id"), str) else None,
+                            field=f"params.{key}",
+                            message=(
+                                "该字段的值为空，请检查是否遗漏了常量或引用绑定，例如引用其他节点的输出"
+                                "（result_of.<node_id>.field）或填充固定值。"
+                            ),
+                        )
+                    )
+                elif isinstance(value, str) and value.strip() == "":
+                    empty_param_errors.append(
+                        ValidationError(
+                            code="EMPTY_PARAM_VALUE",
+                            node_id=node.get("id") if isinstance(node.get("id"), str) else None,
+                            field=f"params.{key}",
+                            message=(
+                                "该字段是空字符串，请确认是否需要绑定其他节点输出或填写具体常量值。"
+                            ),
+                        )
+                    )
+
+    precheck_errors = precheck_loop_body_graphs(workflow)
+    if precheck_errors:
+        return empty_param_errors + precheck_errors
+
+    try:
+        workflow_model = Workflow.model_validate(workflow)
+    except PydanticValidationError as exc:
+        return empty_param_errors + _convert_pydantic_errors_for_structure(workflow, exc)
+    except Exception as exc:  # pragma: no cover - best-effort guard
+        return [
+            *empty_param_errors,
+            ValidationError(
+                code="INVALID_SCHEMA", node_id=None, field=None, message=str(exc)
+            )
+        ]
+
+    normalized = workflow_model.model_dump(by_alias=True)
+    return empty_param_errors + validate_completed_workflow(normalized, action_registry)
+
+
+def _auto_repair_workflow(
+    *,
+    workflow: Mapping[str, Any],
+    nl_requirement: str,
+    action_registry: List[Dict[str, Any]],
+) -> tuple[Dict[str, Any], List[ValidationError], bool]:
+    errors = _validate_workflow_structure(workflow=workflow, action_registry=action_registry)
+    if not errors:
+        return dict(workflow), [], False
+
+    log_warn("[Planner] workflow 校验未通过，尝试自动修复后重新检查。")
+    try:
+        repaired = update_workflow_with_llm(
+            workflow,
+            requirement=nl_requirement,
+            action_registry=action_registry,
+            validation_errors=errors,
+        )
+    except Exception as exc:  # noqa: BLE001 - surface for planner loop
+        log_warn(f"[Planner] 自动修复失败，保留原始 workflow：{exc}")
+        return dict(workflow), errors, False
+
+    repaired_errors = _validate_workflow_structure(
+        workflow=repaired, action_registry=action_registry
+    )
+    if repaired_errors:
+        log_warn("[Planner] 自动修复后仍有校验错误，交给 LLM 继续修补。")
+        return repaired, repaired_errors, True
+
+    log_success("[Planner] 自动修复后 workflow 校验通过。")
+    return repaired, [], True
+
+
+def _build_validation_feedback_message(
+    *,
+    errors: List[ValidationError],
+    workflow: Mapping[str, Any],
+) -> str:
+    return (
+        "workflow 校验未通过，请根据下列问题继续使用规划工具修复后再次调用 finalize_workflow。\n"
+        f"- validation_errors: {json.dumps([err.__dict__ for err in errors], ensure_ascii=False)}\n"
+        f"- readable_summary:\n{_format_validation_errors(errors)}\n"
+        "当前 workflow（含推导的 edges）供参考：\n"
+        f"{json.dumps(workflow, ensure_ascii=False)}"
+    )
 def plan_workflow_structure_with_llm(
     nl_requirement: str,
     search_service: HybridActionSearchService,
@@ -625,6 +834,7 @@ def plan_workflow_structure_with_llm(
                 args = {}
 
             log_info(f"[Planner] 调用工具: {func_name}({args})")
+            normalized_from_refs = False
 
             if func_name == "search_business_actions":
                 query = args.get("query", "")
@@ -689,6 +899,7 @@ def plan_workflow_structure_with_llm(
                         params=cleaned_params,
                         parent_node_id=parent_node_id if isinstance(parent_node_id, str) else None,
                     )
+                    normalized_from_refs = _normalize_inline_from_references(builder)
                     removed_node_fields = _sanitize_builder_node_fields(builder, args["id"])
                     if removed_fields or removed_node_fields:
                         tool_result = {
@@ -769,6 +980,7 @@ def plan_workflow_structure_with_llm(
                         parent_node_id=parent_node_id if isinstance(parent_node_id, str) else None,
                     )
                     _attach_sub_graph_nodes(builder, args["id"], sub_graph_nodes)
+                    normalized_from_refs = _normalize_inline_from_references(builder)
                     removed_node_fields = _sanitize_builder_node_fields(builder, args["id"])
                     if removed_fields or removed_node_fields:
                         tool_result = {
@@ -872,6 +1084,7 @@ def plan_workflow_structure_with_llm(
                         false_to_node=false_to_node if isinstance(false_to_node, str) else None,
                         parent_node_id=parent_node_id if isinstance(parent_node_id, str) else None,
                     )
+                    normalized_from_refs = _normalize_inline_from_references(builder)
                     removed_node_fields = _sanitize_builder_node_fields(builder, args["id"])
                     if removed_fields or removed_node_fields:
                         tool_result = {
@@ -996,6 +1209,7 @@ def plan_workflow_structure_with_llm(
                             _sanitize_builder_node_params(builder, node_id, action_schemas)
                         )
                         removed_node_fields = _sanitize_builder_node_fields(builder, node_id)
+                        normalized_from_refs = _normalize_inline_from_references(builder)
                         if removed_param_fields or removed_node_fields:
                             tool_result = {
                                 "status": "error",
@@ -1089,6 +1303,7 @@ def plan_workflow_structure_with_llm(
                             _sanitize_builder_node_params(builder, node_id, action_schemas)
                         )
                         removed_node_fields = _sanitize_builder_node_fields(builder, node_id)
+                        normalized_from_refs = _normalize_inline_from_references(builder)
                         if removed_param_fields or removed_node_fields:
                             tool_result = {
                                 "status": "error",
@@ -1133,6 +1348,7 @@ def plan_workflow_structure_with_llm(
                             _sanitize_builder_node_params(builder, node_id, action_schemas)
                         )
                         removed_node_fields = _sanitize_builder_node_fields(builder, node_id)
+                        normalized_from_refs = _normalize_inline_from_references(builder)
                         if removed_param_fields or removed_node_fields:
                             tool_result = {
                                 "status": "error",
@@ -1145,24 +1361,46 @@ def plan_workflow_structure_with_llm(
                             tool_result = {"status": "ok", "type": "node_updated", "node_id": node_id}
 
             elif func_name == "finalize_workflow":
+                normalized_from_refs = _normalize_inline_from_references(builder)
                 skeleton, coverage = _run_coverage_check(
                     nl_requirement=nl_requirement,
                     builder=builder,
                     action_registry=action_registry,
                     search_service=search_service,
                 )
-                latest_skeleton = skeleton
+                validated_workflow, validation_errors, auto_repaired = _auto_repair_workflow(
+                    workflow=skeleton,
+                    nl_requirement=nl_requirement,
+                    action_registry=action_registry,
+                )
+                latest_skeleton = validated_workflow
                 latest_coverage = coverage
                 is_covered = bool(coverage.get("is_covered", False))
-                nodes_without_upstream = _find_nodes_without_upstream(skeleton)
+                nodes_without_upstream = _find_nodes_without_upstream(validated_workflow)
                 needs_dependency_review = bool(nodes_without_upstream)
                 tool_result = {
-                    "status": "ok" if is_covered else "needs_more_coverage",
+                    "status": (
+                        "needs_validation_repair"
+                        if validation_errors
+                        else ("ok" if is_covered else "needs_more_coverage")
+                    ),
                     "type": "finalized",
                     "notes": args.get("notes"),
                     "coverage": coverage,
                     "nodes_without_upstream": nodes_without_upstream,
+                    "auto_repair_applied": auto_repaired,
+                    "validation_errors": [
+                        {
+                            "code": err.code,
+                            "node_id": err.node_id,
+                            "field": err.field,
+                            "message": err.message,
+                        }
+                        for err in validation_errors
+                    ],
                 }
+                if normalized_from_refs and isinstance(tool_result, dict):
+                    tool_result["normalized_from_references"] = True
                 messages.append(
                     {
                         "role": "tool",
@@ -1178,21 +1416,11 @@ def plan_workflow_structure_with_llm(
                         f"nodes={nodes_without_upstream}",
                     )
                     dependency_feedback = _build_dependency_feedback_message(
-                        workflow=skeleton, nodes_without_upstream=nodes_without_upstream
+                        workflow=validated_workflow, nodes_without_upstream=nodes_without_upstream
                     )
                     messages.append({"role": "system", "content": dependency_feedback})
 
-                if is_covered:
-                    if needs_dependency_review and dependency_retry <= max_dependency_refine_rounds:
-                        log_info("🔧 覆盖度通过，但需要进一步检查无上游依赖的节点，继续规划。")
-                    else:
-                        finalized = True
-                        log_success("[Planner] 覆盖度检查通过，结束结构规划。")
-                        if needs_dependency_review and dependency_retry > max_dependency_refine_rounds:
-                            log_warn(
-                                "已超过无上游依赖节点检查次数，继续后续流程。"
-                            )
-                else:
+                if not is_covered:
                     coverage_retry += 1
                     log_info("🔧 覆盖度检查未通过，将继续使用规划工具完善。")
                     feedback_message = _build_coverage_feedback_message(
@@ -1202,6 +1430,23 @@ def plan_workflow_structure_with_llm(
                     if coverage_retry > max_coverage_refine_rounds:
                         log_warn("已达到覆盖度补全上限，仍有缺失点，结束规划阶段。")
                         finalized = True
+
+                if validation_errors:
+                    validation_feedback = _build_validation_feedback_message(
+                        errors=validation_errors, workflow=validated_workflow
+                    )
+                    messages.append({"role": "system", "content": validation_feedback})
+
+                if is_covered and not validation_errors:
+                    if needs_dependency_review and dependency_retry <= max_dependency_refine_rounds:
+                        log_info("🔧 覆盖度通过，但需要进一步检查无上游依赖的节点，继续规划。")
+                    else:
+                        finalized = True
+                        log_success("[Planner] 覆盖度检查通过，结束结构规划。")
+                        if needs_dependency_review and dependency_retry > max_dependency_refine_rounds:
+                            log_warn(
+                                "已超过无上游依赖节点检查次数，继续后续流程。"
+                            )
 
                 continue
 
@@ -1221,6 +1466,8 @@ def plan_workflow_structure_with_llm(
             else:
                 tool_result = {"status": "error", "message": f"未知工具 {func_name}"}
 
+            if normalized_from_refs and isinstance(tool_result, dict):
+                tool_result.setdefault("normalized_from_references", True)
             messages.append(
                 {
                     "role": "tool",
