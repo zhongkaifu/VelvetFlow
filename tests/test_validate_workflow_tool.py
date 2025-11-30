@@ -9,6 +9,7 @@ if str(ROOT_DIR) not in sys.path:
 from validate_workflow import validate_workflow_data
 from velvetflow.models import ValidationError, Workflow
 from velvetflow.planner.repair_tools import _apply_local_repairs_for_unknown_params
+from velvetflow.verification.validation import validate_completed_workflow
 
 ACTION_REGISTRY = json.loads(
     (Path(__file__).parent.parent / "velvetflow" / "business_actions.json").read_text(
@@ -262,3 +263,35 @@ def test_loop_export_length_reference_allowed_for_plain_string():
     errors = validate_workflow_data(workflow, ACTION_REGISTRY)
 
     assert errors == []
+
+
+def test_template_reference_to_missing_node_is_removed():
+    workflow_raw = {
+        "workflow_name": "demo",
+        "description": "",
+        "nodes": [
+            {"id": "start", "type": "start"},
+            {
+                "id": "notify",
+                "type": "action",
+                "action_id": "hr.notify_human.v1",
+                "display_name": "{{ result_of.missing_node.output }}",
+                "params": {"message": "hello"},
+            },
+            {"id": "end", "type": "end"},
+        ],
+        "edges": [
+            {"from": "start", "to": "notify"},
+            {"from": "notify", "to": "end"},
+        ],
+    }
+
+    workflow_model = Workflow.model_validate(workflow_raw)
+    workflow_dict = workflow_model.model_dump(by_alias=True)
+    errors = validate_completed_workflow(workflow_dict, ACTION_REGISTRY)
+
+    assert any(
+        err.code == "SCHEMA_MISMATCH" and err.field == "display_name" for err in errors
+    )
+    notify_node = next(n for n in workflow_dict["nodes"] if n["id"] == "notify")
+    assert "display_name" not in notify_node

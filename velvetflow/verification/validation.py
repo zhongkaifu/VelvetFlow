@@ -277,6 +277,16 @@ def _validate_nodes_recursive(
         action_id = n.get("action_id")
         params = n.get("params", {})
 
+        _validate_template_references_in_node_fields(
+            n,
+            nid,
+            nodes_by_id,
+            actions_by_id,
+            loop_body_parents,
+            errors,
+            skip_params=ntype == "action",
+        )
+
         # exports 只能用于 loop 节点
         if "exports" in params and ntype != "loop":
             errors.append(
@@ -1106,6 +1116,57 @@ def _collect_param_bindings(obj: Any, prefix: str = "") -> List[Dict[str, str]]:
             bindings.extend(_collect_param_bindings(decoded, prefix))
 
     return bindings
+
+
+def _validate_template_references_in_node_fields(
+    node: Mapping[str, Any],
+    node_id: str | None,
+    nodes_by_id: Dict[str, Dict[str, Any]],
+    actions_by_id: Dict[str, Dict[str, Any]],
+    loop_body_parents: Optional[Mapping[str, str]],
+    errors: List[ValidationError],
+    *,
+    skip_params: bool = False,
+):
+    """Ensure templated references (``{{...}}``) point to existing nodes/fields.
+
+    When a field value matches the template pattern, the inner reference is
+    validated against existing workflow nodes and their schemas. Invalid
+    references trigger ``ValidationError`` entries and the offending field is
+    removed via ``_RepairingErrorList`` to unblock subsequent fixes.
+    """
+
+    def _walk(value: Any, path_prefix: str) -> None:
+        if isinstance(value, str):
+            normalized = normalize_reference_path(value)
+            if isinstance(normalized, str) and normalized != value:
+                schema_err = _check_output_path_against_schema(
+                    normalized, nodes_by_id, actions_by_id, loop_body_parents
+                )
+                if schema_err:
+                    errors.append(
+                        ValidationError(
+                            code="SCHEMA_MISMATCH",
+                            node_id=node_id,
+                            field=path_prefix,
+                            message=f"字段 '{path_prefix}' 的模板引用无效：{schema_err}",
+                        )
+                    )
+            return
+
+        if isinstance(value, Mapping):
+            for key, nested in value.items():
+                new_prefix = f"{path_prefix}.{key}" if path_prefix else str(key)
+                _walk(nested, new_prefix)
+        elif isinstance(value, list):
+            for idx, nested in enumerate(value):
+                new_prefix = f"{path_prefix}[{idx}]" if path_prefix else f"[{idx}]"
+                _walk(nested, new_prefix)
+
+    for key, value in list(node.items()):
+        if skip_params and key == "params":
+            continue
+        _walk(value, str(key))
 
 
 def _check_output_path_against_schema(
