@@ -487,19 +487,15 @@ def _run_coroutine(factory: Callable[[], Awaitable[Any]]) -> Any:
             loop.close()
 
 
-def scrape_web_page(
+def _scrape_single_url(
     url: str,
     user_request: str,
     *,
     llm_instruction: Optional[str] = None,
     llm_provider: str = "openai/gpt-4o-mini",
+    run_coroutine: Callable[[Callable[[], Awaitable[Any]]], Any] = _run_coroutine,
 ) -> Dict[str, Any]:
-    """Download and analyze a web page according to a natural-language request."""
-
-    if not url:
-        raise ValueError("url is required for scraping")
-    if not user_request:
-        raise ValueError("user_request is required for scraping")
+    """Download and analyze a single web page according to a request."""
 
     instruction = llm_instruction or textwrap.dedent(
         f"""
@@ -558,7 +554,7 @@ def scrape_web_page(
             )
             return fallback_result, attempts
 
-    result, attempts = _run_coroutine(_scrape)
+    result, attempts = run_coroutine(_scrape)
 
     raw_content = result.extracted_content or ""
     analysis: Any
@@ -580,6 +576,80 @@ def scrape_web_page(
         "attempts": attempts,
         "llm_used": use_llm,
         "llm_provider": llm_provider if use_llm else None,
+        "user_request": user_request,
+    }
+
+
+def _aggregate_scrape_results(results: List[Dict[str, Any]], user_request: str) -> str:
+    """Aggregate per-URL scrape outputs into a human-readable summary."""
+
+    if not results:
+        return "No pages were scraped."
+
+    bullet_points: List[str] = []
+    for item in results:
+        url = item.get("url", "")
+        status = item.get("status", "unknown")
+        analysis = item.get("analysis") or item.get("markdown") or ""
+
+        if isinstance(analysis, (dict, list)):
+            analysis_text = json.dumps(analysis, ensure_ascii=False)
+        else:
+            analysis_text = str(analysis).strip()
+
+        if analysis_text:
+            bullet_points.append(f"- [{status}] {url}: {analysis_text}")
+        else:
+            bullet_points.append(f"- [{status}] {url}: No analysis available")
+
+    header = f"Aggregate summary for request: {user_request}".strip()
+    return "\n".join([header, *bullet_points])
+
+
+def scrape_web_page(
+    urls: List[str],
+    user_request: str,
+    *,
+    llm_instruction: Optional[str] = None,
+    llm_provider: str = "openai/gpt-4o-mini",
+) -> Dict[str, Any]:
+    """Download and analyze one or more web pages according to a natural-language request."""
+
+    if isinstance(urls, str):
+        urls = [urls]
+
+    if not isinstance(urls, list) or not urls:
+        raise ValueError("urls must be a non-empty list of strings")
+    if not user_request:
+        raise ValueError("user_request is required for scraping")
+
+    normalized_urls: List[str] = []
+    for url in urls:
+        if not isinstance(url, str) or not url.strip():
+            raise ValueError("each url must be a non-empty string")
+        normalized_urls.append(url.strip())
+
+    per_page_results: List[Dict[str, Any]] = []
+    for url in normalized_urls:
+        per_page_results.append(
+            _scrape_single_url(
+                url,
+                user_request,
+                llm_instruction=llm_instruction,
+                llm_provider=llm_provider,
+            )
+        )
+
+    successes = [item.get("status") == "ok" for item in per_page_results]
+    overall_status = "ok" if all(successes) else "partial" if any(successes) else "error"
+
+    aggregate_summary = _aggregate_scrape_results(per_page_results, user_request)
+
+    return {
+        "status": overall_status,
+        "urls": normalized_urls,
+        "results": per_page_results,
+        "aggregate_summary": aggregate_summary,
         "user_request": user_request,
     }
 
@@ -723,12 +793,15 @@ def register_builtin_tools() -> None:
             args_schema={
                 "type": "object",
                 "properties": {
-                    "url": {"type": "string"},
+                    "urls": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                    },
                     "user_request": {"type": "string"},
                     "llm_instruction": {"type": "string", "nullable": True},
                     "llm_provider": {"type": "string", "default": "openai/gpt-4o-mini"},
                 },
-                "required": ["url", "user_request"],
+                "required": ["urls", "user_request"],
             },
         )
     )

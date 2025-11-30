@@ -372,6 +372,9 @@ class DynamicActionExecutor:
     def _resolve_condition_source(self, source: Any, ctx: BindingContext) -> Any:
         """Resolve condition source which may be a binding dict or a path string."""
 
+        if isinstance(source, list):
+            return [self._resolve_condition_source(item, ctx) for item in source]
+
         if isinstance(source, dict) and "__from__" in source:
             return ctx.resolve_binding(source)
 
