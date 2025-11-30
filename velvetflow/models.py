@@ -67,6 +67,18 @@ class ValidationError:
     message: str
 
 
+# 统一的绑定聚合枚举，供校验和提示使用。
+ALLOWED_PARAM_AGGREGATORS: tuple[str, ...] = (
+    "identity",
+    "count",
+    "count_if",
+    "join",
+    "filter_map",
+    "format_join",
+    "pipeline",
+)
+
+
 @dataclass
 class ParamBinding:
     """Typed representation of the parameter binding DSL."""

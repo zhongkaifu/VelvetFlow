@@ -85,6 +85,44 @@ def test_validate_workflow_unknown_param():
     assert any(e.code == "UNKNOWN_PARAM" and e.field == "date_filter" for e in errors)
 
 
+def test_invalid_agg_value_is_reported_with_context():
+    workflow = {
+        "workflow_name": "demo",
+        "description": "",
+        "nodes": [
+            {"id": "start", "type": "start"},
+            {
+                "id": "prepare_email",
+                "type": "action",
+                "action_id": "productivity.compose_outlook_email.v1",
+                "params": {"email_content": "hello"},
+            },
+            {
+                "id": "notify",
+                "type": "action",
+                "action_id": "productivity.compose_outlook_email.v1",
+                "params": {
+                    "email_content": {
+                        "__from__": "result_of.prepare_email.message",
+                        "__agg__": "sum",
+                    }
+                },
+            },
+            {"id": "end", "type": "end"},
+        ],
+        "edges": [
+            {"from": "start", "to": "prepare_email"},
+            {"from": "prepare_email", "to": "notify"},
+            {"from": "notify", "to": "end"},
+        ],
+    }
+
+    errors = validate_workflow_data(workflow, ACTION_REGISTRY)
+
+    assert any("__agg__ 不支持值" in e.message for e in errors)
+    assert any(e.node_id == "notify" for e in errors)
+
+
 def test_local_repair_removes_unknown_param():
     workflow = Workflow.model_validate(
         _basic_workflow({"email_content": "hello", "date_filter": "today"})

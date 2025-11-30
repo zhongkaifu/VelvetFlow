@@ -16,7 +16,7 @@ from velvetflow.logging_utils import (
     log_event,
     log_llm_usage,
 )
-from velvetflow.models import Node, Workflow
+from velvetflow.models import ALLOWED_PARAM_AGGREGATORS, Node, Workflow
 from velvetflow.planner.params_tools import build_param_completion_tool
 from velvetflow.planner.relations import get_referenced_nodes
 from velvetflow.reference_utils import normalize_reference_path
@@ -232,6 +232,11 @@ def _collect_binding_issues(
                     )
 
                 agg = obj.get("__agg__")
+                if agg is not None and agg not in ALLOWED_PARAM_AGGREGATORS:
+                    issues.append(
+                        f"{path_prefix}: __agg__ 取值非法（{agg}），可选值：{', '.join(ALLOWED_PARAM_AGGREGATORS)}。"
+                    )
+
                 field_checks: List[tuple[str, str]] = []
                 if agg == "count_if":
                     fld = obj.get("field")
@@ -379,9 +384,11 @@ def fill_params_with_llm(
         "start/end 节点可以保持 params 为空。\n"
         "绑定 DSL 说明：\n"
         "- __from__：指向上游结果或循环上下文，形如 result_of.<node_id>.<path>，loop 内可写 loop.item 或 loop.index。\n"
-        "- __agg__：聚合/变换方式，默认 identity。可选值：identity(直接引用)、count/\n"
-        "  count_if(统计列表长度，count_if 需结合 field+op+value 条件)、join(用 separator/sep 将字符串列表拼接)、\n"
-        "  format_join(按 format 模板渲染后用 sep 拼接，format 里请直接写字段名占位符，如 {name}/{score}，不要使用 {value})、filter_map(先过滤再映射/格式化)、pipeline(steps 串联 filter/format_join 等多步变换)。\n"
+        "- __agg__：聚合/变换方式，默认 identity。可选值：identity/count/count_if/join/format_join/filter_map/pipeline，"
+        "仅允许使用这些枚举值，其他取值会被视为非法并在校验后返回错误，需要根据错误提示修正。\n"
+        "  count_if 需结合 field+op+value 条件；join 用 separator/sep 将字符串列表拼接；\n"
+        "  format_join 按 format 模板渲染后用 sep 拼接（format 里请直接写字段名占位符，如 {name}/{score}，不要使用 {value}）；\n"
+        "  filter_map 先过滤再映射/格式化；pipeline 允许 steps 串联 filter/format_join 等多步变换。\n"
         "【重要说明：示例仅为模式，不代表具体业务】\n"
         "示例（字段名仅示意）：\n"
         '- 直接引用：{"__from__": "result_of.some_node.items", "__agg__": "identity"}\n'

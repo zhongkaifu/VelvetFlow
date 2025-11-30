@@ -332,6 +332,7 @@ validation_errors 是 JSON 数组，元素包含 code/node_id/field/message。
 6. 参数绑定 DSL 修复（__from__ 及其聚合逻辑）：
    - 对于 {"__from__": "result_of.xxx.data", "__agg__": "...", ...}：
        - 检查 __from__ 路径是否合法、与 output_schema 对齐；
+       - __agg__ 必须是 identity/count/count_if/join/format_join/filter_map/pipeline 之一，非法取值需要改成最接近语义的枚举值；
        - 检查 count_if/filter_map/pipeline 中的 field/filter_field/map_field 是否存在于数组元素 schema 中；
    - 当错误涉及这些字段时，优先只改字段名（根据元素 schema 的 properties），保持聚合逻辑不变。
 

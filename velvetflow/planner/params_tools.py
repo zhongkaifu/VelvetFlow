@@ -11,7 +11,7 @@ from __future__ import annotations
 import copy
 from typing import Any, Dict, List, Mapping
 
-from velvetflow.models import Node
+from velvetflow.models import ALLOWED_PARAM_AGGREGATORS, Node
 
 
 def _binding_schema() -> Dict[str, Any]:
@@ -23,15 +23,7 @@ def _binding_schema() -> Dict[str, Any]:
             "__from__": {"type": "string"},
             "__agg__": {
                 "type": "string",
-                "enum": [
-                    "identity",
-                    "count",
-                    "count_if",
-                    "join",
-                    "format_join",
-                    "filter_map",
-                    "pipeline",
-                ],
+                "enum": list(ALLOWED_PARAM_AGGREGATORS),
             },
         },
         "required": ["__from__"],
