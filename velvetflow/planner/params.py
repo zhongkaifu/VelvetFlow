@@ -377,13 +377,18 @@ def fill_params_with_llm(
         "当引用循环节点时，只能使用 loop 节点的 exports（如 result_of.<loop_id>.items、result_of.<loop_id>.exports.items 或 result_of.<loop_id>.aggregates.xxx），禁止直接引用 loop body 的节点。\n"
         "若 loop.exports.items.fields 仅包含用来包裹完整输出的字段（如 data/record 等），需要通过 <字段>.<子字段> 的形式访问内部属性，不能直接写子字段名。\n"
         "start/end 节点可以保持 params 为空。\n"
+        "绑定 DSL 说明：\n"
+        "- __from__：指向上游结果或循环上下文，形如 result_of.<node_id>.<path>，loop 内可写 loop.item 或 loop.index。\n"
+        "- __agg__：聚合/变换方式，默认 identity。可选值：identity(直接引用)、count/\n"
+        "  count_if(统计列表长度，count_if 需结合 field+op+value 条件)、join(用 separator/sep 将字符串列表拼接)、\n"
+        "  format_join(按 format 模板渲染后用 sep 拼接，format 里请直接写字段名占位符，如 {name}/{score}，不要使用 {value})、filter_map(先过滤再映射/格式化)、pipeline(steps 串联 filter/format_join 等多步变换)。\n"
         "【重要说明：示例仅为模式，不代表具体业务】\n"
         "示例（字段名仅示意）：\n"
         '- 直接引用：{"__from__": "result_of.some_node.items", "__agg__": "identity"}\n'
         '- 列表计数：{"__from__": "result_of.some_node.items", "__agg__": "count"}\n'
         '- 条件计数：{"__from__": "result_of.some_node.items", "__agg__": "count_if", "field": "value", "op": ">", "value": 10}\n'
         '- 直接格式化并拼接：{"__from__": "result_of.some_node.items", "__agg__": "format_join", "format": "{name}: {score}", "sep": "\\n"}\n'
-        '- pipeline：{"__from__": "result_of.list_node.items", "__agg__": "pipeline", "steps": [{"op": "filter", "field": "score", "cmp": ">", "value": 0.8}, {"op": "format_join", "field": "id", "format": "ID={value} 异常", "sep": "\\n"}]}\n'
+        '- pipeline：{"__from__": "result_of.list_node.items", "__agg__": "pipeline", "steps": [{"op": "filter", "field": "score", "cmp": ">", "value": 0.8}, {"op": "format_join", "field": "id", "format": "ID={id} 异常", "sep": "\\n"}]}\n'
         "示例中的节点名/字段名只是格式说明，实际必须使用 payload 中的节点信息和 output_schema。"
     )
 

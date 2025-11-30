@@ -27,6 +27,7 @@ def _binding_schema() -> Dict[str, Any]:
                     "identity",
                     "count",
                     "count_if",
+                    "join",
                     "format_join",
                     "filter_map",
                     "pipeline",

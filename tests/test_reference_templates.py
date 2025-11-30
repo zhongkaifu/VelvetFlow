@@ -82,6 +82,57 @@ def test_eval_params_parses_json_string_bindings():
     assert params["text"] == "新闻一\n新闻二"
 
 
+def test_format_join_prefers_named_fields_without_value_placeholder():
+    workflow = Workflow.model_validate({"nodes": [{"id": "start", "type": "start"}], "edges": []})
+    ctx = BindingContext(
+        workflow,
+        {
+            "start": {
+                "items": [
+                    {"name": "Alice", "score": 95},
+                    {"name": "Bob", "score": 88},
+                ]
+            }
+        },
+    )
+
+    binding = {
+        "__from__": "result_of.start.items",
+        "__agg__": "format_join",
+        "field": "name",
+        "sep": ",",
+    }
+    node = Node(id="aggregate", type="action", params={"text": binding})
+
+    params = eval_node_params(node, ctx)
+
+    assert params["text"] == "Alice,Bob"
+
+
+def test_join_binding_concatenates_strings():
+    workflow = Workflow.model_validate(
+        {"nodes": [{"id": "start", "type": "start"}, {"id": "aggregate", "type": "action"}], "edges": []}
+    )
+
+    ctx = BindingContext(workflow, {"start": {"items": ["a", "b", "c"]}})
+
+    node = Node(
+        id="aggregate",
+        type="action",
+        params={
+            "text": {
+                "__from__": "result_of.start.items",
+                "__agg__": "join",
+                "separator": "|",
+            }
+        },
+    )
+
+    params = eval_node_params(node, ctx)
+
+    assert params["text"] == "a|b|c"
+
+
 def test_infer_edges_from_embedded_result_refs():
     nodes = [
         Node(id="loop_nvidia_news", type="loop", params={}),
