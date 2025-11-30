@@ -78,6 +78,34 @@ class _DuckDuckGoParser(HTMLParser):
 def search_web(query: str, limit: int = 5, timeout: int = 8) -> Dict[str, List[Dict[str, str]]]:
     """Perform a lightweight DuckDuckGo HTML search and return top results."""
 
+    def _normalize_search_url(raw_url: str) -> str:
+        """Ensure returned URLs are fully qualified HTTP(S) links."""
+
+        if not raw_url:
+            return ""
+
+        # DuckDuckGo may return protocol-relative or redirect-style URLs; normalize them.
+        full_url = urllib.parse.urljoin("https://duckduckgo.com", html.unescape(raw_url.strip()))
+        parsed = urllib.parse.urlparse(full_url)
+
+        query_params = urllib.parse.parse_qs(parsed.query)
+        redirect_targets = query_params.get("uddg") or []
+        if redirect_targets:
+            target = html.unescape(urllib.parse.unquote(redirect_targets[0].strip()))
+            target_parts = urllib.parse.urlparse(target)
+            if target_parts.scheme in {"http", "https"}:
+                return target
+            if target_parts.netloc:
+                return f"https://{target}"
+
+        if parsed.scheme in {"http", "https"} and parsed.netloc:
+            return full_url
+
+        if not parsed.scheme and parsed.netloc:
+            return f"https://{parsed.netloc}{parsed.path or ''}{('?' + parsed.query) if parsed.query else ''}{('#' + parsed.fragment) if parsed.fragment else ''}"
+
+        return ""
+
     if not query:
         raise ValueError("query is required for web search")
 
@@ -98,10 +126,11 @@ def search_web(query: str, limit: int = 5, timeout: int = 8) -> Dict[str, List[D
 
     results: List[Dict[str, str]] = []
     for item in parser.results[:limit]:
+        normalized_url = _normalize_search_url(item.get("url", ""))
         results.append(
             {
                 "title": item.get("title", ""),
-                "url": item.get("url", ""),
+                "url": normalized_url,
                 "snippet": item.get("snippet", ""),
             }
         )
