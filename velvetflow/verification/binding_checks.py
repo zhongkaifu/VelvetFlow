@@ -483,6 +483,13 @@ def _schema_path_error(schema: Mapping[str, Any], fields: List[Any]) -> Optional
             idx += 1
             continue
 
+        if name == "*":
+            if typ != "array":
+                return f"字段路径 '{'.'.join(map(str, normalized_fields))}' 与 schema 类型 '{typ}' 不匹配（期望 array）。"
+            current = current.get("items") or {}
+            idx += 1
+            continue
+
         builtin_schema = _get_builtin_field_schema(current, name)
         if builtin_schema is not None:
             current = builtin_schema

@@ -188,6 +188,33 @@ def test_eval_params_parses_json_string_bindings():
     assert params["text"] == "新闻一\n新闻二"
 
 
+def test_template_wildcard_references_extract_list_fields():
+    workflow = Workflow.model_validate({"nodes": [{"id": "start", "type": "start"}], "edges": []})
+    ctx = BindingContext(
+        workflow,
+        {
+            "start": {
+                "results": [
+                    {"snippet": "Alpha"},
+                    {"snippet": "Beta"},
+                ]
+            }
+        },
+    )
+
+    direct_value = ctx.get_value("result_of.start.results[*].snippet")
+    node = Node(
+        id="notify",
+        type="action",
+        params={"message": "Snippets: ${result_of.start.results[*].snippet}"},
+    )
+
+    params = eval_node_params(node, ctx)
+
+    assert direct_value == ["Alpha", "Beta"]
+    assert params["message"] == "Snippets: ['Alpha', 'Beta']"
+
+
 def test_eval_params_renders_embedded_json_binding_with_escapes():
     workflow = Workflow.model_validate(
         {

@@ -64,7 +64,8 @@ def parse_field_path(path: str) -> List[Union[str, int]]:
 
     Returns a list of strings and integers representing object keys and list
     indices. Invalid fragments (such as missing brackets or non-numeric
-    indices) will raise ``ValueError``.
+    indices) will raise ``ValueError``. ``*`` is accepted inside brackets to
+    indicate a wildcard match for list elements.
     """
 
     if not isinstance(path, str) or not path:
@@ -92,10 +93,14 @@ def parse_field_path(path: str) -> List[Union[str, int]]:
                 raise ValueError(f"missing closing bracket in segment '{segment}'")
 
             index_literal = segment[bracket_pos + 1 : end_bracket]
-            if not index_literal.isdigit():
-                raise ValueError(f"list index must be integer in segment '{segment}'")
-
-            tokens.append(int(index_literal))
+            if index_literal == "*":
+                tokens.append("*")
+            elif index_literal.isdigit():
+                tokens.append(int(index_literal))
+            else:
+                raise ValueError(
+                    f"list index must be integer or '*' in segment '{segment}'"
+                )
             cursor = end_bracket + 1
 
         if not tokens:

@@ -367,6 +367,13 @@ class BindingContext:
                 idx += 1
                 continue
 
+            if name == "*":
+                if typ != "array":
+                    return False
+                current = current.get("items") or {}
+                idx += 1
+                continue
+
             if typ == "array":
                 current = current.get("items") or {}
                 # array 本身不消费字段名，继续在 items 上检查同一个字段
@@ -524,6 +531,14 @@ class BindingContext:
             rest = parts[1:]
 
         for p in rest:
+            if p == "*":
+                if not isinstance(cur, list):
+                    raise TypeError(
+                        f"{_fmt_path()}: 值类型为 {type(cur).__name__}，不支持通配访问"
+                    )
+                _append_token("*")
+                continue
+
             if isinstance(p, int):
                 if isinstance(cur, list):
                     if p < 0 or p >= len(cur):
