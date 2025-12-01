@@ -254,13 +254,22 @@ def _get_array_item_schema_from_output(
             body_subgraph = loop_params.get("body_subgraph")
             body_nodes = body_subgraph.get("nodes") if isinstance(body_subgraph, Mapping) else []
             body_node_map = {bn.get("id"): bn for bn in body_nodes if isinstance(bn, Mapping)}
-            from_node = (loop_params.get("exports") or {}).get("items", {}).get("from_node")
-            fields = (loop_params.get("exports") or {}).get("items", {}).get("fields")
+
+            exports = loop_params.get("exports") if isinstance(loop_params, Mapping) else None
+            items_spec = exports.get("items") if isinstance(exports, Mapping) else None
+            from_node = items_spec.get("from_node") if isinstance(items_spec, Mapping) else None
+            fields = items_spec.get("fields") if isinstance(items_spec, Mapping) else None
+
             body_params = node.get("params") if isinstance(node, Mapping) else {}
             loop_params = body_params if isinstance(body_params, Mapping) else {}
             body_nodes = loop_params.get("body_subgraph", {}).get("nodes", [])
             body_node_map = {bn.get("id"): bn for bn in body_nodes if isinstance(bn, Mapping)}
-            if isinstance(from_node, str) and isinstance(fields, list) and from_node in body_node_map:
+
+            if (
+                isinstance(from_node, str)
+                and isinstance(fields, list)
+                and from_node in body_node_map
+            ):
                 items_spec = (body_params.get("exports") or {}).get("items")
                 items_schema = _get_loop_items_schema_from_exports(
                     items_spec, node, nodes_by_id, actions_by_id
