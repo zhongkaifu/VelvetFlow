@@ -9,7 +9,12 @@ from typing import Any, List, Union
 _REFERENCE_PATTERNS = [
     re.compile(r"^\{\{\s*(?P<path>[^{}]+?)\s*\}\}$"),
     re.compile(r"^\$\{\{\s*(?P<path>[^{}]+?)\s*\}\}$"),
+    re.compile(r"^\$\{\s*(?P<path>[^{}]+?)\s*\}$"),
 ]
+
+_TEMPLATE_CANONICALIZE_PATTERN = re.compile(
+    r"\$\{\{\s*([^{}]+?)\s*\}\}|\$\{\s*([^{}]+?)\s*\}",
+)
 
 
 def normalize_reference_path(path: Any) -> Any:
@@ -18,9 +23,10 @@ def normalize_reference_path(path: Any) -> Any:
     The workflow DSL historically used raw dotted strings such as
     ``result_of.node.output`` for node/field references. Users now sometimes
     express the same intent with ``{{result_of.node.output}}`` or
-    ``${{ result_of.node.output }}``. This helper normalizes those templated
-    inputs back to the original raw dotted form so downstream validators and
-    executors can handle all styles uniformly.
+    ``${ result_of.node.output }`` (including the historic ``${{ ... }}`` form).
+    This helper normalizes those templated inputs back to the original raw
+    dotted form so downstream validators and executors can handle all styles
+    uniformly.
 
     Non-string inputs are returned as-is.
     """
@@ -34,6 +40,23 @@ def normalize_reference_path(path: Any) -> Any:
             return match.group("path").strip()
 
     return path
+
+
+def canonicalize_template_placeholders(text: Any) -> Any:
+    """Return ``text`` with ``${...}``/``${{...}}`` placeholders rewritten to ``{{...}}``.
+
+    Non-string inputs are returned unchanged to keep call sites ergonomic. Whitespace
+    inside placeholders is stripped, matching ``normalize_reference_path`` behavior.
+    """
+
+    if not isinstance(text, str):
+        return text
+
+    def _replace(match: re.Match[str]) -> str:
+        path = match.group(1) or match.group(2) or ""
+        return f"{{{{{path.strip()}}}}}"
+
+    return _TEMPLATE_CANONICALIZE_PATTERN.sub(_replace, text)
 
 
 def parse_field_path(path: str) -> List[Union[str, int]]:
