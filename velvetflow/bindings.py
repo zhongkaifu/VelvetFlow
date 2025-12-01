@@ -33,6 +33,113 @@ class BindingContext:
         if extra_nodes:
             self._nodes.update(extra_nodes)
 
+    def _format_field_path(self, parts: List[Any]) -> str:
+        path_str = ""
+        for part in parts:
+            if isinstance(part, int):
+                path_str += f"[{part}]"
+            else:
+                path_str += ("." if path_str else "") + str(part)
+        return path_str
+
+    def _infer_loop_reference_path(self, src_path: str) -> str:
+        """Try to recover missing loop exports/items/aggregates segments.
+
+        Some LLM-generated bindings may omit ``exports`` or ``items`` when
+        referencing loop outputs. This helper attempts to insert the missing
+        segments based on the loop's ``exports`` definition. If multiple
+        completions are possible, a ``ValueError`` will be raised to surface the
+        ambiguity instead of guessing.
+        """
+
+        try:
+            parts = parse_field_path(src_path)
+        except Exception:
+            return src_path
+
+        if len(parts) < 2 or parts[0] != "result_of":
+            return src_path
+
+        node_id = parts[1]
+        node = self._nodes.get(node_id)
+        if not node or node.type != "loop":
+            return src_path
+
+        rest_path = parts[2:]
+        params = node.params or {}
+        exports = params.get("exports") if isinstance(params, Mapping) else None
+        if not isinstance(exports, Mapping):
+            body_graph = params.get("body_subgraph") if isinstance(params, Mapping) else None
+            if isinstance(body_graph, Mapping):
+                exports = body_graph.get("exports") if isinstance(body_graph.get("exports"), Mapping) else None
+
+        if not isinstance(exports, Mapping):
+            return src_path
+
+        normalized_rest = rest_path[1:] if rest_path and rest_path[0] == "exports" else rest_path
+        if normalized_rest and normalized_rest[0] in {"items", "aggregates"}:
+            return src_path
+
+        items_fields: List[List[Any]] = []
+        items_spec = exports.get("items")
+        if isinstance(items_spec, Mapping):
+            for field in items_spec.get("fields", []):
+                if not isinstance(field, str):
+                    continue
+                try:
+                    items_fields.append(parse_field_path(field))
+                except Exception:
+                    items_fields.append([field])
+
+        aggregate_names = {
+            agg.get("name")
+            for agg in exports.get("aggregates", [])
+            if isinstance(agg, Mapping) and isinstance(agg.get("name"), str)
+        }
+
+        candidates: List[List[Any]] = []
+        for field_tokens in items_fields:
+            if normalized_rest[: len(field_tokens)] == field_tokens:
+                candidates.append(["items", *normalized_rest])
+                candidates.append(["exports", "items", *normalized_rest])
+
+        if normalized_rest and normalized_rest[0] in aggregate_names:
+            candidates.append(["aggregates", *normalized_rest])
+            candidates.append(["exports", "aggregates", *normalized_rest])
+
+        if not candidates:
+            return src_path
+
+        loop_schema = build_loop_output_schema(params)
+        validated_candidates: List[List[Any]] = []
+        for cand in candidates:
+            effective = cand[1:] if cand and cand[0] == "exports" else cand
+            if loop_schema and self._schema_has_path(loop_schema, effective):
+                validated_candidates.append(cand)
+
+        if not validated_candidates:
+            return src_path
+
+        deduped: List[List[Any]] = []
+        seen_effective: set = set()
+        for cand in validated_candidates:
+            effective = tuple(cand[1:] if cand and cand[0] == "exports" else cand)
+            if effective in seen_effective:
+                continue
+            seen_effective.add(effective)
+            deduped.append(cand)
+
+        if len(deduped) > 1:
+            readable = [
+                self._format_field_path(["result_of", node_id, *cand]) for cand in deduped
+            ]
+            raise ValueError(
+                f"__from__ 引用 '{src_path}' 存在歧义，可能的有效路径: {', '.join(readable)}"
+            )
+
+        corrected_parts = ["result_of", node_id, *deduped[0]]
+        return self._format_field_path(corrected_parts)
+
     def resolve_binding(self, binding: dict) -> Any:
         """解析 __from__, __agg__, pipeline 等绑定 DSL。"""
 
@@ -60,8 +167,20 @@ class BindingContext:
             return binding
 
         src_path = normalize_reference_path(binding["__from__"])
-        self._validate_result_reference(src_path)
-        data = self._get_from_context(src_path)
+        resolved_path = src_path
+        try:
+            self._validate_result_reference(resolved_path)
+        except ValueError:
+            inferred_path = self._infer_loop_reference_path(resolved_path)
+            if inferred_path == resolved_path:
+                raise
+            self._validate_result_reference(inferred_path)
+            log_warn(
+                f"[binding] 自动补全 loop 引用 '{src_path}' -> '{inferred_path}'"
+            )
+            resolved_path = inferred_path
+
+        data = self._get_from_context(resolved_path)
         agg = binding.get("__agg__", "identity")
         if agg not in ALLOWED_PARAM_AGGREGATORS:
             raise ValueError(
