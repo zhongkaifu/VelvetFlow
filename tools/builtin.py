@@ -76,20 +76,26 @@ class _DuckDuckGoParser(HTMLParser):
 
 
 def search_web(query: str, limit: int = 5, timeout: int = 8) -> Dict[str, List[Dict[str, str]]]:
-    """Perform a lightweight Bing HTML search and return top results."""
+    """Perform a DuckDuckGo HTML search and return top results with snippets."""
 
     def _clean_text(value: str) -> str:
         text_no_tags = re.sub(r"<[^>]+>", " ", value)
         text_unescaped = html.unescape(text_no_tags)
         return re.sub(r"\s+", " ", text_unescaped).strip()
 
+    def _resolve_url(raw_url: str) -> str:
+        if raw_url.startswith("/l/?"):
+            parsed = urllib.parse.urlparse(raw_url)
+            uddg = urllib.parse.parse_qs(parsed.query).get("uddg", [])
+            if uddg:
+                return urllib.parse.unquote(uddg[0])
+        return raw_url
+
     if not query:
         raise ValueError("query is required for web search")
 
     encoded_q = urllib.parse.quote_plus(query)
-    url = (
-        f"https://www.bing.com/search?q={encoded_q}&count={limit}&setLang=en-US&cc=US"
-    )
+    url = f"https://duckduckgo.com/html/?q={encoded_q}&kl=us-en"
     req = urllib.request.Request(
         url,
         headers={"User-Agent": "Mozilla/5.0 (compatible; VelvetFlow/1.0)"},
@@ -100,27 +106,24 @@ def search_web(query: str, limit: int = 5, timeout: int = 8) -> Dict[str, List[D
     except Exception as exc:  # pragma: no cover - network-dependent
         raise RuntimeError(f"web search failed: {exc}") from exc
 
+    parser = _DuckDuckGoParser(limit)
+    try:
+        parser.feed(raw_html)
+    except StopIteration:  # pragma: no cover - parser stops early when limit reached
+        pass
+
     results: List[Dict[str, str]] = []
-    for match in re.finditer(r'<li class="b_algo".*?</li>', raw_html, flags=re.S):
-        block = match.group(0)
-        title_match = re.search(r'<h2[^>]*>\s*<a href="(.*?)"[^>]*>(.*?)</a>', block, flags=re.S)
-        snippet_match = re.search(r'<p[^>]*>(.*?)</p>', block, flags=re.S)
-
-        if not title_match:
-            continue
-
-        url_value = _clean_text(title_match.group(1))
-        title_value = _clean_text(title_match.group(2))
-        snippet_value = (
-            _clean_text(snippet_match.group(1)) if snippet_match else title_value
-        )
+    for entry in parser.results:
+        title_value = _clean_text(entry.get("title", ""))
+        url_value = _resolve_url(entry.get("url", ""))
+        snippet_value = _clean_text(entry.get("snippet", "")) or title_value
 
         if title_value and url_value:
             results.append(
                 {
                     "title": title_value,
                     "url": url_value,
-                    "snippet": snippet_value or title_value,
+                    "snippet": snippet_value,
                 }
             )
 
