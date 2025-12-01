@@ -1,5 +1,5 @@
 """
-workflow_fc_hybrid_actions_demo.py
+build_workflow.py
 
 原有的单文件 demo 已拆分为可复用的模块：
 - velvetflow.action_registry：业务动作注册表
