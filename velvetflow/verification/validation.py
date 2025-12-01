@@ -8,7 +8,11 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set
 
 from velvetflow.loop_dsl import build_loop_output_schema, index_loop_body_nodes
 from velvetflow.models import ALLOWED_PARAM_AGGREGATORS, ValidationError, Workflow
-from velvetflow.reference_utils import normalize_reference_path, parse_field_path
+from velvetflow.reference_utils import (
+    canonicalize_template_placeholders,
+    normalize_reference_path,
+    parse_field_path,
+)
 
 CONDITION_PARAM_FIELDS = {
     "kind",
@@ -30,7 +34,9 @@ LOOP_PARAM_FIELDS = {
     "exports",
 }
 
-_TEMPLATE_REF_PATTERN = re.compile(r"\{\{\s*([^{}]+?)\s*\}\}|\$\{\{\s*([^{}]+?)\s*\}\}")
+_TEMPLATE_REF_PATTERN = re.compile(
+    r"\{\{\s*([^{}]+?)\s*\}\}|\$\{\{\s*([^{}]+?)\s*\}\}|\$\{\s*([^{}]+?)\s*\}"
+)
 
 
 class _RepairingErrorList(list):
@@ -217,15 +223,17 @@ def _filter_params_by_supported_fields(
 
 
 def _iter_template_references(text: str) -> Iterable[str]:
-    """Yield templated reference paths (``{{foo.bar}}`` or ``${{foo.bar}}``) from text."""
+    """Yield templated reference paths (``{{foo.bar}}`` or ``${foo.bar}``) from text."""
 
     if not isinstance(text, str):
         return []
 
+    text = canonicalize_template_placeholders(text)
+
     return (
-        (match.group(1) or match.group(2) or "").strip()
+        (match.group(1) or match.group(2) or match.group(3) or "").strip()
         for match in _TEMPLATE_REF_PATTERN.finditer(text)
-        if match.group(1) or match.group(2)
+        if match.group(1) or match.group(2) or match.group(3)
     )
 
 
@@ -514,7 +522,8 @@ def _validate_nodes_recursive(
             # 模板引用静态校验（例如 "{{news_item.title}}"）
             def _walk_params_for_template_refs(obj: Any, path_prefix: str = ""):
                 if isinstance(obj, str):
-                    template_refs = list(_iter_template_references(obj))
+                    normalized_obj = canonicalize_template_placeholders(obj)
+                    template_refs = list(_iter_template_references(normalized_obj))
 
                     if template_refs:
                         for ref in template_refs:
@@ -526,7 +535,7 @@ def _validate_nodes_recursive(
                             alias = parts[0] if parts else None
                             context_suffix = (
                                 f"。模板上下文：{obj}"
-                                if obj and obj.strip() != f"{{{{{ref}}}}}"
+                                if obj and normalized_obj.strip() != f"{{{{{ref}}}}}"
                                 else ""
                             )
 

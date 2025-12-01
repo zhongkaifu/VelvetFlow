@@ -20,7 +20,10 @@ from velvetflow.logging_utils import (
     log_warn,
     use_trace_context,
 )
-from velvetflow.reference_utils import parse_field_path
+from velvetflow.reference_utils import (
+    canonicalize_template_placeholders,
+    parse_field_path,
+)
 from velvetflow.models import Node, ValidationError, Workflow, infer_edges_from_bindings
 from tools import get_registered_tool
 
@@ -287,13 +290,14 @@ class DynamicActionExecutor:
 
     def _render_template(self, value: Any, params: Mapping[str, Any]) -> Any:
         if isinstance(value, str):
-            pattern = r"\{\{([^{}]+)\}\}"
+            normalized_value = canonicalize_template_placeholders(value)
+            pattern = r"\{\{\s*([^{}]+)\s*\}\}"
 
             def _replace(match: re.Match[str]) -> str:
                 key = match.group(1)
                 return str(params.get(key, match.group(0)))
 
-            return re.sub(pattern, _replace, value)
+            return re.sub(pattern, _replace, normalized_value)
 
         if isinstance(value, list):
             return [self._render_template(v, params) for v in value]

@@ -8,7 +8,11 @@ from velvetflow.action_registry import get_action_by_id
 from velvetflow.loop_dsl import build_loop_output_schema
 from velvetflow.logging_utils import log_warn
 from velvetflow.models import ALLOWED_PARAM_AGGREGATORS, Node, Workflow
-from velvetflow.reference_utils import normalize_reference_path, parse_field_path
+from velvetflow.reference_utils import (
+    canonicalize_template_placeholders,
+    normalize_reference_path,
+    parse_field_path,
+)
 
 
 class BindingContext:
@@ -466,7 +470,45 @@ class _SafeDict(dict):
 def eval_node_params(node: Node, ctx: BindingContext) -> Dict[str, Any]:
     """遍历 node.params，如果是绑定 DSL，就用 ctx.resolve_binding 解析。"""
 
-    template_pattern = re.compile(r"\{\{\s*([^{}]+?)\s*\}\}|\$\{\{\s*([^{}]+?)\s*\}\}")
+    template_pattern = re.compile(
+        r"\{\{\s*([^{}]+?)\s*\}\}|\$\{\{\s*([^{}]+?)\s*\}\}|\$\{\s*([^{}]+?)\s*\}"
+    )
+
+    decoder = json.JSONDecoder()
+
+    def _render_json_bindings(text: str) -> str:
+        out: List[str] = []
+        sentinel = object()
+        idx = 0
+        while idx < len(text):
+            if text[idx] != "{":
+                out.append(text[idx])
+                idx += 1
+                continue
+
+            try:
+                obj, end = decoder.raw_decode(text, idx)
+            except json.JSONDecodeError:
+                out.append(text[idx])
+                idx += 1
+                continue
+
+            replacement: Any = sentinel
+            if isinstance(obj, dict) and "__from__" in obj:
+                try:
+                    replacement = ctx.resolve_binding(obj)
+                except Exception as e:  # pragma: no cover - log-only path
+                    log_warn(
+                        f"[param-resolver] 字符串内嵌绑定 {obj} 解析失败: {e}，使用原值"
+                    )
+
+            if replacement is sentinel:
+                out.append(text[idx:end])
+            else:
+                out.append("" if replacement is None else str(replacement))
+            idx = end
+
+        return "".join(out)
 
     def _resolve(value: Any, path: str = "") -> Any:
         if isinstance(value, dict):
@@ -483,7 +525,9 @@ def eval_node_params(node: Node, ctx: BindingContext) -> Dict[str, Any]:
             return [_resolve(v, f"{path}[{idx}]") for idx, v in enumerate(value)]
 
         if isinstance(value, str):
-            str_val = value.strip()
+            normalized_templates = canonicalize_template_placeholders(value)
+            rendered_inline = _render_json_bindings(normalized_templates)
+            str_val = rendered_inline.strip()
             # 允许 text 等字段以字符串形式携带绑定表达式（常见于外部序列化后传入）
             if str_val.startswith("{") and str_val.endswith("}") and "__from__" in str_val:
                 try:
@@ -496,7 +540,7 @@ def eval_node_params(node: Node, ctx: BindingContext) -> Dict[str, Any]:
                     except Exception as e:
                         log_warn(f"[param-resolver] 字符串绑定 {value} 解析失败: {e}，使用原值")
 
-            normalized_v = normalize_reference_path(value)
+            normalized_v = normalize_reference_path(rendered_inline)
             head = normalized_v.split(".", 1)[0]
             # 仅当整个字符串就是绑定路径时才解析；包含插值占位符的混合字符串将保留原样
             if (
@@ -512,12 +556,12 @@ def eval_node_params(node: Node, ctx: BindingContext) -> Dict[str, Any]:
                         f"[param-resolver] 路径字符串 {value} 解析失败: {e}，使用原值"
                     )
 
-            resolved_with_templates = value
+            resolved_with_templates = rendered_inline
             replaced = False
 
             def _replace(match: re.Match[str]) -> str:
                 nonlocal replaced
-                raw_path = match.group(1) or match.group(2)
+                raw_path = match.group(1) or match.group(2) or match.group(3)
                 normalized_path = normalize_reference_path(raw_path)
                 head = normalized_path.split(".", 1)[0]
                 if (
@@ -538,8 +582,10 @@ def eval_node_params(node: Node, ctx: BindingContext) -> Dict[str, Any]:
                 replaced = True
                 return "" if value is None else str(value)
 
-            resolved_with_templates = template_pattern.sub(_replace, value)
-            if replaced:
+            resolved_with_templates = template_pattern.sub(
+                _replace, resolved_with_templates
+            )
+            if replaced or resolved_with_templates != value:
                 return resolved_with_templates
 
             return value

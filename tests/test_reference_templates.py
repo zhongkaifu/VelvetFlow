@@ -24,13 +24,33 @@ def test_binding_context_supports_templated_references():
 
     binding_value = ctx.resolve_binding({"__from__": "{{ result_of.start.status }}"})
     direct_value = ctx.get_value("${{result_of.start.status}}")
+    direct_value_dollar = ctx.get_value("${ result_of.start.status }")
 
     node = Node(id="notify", type="action", params={"message": "${{result_of.start.status}}"})
+    node_with_dollar = Node(id="notify2", type="action", params={"message": "${result_of.start.status}"})
     params = eval_node_params(node, ctx)
+    params_with_dollar = eval_node_params(node_with_dollar, ctx)
 
     assert binding_value == "ok"
     assert direct_value == "ok"
+    assert direct_value_dollar == "ok"
     assert params["message"] == "ok"
+    assert params_with_dollar["message"] == "ok"
+
+
+def test_eval_params_canonicalizes_unresolved_placeholders():
+    workflow = Workflow.model_validate({"nodes": [{"id": "start", "type": "start"}], "edges": []})
+    ctx = BindingContext(workflow, {"start": {"status": "ok"}})
+
+    node = Node(
+        id="notify",
+        type="action",
+        params={"message": "等待补全：${{missing.path}}"},
+    )
+
+    params = eval_node_params(node, ctx)
+
+    assert params["message"] == "等待补全：{{missing.path}}"
 
 
 def test_validation_accepts_templated_result_reference():
@@ -63,15 +83,15 @@ def test_validation_rejects_invalid_template_reference():
         "description": "",
         "nodes": [
             {"id": "start", "type": "start"},
-            {
-                "id": "notify",
-                "type": "action",
-                "action_id": "hr.notify_human.v1",
-                "params": {
-                    "message": "无法找到节点：{{result_of.missing.status}}",
-                    "subject": "demo",
+                {
+                    "id": "notify",
+                    "type": "action",
+                    "action_id": "hr.update_employee_health_profile.v1",
+                    "params": {
+                        "employee_id": "E001",
+                        "status": "无法找到节点：{{result_of.missing.status}}",
+                    },
                 },
-            },
             {"id": "end", "type": "end"},
         ],
         "edges": [{"from": "start", "to": "notify"}, {"from": "notify", "to": "end"}],
@@ -81,7 +101,65 @@ def test_validation_rejects_invalid_template_reference():
 
     assert len(errors) == 1
     assert errors[0].node_id == "notify"
-    assert errors[0].field == "message"
+    assert errors[0].field == "status"
+    assert "模板" in errors[0].message
+    assert "missing" in errors[0].message
+
+
+def test_validation_rejects_invalid_dollar_template_reference():
+    workflow = {
+        "workflow_name": "demo",
+        "description": "",
+        "nodes": [
+            {"id": "start", "type": "start"},
+                {
+                    "id": "notify",
+                    "type": "action",
+                    "action_id": "hr.update_employee_health_profile.v1",
+                    "params": {
+                        "employee_id": "E001",
+                        "status": "无法找到节点：${result_of.missing.status}",
+                    },
+                },
+            {"id": "end", "type": "end"},
+        ],
+        "edges": [{"from": "start", "to": "notify"}, {"from": "notify", "to": "end"}],
+    }
+
+    errors = validate_workflow_data(workflow, ACTION_REGISTRY)
+
+    assert len(errors) == 1
+    assert errors[0].node_id == "notify"
+    assert errors[0].field == "status"
+    assert "模板" in errors[0].message
+    assert "missing" in errors[0].message
+
+
+def test_validation_rejects_invalid_double_dollar_template_reference():
+    workflow = {
+        "workflow_name": "demo",
+        "description": "",
+        "nodes": [
+            {"id": "start", "type": "start"},
+                {
+                    "id": "notify",
+                    "type": "action",
+                    "action_id": "hr.update_employee_health_profile.v1",
+                    "params": {
+                        "employee_id": "E001",
+                        "status": "无法找到节点：${{result_of.missing.status}}",
+                    },
+                },
+            {"id": "end", "type": "end"},
+        ],
+        "edges": [{"from": "start", "to": "notify"}, {"from": "notify", "to": "end"}],
+    }
+
+    errors = validate_workflow_data(workflow, ACTION_REGISTRY)
+
+    assert len(errors) == 1
+    assert errors[0].node_id == "notify"
+    assert errors[0].field == "status"
     assert "模板" in errors[0].message
     assert "missing" in errors[0].message
 
@@ -108,6 +186,53 @@ def test_eval_params_parses_json_string_bindings():
     params = eval_node_params(node, ctx)
 
     assert params["text"] == "新闻一\n新闻二"
+
+
+def test_eval_params_renders_embedded_json_binding_with_escapes():
+    workflow = Workflow.model_validate(
+        {
+            "nodes": [
+                {"id": "start", "type": "start"},
+                {"id": "analyze_stock_performance", "type": "action"},
+                {"id": "summarize_stock_info", "type": "action"},
+            ],
+            "edges": [],
+        }
+    )
+    ctx = BindingContext(
+        workflow,
+        {
+            "analyze_stock_performance": {
+                "aggregate_summary": "市场总结 A +10% / B -5%",
+            },
+            "summarize_stock_info": {
+                "results": [
+                    {"title": "AAPL", "snippet": "上涨 3%"},
+                    {"title": "TSLA", "snippet": "下跌 2%"},
+                ]
+            },
+        },
+    )
+
+    binding_str = (
+        "根据最新财经网站数据，以下是10只涨得最好和10只跌得最多的股票及其投资建议总结：\n\n"
+        "涨幅最高的10只股票：{\"__from__\":\"result_of.analyze_stock_performance.aggregate_summary\",\"__agg__\":\"identity\"}\n"
+        "跌幅最高的10只股票：{\"__from__\":\"result_of.analyze_stock_performance.aggregate_summary\",\"__agg__\":\"identity\"}\n"
+        "投资建议：{\"__from__\":\"result_of.analyze_stock_performance.aggregate_summary\",\"__agg__\":\"identity\"}\n\n"
+        "总结内容：{\"__from__\":\"result_of.summarize_stock_info.results\",\"__agg__\":\"format_join\",\"format\":\"{title}: {snippet}\",\"sep\":\"\\n\"}"
+    )
+    node = Node(id="aggregate", type="action", params={"text": binding_str})
+
+    params = eval_node_params(node, ctx)
+
+    assert (
+        params["text"]
+        == "根据最新财经网站数据，以下是10只涨得最好和10只跌得最多的股票及其投资建议总结：\n\n"
+        "涨幅最高的10只股票：市场总结 A +10% / B -5%\n"
+        "跌幅最高的10只股票：市场总结 A +10% / B -5%\n"
+        "投资建议：市场总结 A +10% / B -5%\n\n"
+        "总结内容：AAPL: 上涨 3%\nTSLA: 下跌 2%"
+    )
 
 
 def test_eval_params_resolves_nested_binding_in_dict():
