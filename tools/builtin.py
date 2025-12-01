@@ -76,7 +76,7 @@ class _DuckDuckGoParser(HTMLParser):
 
 
 def search_web(query: str, limit: int = 5, timeout: int = 8) -> Dict[str, List[Dict[str, str]]]:
-    """Perform a lightweight Google HTML search and return top results."""
+    """Perform a lightweight Bing HTML search and return top results."""
 
     def _clean_text(value: str) -> str:
         text_no_tags = re.sub(r"<[^>]+>", " ", value)
@@ -87,12 +87,12 @@ def search_web(query: str, limit: int = 5, timeout: int = 8) -> Dict[str, List[D
         raise ValueError("query is required for web search")
 
     encoded_q = urllib.parse.quote_plus(query)
-    url = f"https://www.google.com/search?q={encoded_q}&hl=en&num={limit}"
+    url = (
+        f"https://www.bing.com/search?q={encoded_q}&count={limit}&setLang=en-US&cc=US"
+    )
     req = urllib.request.Request(
         url,
-        headers={
-            "User-Agent": "Mozilla/5.0 (compatible; VelvetFlow/1.0; +https://example.com)",
-        },
+        headers={"User-Agent": "Mozilla/5.0 (compatible; VelvetFlow/1.0)"},
     )
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -101,24 +101,26 @@ def search_web(query: str, limit: int = 5, timeout: int = 8) -> Dict[str, List[D
         raise RuntimeError(f"web search failed: {exc}") from exc
 
     results: List[Dict[str, str]] = []
-    for match in re.finditer(r'<div class="tF2Cxc".*?</div>\s*</div>\s*</div>', raw_html, flags=re.S):
+    for match in re.finditer(r'<li class="b_algo".*?</li>', raw_html, flags=re.S):
         block = match.group(0)
-        title_match = re.search(r'<a href="(.*?)"[^>]*>\s*<h3[^>]*>(.*?)</h3>', block, flags=re.S)
-        snippet_match = re.search(r'<div class="VwiC3b[^>]*>(.*?)</div>', block, flags=re.S)
+        title_match = re.search(r'<h2[^>]*>\s*<a href="(.*?)"[^>]*>(.*?)</a>', block, flags=re.S)
+        snippet_match = re.search(r'<p[^>]*>(.*?)</p>', block, flags=re.S)
 
         if not title_match:
             continue
 
         url_value = _clean_text(title_match.group(1))
         title_value = _clean_text(title_match.group(2))
-        snippet_value = _clean_text(snippet_match.group(1)) if snippet_match else ""
+        snippet_value = (
+            _clean_text(snippet_match.group(1)) if snippet_match else title_value
+        )
 
         if title_value and url_value:
             results.append(
                 {
                     "title": title_value,
                     "url": url_value,
-                    "snippet": snippet_value,
+                    "snippet": snippet_value or title_value,
                 }
             )
 
@@ -754,7 +756,7 @@ def register_builtin_tools() -> None:
     register_tool(
         Tool(
             name="search_web",
-            description="Perform a Google search and return titles, URLs, and snippets.",
+            description="Perform a Bing search and return titles, URLs, and snippets.",
             function=search_web,
             args_schema={
                 "type": "object",
