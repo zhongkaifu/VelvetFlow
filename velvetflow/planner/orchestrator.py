@@ -16,7 +16,7 @@ workflow 结构和参数的两阶段推理，然后在必要时向 LLM 提供错
 返回值统一为 `Workflow` 对象，调用方无需关心 LLM 返回的原始 JSON 格式。
 """
 
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Any, Dict, Iterable, List, Mapping, Optional
 
 from velvetflow.config import OPENAI_MODEL
 from velvetflow.logging_utils import (
@@ -47,6 +47,7 @@ from velvetflow.planner.repair_tools import (
     _apply_local_repairs_for_unknown_params,
 )
 from velvetflow.planner.structure import plan_workflow_structure_with_llm
+from velvetflow.reference_utils import parse_field_path
 from velvetflow.verification import (
     precheck_loop_body_graphs,
     run_lightweight_static_rules,
@@ -55,6 +56,7 @@ from velvetflow.verification import (
 from velvetflow.verification.validation import (
     _get_array_item_schema_from_output,
     _get_field_schema_from_item,
+    _get_output_schema_at_path,
     _is_numeric_schema_type,
 )
 from velvetflow.search import HybridActionSearchService
@@ -293,6 +295,176 @@ def _coerce_value_to_schema_type(value: Any, field_schema: Mapping[str, Any]) ->
         return {"value": value}
 
     return None
+
+
+def _align_reference_field_types(
+    workflow: Workflow, *, action_registry: List[Dict[str, Any]]
+) -> tuple[Workflow, List[ValidationError]]:
+    """Ensure param binding types match the referenced output schema.
+
+    当某个参数通过 ``__from__`` 引用上游节点输出时，检查该字段期望的
+    JSON Schema 类型是否与引用的输出类型一致：
+
+    * 若检测到类型不一致且可预测的转换规则（如数组包装、字符串化）可用，
+      则直接在本地修改 workflow，避免进入 LLM 修复流程。
+    * 无法自动转换时，返回带有上下文信息的 ``ValidationError``，以便后续
+      交给 LLM 处理。
+    """
+
+    def _schema_primary_type(schema: Optional[Mapping[str, Any]]) -> Any:
+        if not isinstance(schema, Mapping):
+            return None
+        typ = schema.get("type")
+        if isinstance(typ, list):
+            return typ[0] if typ else None
+        return typ
+
+    def _coerce_binding(binding: Mapping[str, Any], field_schema: Mapping[str, Any]) -> Optional[Any]:
+        schema_type = _schema_primary_type(field_schema)
+        if schema_type == "array" and not isinstance(binding, list):
+            return [binding]
+
+        if schema_type == "string":
+            agg = binding.get("__agg__", "identity")
+            if agg in {None, "", "identity"}:
+                coerced = dict(binding)
+                coerced["__agg__"] = "pipeline"
+                steps = coerced.get("steps") or []
+                coerced["steps"] = steps + [{"op": "format_join"}]
+                return coerced
+
+        return None
+
+    wf_dict = workflow.model_dump(by_alias=True)
+    actions_by_id = _index_actions_by_id(action_registry)
+    nodes_by_id = {n.get("id"): n for n in iter_workflow_and_loop_body_nodes(wf_dict)}
+
+    loop_body_parents: Dict[str, str] = {}
+    for node in wf_dict.get("nodes", []) or []:
+        if not isinstance(node, Mapping) or node.get("type") != "loop":
+            continue
+        params = node.get("params") if isinstance(node.get("params"), Mapping) else {}
+        body_nodes = (
+            params.get("body_subgraph", {}).get("nodes") if isinstance(params, Mapping) else []
+        )
+        for bn in body_nodes or []:
+            if isinstance(bn, Mapping) and bn.get("id"):
+                loop_body_parents[bn["id"]] = node.get("id", "")
+
+    errors: List[ValidationError] = []
+    changed = False
+
+    def _iter_bindings_with_schema(
+        value: Any, schema: Optional[Mapping[str, Any]], path_prefix: str
+    ) -> Iterable[tuple[str, Mapping[str, Any], Optional[Mapping[str, Any]]]]:
+        if isinstance(value, Mapping):
+            if "__from__" in value:
+                yield path_prefix, value, schema
+            for key, val in value.items():
+                next_prefix = f"{path_prefix}.{key}" if path_prefix else str(key)
+                child_schema: Optional[Mapping[str, Any]] = None
+                if isinstance(schema, Mapping):
+                    schema_type = schema.get("type")
+                    if schema_type == "array":
+                        child_schema = schema.get("items")
+                    elif schema_type in {None, "object"}:
+                        props = schema.get("properties") or {}
+                        child_schema = props.get(key) if isinstance(props, Mapping) else None
+                yield from _iter_bindings_with_schema(val, child_schema, next_prefix)
+            return
+
+        if isinstance(value, list):
+            item_schema = schema.get("items") if isinstance(schema, Mapping) else None
+            for idx, item in enumerate(value):
+                yield from _iter_bindings_with_schema(item, item_schema, f"{path_prefix}[{idx}]")
+
+    for node in wf_dict.get("nodes", []) or []:
+        if not isinstance(node, Mapping) or node.get("type") != "action":
+            continue
+
+        node_id = node.get("id")
+        params = node.get("params") if isinstance(node.get("params"), Mapping) else None
+        if not params:
+            continue
+
+        arg_schema = actions_by_id.get(node.get("action_id"), {}).get("arg_schema")
+        for path, binding, binding_schema in _iter_bindings_with_schema(
+            params, arg_schema, "params"
+        ):
+            from_path = binding.get("__from__") if isinstance(binding, Mapping) else None
+            if not isinstance(from_path, str):
+                continue
+
+            source_schema = _get_output_schema_at_path(
+                from_path,
+                nodes_by_id,
+                actions_by_id,
+                loop_body_parents=loop_body_parents,
+            )
+            target_type = _schema_primary_type(binding_schema)
+            source_type = _schema_primary_type(source_schema)
+
+            if target_type is None or source_type is None or target_type == source_type:
+                continue
+
+            coerced = _coerce_binding(binding, binding_schema or {})
+            if coerced is not None:
+                parent = params
+                try:
+                    tokens = parse_field_path(path.replace("params.", "", 1))
+                except Exception:
+                    errors.append(
+                        ValidationError(
+                            code="SCHEMA_MISMATCH",
+                            node_id=node_id,
+                            field=path.replace("params.", "", 1),
+                            message=(
+                                f"参数 {path} 的路径无法解析，跳过自动类型转换。"
+                            ),
+                        )
+                    )
+                    continue
+                cursor: Any = parent
+                for token in tokens[:-1]:
+                    if isinstance(token, int):
+                        cursor = cursor[token]
+                    else:
+                        cursor = cursor.get(token)
+                last = tokens[-1]
+                if isinstance(cursor, list) and isinstance(last, int):
+                    cursor[last] = coerced
+                elif isinstance(cursor, Mapping):
+                    cursor[last] = coerced
+                changed = True
+                continue
+
+            errors.append(
+                ValidationError(
+                    code="SCHEMA_MISMATCH",
+                    node_id=node_id,
+                    field=path.replace("params.", "", 1),
+                    message=(
+                        "参数 {field} 引用 {source} 的输出类型为 {source_type}，"
+                        "但期望 {target_type}。无法自动转换，请使用工具调整或添加转换逻辑。"
+                    ).format(
+                        field=path,
+                        source=from_path,
+                        source_type=source_type,
+                        target_type=target_type,
+                    ),
+                )
+            )
+
+    if not changed:
+        return workflow, errors
+
+    try:
+        coerced_workflow = Workflow.model_validate(wf_dict)
+    except Exception as exc:  # noqa: BLE001
+        log_warn(f"[AutoRepair] 引用类型矫正后验证失败：{exc}")
+        return workflow, errors
+
+    return coerced_workflow, errors
 
 
 def _coerce_condition_param_types(
@@ -874,6 +1046,10 @@ def plan_workflow_with_two_pass(
                 current_workflow, action_registry=action_registry
             )
 
+            current_workflow, reference_errors = _align_reference_field_types(
+                current_workflow, action_registry=action_registry
+            )
+
             loop_exports_workflow, loop_export_summary = fill_loop_exports_defaults(
                 current_workflow.model_dump(by_alias=True),
                 action_registry=action_registry,
@@ -904,6 +1080,7 @@ def plan_workflow_with_two_pass(
 
             errors: List[ValidationError] = []
             errors.extend(coercion_errors)
+            errors.extend(reference_errors)
 
             if static_errors:
                 errors.extend(static_errors)
