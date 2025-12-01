@@ -215,6 +215,31 @@ def test_template_wildcard_references_extract_list_fields():
     assert params["message"] == "Snippets: ['Alpha', 'Beta']"
 
 
+def test_template_wildcard_without_result_of_prefix():
+    workflow = Workflow.model_validate({"nodes": [{"id": "search_nvidia_news", "type": "action"}], "edges": []})
+    ctx = BindingContext(
+        workflow,
+        {
+            "search_nvidia_news": {
+                "results": [
+                    {"snippet": "NVDA hits record high"},
+                    {"snippet": "New GPU architecture"},
+                ]
+            }
+        },
+    )
+
+    node = Node(
+        id="notify",
+        type="action",
+        params={"text": "${search_nvidia_news.results[*].snippet}"},
+    )
+
+    params = eval_node_params(node, ctx)
+
+    assert params["text"] == ["NVDA hits record high", "New GPU architecture"]
+
+
 def test_eval_params_renders_embedded_json_binding_with_escapes():
     workflow = Workflow.model_validate(
         {

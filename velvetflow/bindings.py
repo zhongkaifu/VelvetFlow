@@ -42,6 +42,38 @@ class BindingContext:
                 path_str += ("." if path_str else "") + str(part)
         return path_str
 
+    def _qualify_context_path(self, path: Any) -> Any:
+        """Normalize context references and prepend ``result_of.`` when omitted.
+
+        Some authoring tools emit bare node references (e.g.,
+        ``search_nvidia_news.results[*].snippet``) inside template placeholders.
+        To keep compatibility with the rest of the resolver, this helper detects
+        such cases and rewrites them to the canonical ``result_of.<node_id>``
+        form. Non-string inputs or paths already pointing to loop context or
+        ``result_of`` are returned unchanged.
+        """
+
+        normalized = normalize_reference_path(path)
+        if not isinstance(normalized, str):
+            return normalized
+
+        try:
+            parts = parse_field_path(normalized)
+        except Exception:
+            return normalized
+
+        if not parts:
+            return normalized
+
+        head = parts[0]
+        if head in {self.loop_id, "loop"} or head in self.loop_ctx:
+            return normalized
+
+        if head == "result_of" or head not in self._nodes:
+            return normalized
+
+        return f"result_of.{normalized}"
+
     def _infer_loop_reference_path(self, src_path: str) -> str:
         """Try to recover missing loop exports/items/aggregates segments.
 
@@ -467,7 +499,7 @@ class BindingContext:
         return self._get_from_context(path)
 
     def _get_from_context(self, path: str):
-        path = normalize_reference_path(path)
+        path = self._qualify_context_path(path)
         if not path:
             raise KeyError("空路径")
 
@@ -675,16 +707,17 @@ def eval_node_params(node: Node, ctx: BindingContext) -> Dict[str, Any]:
                         log_warn(f"[param-resolver] 字符串绑定 {value} 解析失败: {e}，使用原值")
 
             normalized_v = normalize_reference_path(rendered_inline)
-            head = normalized_v.split(".", 1)[0]
+            qualified_v = ctx._qualify_context_path(normalized_v)
+            head = qualified_v.split(".", 1)[0]
             # 仅当整个字符串就是绑定路径时才解析；包含插值占位符的混合字符串将保留原样
             if (
                 head in ctx.loop_ctx
                 or head == ctx.loop_id
-                or normalized_v.startswith("loop.")
-                or normalized_v.startswith("result_of.")
+                or qualified_v.startswith("loop.")
+                or qualified_v.startswith("result_of.")
             ):
                 try:
-                    return ctx.get_value(normalized_v)
+                    return ctx.get_value(qualified_v)
                 except Exception as e:
                     log_warn(
                         f"[param-resolver] 路径字符串 {value} 解析失败: {e}，使用原值"
@@ -697,16 +730,17 @@ def eval_node_params(node: Node, ctx: BindingContext) -> Dict[str, Any]:
                 nonlocal replaced
                 raw_path = match.group(1) or match.group(2) or match.group(3)
                 normalized_path = normalize_reference_path(raw_path)
-                head = normalized_path.split(".", 1)[0]
+                qualified_path = ctx._qualify_context_path(normalized_path)
+                head = qualified_path.split(".", 1)[0]
                 if (
                     head not in ctx.loop_ctx
                     and head != ctx.loop_id
-                    and not normalized_path.startswith("loop.")
-                    and not normalized_path.startswith("result_of.")
+                    and not qualified_path.startswith("loop.")
+                    and not qualified_path.startswith("result_of.")
                 ):
                     return match.group(0)
                 try:
-                    value = ctx.get_value(normalized_path)
+                    value = ctx.get_value(qualified_path)
                 except Exception as e:
                     log_warn(
                         f"[param-resolver] 模板占位符 {match.group(0)} 解析失败: {e}，保留原样"
