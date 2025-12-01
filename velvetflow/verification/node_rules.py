@@ -969,6 +969,7 @@ __all__ = [
     "CONDITION_PARAM_FIELDS",
     "LOOP_PARAM_FIELDS",
     "_filter_params_by_supported_fields",
+    "_is_numeric_schema_type",
     "_strip_illegal_exports",
     "_validate_nodes_recursive",
 ]

@@ -19,7 +19,7 @@ VelvetFlow (repo root)
 │   ├── search.py                # Fake ES + 内存向量库的混合检索服务
 │   ├── simulation_data.json     # 执行动作的模拟返回模板
 │   └── visualization.py         # 将 workflow 渲染为 JPEG DAG
-├── workflow_fc_hybrid_actions_demo.py # 端到端生成 + 可视化示例入口
+├── build_workflow.py                  # 端到端生成 + 可视化示例入口
 ├── execute_workflow.py                 # 从已保存 JSON 执行 workflow
 └── LICENSE
 ```
@@ -49,7 +49,7 @@ VelvetFlow (repo root)
    ```
 3. **运行端到端示例**
    ```bash
-   python workflow_fc_hybrid_actions_demo.py
+   python build_workflow.py
    ```
    - 按提示输入自然语言需求（或直接回车使用默认示例），程序将构建混合检索服务、两阶段规划工作流，并打印最终 DSL。
    - 结果会持久化到 `workflow_output.json`，并生成 `workflow_dag.jpg`。
@@ -128,7 +128,7 @@ LLM 相关节点说明：
 
 ## 自定义与扩展
 - **扩展动作库**：编辑 `velvetflow/business_actions.json` 增加/调整动作，`action_registry.py` 会自动加载并附加安全字段。
-- **调优检索**：在 `workflow_fc_hybrid_actions_demo.py` 的 `build_default_search_service` 调整 `alpha` 或替换 `DEFAULT_EMBEDDING_MODEL`/`embed_text_openai` 以适配自定义向量模型。
+- **调优检索**：在 `build_workflow.py` 的 `build_default_search_service` 调整 `alpha` 或替换 `DEFAULT_EMBEDDING_MODEL`/`embed_text_openai` 以适配自定义向量模型。
 - **更换模型**：`velvetflow/config.py` 中的 `OPENAI_MODEL` 控制规划/补参阶段使用的 OpenAI Chat 模型。
 - **定制执行行为**：修改 `velvetflow/simulation_data.json` 模板以覆盖动作返回；如需调整条件/循环聚合规则，可在 `executor.py` 与`bindings.py` 中扩展。
 
