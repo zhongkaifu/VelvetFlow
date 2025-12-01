@@ -18,6 +18,7 @@ from .binding_checks import (
     _maybe_decode_binding_string,
     _schema_path_error,
     _suggest_numeric_subfield,
+    _walk_schema_with_tokens,
     validate_param_binding,
 )
 
@@ -74,6 +75,40 @@ def _filter_params_by_supported_fields(
         node["params"] = node_params
 
     return removed
+
+
+def _resolve_condition_schema(
+    source_path: str,
+    field: str | None,
+    nodes_by_id: Mapping[str, Mapping[str, Any]],
+    actions_by_id: Mapping[str, Mapping[str, Any]],
+    loop_body_parents: Mapping[str, str],
+    alias_schemas: Mapping[str, Mapping[str, Any]] | None,
+) -> Mapping[str, Any] | None:
+    """Return the schema of the condition target (source + optional field)."""
+
+    normalized_source = normalize_reference_path(source_path)
+    field_path = field if isinstance(field, str) and field else None
+
+    alias_schema = (alias_schemas or {}).get(normalized_source)
+    if isinstance(alias_schema, Mapping):
+        if field_path:
+            try:
+                tokens = parse_field_path(field_path)
+            except Exception:
+                return None
+            return _walk_schema_with_tokens(alias_schema, tokens)
+        return alias_schema
+
+    if not isinstance(normalized_source, str):
+        return None
+
+    combined_path = (
+        f"{normalized_source}.{field_path}" if field_path else normalized_source
+    )
+    return _get_output_schema_at_path(
+        combined_path, nodes_by_id, actions_by_id, loop_body_parents
+    )
 
 
 def _strip_illegal_exports(node: Mapping[str, Any]) -> bool:
@@ -485,26 +520,44 @@ def _validate_nodes_recursive(
                         )
                     )
 
-                if kind in {"any_greater_than", "all_less_than", "contains"}:
-                    fld = params.get("field")
-                    if isinstance(fld, str):
-                        for source_path in source_paths:
-                            item_err = _check_array_item_field(
-                                source_path,
-                                fld,
-                                nodes_by_id,
-                                actions_by_id,
-                                loop_body_parents,
-                                alias_schemas,
+                field_path = params.get("field") if isinstance(params.get("field"), str) else None
+                target_schemas: List[tuple[str, Mapping[str, Any] | None]] = []
+                for source_path in source_paths:
+                    normalized_source = normalize_reference_path(source_path)
+                    target_schema = _resolve_condition_schema(
+                        normalized_source,
+                        field_path,
+                        nodes_by_id,
+                        actions_by_id,
+                        loop_body_parents,
+                        alias_schemas,
+                    )
+                    target_schemas.append((normalized_source, target_schema))
+                    if field_path and target_schema is None:
+                        errors.append(
+                            ValidationError(
+                                code="SCHEMA_MISMATCH",
+                                node_id=nid,
+                                field="field",
+                                message=(
+                                    f"condition 节点 '{nid}' 的引用 '{normalized_source}.{field_path}' 无法在 schema 中找到或缺少类型信息。"
+                                ),
                             )
-                            if item_err:
+                        )
+
+                if kind == "list_not_empty":
+                    for normalized_source, target_schema in target_schemas:
+                        if target_schema:
+                            target_type = target_schema.get("type")
+                            if not _is_array_schema_type(target_type):
                                 errors.append(
                                     ValidationError(
                                         code="SCHEMA_MISMATCH",
                                         node_id=nid,
-                                        field="field",
+                                        field="field" if field_path else "source",
                                         message=(
-                                            f"condition 节点 '{nid}' 的 field='{fld}' 无效：{item_err}"
+                                            f"condition 节点 '{nid}' 的引用 '{normalized_source if not field_path else f'{normalized_source}.{field_path}'}' 类型为 {target_type}，"
+                                            "期望数组用于 list_not_empty。"
                                         ),
                                     )
                                 )
@@ -539,15 +592,16 @@ def _validate_nodes_recursive(
                                 )
                             )
 
-                    if kind in {"any_greater_than", "all_less_than"}:
-                        fld = params.get("field")
-                        if isinstance(source_path, str) and isinstance(fld, str):
-                            item_schema = _get_array_item_schema_from_output(
-                                source_path, nodes_by_id, actions_by_id, loop_body_parents
-                            )
-                            field_schema = _get_field_schema_from_item(item_schema, fld)
-                            if field_schema:
-                                field_type = field_schema.get("type")
+                    if field_path and kind in {
+                        "any_greater_than",
+                        "all_less_than",
+                        "greater_than",
+                        "less_than",
+                        "between",
+                    }:
+                        for normalized_source, target_schema in target_schemas:
+                            if target_schema:
+                                field_type = target_schema.get("type")
                                 is_numeric_type = _is_numeric_schema_type(field_type)
                                 if not is_numeric_type:
                                     errors.append(
@@ -556,11 +610,30 @@ def _validate_nodes_recursive(
                                             node_id=nid,
                                             field="field",
                                             message=(
-                                                f"condition 节点 '{nid}' 的字段 '{fld}' 类型为 {field_type}，"
+                                                f"condition 节点 '{nid}' 的字段 '{field_path}' 类型为 {field_type}，"
                                                 "无法与数值阈值比较。"
                                             ),
                                         )
                                     )
+
+                if kind == "contains" and field_path:
+                    for normalized_source, target_schema in target_schemas:
+                        if not target_schema:
+                            continue
+
+                        target_type = target_schema.get("type")
+                        if target_type and not _is_array_or_string_schema_type(target_type):
+                            errors.append(
+                                ValidationError(
+                                    code="SCHEMA_MISMATCH",
+                                    node_id=nid,
+                                    field="field",
+                                    message=(
+                                        f"condition 节点 '{nid}' 的引用 '{normalized_source}.{field_path}' 类型为 {target_type}，"
+                                        "需要数组或字符串以支持 contains。"
+                                    ),
+                                )
+                            )
 
         # 3) loop 节点
         if ntype == "loop":
@@ -965,11 +1038,31 @@ def _is_numeric_schema_type(schema_type: Any) -> bool:
     return schema_type in {"number", "integer"}
 
 
+def _is_array_schema_type(schema_type: Any) -> bool:
+    """Return True if the schema type represents an array."""
+
+    if isinstance(schema_type, list):
+        return "array" in schema_type
+
+    return schema_type == "array"
+
+
+def _is_array_or_string_schema_type(schema_type: Any) -> bool:
+    """Return True if the schema type represents an array or string."""
+
+    if isinstance(schema_type, list):
+        return any(t in {"array", "string"} for t in schema_type)
+
+    return schema_type in {"array", "string"}
+
+
 __all__ = [
     "CONDITION_PARAM_FIELDS",
     "LOOP_PARAM_FIELDS",
     "_filter_params_by_supported_fields",
     "_is_numeric_schema_type",
+    "_is_array_schema_type",
+    "_is_array_or_string_schema_type",
     "_strip_illegal_exports",
     "_validate_nodes_recursive",
 ]

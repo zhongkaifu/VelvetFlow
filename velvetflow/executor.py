@@ -727,17 +727,19 @@ class DynamicActionExecutor:
                 return None
 
         data = _safe_get_source()
+        field_path = params.get("field") if isinstance(params.get("field"), str) else None
+        target_data = self._get_field_value(data, field_path) if field_path else data
 
         if kind == "list_not_empty":
             condition = {"check": "len(value) > 0", "type": "list"}
-            if not isinstance(data, list):
+            if not isinstance(target_data, list):
                 condition["reason"] = "source_not_list"
                 log_warn("[condition:list_not_empty] source 不是 list，返回 False")
                 result = False
             else:
-                result = len(data) > 0
-            _log_condition_debug(None, data, condition, params)
-            return _return(result, data)
+                result = len(target_data) > 0
+            _log_condition_debug(field_path, target_data, condition, params)
+            return _return(result, target_data)
 
         if kind == "is_empty":
             condition = {"check": "value is None or len(value) == 0"}

@@ -446,6 +446,12 @@ def _walk_schema_with_tokens(schema: Mapping[str, Any], fields: List[Any]) -> Op
             current = current.get("items") or {}
             continue
 
+        if name == "*":
+            if typ != "array":
+                return None
+            current = current.get("items") or {}
+            continue
+
         if typ == "array":
             current = current.get("items") or {}
 
