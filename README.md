@@ -2,6 +2,8 @@
 
 VelvetFlow 是一个可复用的 LLM 驱动工作流规划与执行演示项目。项目包含混合检索、两阶段 LLM 规划（结构 + 补参）、静态校验与自修复、参数绑定 DSL、可模拟执行器与 DAG 可视化，帮助从自然语言需求自动构建并运行业务流程。
 
+开篇先交代业务与交付价值：更少人工即可把文字需求变成可执行流程，内置安全审计、防御式修复与回滚路径，缩短 PoC 周期并提高交付确定性。随后的章节概述核心架构（混合检索、两阶段规划、Action Guard、本地/LLM 修复、可视化与模拟执行器），再逐步下钻到项目结构、运行方式、规划与执行细节及 DSL 参考，既便于决策判断落地性，也方便工程师按步骤复刻实现。
+
 ## 项目结构
 ```
 VelvetFlow (repo root)
@@ -27,14 +29,19 @@ VelvetFlow (repo root)
 ## 核心能力
 - **业务动作注册表**：`action_registry.py` 从 `business_actions.json` 载入动作，自动补齐 `requires_approval` / `allowed_roles` 安全字段，并提供 `get_action_by_id` 查询。
 - **混合检索**：`search.py` 提供 `FakeElasticsearch`（基于关键词计分）、`VectorClient`（余弦相似度）以及 `embed_text_openai`。`HybridActionSearchService` 将 BM25 与向量分数归一化后加权融合，返回动作候选。
-- **工作流规划 Orchestrator**：`planner/orchestrator.py` 实现两阶段 `plan_workflow_with_two_pass`：
-  - 调用 `planner/structure.py` 使用 OpenAI tool-calling 规划结构，并通过覆盖度检查、自动补边/修补循环 exports、审批节点检查等提升连通性与完备性。
-  - 使用 `planner/params.py` 补全必填参数（含参数绑定示例），若失败则进入 `planner/repair.py` 与 `planner/action_guard.py` 的 LLM 自修复与动作校验。
-  - `verification/validation.py` 做最终静态校验（必填字段、节点连通性、Schema 对齐）；失败则多轮调用修复直到通过或达到上限。
+- **工作流规划 Orchestrator**：`planner/orchestrator.py` 实现两阶段 `plan_workflow_with_two_pass`，在结构规划 + 补参后还会自动做动作合法性守卫、字段类型比对、缺省导出填充，再进入 LLM 修复循环：
+  - 结构规划通过覆盖度检查、自动补边/修补循环 exports、审批节点检查等提升连通性与完备性，同时提前验证 loop body 的节点引用是否存在。
+  - 补参阶段后增加“Action Guard”，若发现未注册或缺失的 `action_id` 会先尝试用混合检索一键替换，失败再引导 LLM 修复；并在条件/引用绑定上自动做类型矫正或生成可操作的错误提示。
+  - 本地自动修复（缺字段默认值、移除 schema 未定义字段、匹配输出/输入的类型转换、填充 `loop.exports`）完成后，再由 `verification/validation.py` 做最终静态校验并按需多轮 LLM 修复。
 - **DSL 模型与校验**：`models.py` 定义 Node/Edge/Workflow，并校验节点类型、边引用合法性、loop 子图 Schema 等；提供 `ValidationError` 以在修复阶段统一描述错误。
 - **参数绑定 DSL**：`bindings.py` 支持 `__from__` 引用上游结果，`__agg__` 支持 `identity/count/count_if/format_join/filter_map/pipeline`，并校验引用路径是否存在于动作输出/输入或 loop exports。
 - **执行器**：`executor.py` 的 `DynamicActionExecutor` 会先校验 action_id 是否在注册表中，再执行拓扑排序确保连通；支持 condition 节点（如 list_not_empty/equals/contains/greater_than/between 等）与 loop 节点（body_subgraph + exports.items/aggregates 收集迭代与聚合结果），并结合 `simulation_data.json` 模拟动作返回。日志输出使用 `logging_utils.py`。
 - **可视化**：`visualization.py` 提供 `render_workflow_dag`，支持 Unicode 字体回退，将 Workflow 渲染为 JPEG DAG。
+
+## 业务价值与演进方向
+- **投入产出**：将需求解读、动作匹配、参数落地和校验自动化，避免人工对接和回滚，适合快速验证跨 HR/OPS/CRM 等场景的流程自动化可行性。
+- **可靠性**：多轮静态校验 + 本地自动修复 + LLM 修复的组合，保证即便模型输出异常仍能返回合法的 Workflow，降低上线风险。【F:velvetflow/planner/orchestrator.py†L361-L940】
+- **演进方向**：未来可在 Action Registry 接入实时企业数据源、在检索阶段加入权限/成本信号，或将模拟执行器替换为真实后端服务以验证端到端的产出质量。
 
 ## 使用方法
 1. **安装依赖**
@@ -75,40 +82,45 @@ VelvetFlow (repo root)
    - 将自然语言需求与现有 workflow 作为输入，调用 LLM 自动更新节点、参数与边；若校验失败会将错误列表反馈给 LLM 自动修复（最多 3 轮），最终写入通过校验的结果到 `--output` 指定的文件。
 
 ## 工作流构建流程（含 LLM 标注）
-下面先将原本的一步式描述拆分为更细的流水线，再用流程图展示端到端构建：
+下面将端到端流程拆解为可复用的流水线，体现近期新增的“防御式校验 + 自动修复”改动：
 
-1. **需求接收与环境准备**：获取自然语言需求，并加载业务动作库以初始化混合检索服务。
-2. **结构规划 + 覆盖度校验（LLM）**：调用 `plan_workflow_structure_with_llm` 通过 `planner/tools.py` 提供的工具集多轮构建 `nodes/edges/entry/exit` 骨架。每当模型调用 `finalize_workflow` 时会立即触发 `check_requirement_coverage_with_llm`，如果发现 `missing_points` 会将缺失点和当前 workflow 以 system 消息反馈给模型，继续使用 `PLANNER_TOOLS` 修补直至覆盖或达到 `max_coverage_refine_rounds` 上限。【F:velvetflow/planner/structure.py†L631-L960】【F:velvetflow/planner/tools.py†L1-L107】【F:velvetflow/planner/coverage.py†L13-L118】
-3. **参数补全（LLM）**：在已通过的骨架上调用 `fill_params_with_llm` 补齐各节点 `params/exports/bindings`，生成完整的工作流字典。
-4. **多轮校验与自修复（LLM）**：
-   - 首次校验未通过时，记录 `ValidationError` 列表。
-   - 进入 `_repair_with_llm_and_fallback`，结合错误提示反复修复，必要时回退到上一次有效版本，直到通过或达到 `max_repair_rounds`。
-5. **持久化与可视化**：最终通过校验后，写出 `workflow_output.json`，并可用 `render_workflow_image.py` 生成 `workflow_dag.jpg`。
+1. **需求接收与环境准备**：获取自然语言需求，加载业务动作库并初始化混合检索服务，后续 Action Guard 将复用检索结果做自动替换。
+2. **结构规划 + 覆盖度校验（LLM）**：`plan_workflow_structure_with_llm` 通过 `planner/tools.py` 工具集多轮构建 `nodes/edges/entry/exit` 骨架，每次 `finalize_workflow` 都会触发覆盖度检查并将缺失点回注给 LLM；同时提前检查 loop body 中的节点引用是否缺失，必要时进入修复。【F:velvetflow/planner/structure.py†L631-L960】【F:velvetflow/planner/tools.py†L1-L192】【F:velvetflow/planner/coverage.py†L13-L118】【F:velvetflow/planner/orchestrator.py†L170-L236】
+3. **动作守卫与骨架校准**：结构结果会被 Pydantic 校验并进入 Action Guard。未注册/缺失的 `action_id` 会先尝试用混合检索一键替换，再将剩余问题交给 LLM 修复，确保进入补参阶段的动作都在白名单内。【F:velvetflow/planner/orchestrator.py†L104-L214】【F:velvetflow/planner/orchestrator.py†L262-L343】
+4. **参数补全（LLM）**：`fill_params_with_llm` 在骨架上补齐各节点的 `params`、`exports` 与绑定表达式。若补参异常会直接回滚到上次合法版本，并走同样的 Action Guard 保障动作合法性。【F:velvetflow/planner/orchestrator.py†L361-L432】
+5. **本地自动修复与类型对齐**：补参结果会先经过多轮本地修复：
+   - **条件/引用类型矫正**：根据 condition kind 需求与输出 Schema 自动转换数值/正则类型，并为绑定的 `__from__` 与目标 Schema 之间的类型不匹配提供自动包装或错误提示。【F:velvetflow/planner/orchestrator.py†L444-L580】
+   - **loop.exports 补全**：自动填充缺失的 `items/aggregates` 声明并规范化导出字段，避免循环节点留空导致 LLM 返工。【F:velvetflow/planner/orchestrator.py†L589-L662】
+   - **Schema 感知修复**：移除动作 Schema 未定义的字段、为空字段写入默认值或尝试按类型转换，再进入正式校验；无法修复的错误会打包为 `ValidationError` 供后续 LLM 使用。【F:velvetflow/planner/repair_tools.py†L63-L215】【F:velvetflow/planner/orchestrator.py†L664-L817】
+6. **静态校验 + LLM 自修复循环**：`validate_completed_workflow` 会在每轮本地修复后运行，若仍有错误则将错误分布与上下文交给 `_repair_with_llm_and_fallback`，在限定轮次内迭代直至通过或返回最后一个合法版本。【F:velvetflow/planner/orchestrator.py†L671-L817】【F:velvetflow/planner/orchestrator.py†L834-L940】
+7. **持久化与可视化**：通过校验后写出 `workflow_output.json`，并可用 `render_workflow_image.py` 生成 `workflow_dag.jpg`，同时日志保留所有 LLM 对话与自动修复记录便于审计。
 
-下方流程图标明关键输入/输出与 LLM 节点：
+下方流程图将关键输入/输出、自动修复节点与 LLM 交互标出：
 
 ```mermaid
 flowchart TD
     A["用户需求输入\n输入: nl_requirement:str"] --> B
-    B["构建混合检索服务\n输入: BUSINESS_ACTIONS\n输出: HybridActionSearchService (BM25+向量索引)"] --> C
-    C{{"LLM: 结构规划 (plan_workflow_structure_with_llm)\n内置覆盖度自检/补充\n输入: nl_requirement + action_registry\n输出: workflow_skeleton: dict{nodes,edges,entry,exit}"}} --> D
-    D["Pydantic 校验 & ensure_registered_actions\n输入: workflow_skeleton\n输出: skeleton: Workflow"] --> E
-    E{{"LLM: 参数补全 (fill_params_with_llm)\n输入: skeleton.model_dump(by_alias=True) + action_registry\n输出: completed_workflow_raw: dict 含 params/exports/bindings"}} --> F
-    F{{"LLM: 自修复 (_repair_with_llm_and_fallback，可多轮)\n输入: validation_errors + 当前 workflow dict\n输出: repaired_workflow: dict"}} --> G
-    D -->|补参异常/缺字段| F
-    E -->|校验失败| F
-    F --> G
-    G["最终校验 (validate_completed_workflow)\n输出: 完整 Workflow 模型"] --> H["持久化与可视化\n输出: workflow_output.json + workflow_dag.jpg"]
+    B["构建混合检索服务\n输出: HybridActionSearchService"] --> C
+    C{{"LLM: 结构规划 (plan_workflow_structure_with_llm)\n内置覆盖度自检/补充"}} --> D
+    D["骨架校验 + loop body 预检查"] --> E
+    E["Action Guard\n未注册 action 自动检索替换/提示"] --> F
+    F{{"LLM: 参数补全 (fill_params_with_llm)"}} --> G
+    G["本地自动修复\n条件/绑定类型矫正、loop.exports 填充、Schema 感知修复"] --> H
+    H{{"LLM: 自修复 (_repair_with_llm_and_fallback)\n按需多轮"}} --> I
+    G -->|仍有错误| H
+    H -->|返回合法版本| I
+    I["最终校验 (validate_completed_workflow)\n输出: 完整 Workflow 模型"] --> J["持久化与可视化\nworkflow_output.json + workflow_dag.jpg"]
 
     classDef llm fill:#fff6e6,stroke:#e67e22,stroke-width:2px;
-    class C,E,F llm;
+    class C,F,H llm;
 ```
 
 LLM 相关节点说明：
 - **结构规划**：基于自然语言需求与动作 schema，生成 `nodes/edges/entry/exit` 的骨架。规划阶段会使用预置的工具集（添加节点/边、设置入口出口、修改 meta 信息等），模型通过 tool-calling 自动选择，所有调用结果会以日志形式保存，便于复现或对照失败案例。【F:velvetflow/planner/structure.py†L337-L451】
 - **覆盖度检查**：在结构规划阶段，当模型调用 `finalize_workflow` 时会立即对照自然语言需求触发覆盖度检查；若出现 `missing_points` 会把缺失点和当前 workflow 反馈给模型，让其继续用规划工具补齐后再次 finalize，直至覆盖或达到补全上限。【F:velvetflow/planner/structure.py†L631-L960】【F:velvetflow/planner/coverage.py†L13-L118】
+- **动作合法性守卫**：补参前后若发现 `action_id` 缺失或未注册，会先尝试基于 display_name/原 action_id 检索替换，再将剩余问题打包给 LLM 修复，避免幻觉动作进入最终 Workflow。【F:velvetflow/planner/orchestrator.py†L104-L214】【F:velvetflow/planner/orchestrator.py†L262-L343】
 - **参数补全**：为每个 action/condition/loop 节点填充必需的 `params`、`exports` 与绑定表达式，模型由 `velvetflow.config.OPENAI_MODEL` 控制。
-- **自修复**：当校验失败或补参异常时，使用当前 workflow 字典与 `ValidationError` 列表提示模型修复，直到通过或达到 `max_repair_rounds`。
+- **自修复**：当静态校验或本地修复仍未通过时，使用当前 workflow 字典与 `ValidationError` 列表提示模型修复，直到通过或达到 `max_repair_rounds`，并在过程中保留最近一次合法版本以确保可回退。【F:velvetflow/planner/orchestrator.py†L671-L817】【F:velvetflow/planner/orchestrator.py†L834-L940】
 
 ### Tool-calling 的设计与技术细节
 - **工具清单与参数规范**：规划阶段暴露给 LLM 的工具集中定义在 `planner/tools.py`，包含元数据设置、业务动作检索、节点增删以及结束标记，共同组成结构规划的“编辑指令集”。每个工具都给出了 JSON Schema 约束，帮助模型生成可解析的参数；其中 `search_business_actions` 返回 candidates 列表，后续 `add_action_node` 只能在该候选集里选择 action_id，强制动作来自注册表。【F:velvetflow/planner/tools.py†L1-L192】
