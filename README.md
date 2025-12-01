@@ -216,6 +216,27 @@ LLM 相关节点说明：
 4. **模拟执行观察输出**：用 `python execute_workflow.py --workflow-json your_workflow.json`，日志会标明每个节点解析后的参数值，便于确认聚合逻辑是否符合预期。
 5. **可视化辅助**：通过 `python render_workflow_image.py --workflow-json your_workflow.json --output tmp.jpg` 生成 DAG，快速核对节点/边连通性与显示名称。
 
+## 示例与 Demo
+下面的资源可以帮助快速理解 VelvetFlow 的输入、输出与运行效果：
+
+- **交互式 GIF**
+  - [![Health Check Demo](examples/demo_health_check.gif)](examples/demo_health_check.gif)：展示以“系统健康检查”为需求的端到端流程，从需求输入、规划到 DAG 渲染的实时画面。
+  - [![Top Stock Mover Demo](examples/demo_find_top_stock_mover.gif)](examples/demo_find_top_stock_mover.gif)：展示检索热点股票并生成总结的流程，包含检索/补参/校验的完整记录。
+
+- **可下载的工作流产物**
+  - `examples/health_check/`：包含 `workflow_output.json`（可直接用 `execute_workflow.py` 复现）与 `workflow_dag.jpg`（渲染后的拓扑图）。
+  - `examples/search_news_summarize/`：同样提供 JSON 与 DAG 图片，演示新闻检索与摘要的工作流。
+
+- **一键复现命令**
+  ```bash
+  # 复现示例 1：系统健康检查
+  python execute_workflow.py --workflow-json examples/health_check/workflow_output.json
+
+  # 复现示例 2：新闻检索 + 摘要
+  python execute_workflow.py --workflow-json examples/search_news_summarize/workflow_output.json
+  ```
+  执行过程中终端日志会打印每个节点解析后的参数、条件判断结果与模拟返回；你也可以结合 `render_workflow_image.py` 重绘 DAG，或将示例 JSON 作为起点用 `update_workflow.py` 迭代新需求。
+
 ## 测试（可选）
 - 仅进行语法检查可运行：
   ```bash
