@@ -1,3 +1,6 @@
+# Author: Zhongkai Fu (fuzhongkai@gmail.com)
+# License: BSD 3-Clause License
+
 """Top-level orchestrator for the two-pass planner.
 
 本模块聚合了结构规划、参数补全与错误修复三个阶段，主要通过 LLM 进行

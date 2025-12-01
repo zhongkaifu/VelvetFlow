@@ -1,3 +1,6 @@
+# Author: Zhongkai Fu (fuzhongkai@gmail.com)
+# License: BSD 3-Clause License
+
 """Strongly-typed workflow DSL models without external dependencies."""
 
 from __future__ import annotations

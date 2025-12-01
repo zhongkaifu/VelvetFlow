@@ -1,3 +1,6 @@
+# Author: Zhongkai Fu (fuzhongkai@gmail.com)
+# License: BSD 3-Clause License
+
 """Static validation helpers for VelvetFlow workflows.
 
 This module now delegates implementation details to smaller building blocks

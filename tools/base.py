@@ -1,3 +1,6 @@
+# Author: Zhongkai Fu (fuzhongkai@gmail.com)
+# License: BSD 3-Clause License
+
 """Base definitions for simple callable tools."""
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping, Optional

@@ -1,3 +1,6 @@
+# Author: Zhongkai Fu (fuzhongkai@gmail.com)
+# License: BSD 3-Clause License
+
 """Utility helpers for console + structured logging with trace context."""
 
 from __future__ import annotations

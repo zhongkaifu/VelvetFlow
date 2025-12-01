@@ -1,3 +1,6 @@
+# Author: Zhongkai Fu (fuzhongkai@gmail.com)
+# License: BSD 3-Clause License
+
 """Error handling helpers for validation routines."""
 from contextlib import contextmanager
 from typing import Any, Mapping, Optional

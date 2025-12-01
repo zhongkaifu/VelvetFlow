@@ -1,3 +1,6 @@
+# Author: Zhongkai Fu (fuzhongkai@gmail.com)
+# License: BSD 3-Clause License
+
 """Node-level validation logic for workflows."""
 from typing import Any, Dict, List, Mapping, Optional
 

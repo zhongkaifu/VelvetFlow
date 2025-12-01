@@ -1,3 +1,6 @@
+# Author: Zhongkai Fu (fuzhongkai@gmail.com)
+# License: BSD 3-Clause License
+
 """Simple in-memory registry for callable tools."""
 from typing import Any, Dict, Iterable, Optional
 

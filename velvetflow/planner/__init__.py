@@ -1,3 +1,6 @@
+# Author: Zhongkai Fu (fuzhongkai@gmail.com)
+# License: BSD 3-Clause License
+
 """Planner package entrypoint and public API."""
 
 from velvetflow.planner.tools import PLANNER_TOOLS

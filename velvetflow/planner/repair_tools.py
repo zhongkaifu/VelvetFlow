@@ -1,3 +1,6 @@
+# Author: Zhongkai Fu (fuzhongkai@gmail.com)
+# License: BSD 3-Clause License
+
 """Deterministic repair tools exposed to the LLM for tool-calling."""
 
 from __future__ import annotations

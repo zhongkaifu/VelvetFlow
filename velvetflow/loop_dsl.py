@@ -1,3 +1,6 @@
+# Author: Zhongkai Fu (fuzhongkai@gmail.com)
+# License: BSD 3-Clause License
+
 """Shared helpers for loop DSL schema and validation."""
 from typing import Any, Dict, Iterable, Mapping, Optional
 

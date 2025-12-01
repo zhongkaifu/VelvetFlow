@@ -1,3 +1,6 @@
+# Author: Zhongkai Fu (fuzhongkai@gmail.com)
+# License: BSD 3-Clause License
+
 """Workflow-level validation entrypoints."""
 from collections import deque
 from typing import Any, Dict, List, Mapping, Optional

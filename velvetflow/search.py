@@ -1,3 +1,6 @@
+# Author: Zhongkai Fu (fuzhongkai@gmail.com)
+# License: BSD 3-Clause License
+
 """Search and embedding utilities for VelvetFlow."""
 import time
 from typing import Any, Dict, List, Optional, Tuple

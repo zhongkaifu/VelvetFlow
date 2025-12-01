@@ -1,3 +1,6 @@
+# Author: Zhongkai Fu (fuzhongkai@gmail.com)
+# License: BSD 3-Clause License
+
 """Business-ready tools and registry exports."""
 from tools.base import Tool
 from tools.builtin import (
