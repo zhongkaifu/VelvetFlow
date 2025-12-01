@@ -106,3 +106,48 @@ def test_executor_resolves_multiple_condition_sources():
         "summary content",
     ]
     assert "notify_summary" in results
+
+
+def test_condition_source_allows_plain_node_id():
+    workflow = Workflow.model_validate(
+        {
+            "workflow_name": "plain_source_id",
+            "description": "",
+            "nodes": [
+                {"id": "start", "type": "start"},
+                {
+                    "id": "summarize_nvidia_news",
+                    "type": "action",
+                    "action_id": "productivity.compose_outlook_email.v1",
+                    "params": {"email_content": "nvidia news"},
+                },
+                {
+                    "id": "cond_after_summarize_nvidia",
+                    "type": "condition",
+                    "params": {
+                        "kind": "not_empty",
+                        "source": "summarize_nvidia_news",
+                    },
+                    "true_to_node": None,
+                    "false_to_node": None,
+                },
+            ],
+            "edges": [
+                {"from": "start", "to": "summarize_nvidia_news"},
+                {"from": "summarize_nvidia_news", "to": "cond_after_summarize_nvidia"},
+            ],
+        }
+    )
+
+    executor = DynamicActionExecutor(
+        workflow,
+        simulations={
+            "productivity.compose_outlook_email.v1": {
+                "result": {"summary": "hello", "status": "simulated"}
+            }
+        },
+    )
+
+    results = executor.run()
+
+    assert results["cond_after_summarize_nvidia"].get("condition_result") is True

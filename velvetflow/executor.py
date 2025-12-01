@@ -383,7 +383,20 @@ class DynamicActionExecutor:
             return ctx.resolve_binding(source)
 
         if isinstance(source, str):
-            return ctx.get_value(source)
+            # 兼容部分工作流直接使用节点 id 作为 source 的写法，默认视为
+            # "result_of.<node_id>"，避免因缺失前缀导致条件评估失败。
+            if source in ctx.results:
+                return ctx.results[source]
+
+            if source.startswith("result_of."):
+                return ctx.get_value(source)
+
+            # 如果缺失 "result_of." 前缀，尝试补全后解析；解析失败则回退到
+            # 直接解析原始路径以保留原有行为。
+            try:
+                return ctx.get_value(f"result_of.{source}")
+            except Exception:
+                return ctx.get_value(source)
 
         return source
 
