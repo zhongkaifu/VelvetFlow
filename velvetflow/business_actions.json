@@ -344,7 +344,7 @@
     "action_id": "common.search_web.v1",
     "name": "Search web",
     "domain": "common",
-    "description": "Perform a Google web search and return the top result titles, URLs, and snippets.",
+    "description": "Perform a Bing web search and return the top result titles, URLs, and snippets.",
     "tool_name": "search_web",
     "tags": [
       "search",
