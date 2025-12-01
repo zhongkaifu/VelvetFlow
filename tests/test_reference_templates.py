@@ -240,6 +240,32 @@ def test_template_wildcard_without_result_of_prefix():
     assert params["text"] == ["NVDA hits record high", "New GPU architecture"]
 
 
+def test_reference_allows_builtin_function_invocation():
+    workflow = Workflow.model_validate(
+        {"nodes": [{"id": "loop_nvidia_news", "type": "loop"}], "edges": []}
+    )
+    ctx = BindingContext(
+        workflow,
+        {
+            "loop_nvidia_news": {"items": [{"summary": "N1"}, {"summary": "N2"}]}
+        },
+    )
+
+    joined = ctx.get_value("result_of.loop_nvidia_news.exports.items[*].summary.join('\\n')")
+    node = Node(
+        id="notify",
+        type="action",
+        params={
+            "email_content": "Nvidia新闻总结：\n${loop_nvidia_news.exports.items[*].summary.join('\\n')}",
+        },
+    )
+
+    params = eval_node_params(node, ctx)
+
+    assert joined == "N1\nN2"
+    assert params["email_content"] == "Nvidia新闻总结：\nN1\nN2"
+
+
 def test_eval_params_renders_embedded_json_binding_with_escapes():
     workflow = Workflow.model_validate(
         {

@@ -1,5 +1,6 @@
 """Parameter binding resolution for workflow execution."""
 
+import ast
 import json
 import re
 from typing import Any, Dict, List, Mapping, Optional
@@ -563,6 +564,30 @@ class BindingContext:
             rest = parts[1:]
 
         for p in rest:
+            if isinstance(p, str):
+                func_match = re.match(r"^(?P<name>[A-Za-z_][A-Za-z0-9_]*)\((?P<args>.*)\)$", p)
+                if func_match:
+                    func_name = func_match.group("name")
+                    args_literal = func_match.group("args").strip()
+                    try:
+                        args = () if args_literal == "" else ast.literal_eval(f"({args_literal},)")
+                    except Exception as exc:
+                        raise ValueError(f"{_fmt_path(p)}: 函数参数解析失败: {exc}")
+
+                    if func_name == "join":
+                        sep = args[0] if args else ""
+                        if not isinstance(sep, str):
+                            sep = str(sep)
+                        if isinstance(cur, list):
+                            cur = sep.join("" if v is None else str(v) for v in cur)
+                            _append_token(p)
+                            continue
+                        raise TypeError(
+                            f"{_fmt_path()}: 值类型为 {type(cur).__name__}，不支持 join 函数"
+                        )
+
+                    raise ValueError(f"{_fmt_path(p)}: 不支持的内建函数 '{func_name}'")
+
             if p == "*":
                 if not isinstance(cur, list):
                     raise TypeError(
