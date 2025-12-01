@@ -765,6 +765,90 @@
     "enabled": true
   },
   {
+    "action_id": "common.join_list.v1",
+    "name": "Join list into string",
+    "domain": "common",
+    "description": "Join a list of strings using the provided separator.",
+    "tool_name": "join_list",
+    "tags": [
+      "string",
+      "list",
+      "join"
+    ],
+    "arg_schema": {
+      "type": "object",
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "separator": {
+          "type": "string",
+          "default": ","
+        }
+      },
+      "required": [
+        "items"
+      ]
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "result": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "result"
+      ]
+    },
+    "enabled": true
+  },
+  {
+    "action_id": "common.split_list.v1",
+    "name": "Split string into list",
+    "domain": "common",
+    "description": "Split a string into a list using the provided separator.",
+    "tool_name": "split_list",
+    "tags": [
+      "string",
+      "list",
+      "split"
+    ],
+    "arg_schema": {
+      "type": "object",
+      "properties": {
+        "text": {
+          "type": "string"
+        },
+        "separator": {
+          "type": "string",
+          "default": ","
+        }
+      },
+      "required": [
+        "text"
+      ]
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "items"
+      ]
+    },
+    "enabled": true
+  },
+  {
     "action_id": "productivity.compose_outlook_email.v1",
     "name": "Open Outlook and compose an email",
     "domain": "productivity",

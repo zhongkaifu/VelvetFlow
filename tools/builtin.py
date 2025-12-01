@@ -466,6 +466,33 @@ def read_file(path: str, *, max_bytes: int = 65536, encoding: str = "utf-8") -> 
     }
 
 
+def join_list(items: List[str], separator: str = ",") -> Dict[str, str]:
+    """Join a list of strings using the provided separator."""
+
+    if not isinstance(items, list):
+        raise TypeError("items must be a list of strings")
+
+    if not all(isinstance(item, str) for item in items):
+        raise TypeError("items must contain only strings")
+
+    if not isinstance(separator, str):
+        raise TypeError("separator must be a string")
+
+    return {"result": separator.join(items)}
+
+
+def split_list(text: str, separator: str = ",") -> Dict[str, List[str]]:
+    """Split a string into a list using the provided separator."""
+
+    if not isinstance(text, str):
+        raise TypeError("text must be a string")
+
+    if not isinstance(separator, str) or separator == "":
+        raise ValueError("separator must be a non-empty string")
+
+    return {"items": text.split(separator)}
+
+
 def summarize(text: str, max_sentences: int = 3) -> Dict[str, Any]:
     """Summarize a block of text using the configured LLM."""
 
@@ -854,6 +881,38 @@ def register_builtin_tools() -> None:
 
     register_tool(
         Tool(
+            name="join_list",
+            description="Join a list of strings using a separator.",
+            function=join_list,
+            args_schema={
+                "type": "object",
+                "properties": {
+                    "items": {"type": "array", "items": {"type": "string"}},
+                    "separator": {"type": "string", "default": ","},
+                },
+                "required": ["items"],
+            },
+        )
+    )
+
+    register_tool(
+        Tool(
+            name="split_list",
+            description="Split a string into a list using a separator.",
+            function=split_list,
+            args_schema={
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string"},
+                    "separator": {"type": "string", "default": ","},
+                },
+                "required": ["text"],
+            },
+        )
+    )
+
+    register_tool(
+        Tool(
             name="summarize",
             description="Summarize text with the LLM for concise overviews.",
             function=summarize,
@@ -862,11 +921,11 @@ def register_builtin_tools() -> None:
                 "properties": {
                     "text": {"type": "string"},
                     "max_sentences": {"type": "integer", "default": 3},
+                },
+                "required": ["text"],
             },
-            "required": ["text"],
-        },
+        )
     )
-)
 
     register_tool(
         Tool(
@@ -916,6 +975,8 @@ __all__ = [
     "classify_text",
     "list_files",
     "read_file",
+    "join_list",
+    "split_list",
     "summarize",
     "compose_outlook_email",
     "scrape_web_page",
