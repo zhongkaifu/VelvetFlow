@@ -33,7 +33,7 @@ ACTION_REGISTRY = json.loads(
 )
 
 
-def _workflow_with_results_field():
+def _workflow_with_extracted_content_field():
     return {
         "workflow_name": "condition_field_type_check",
         "description": "",
@@ -52,9 +52,8 @@ def _workflow_with_results_field():
                 "id": "check_results",
                 "type": "condition",
                 "params": {
-                    "kind": "list_not_empty",
-                    "source": "result_of.scrape_news",
-                    "field": "results",
+                    "kind": "not_empty",
+                    "source": "result_of.scrape_news.extracted_content",
                 },
                 "true_to_node": None,
                 "false_to_node": None,
@@ -67,8 +66,8 @@ def _workflow_with_results_field():
     }
 
 
-def test_condition_validation_uses_field_path_for_list_type():
-    workflow = _workflow_with_results_field()
+def test_condition_validation_accepts_extracted_content_field():
+    workflow = _workflow_with_extracted_content_field()
 
     errors = validate_completed_workflow(workflow, action_registry=ACTION_REGISTRY)
 
@@ -112,13 +111,13 @@ def test_condition_validation_detects_non_list_targets():
     )
 
 
-def test_executor_uses_field_value_for_list_not_empty():
-    workflow = Workflow.model_validate(_workflow_with_results_field())
+def test_executor_uses_field_value_for_not_empty():
+    workflow = Workflow.model_validate(_workflow_with_extracted_content_field())
     executor = DynamicActionExecutor(
         workflow,
         simulations={
             "common.scrape_web_page.v1": {
-                "result": {"status": "ok", "results": [{"title": "story"}]}
+                "result": {"status": "ok", "extracted_content": "breaking news"}
             }
         },
     )
@@ -129,7 +128,7 @@ def test_executor_uses_field_value_for_list_not_empty():
     resolved_value = results["check_results"].get("resolved_value")
 
     assert condition_result is True
-    assert resolved_value == [{"title": "story"}]
+    assert resolved_value == "breaking news"
 
 
 def _workflow_with_numeric_field(field: str):

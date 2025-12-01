@@ -667,26 +667,19 @@ def _scrape_single_url(
     result, attempts = run_coroutine(_scrape)
 
     raw_content = result.extracted_content or ""
-    analysis: Any
-    try:
-        analysis = json.loads(raw_content) if isinstance(raw_content, str) else raw_content
-    except json.JSONDecodeError:
-        analysis = raw_content.strip() if isinstance(raw_content, str) else raw_content
+    if isinstance(raw_content, (dict, list)):
+        extracted_content = json.dumps(raw_content, ensure_ascii=False)
+    else:
+        extracted_content = str(raw_content).strip()
 
-    if not analysis and getattr(result, "markdown", None):
-        analysis = result.markdown
+    if not extracted_content and getattr(result, "markdown", None):
+        extracted_content = str(result.markdown).strip()
 
     status = "ok" if result.success else "error"
 
     return {
         "status": status,
-        "url": url,
-        "analysis": analysis,
-        "markdown": getattr(result, "markdown", "") or "",
-        "attempts": attempts,
-        "llm_used": use_llm,
-        "llm_provider": llm_provider if use_llm else None,
-        "user_request": user_request,
+        "extracted_content": extracted_content,
     }
 
 
@@ -740,27 +733,27 @@ def scrape_web_page(
         normalized_urls.append(url.strip())
 
     per_page_results: List[Dict[str, Any]] = []
+    extracted_parts: List[str] = []
     for url in normalized_urls:
-        per_page_results.append(
-            _scrape_single_url(
-                url,
-                user_request,
-                llm_instruction=llm_instruction,
-                llm_provider=llm_provider,
-            )
+        page_result = _scrape_single_url(
+            url,
+            user_request,
+            llm_instruction=llm_instruction,
+            llm_provider=llm_provider,
         )
+        per_page_results.append(page_result)
+        content = page_result.get("extracted_content")
+        if content:
+            extracted_parts.append(str(content))
 
     successes = [item.get("status") == "ok" for item in per_page_results]
     overall_status = "ok" if all(successes) else "partial" if any(successes) else "error"
 
-    aggregate_summary = _aggregate_scrape_results(per_page_results, user_request)
+    aggregated_content = "\n".join(extracted_parts)
 
     return {
         "status": overall_status,
-        "urls": normalized_urls,
-        "results": per_page_results,
-        "aggregate_summary": aggregate_summary,
-        "user_request": user_request,
+        "extracted_content": aggregated_content,
     }
 
 

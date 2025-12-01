@@ -737,29 +737,13 @@
         "status": {
           "type": "string"
         },
-        "urls": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "results": {
-          "type": "array",
-          "items": {
-            "type": "object"
-          }
-        },
-        "aggregate_summary": {
-          "type": "string"
-        },
-        "user_request": {
+        "extracted_content": {
           "type": "string"
         }
       },
       "required": [
         "status",
-        "urls",
-        "results"
+        "extracted_content"
       ]
     },
     "enabled": true

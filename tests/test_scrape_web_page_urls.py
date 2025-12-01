@@ -37,13 +37,7 @@ def test_scrape_web_page_accepts_multiple_urls(monkeypatch):
         captured.append(url)
         return {
             "status": "ok",
-            "url": url,
-            "analysis": f"analysis for {url}",
-            "markdown": "",
-            "attempts": [],
-            "llm_used": False,
-            "llm_provider": None,
-            "user_request": "test",
+            "extracted_content": f"content for {url}",
         }
 
     monkeypatch.setattr(builtin, "_scrape_single_url", fake_scrape)
@@ -52,9 +46,9 @@ def test_scrape_web_page_accepts_multiple_urls(monkeypatch):
 
     assert captured == urls
     assert result["status"] == "ok"
-    assert result["urls"] == urls
-    assert len(result["results"]) == 2
-    assert "Aggregate summary" in result["aggregate_summary"]
+    assert result["extracted_content"] == "\n".join(
+        ["content for http://example.com/a", "content for http://example.com/b"]
+    )
 
 
 def test_scrape_web_page_partial_status(monkeypatch):
@@ -64,13 +58,7 @@ def test_scrape_web_page_partial_status(monkeypatch):
         calls.append(url)
         return {
             "status": "ok" if "good" in url else "error",
-            "url": url,
-            "analysis": f"analysis for {url}",
-            "markdown": "",
-            "attempts": [],
-            "llm_used": False,
-            "llm_provider": None,
-            "user_request": "test",
+            "extracted_content": f"analysis for {url}",
         }
 
     monkeypatch.setattr(builtin, "_scrape_single_url", fake_scrape)
@@ -79,7 +67,7 @@ def test_scrape_web_page_partial_status(monkeypatch):
 
     assert calls == ["http://good", "http://bad"]
     assert result["status"] == "partial"
-    assert result["results"][1]["status"] == "error"
+    assert "analysis for http://bad" in result["extracted_content"]
 
 
 def test_scrape_web_page_validates_inputs():
