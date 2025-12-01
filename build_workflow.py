@@ -73,8 +73,8 @@ def plan_workflow(user_nl: str, search_service: Optional[HybridActionSearchServi
         nl_requirement=user_nl,
         search_service=hybrid_searcher,
         action_registry=BUSINESS_ACTIONS,
-        max_rounds=10,
-        max_repair_rounds=3,
+        max_rounds=100,
+        max_repair_rounds=30,
     )
 
 
