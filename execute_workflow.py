@@ -1,3 +1,6 @@
+# Author: Zhongkai Fu (fuzhongkai@gmail.com)
+# License: BSD 3-Clause License
+
 """从已保存的 workflow JSON 与模拟数据执行工作流。"""
 
 import argparse

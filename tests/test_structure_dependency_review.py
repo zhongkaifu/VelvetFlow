@@ -1,3 +1,6 @@
+# Author: Zhongkai Fu (fuzhongkai@gmail.com)
+# License: BSD 3-Clause License
+
 from velvetflow.planner.structure import _find_nodes_without_upstream
 
 

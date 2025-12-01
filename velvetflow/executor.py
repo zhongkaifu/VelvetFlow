@@ -1,3 +1,6 @@
+# Author: Zhongkai Fu (fuzhongkai@gmail.com)
+# License: BSD 3-Clause License
+
 """Workflow execution utilities."""
 import copy
 import json

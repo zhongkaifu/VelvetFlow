@@ -1,3 +1,6 @@
+# Author: Zhongkai Fu (fuzhongkai@gmail.com)
+# License: BSD 3-Clause License
+
 """LLM-powered parameter completion utilities."""
 
 import copy

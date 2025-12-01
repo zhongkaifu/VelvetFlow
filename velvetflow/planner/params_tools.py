@@ -1,3 +1,6 @@
+# Author: Zhongkai Fu (fuzhongkai@gmail.com)
+# License: BSD 3-Clause License
+
 """Tool definitions for parameter completion via LLM tool-calling.
 
 This module exposes a single helper to build a per-node tool schema that

@@ -1,3 +1,6 @@
+# Author: Zhongkai Fu (fuzhongkai@gmail.com)
+# License: BSD 3-Clause License
+
 from velvetflow.planner.repair_tools import (
     fill_loop_exports_defaults,
     normalize_binding_paths,

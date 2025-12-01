@@ -1,3 +1,6 @@
+# Author: Zhongkai Fu (fuzhongkai@gmail.com)
+# License: BSD 3-Clause License
+
 """LLM-driven workflow updater based on a new requirement description."""
 
 from __future__ import annotations

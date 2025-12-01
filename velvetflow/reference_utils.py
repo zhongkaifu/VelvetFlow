@@ -1,3 +1,6 @@
+# Author: Zhongkai Fu (fuzhongkai@gmail.com)
+# License: BSD 3-Clause License
+
 """Utilities for normalizing workflow reference strings."""
 
 from __future__ import annotations

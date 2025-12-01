@@ -1,3 +1,6 @@
+# Author: Zhongkai Fu (fuzhongkai@gmail.com)
+# License: BSD 3-Clause License
+
 import pytest
 
 from velvetflow.executor import DynamicActionExecutor

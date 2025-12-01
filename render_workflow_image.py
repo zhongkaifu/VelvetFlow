@@ -1,3 +1,6 @@
+# Author: Zhongkai Fu (fuzhongkai@gmail.com)
+# License: BSD 3-Clause License
+
 """Render a workflow JSON file into a JPEG DAG image.
 
 Usage:

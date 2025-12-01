@@ -1,3 +1,6 @@
+# Author: Zhongkai Fu (fuzhongkai@gmail.com)
+# License: BSD 3-Clause License
+
 """Utilities to render a workflow DAG as a JPEG image with Unicode text support."""
 
 import math

@@ -1,3 +1,6 @@
+# Author: Zhongkai Fu (fuzhongkai@gmail.com)
+# License: BSD 3-Clause License
+
 """Standalone Workflow DSL validation tool.
 
 This module exposes a small CLI that validates a workflow JSON file against

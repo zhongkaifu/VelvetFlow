@@ -1,3 +1,6 @@
+# Author: Zhongkai Fu (fuzhongkai@gmail.com)
+# License: BSD 3-Clause License
+
 from __future__ import annotations
 
 """A small set of real, ready-to-use business tools."""

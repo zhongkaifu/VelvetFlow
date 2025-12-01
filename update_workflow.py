@@ -1,3 +1,6 @@
+# Author: Zhongkai Fu (fuzhongkai@gmail.com)
+# License: BSD 3-Clause License
+
 """Standalone tool for updating a workflow JSON based on a new requirement."""
 
 from __future__ import annotations
