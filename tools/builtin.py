@@ -25,6 +25,31 @@ from tools.base import Tool
 from tools.registry import get_registered_tool, register_tool
 
 
+def _normalize_web_url(raw_url: str) -> str:
+    url = raw_url.strip()
+    if not url:
+        return ""
+
+    if url.startswith("//"):
+        url = f"https:{url}"
+    elif not re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://", url):
+        url = f"https://{url}"
+
+    return url
+
+
+def _resolve_search_url(raw_url: str) -> str:
+    if not raw_url:
+        return ""
+
+    if raw_url.startswith("/l/?"):
+        parsed = urllib.parse.urlparse(raw_url)
+        uddg = urllib.parse.parse_qs(parsed.query).get("uddg", [])
+        if uddg:
+            return _normalize_web_url(urllib.parse.unquote(uddg[0]))
+    return _normalize_web_url(raw_url)
+
+
 class _DuckDuckGoParser(HTMLParser):
     """Minimal parser to extract search results from DuckDuckGo HTML."""
 
@@ -83,14 +108,6 @@ def search_web(query: str, limit: int = 5, timeout: int = 8) -> Dict[str, List[D
         text_unescaped = html.unescape(text_no_tags)
         return re.sub(r"\s+", " ", text_unescaped).strip()
 
-    def _resolve_url(raw_url: str) -> str:
-        if raw_url.startswith("/l/?"):
-            parsed = urllib.parse.urlparse(raw_url)
-            uddg = urllib.parse.parse_qs(parsed.query).get("uddg", [])
-            if uddg:
-                return urllib.parse.unquote(uddg[0])
-        return raw_url
-
     if not query:
         raise ValueError("query is required for web search")
 
@@ -115,7 +132,7 @@ def search_web(query: str, limit: int = 5, timeout: int = 8) -> Dict[str, List[D
     results: List[Dict[str, str]] = []
     for entry in parser.results:
         title_value = _clean_text(entry.get("title", ""))
-        url_value = _resolve_url(entry.get("url", ""))
+        url_value = _resolve_search_url(entry.get("url", ""))
         snippet_value = _clean_text(entry.get("snippet", "")) or title_value
 
         if title_value and url_value:
