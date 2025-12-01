@@ -16,7 +16,7 @@ workflow 结构和参数的两阶段推理，然后在必要时向 LLM 提供错
 返回值统一为 `Workflow` 对象，调用方无需关心 LLM 返回的原始 JSON 格式。
 """
 
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Any, Dict, List, Mapping, Optional, Set, Tuple
 
 from velvetflow.config import OPENAI_MODEL
 from velvetflow.logging_utils import (
@@ -59,6 +59,8 @@ from velvetflow.verification.validation import (
 )
 from velvetflow.search import HybridActionSearchService
 
+STUBBORN_FIELD_FAILURE_THRESHOLD = 5
+
 
 def _index_actions_by_id(
     action_registry: List[Dict[str, Any]]
@@ -85,6 +87,63 @@ def _find_unregistered_action_nodes(
                 "action_id": action_id or "",
             })
     return invalid
+
+
+def _remove_nested_field(container: Any, path_parts: List[str]) -> bool:
+    """Recursively remove the field at the given dotted path if it exists."""
+
+    if not path_parts:
+        return False
+
+    key = path_parts[0]
+    remaining = path_parts[1:]
+
+    if isinstance(container, dict):
+        if key not in container:
+            return False
+        if remaining:
+            return _remove_nested_field(container.get(key), remaining)
+        container.pop(key, None)
+        return True
+
+    if isinstance(container, list):
+        try:
+            index = int(key)
+        except (TypeError, ValueError):
+            return False
+
+        if 0 <= index < len(container):
+            if remaining:
+                return _remove_nested_field(container[index], remaining)
+            container.pop(index)
+            return True
+
+    return False
+
+
+def _remove_field_from_workflow_raw(
+    workflow_dict: Dict[str, Any], node_id: str, field: str
+) -> bool:
+    """Remove a stubborn field from a specific node to allow LLM regeneration."""
+
+    if not isinstance(workflow_dict, dict):
+        return False
+
+    for node in workflow_dict.get("nodes") or []:
+        if not isinstance(node, dict):
+            continue
+
+        if node.get("id") != node_id:
+            continue
+
+        removed = _remove_nested_field(node, field.split("."))
+        if removed:
+            log_warn(
+                f"[AutoRepair] 节点 {node_id} 的字段 {field} 连续多次修复失败，已删除以便 LLM 重新生成。"
+            )
+        return removed
+
+    return False
 
 
 def _attach_out_params_schema(
@@ -866,6 +925,7 @@ def plan_workflow_with_two_pass(
                     else:
                         current_workflow = last_good_workflow
 
+        stubborn_error_counts: Dict[Tuple[str, str], int] = {}
         for repair_round in range(max_repair_rounds + 1):
             log_section(f"校验 + 自修复轮次 {repair_round}")
             log_json("当前 workflow", current_workflow.model_dump(by_alias=True))
@@ -991,6 +1051,43 @@ def plan_workflow_with_two_pass(
                         f"[code={e.code}] node={e.node_id} field={e.field} message={e.message}"
                     )
 
+            workflow_for_llm = current_workflow.model_dump(by_alias=True)
+            stubborn_notes: List[str] = []
+            current_error_keys: Set[Tuple[str, str]] = {
+                (e.node_id, e.field)
+                for e in errors
+                if e.node_id is not None and e.field is not None
+            }
+
+            for key in list(stubborn_error_counts.keys()):
+                if key not in current_error_keys:
+                    stubborn_error_counts.pop(key, None)
+
+            for key in current_error_keys:
+                attempts = stubborn_error_counts.get(key, 0) + 1
+                stubborn_error_counts[key] = attempts
+
+                if attempts >= STUBBORN_FIELD_FAILURE_THRESHOLD:
+                    node_id, field = key
+                    removed = _remove_field_from_workflow_raw(
+                        workflow_for_llm, node_id, field
+                    )
+                    if removed:
+                        stubborn_error_counts.pop(key, None)
+                        stubborn_notes.append(
+                            (
+                                f"节点 {node_id} 的字段 {field} 已连续 {attempts} 轮未修复成功，"
+                                "字段已被移除，请按 schema 重新生成。"
+                            )
+                        )
+                    else:
+                        stubborn_notes.append(
+                            (
+                                f"节点 {node_id} 的字段 {field} 已连续 {attempts} 轮未修复成功，"
+                                "但未能在当前结构中定位该字段，请重新补全。"
+                            )
+                        )
+
             if repair_round == max_repair_rounds:
                 log_warn("已到最大修复轮次，仍有错误，返回最后一个合法结构版本")
                 log_event(
@@ -1005,11 +1102,12 @@ def plan_workflow_with_two_pass(
 
             log_info(f"调用 LLM 进行第 {repair_round + 1} 次修复")
             current_workflow = _repair_with_llm_and_fallback(
-                broken_workflow=current_workflow.model_dump(by_alias=True),
+                broken_workflow=workflow_for_llm,
                 validation_errors=errors,
                 action_registry=action_registry,
                 search_service=search_service,
                 reason=f"修复轮次 {repair_round + 1}",
+                extra_error_notes=stubborn_notes,
             )
             current_workflow = _ensure_actions_registered_or_repair(
                 current_workflow,

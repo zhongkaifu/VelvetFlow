@@ -84,6 +84,7 @@ def _summarize_validation_errors_for_llm(
     *,
     workflow: Mapping[str, Any] | None = None,
     action_registry: Sequence[Mapping[str, Any]] | None = None,
+    extra_notes: Sequence[str] | None = None,
 ) -> str:
     """Convert validation errors to an LLM-friendly, human-readable summary."""
 
@@ -160,6 +161,11 @@ def _summarize_validation_errors_for_llm(
         lines.append("Loop 修复提示（补齐必填字段/字段名需与 source schema 对齐）：")
         lines.extend(sorted(set(loop_hints)))
 
+    if extra_notes:
+        lines.append("")
+        lines.append("额外修复提示（字段已被删除，请重新生成合理内容）：")
+        lines.extend(extra_notes)
+
     return "\n".join(lines)
 
 
@@ -226,6 +232,7 @@ def _repair_with_llm_and_fallback(
     action_registry: List[Dict[str, Any]],
     search_service,
     reason: str,
+    extra_error_notes: Sequence[str] | None = None,
 ) -> Workflow:
     log_info(f"[AutoRepair] {reason}，将错误上下文提交给 LLM 尝试修复。")
 
@@ -233,6 +240,7 @@ def _repair_with_llm_and_fallback(
         validation_errors,
         workflow=broken_workflow,
         action_registry=action_registry,
+        extra_notes=extra_error_notes,
     )
     try:
         repaired_raw = repair_workflow_with_llm(
