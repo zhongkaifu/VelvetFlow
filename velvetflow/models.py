@@ -65,6 +65,7 @@ class ValidationError:
         "STATIC_RULES_SUMMARY",
         "EMPTY_PARAM_VALUE",
         "EMPTY_PARAMS",
+        "SELF_REFERENCE",
         "SYNTAX_ERROR",
         "GRAMMAR_VIOLATION",
     ]

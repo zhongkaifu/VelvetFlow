@@ -80,6 +80,24 @@ def _filter_params_by_supported_fields(
     return removed
 
 
+def _is_self_reference_path(path: Any, node_id: str | None) -> bool:
+    """Return True if ``path`` points to ``result_of.<node_id>`` (self-cycle)."""
+
+    if not isinstance(path, str) or not node_id:
+        return False
+
+    normalized = normalize_reference_path(path)
+    if not isinstance(normalized, str):
+        return False
+
+    try:
+        parts = parse_field_path(normalized)
+    except Exception:
+        return False
+
+    return len(parts) >= 2 and parts[0] == "result_of" and parts[1] == node_id
+
+
 def _resolve_condition_schema(
     source_path: str,
     field: str | None,
@@ -152,6 +170,20 @@ def _validate_nodes_recursive(
         ntype = n.get("type")
         action_id = n.get("action_id")
         params = n.get("params", {})
+
+        def _flag_self_reference(field_path: str, ref: str) -> None:
+            errors.append(
+                ValidationError(
+                    code="SELF_REFERENCE",
+                    node_id=nid,
+                    field=field_path,
+                    message=(
+                        f"节点 '{nid}' 的字段 '{field_path}' 自引用 {ref}"
+                        "，会造成循环依赖。请将此错误上下文提交给 LLM 分析原因，"
+                        "并使用可用工具改为引用上游节点的输出或拆分节点。"
+                    ),
+                )
+            )
 
         if ntype == "action" and (not isinstance(params, Mapping) or len(params) == 0):
             errors.append(
@@ -294,6 +326,11 @@ def _validate_nodes_recursive(
                                     )
 
                         for src_idx, src in enumerate(sources):
+                            if _is_self_reference_path(src, nid):
+                                field_label = path_prefix or "params"
+                                if path_prefix and not path_prefix.startswith("params"):
+                                    field_label = f"params.{path_prefix}"
+                                _flag_self_reference(field_label, src)
                             schema_err = _check_output_path_against_schema(
                                 src, nodes_by_id, actions_by_id, loop_body_parents
                             )
@@ -366,6 +403,12 @@ def _validate_nodes_recursive(
                             ref_parts = parse_field_path(ref_path)
                         except Exception:
                             continue
+
+                        if _is_self_reference_path(ref_path, nid):
+                            field_label = path_prefix or "params"
+                            if path_prefix and not path_prefix.startswith("params"):
+                                field_label = f"params.{path_prefix}"
+                            _flag_self_reference(field_label, ref_path)
 
                         schema_err = None
                         if ref_parts:
@@ -534,6 +577,10 @@ def _validate_nodes_recursive(
                             ),
                         )
                     )
+
+                for source_path in source_paths:
+                    if _is_self_reference_path(source_path, nid):
+                        _flag_self_reference("source", source_path)
 
                 field_path = params.get("field") if isinstance(params.get("field"), str) else None
                 target_schemas: List[tuple[str, Mapping[str, Any] | None]] = []
@@ -718,6 +765,8 @@ def _validate_nodes_recursive(
                     )
                 )
             elif isinstance(source, str):
+                if _is_self_reference_path(source, nid):
+                    _flag_self_reference("source", source)
                 src_err = _check_output_path_against_schema(
                     source, nodes_by_id, actions_by_id, loop_body_parents
                 )
@@ -743,6 +792,8 @@ def _validate_nodes_recursive(
                     )
                 elif isinstance(source.get("__from__"), str):
                     normalized_source = normalize_reference_path(source["__from__"])
+                    if _is_self_reference_path(normalized_source, nid):
+                        _flag_self_reference("source", normalized_source)
                     schema_err = _check_output_path_against_schema(
                         normalized_source, nodes_by_id, actions_by_id, loop_body_parents
                     )

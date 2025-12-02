@@ -139,6 +139,18 @@ def test_invalid_agg_value_is_reported_with_context():
     assert any(e.node_id == "notify" for e in errors)
 
 
+def test_self_reference_binding_is_flagged_for_llm_repair():
+    workflow = _basic_workflow(
+        {"email_content": {"__from__": "result_of.notify.message"}}
+    )
+
+    errors = validate_workflow_data(workflow, ACTION_REGISTRY)
+
+    self_ref_error = next(e for e in errors if e.code == "SELF_REFERENCE")
+    assert self_ref_error.field == "params.email_content"
+    assert "LLM" in self_ref_error.message and "工具" in self_ref_error.message
+
+
 def test_local_repair_removes_unknown_param():
     workflow = Workflow.model_validate(
         _basic_workflow({"email_content": "hello", "date_filter": "today"})
