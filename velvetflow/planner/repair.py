@@ -6,7 +6,7 @@
 import json
 import os
 from dataclasses import asdict
-from typing import Any, Dict, List, Mapping, Optional, Sequence
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from openai import OpenAI
 
@@ -23,6 +23,7 @@ from velvetflow.logging_utils import (
 from velvetflow.models import Node, PydanticValidationError, ValidationError, Workflow
 from velvetflow.planner.action_guard import ensure_registered_actions
 from velvetflow.planner.repair_tools import REPAIR_TOOLS, apply_repair_tool
+from velvetflow.verification import generate_repair_suggestions, validate_completed_workflow
 
 
 def _convert_pydantic_errors(
@@ -98,6 +99,7 @@ def _summarize_validation_errors_for_llm(
     ]
     loop_hints: List[str] = []
     schema_hints: List[str] = []
+    repair_prompts: List[str] = []
 
     action_map: Dict[str, Mapping[str, Any]] = {}
     node_to_action: Dict[str, str] = {}
@@ -153,6 +155,10 @@ def _summarize_validation_errors_for_llm(
                         f"- 动作 {action_id} 的字段 {err.field} 期望类型/结构：{expected_type}，请按 schema 修正。"
                     )
 
+        prompt = _ERROR_TYPE_PROMPTS.get(err.code)
+        if prompt:
+            repair_prompts.append(f"- [{err.code}] {prompt}")
+
     if schema_hints:
         lines.append("")
         lines.append("Schema 提示（按提示修改可减少重复校验）：")
@@ -163,7 +169,53 @@ def _summarize_validation_errors_for_llm(
         lines.append("Loop 修复提示（补齐必填字段/字段名需与 source schema 对齐）：")
         lines.extend(sorted(set(loop_hints)))
 
+    if repair_prompts:
+        lines.append("")
+        lines.append("错误特定提示（按类型引导 LLM 思考与修复）：")
+        lines.extend(sorted(set(repair_prompts)))
+
     return "\n".join(lines)
+
+
+_ERROR_TYPE_PROMPTS: Dict[str, str] = {
+    "MISSING_REQUIRED_PARAM": "补齐 params.<field>，优先绑定上游符合 arg_schema 的输出或使用 schema 默认值。",
+    "UNKNOWN_ACTION_ID": "替换为 Action Registry 中存在的 action_id，保持节点含义最接近并同步校正 params。",
+    "UNKNOWN_PARAM": "移除或重命名 params 中未在 arg_schema 声明的字段，使其与 schema 对齐。",
+    "DISCONNECTED_GRAPH": "连接无入度/出度节点，确保从 start 或入参到每个节点都有可达路径。",
+    "INVALID_EDGE": "修复边的 from/to 以引用存在的节点，并保持条件字段合法。",
+    "SCHEMA_MISMATCH": "调整绑定字段或聚合方式，使类型与上游 output_schema/arg_schema 兼容。",
+    "INVALID_SCHEMA": "按 DSL 结构补齐/修正字段类型（nodes/edges/params），避免 JSON 结构缺失。",
+    "INVALID_LOOP_BODY": "补齐 loop.body_subgraph 的 entry/exit/nodes/edges，并确保 exports.items 字段匹配 body 输出。",
+    "STATIC_RULES_SUMMARY": "遵循静态规则摘要中的提示逐项修复，优先处理连通性和 schema 不匹配。",
+    "EMPTY_PARAM_VALUE": "为空的参数应填入非空值或绑定，避免空字符串/空对象。",
+    "EMPTY_PARAMS": "params 不能是空对象，为必填字段提供值或引用，并使用工具完成不确定的填充。",
+    "SYNTAX_ERROR": "修正 DSL 语法（括号、逗号、引号等），使解析器能生成 AST。",
+    "GRAMMAR_VIOLATION": "遵循文法约束调整节点/字段位置，按期望的 token/产生式重新组织。",
+}
+
+
+def apply_rule_based_repairs(
+    workflow_raw: Mapping[str, Any],
+    action_registry: Sequence[Mapping[str, Any]],
+    validation_errors: Sequence[ValidationError],
+) -> Tuple[Dict[str, Any], List[ValidationError]]:
+    """Run deterministic repairs before falling back to LLM fixes.
+
+    The repair logic relies on parser-backed AST cloning plus schema-driven templates
+    and constraint solving to patch common issues. Remaining validation errors are
+    returned so callers can decide whether an LLM hand-off is still required.
+    """
+
+    patched_workflow, _suggestions = generate_repair_suggestions(
+        workflow_raw, action_registry, errors=validation_errors
+    )
+    try:
+        remaining_errors = validate_completed_workflow(patched_workflow, list(action_registry))
+    except Exception as exc:  # noqa: BLE001
+        log_warn(f"[AutoRepair] 规则修复后重跑校验失败：{exc}")
+        remaining_errors = list(validation_errors)
+
+    return patched_workflow, remaining_errors
 
 
 def _safe_repair_invalid_loop_body(workflow_raw: Mapping[str, Any]) -> Workflow:
@@ -231,6 +283,21 @@ def _repair_with_llm_and_fallback(
     reason: str,
 ) -> Workflow:
     log_info(f"[AutoRepair] {reason}，将错误上下文提交给 LLM 尝试修复。")
+
+    patched_workflow, remaining_errors = apply_rule_based_repairs(
+        broken_workflow, action_registry, validation_errors
+    )
+    if not remaining_errors:
+        log_success("[AutoRepair] 规则/模板修复已清零错误，无需进入 LLM。")
+        return Workflow.model_validate(patched_workflow)
+
+    if len(remaining_errors) < len(validation_errors):
+        log_info(
+            f"[AutoRepair] 规则修复降低错误数量：{len(validation_errors)} -> {len(remaining_errors)}"
+        )
+
+    broken_workflow = patched_workflow
+    validation_errors = list(remaining_errors)
 
     error_summary = _summarize_validation_errors_for_llm(
         validation_errors,
@@ -456,5 +523,6 @@ __all__ = [
     "_convert_pydantic_errors",
     "_make_failure_validation_error",
     "_repair_with_llm_and_fallback",
+    "apply_rule_based_repairs",
     "repair_workflow_with_llm",
 ]
