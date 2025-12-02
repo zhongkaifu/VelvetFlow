@@ -153,6 +153,18 @@ def _validate_nodes_recursive(
         action_id = n.get("action_id")
         params = n.get("params", {})
 
+        if ntype == "action" and (not isinstance(params, Mapping) or len(params) == 0):
+            errors.append(
+                ValidationError(
+                    code="EMPTY_PARAMS",
+                    node_id=nid,
+                    field="params",
+                    message=(
+                        "action 节点的 params 为空，需要通过 LLM 分析原因并调用工具补全必需字段或绑定。"
+                    ),
+                )
+            )
+
         empty_fields = list(_iter_empty_param_fields(params))
         for path in empty_fields:
             context_parts = []

@@ -64,6 +64,7 @@ class ValidationError:
         "INVALID_LOOP_BODY",
         "STATIC_RULES_SUMMARY",
         "EMPTY_PARAM_VALUE",
+        "EMPTY_PARAMS",
         "SYNTAX_ERROR",
         "GRAMMAR_VIOLATION",
     ]

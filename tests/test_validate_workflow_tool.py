@@ -65,6 +65,19 @@ def test_validate_workflow_missing_required_param():
 
     assert errors, "Expected validation to fail due to missing required param"
     assert any(e.code == "MISSING_REQUIRED_PARAM" for e in errors)
+    assert any(
+        e.code == "EMPTY_PARAMS" and e.field == "params" and e.node_id == "notify"
+        for e in errors
+    )
+
+
+def test_empty_params_surface_llm_repair_hint():
+    workflow = _basic_workflow({})
+
+    errors = validate_workflow_data(workflow, ACTION_REGISTRY)
+
+    empty_param_error = next(e for e in errors if e.code == "EMPTY_PARAMS")
+    assert "LLM" in empty_param_error.message
 
 
 def test_validate_workflow_empty_param_value_flagged():

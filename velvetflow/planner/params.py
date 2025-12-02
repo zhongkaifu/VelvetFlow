@@ -384,7 +384,7 @@ def fill_params_with_llm(
         "你只能从以下节点中读取上下游结果：result_of.<node_id>.<field>...，其中 node_id 必须来自 allowed_node_ids，field 必须存在于该节点的 output_schema。\n"
         "当引用循环节点时，只能使用 loop 节点的 exports（如 result_of.<loop_id>.items、result_of.<loop_id>.exports.items 或 result_of.<loop_id>.aggregates.xxx），禁止直接引用 loop body 的节点。\n"
         "若 loop.exports.items.fields 仅包含用来包裹完整输出的字段（如 data/record 等），需要通过 <字段>.<子字段> 的形式访问内部属性，不能直接写子字段名。\n"
-        "start/end 节点可以保持 params 为空。\n"
+        "所有节点的 params 不得为空；如无 obvious 默认值，需要分析上下游语义后调用工具补全。\n"
         "绑定 DSL 说明：\n"
         "- __from__：指向上游结果或循环上下文，形如 result_of.<node_id>.<path>，loop 内可写 loop.item 或 loop.index。\n"
         "- __agg__：聚合/变换方式，默认 identity。可选值：identity/count/count_if/join/format_join/filter_map/pipeline，"
