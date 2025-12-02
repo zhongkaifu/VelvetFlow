@@ -18,7 +18,10 @@ from pathlib import Path
 from typing import Any, Iterable, List, Mapping
 
 from velvetflow.models import PydanticValidationError, ValidationError, Workflow
+from velvetflow.workflow_parser import WorkflowParseResult, parse_workflow_source
 from velvetflow.verification import precheck_loop_body_graphs, validate_completed_workflow
+from velvetflow.verification import generate_repair_suggestions
+from velvetflow.verification.semantic_analysis import analyze_workflow_semantics
 
 
 def _convert_pydantic_errors(
@@ -95,26 +98,72 @@ def _format_errors(errors: Iterable[ValidationError]) -> str:
     return "\n".join(lines)
 
 
+def _convert_parser_issues(parse_result: WorkflowParseResult) -> List[ValidationError]:
+    parser_errors: List[ValidationError] = []
+
+    for syntax_err in parse_result.syntax_errors:
+        message = f"语法错误（行 {syntax_err.line}, 列 {syntax_err.column}）：{syntax_err.message}"
+        if syntax_err.expected:
+            message += f"；期望: {', '.join(syntax_err.expected)}"
+        parser_errors.append(
+            ValidationError(
+                code="SYNTAX_ERROR",
+                node_id=None,
+                field=None,
+                message=message,
+            )
+        )
+
+    for issue in parse_result.grammar_issues:
+        message = issue.message
+        if issue.expected:
+            message += f"；期望: {', '.join(issue.expected)}"
+        if issue.recovery:
+            message += f"（建议 {issue.recovery.description}）"
+        parser_errors.append(
+            ValidationError(
+                code="GRAMMAR_VIOLATION",
+                node_id=issue.node_id,
+                field=issue.path,
+                message=message,
+            )
+        )
+
+    return parser_errors
+
+
 def validate_workflow_data(
-    workflow_raw: Any, action_registry: List[dict[str, Any]]
+    workflow_raw: Any, action_registry: List[dict[str, Any]], *, parser_result: WorkflowParseResult | None = None
 ) -> List[ValidationError]:
     """Validate workflow DSL structure and static rules.
 
-    The function first runs Pydantic schema validation, then applies the
-    planner's static rules (action references, graph connectivity, bindings,
-    etc.). All found errors are returned for reporting by the caller.
+    The function first runs grammar-aware parsing, then Pydantic schema
+    validation, then applies the planner's static rules (action references,
+    graph connectivity, bindings, etc.). All found errors are returned for
+    reporting by the caller.
     """
 
     errors: List[ValidationError] = []
 
-    precheck_errors = precheck_loop_body_graphs(workflow_raw)
+    parse_result = parser_result or parse_workflow_source(workflow_raw)
+    errors.extend(_convert_parser_issues(parse_result))
+    if errors:
+        return errors
+
+    workflow_parsed = parse_result.ast if parse_result.ast is not None else workflow_raw
+
+    semantic_errors = analyze_workflow_semantics(workflow_parsed, action_registry)
+    if semantic_errors:
+        return semantic_errors
+
+    precheck_errors = precheck_loop_body_graphs(workflow_parsed)
     if precheck_errors:
         return precheck_errors
 
     try:
-        workflow_model = Workflow.model_validate(workflow_raw)
+        workflow_model = Workflow.model_validate(workflow_parsed)
     except PydanticValidationError as exc:  # pragma: no cover - exercised via unit test
-        return _convert_pydantic_errors(workflow_raw, exc)
+        return _convert_pydantic_errors(workflow_parsed, exc)
     except Exception as exc:  # pragma: no cover
         return [
             ValidationError(
@@ -146,15 +195,17 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Print normalized workflow JSON after successful validation.",
     )
+    parser.add_argument(
+        "--suggest-fixes",
+        action="store_true",
+        help="在校验失败时输出基于 AST 模板/约束求解的修复建议。",
+    )
     args = parser.parse_args(argv)
 
     try:
-        workflow_raw = json.loads(args.workflow.read_text(encoding="utf-8"))
+        workflow_text = args.workflow.read_text(encoding="utf-8")
     except FileNotFoundError:
         print(f"找不到 workflow 文件: {args.workflow}", file=sys.stderr)
-        return 2
-    except json.JSONDecodeError as exc:
-        print(f"workflow 文件不是合法 JSON: {exc}", file=sys.stderr)
         return 2
 
     try:
@@ -163,15 +214,31 @@ def main(argv: list[str] | None = None) -> int:
         print(f"加载 Action Registry 失败: {exc}", file=sys.stderr)
         return 2
 
-    errors = validate_workflow_data(workflow_raw, action_registry)
+    parser_result = parse_workflow_source(workflow_text)
+    errors = validate_workflow_data(parser_result.ast or {}, action_registry, parser_result=parser_result)
     if errors:
         print("校验未通过，发现以下问题：", file=sys.stderr)
         print(_format_errors(errors), file=sys.stderr)
+        if args.suggest_fixes:
+            patched, suggestions = generate_repair_suggestions(
+                parser_result.ast or {}, action_registry, errors=errors
+            )
+            if suggestions:
+                print("\n自动修复建议：", file=sys.stderr)
+                for idx, suggestion in enumerate(suggestions, start=1):
+                    print(
+                        f"{idx}. [{suggestion.strategy}] {suggestion.description}"
+                        f"（路径: {suggestion.path}, 置信度: {suggestion.confidence:.2f}）",
+                        file=sys.stderr,
+                    )
+                    print(f"    建议补丁: {suggestion.patch}", file=sys.stderr)
+            else:
+                print("未生成自动修复建议。", file=sys.stderr)
         return 1
 
     print("workflow DSL 校验通过。")
     if args.print_normalized:
-        normalized = Workflow.model_validate(workflow_raw).model_dump(by_alias=True)
+        normalized = Workflow.model_validate(parser_result.ast or {}).model_dump(by_alias=True)
         print(json.dumps(normalized, ensure_ascii=False, indent=2))
     return 0
 

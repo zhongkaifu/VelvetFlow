@@ -65,6 +65,19 @@ def test_validate_workflow_missing_required_param():
 
     assert errors, "Expected validation to fail due to missing required param"
     assert any(e.code == "MISSING_REQUIRED_PARAM" for e in errors)
+    assert any(
+        e.code == "EMPTY_PARAMS" and e.field == "params" and e.node_id == "notify"
+        for e in errors
+    )
+
+
+def test_empty_params_surface_llm_repair_hint():
+    workflow = _basic_workflow({})
+
+    errors = validate_workflow_data(workflow, ACTION_REGISTRY)
+
+    empty_param_error = next(e for e in errors if e.code == "EMPTY_PARAMS")
+    assert "LLM" in empty_param_error.message
 
 
 def test_validate_workflow_empty_param_value_flagged():
@@ -124,6 +137,18 @@ def test_invalid_agg_value_is_reported_with_context():
 
     assert any("__agg__ 不支持值" in e.message for e in errors)
     assert any(e.node_id == "notify" for e in errors)
+
+
+def test_self_reference_binding_is_flagged_for_llm_repair():
+    workflow = _basic_workflow(
+        {"email_content": {"__from__": "result_of.notify.message"}}
+    )
+
+    errors = validate_workflow_data(workflow, ACTION_REGISTRY)
+
+    self_ref_error = next(e for e in errors if e.code == "SELF_REFERENCE")
+    assert self_ref_error.field == "params.email_content"
+    assert "LLM" in self_ref_error.message and "工具" in self_ref_error.message
 
 
 def test_local_repair_removes_unknown_param():
