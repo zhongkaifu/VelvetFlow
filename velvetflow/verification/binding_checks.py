@@ -213,6 +213,12 @@ def _check_output_path_against_schema(
             return None
         return _schema_path_error(schema, list(rest_path))
 
+    if rest_path:
+        pretty_path = ".".join(str(p) for p in rest_path)
+        return (
+            f"节点 '{node_id}' 类型为 {target.get('type')}，无法引用其输出路径 '{pretty_path}'"
+        )
+
     return None
 
 
@@ -319,12 +325,22 @@ def _get_output_schema_at_path(
             return None
 
         effective_path = rest_path[1:] if rest_path and rest_path[0] == "exports" else rest_path
-        return _walk_schema_with_tokens(
-            loop_schema, _normalize_field_tokens(list(effective_path))
-        )
+        normalized_path = _normalize_field_tokens(list(effective_path))
+        if normalized_path and normalized_path[-1] == "length":
+            array_schema = _walk_schema_with_tokens(loop_schema, normalized_path[:-1])
+            if isinstance(array_schema, Mapping) and array_schema.get("type") == "array":
+                return {"type": "integer"}
+
+        return _walk_schema_with_tokens(loop_schema, normalized_path)
 
     schema_obj = _get_node_output_schema(node, actions_by_id) or {}
-    return _walk_schema_with_tokens(schema_obj, _normalize_field_tokens(list(rest_path)))
+    normalized_path = _normalize_field_tokens(list(rest_path))
+    if normalized_path and normalized_path[-1] == "length":
+        array_schema = _walk_schema_with_tokens(schema_obj, normalized_path[:-1])
+        if isinstance(array_schema, Mapping) and array_schema.get("type") == "array":
+            return {"type": "integer"}
+
+    return _walk_schema_with_tokens(schema_obj, normalized_path)
 
 
 def _get_field_schema_from_item(

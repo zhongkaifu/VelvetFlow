@@ -64,10 +64,34 @@ class ValidationError:
         "INVALID_LOOP_BODY",
         "STATIC_RULES_SUMMARY",
         "EMPTY_PARAM_VALUE",
+        "SYNTAX_ERROR",
+        "GRAMMAR_VIOLATION",
     ]
     node_id: Optional[str]
     field: Optional[str]
     message: str
+
+
+@dataclass
+class RepairSuggestion:
+    """Structured auto-repair hint produced by the validator.
+
+    ``patch`` describes the replacement value to be applied at ``path`` within
+    the workflow AST. ``strategy`` captures which repair technique generated the
+    hint so callers can prioritize deterministic templates over probabilistic
+    fills.
+    """
+
+    strategy: Literal[
+        "ast_template",
+        "constraint_solver",
+        "statistical_fill",
+    ]
+    description: str
+    path: str
+    patch: Any
+    confidence: float = 0.5
+    rationale: Optional[str] = None
 
 
 # 统一的绑定聚合枚举，供校验和提示使用。

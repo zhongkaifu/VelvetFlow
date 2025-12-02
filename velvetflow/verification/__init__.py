@@ -10,6 +10,7 @@ from velvetflow.verification.validation import (
     validate_param_binding,
     validate_param_binding_and_schema,
 )
+from velvetflow.verification.repair_suggestions import generate_repair_suggestions
 
 __all__ = [
     "precheck_loop_body_graphs",
@@ -17,4 +18,5 @@ __all__ = [
     "validate_completed_workflow",
     "validate_param_binding",
     "validate_param_binding_and_schema",
+    "generate_repair_suggestions",
 ]
