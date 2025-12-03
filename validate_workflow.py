@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Iterable, List, Mapping
 
 from velvetflow.models import PydanticValidationError, ValidationError, Workflow
+from velvetflow.reference_utils import normalize_template_placeholders
 from velvetflow.workflow_parser import WorkflowParseResult, parse_workflow_source
 from velvetflow.verification import precheck_loop_body_graphs, validate_completed_workflow
 from velvetflow.verification import generate_repair_suggestions
@@ -151,6 +152,7 @@ def validate_workflow_data(
         return errors
 
     workflow_parsed = parse_result.ast if parse_result.ast is not None else workflow_raw
+    workflow_parsed = normalize_template_placeholders(workflow_parsed)
 
     semantic_errors = analyze_workflow_semantics(workflow_parsed, action_registry)
     errors.extend(semantic_errors)

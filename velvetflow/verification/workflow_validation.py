@@ -6,6 +6,7 @@ from collections import deque
 from typing import Any, Dict, List, Mapping, Optional
 
 from velvetflow.models import ValidationError, Workflow, infer_edges_from_bindings
+from velvetflow.reference_utils import normalize_template_placeholders
 from velvetflow.loop_dsl import index_loop_body_nodes
 
 from .binding_checks import (
@@ -121,6 +122,7 @@ def validate_completed_workflow(
     workflow: Dict[str, Any],
     action_registry: List[Dict[str, Any]],
 ) -> List[ValidationError]:
+    workflow = normalize_template_placeholders(workflow)
     errors: List[ValidationError] = _RepairingErrorList(workflow)
 
     nodes = workflow.get("nodes", [])

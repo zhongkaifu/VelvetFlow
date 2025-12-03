@@ -13,6 +13,7 @@ import copy
 from typing import Any, Dict, List, Mapping, MutableMapping, Optional, Sequence, Tuple
 
 from velvetflow.models import RepairSuggestion, ValidationError
+from velvetflow.reference_utils import normalize_template_placeholders
 from velvetflow.workflow_parser import parse_workflow_source
 from velvetflow.verification.binding_checks import (
     _get_field_schema,
@@ -24,7 +25,8 @@ from velvetflow.verification.binding_checks import (
 def _clone_workflow(workflow_raw: Any) -> Dict[str, Any]:
     parse_result = parse_workflow_source(workflow_raw)
     ast = parse_result.ast if parse_result.ast is not None else workflow_raw
-    return copy.deepcopy(ast if isinstance(ast, Mapping) else {})
+    normalized = normalize_template_placeholders(ast)
+    return copy.deepcopy(normalized if isinstance(normalized, Mapping) else {})
 
 
 def _schema_types(schema: Mapping[str, Any]) -> set[str]:
