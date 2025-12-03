@@ -279,7 +279,7 @@ def _ensure_workflow_dict(workflow: Any) -> Dict[str, Any]:
     """Return a plain dictionary representation of a workflow-like object."""
 
     if isinstance(workflow, Workflow):
-        return workflow.model_dump(exclude_none=False)
+        return workflow.model_dump()
     if isinstance(workflow, Mapping):
         return dict(workflow)
 
