@@ -60,8 +60,8 @@ def _build_workflow_with_list_source():
                 "params": {
                     "kind": "list_not_empty",
                     "source": [
-                        "result_of.summarize_nvidia_news.summary",
-                        "result_of.summarize_google_news.summary",
+                        "{{result_of.summarize_nvidia_news.summary}}",
+                        "{{result_of.summarize_google_news.summary}}",
                     ],
                 },
                 "true_to_node": "notify_summary",
@@ -130,7 +130,7 @@ def test_condition_source_allows_plain_node_id():
                     "type": "condition",
                     "params": {
                         "kind": "not_empty",
-                        "source": "summarize_nvidia_news",
+                        "source": "{{result_of.summarize_nvidia_news}}",
                     },
                     "true_to_node": None,
                     "false_to_node": None,

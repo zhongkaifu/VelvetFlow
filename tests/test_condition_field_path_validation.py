@@ -56,7 +56,7 @@ def _workflow_with_extracted_content_field():
                 "type": "condition",
                 "params": {
                     "kind": "not_empty",
-                    "source": "result_of.scrape_news.extracted_content",
+                    "source": "{{result_of.scrape_news.extracted_content}}",
                 },
                 "true_to_node": None,
                 "false_to_node": None,
@@ -94,7 +94,7 @@ def test_condition_validation_detects_non_list_targets():
                 "type": "condition",
                 "params": {
                     "kind": "list_not_empty",
-                    "source": "result_of.log_event",
+                    "source": "{{result_of.log_event}}",
                     "field": "event_id",
                 },
                 "true_to_node": None,
@@ -132,7 +132,7 @@ def test_condition_validation_accepts_loop_export_field_schema():
                 "params": {
                     "loop_kind": "for_each",
                     "item_alias": "employee",
-                    "source": "result_of.get_temperatures.data",
+                    "source": "{{result_of.get_temperatures.data}}",
                     "body_subgraph": {
                         "entry": "cond_temp_above_38",
                         "exit": "add_to_warning_list",
@@ -142,7 +142,7 @@ def test_condition_validation_accepts_loop_export_field_schema():
                                 "type": "condition",
                                 "display_name": "体温是否超过38度",
                                 "params": {
-                                    "source": "employee",
+                                    "source": "{{employee}}",
                                     "field": "temperature",
                                     "threshold": 38,
                                     "kind": "greater_than",
@@ -178,7 +178,7 @@ def test_condition_validation_accepts_loop_export_field_schema():
                 "id": "cond_warning_list_not_empty",
                 "type": "condition",
                 "params": {
-                    "source": "result_of.loop_check_temperature.exports.items",
+                    "source": "{{result_of.loop_check_temperature.exports.items}}",
                     "field": "employee_id",
                     "kind": "list_not_empty",
                 },
@@ -235,7 +235,7 @@ def _workflow_with_numeric_field(field: str):
                 "type": "condition",
                 "params": {
                     "kind": "greater_than",
-                    "source": "result_of.temperatures",
+                    "source": "{{result_of.temperatures}}",
                     "field": field,
                     "threshold": 37,
                 },

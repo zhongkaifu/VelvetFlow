@@ -47,7 +47,7 @@
       "action_id": null,
       "display_name": "循环检查每位员工体温",
       "params": {
-        "source": "result_of.fetch_temperatures.data",
+        "source": "{{result_of.fetch_temperatures.data}}",
         "exports": {
           "items": {
             "from_node": "add_to_warning_list",
@@ -120,7 +120,7 @@
       "action_id": null,
       "display_name": "判断健康预警列表是否为空",
       "params": {
-        "source": "result_of.loop_check_temperature.exports.items",
+        "source": "{{result_of.loop_check_temperature.exports.items}}",
         "kind": "list_not_empty"
       },
       "true_to_node": "generate_warning_report",

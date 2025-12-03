@@ -27,7 +27,7 @@ def test_executor_advances_from_action_to_loop():
                     "type": "loop",
                     "params": {
                         "loop_kind": "for_each",
-                        "source": "result_of.get_temperatures.data",
+                        "source": "{{result_of.get_temperatures.data}}",
                         "item_alias": "employee",
                         "body_subgraph": {
                             "nodes": [
@@ -36,7 +36,7 @@ def test_executor_advances_from_action_to_loop():
                                     "type": "condition",
                                     "params": {
                                         "kind": "any_greater_than",
-                                        "source": "employee",
+                                        "source": "{{employee}}",
                                         "field": "temperature",
                                         "threshold": 38,
                                     },
@@ -47,8 +47,8 @@ def test_executor_advances_from_action_to_loop():
                                     "type": "action",
                                     "action_id": "hr.update_employee_health_profile.v1",
                                     "params": {
-                                        "employee_id": "employee.employee_id",
-                                        "last_temperature": "employee.temperature",
+                                        "employee_id": "{{employee.employee_id}}",
+                                        "last_temperature": "{{employee.temperature}}",
                                         "status": "fever",
                                     },
                                 },

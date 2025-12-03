@@ -242,8 +242,8 @@ def test_condition_array_binding_supports_builtin_length_field():
                                 "type": "action",
                                 "action_id": "hr.update_employee_health_profile.v1",
                                 "params": {
-                                    "employee_id": "employee.employee_id",
-                                    "last_temperature": "employee.temperature",
+                                    "employee_id": "{{employee.employee_id}}",
+                                    "last_temperature": "{{employee.temperature}}",
                                     "status": "high_temperature",
                                 },
                             }
@@ -313,8 +313,8 @@ def test_loop_export_length_reference_allowed_for_plain_string():
                                 "type": "action",
                                 "action_id": "hr.update_employee_health_profile.v1",
                                 "params": {
-                                    "employee_id": "employee.employee_id",
-                                    "last_temperature": "employee.temperature",
+                                    "employee_id": "{{employee.employee_id}}",
+                                    "last_temperature": "{{employee.temperature}}",
                                     "status": "high_temperature",
                                 },
                             }
@@ -338,7 +338,7 @@ def test_loop_export_length_reference_allowed_for_plain_string():
                 "params": {
                     "event_type": "健康预警报告",
                     "date": {"__from__": "result_of.fetch_temperatures.date"},
-                    "abnormal_count": "result_of.loop_employees.exports.items.length",
+                    "abnormal_count": "{{result_of.loop_employees.exports.items.length}}",
                 },
             },
             {"id": "end", "type": "end"},

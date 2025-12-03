@@ -739,22 +739,27 @@ def eval_node_params(node: Node, ctx: BindingContext) -> Dict[str, Any]:
                     except Exception as e:
                         log_warn(f"[param-resolver] 字符串绑定 {value} 解析失败: {e}，使用原值")
 
-            normalized_v = normalize_reference_path(rendered_inline)
-            qualified_v = ctx._qualify_context_path(normalized_v)
-            head = qualified_v.split(".", 1)[0]
-            # 仅当整个字符串就是绑定路径时才解析；包含插值占位符的混合字符串将保留原样
-            if (
-                head in ctx.loop_ctx
-                or head == ctx.loop_id
-                or qualified_v.startswith("loop.")
-                or qualified_v.startswith("result_of.")
-            ):
-                try:
-                    return ctx.get_value(qualified_v)
-                except Exception as e:
-                    log_warn(
-                        f"[param-resolver] 路径字符串 {value} 解析失败: {e}，使用原值"
-                    )
+            if not template_pattern.search(rendered_inline):
+                return rendered_inline
+
+            single_match = template_pattern.fullmatch(rendered_inline)
+            if single_match:
+                raw_path = single_match.group(1) or single_match.group(2) or single_match.group(3)
+                normalized_path = normalize_reference_path(raw_path)
+                qualified_path = ctx._qualify_context_path(normalized_path)
+                head = qualified_path.split(".", 1)[0]
+                if (
+                    head in ctx.loop_ctx
+                    or head == ctx.loop_id
+                    or qualified_path.startswith("loop.")
+                    or qualified_path.startswith("result_of.")
+                ):
+                    try:
+                        return ctx.get_value(qualified_path)
+                    except Exception as e:
+                        log_warn(
+                            f"[param-resolver] 路径模板 {value} 解析失败: {e}，使用原值"
+                        )
 
             resolved_with_templates = rendered_inline
             replaced = False
