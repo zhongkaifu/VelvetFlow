@@ -586,14 +586,41 @@ def _validate_nodes_recursive(
                 target_schemas: List[tuple[str, Mapping[str, Any] | None]] = []
                 for source_path in source_paths:
                     normalized_source = normalize_reference_path(source_path)
-                    target_schema = _resolve_condition_schema(
-                        normalized_source,
-                        field_path,
-                        nodes_by_id,
-                        actions_by_id,
-                        loop_body_parents,
-                        alias_schemas,
-                    )
+                    if kind == "list_not_empty" and field_path:
+                        target_schema = _resolve_condition_schema(
+                            normalized_source,
+                            None,
+                            nodes_by_id,
+                            actions_by_id,
+                            loop_body_parents,
+                            alias_schemas,
+                        )
+                        if target_schema:
+                            nested_schema = _walk_schema_with_tokens(
+                                target_schema, [field_path]
+                            )
+                            if nested_schema is None:
+                                errors.append(
+                                    ValidationError(
+                                        code="SCHEMA_MISMATCH",
+                                        node_id=nid,
+                                        field="field",
+                                        message=(
+                                            ""
+                                            f"condition 节点 '{nid}' 的引用 "
+                                            f"'{normalized_source}.{field_path}' 无法在 schema 中找到或缺少类型信息。"
+                                        ),
+                                    )
+                                )
+                    else:
+                        target_schema = _resolve_condition_schema(
+                            normalized_source,
+                            field_path,
+                            nodes_by_id,
+                            actions_by_id,
+                            loop_body_parents,
+                            alias_schemas,
+                        )
                     target_schemas.append((normalized_source, target_schema))
                     if field_path and target_schema is None:
                         errors.append(

@@ -325,8 +325,24 @@ def _get_output_schema_at_path(
     if node_type == "loop":
         params = node.get("params") if isinstance(node, Mapping) else {}
         loop_schema = build_loop_output_schema(params or {})
+        exports = params.get("exports") if isinstance(params, Mapping) else {}
+        items_spec = exports.get("items") if isinstance(exports, Mapping) else None
+        items_schema = _get_loop_items_schema_from_exports(
+            items_spec, node, nodes_by_id, actions_by_id
+        )
         if not loop_schema:
             return None
+
+        if items_schema:
+            props = loop_schema.setdefault("properties", {})
+            items_container = props.get("items") if isinstance(props, Mapping) else {}
+            new_items = {"type": "array", "items": items_schema}
+            if isinstance(items_container, Mapping):
+                merged = dict(items_container)
+                merged.update(new_items)
+                props["items"] = merged
+            else:
+                props["items"] = new_items
 
         effective_path = rest_path[1:] if rest_path and rest_path[0] == "exports" else rest_path
         normalized_path = _normalize_field_tokens(list(effective_path))
@@ -477,6 +493,7 @@ def _walk_schema_with_tokens(schema: Mapping[str, Any], fields: List[Any]) -> Op
 
         if typ == "array":
             current = current.get("items") or {}
+            typ = current.get("type")
 
         if typ == "object" or typ is None:
             props = current.get("properties") or {}
