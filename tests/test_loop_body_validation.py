@@ -554,6 +554,62 @@ def test_loop_exports_should_not_live_in_body_subgraph():
     )
 
 
+def test_loop_body_nodes_should_not_reference_loop_exports():
+    """Body nodes must rely on body_subgraph outputs instead of loop exports."""
+
+    workflow = {
+        "workflow_name": "news_summary",
+        "nodes": [
+            {
+                "id": "search_news",
+                "type": "action",
+                "action_id": "common.search_news.v1",
+                "params": {"query": "AI"},
+            },
+            {
+                "id": "loop_summarize_news",
+                "type": "loop",
+                "params": {
+                    "loop_kind": "for_each",
+                    "source": "result_of.search_news.results",
+                    "item_alias": "news_item",
+                    "body_subgraph": {
+                        "nodes": [
+                            {
+                                "id": "summarize_news",
+                                "type": "action",
+                                "action_id": "common.summarize.v1",
+                                "params": {
+                                    "text": {
+                                        "__from__": "result_of.loop_summarize_news.exports.items"
+                                    }
+                                },
+                            },
+                            {"id": "exit", "type": "end"},
+                        ],
+                        "edges": [{"from": "summarize_news", "to": "exit"}],
+                        "entry": "summarize_news",
+                        "exit": "exit",
+                    },
+                    "exports": {
+                        "items": {"from_node": "summarize_news", "fields": ["summary"]},
+                    },
+                },
+            },
+        ],
+        "edges": [{"from": "search_news", "to": "loop_summarize_news"}],
+    }
+
+    errors = validate_workflow_data(workflow, ACTION_REGISTRY)
+
+    assert any(
+        e.code == "SCHEMA_MISMATCH"
+        and e.node_id == "summarize_news"
+        and "不可直接引用所属 loop" in e.message
+        for e in errors
+    )
+
+
 def test_condition_cannot_reference_missing_loop_export_field():
     """条件节点引用 loop exports 下不存在的字段时应报错。"""
 

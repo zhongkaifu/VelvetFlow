@@ -332,7 +332,11 @@ def _validate_nodes_recursive(
                                     field_label = f"params.{path_prefix}"
                                 _flag_self_reference(field_label, src)
                             schema_err = _check_output_path_against_schema(
-                                src, nodes_by_id, actions_by_id, loop_body_parents
+                                src,
+                                nodes_by_id,
+                                actions_by_id,
+                                loop_body_parents,
+                                context_node_id=nid,
                             )
                             if schema_err:
                                 suffix = f"[{src_idx}]" if len(sources) > 1 else ""
@@ -417,7 +421,11 @@ def _validate_nodes_recursive(
                                 schema_err = _schema_path_error(alias_schemas[alias], ref_parts[1:])
                             else:
                                 schema_err = _check_output_path_against_schema(
-                                    ref_path, nodes_by_id, actions_by_id, loop_body_parents
+                                    ref_path,
+                                    nodes_by_id,
+                                    actions_by_id,
+                                    loop_body_parents,
+                                    context_node_id=nid,
                                 )
 
                         if schema_err:
@@ -795,7 +803,11 @@ def _validate_nodes_recursive(
                 if _is_self_reference_path(source, nid):
                     _flag_self_reference("source", source)
                 src_err = _check_output_path_against_schema(
-                    source, nodes_by_id, actions_by_id, loop_body_parents
+                    source,
+                    nodes_by_id,
+                    actions_by_id,
+                    loop_body_parents,
+                    context_node_id=nid,
                 )
                 if src_err:
                     errors.append(
@@ -822,7 +834,11 @@ def _validate_nodes_recursive(
                     if _is_self_reference_path(normalized_source, nid):
                         _flag_self_reference("source", normalized_source)
                     schema_err = _check_output_path_against_schema(
-                        normalized_source, nodes_by_id, actions_by_id, loop_body_parents
+                        normalized_source,
+                        nodes_by_id,
+                        actions_by_id,
+                        loop_body_parents,
+                        context_node_id=nid,
                     )
                     if schema_err:
                         errors.append(
@@ -835,7 +851,11 @@ def _validate_nodes_recursive(
                         )
                     else:
                         nested_schema = _get_array_item_schema_from_output(
-                            normalized_source, nodes_by_id, actions_by_id, loop_body_parents
+                            normalized_source,
+                            nodes_by_id,
+                            actions_by_id,
+                            loop_body_parents,
+                            context_node_id=nid,
                         )
                         if nested_schema:
                             alias_schemas = dict(alias_schemas or {})
@@ -1017,7 +1037,11 @@ def _validate_nodes_recursive(
                                 )
                             elif isinstance(source, str):
                                 schema_err = _check_output_path_against_schema(
-                                    source, nodes_by_id, actions_by_id, loop_body_parents
+                                    source,
+                                    nodes_by_id,
+                                    actions_by_id,
+                                    loop_body_parents,
+                                    context_node_id=nid,
                                 )
                                 if schema_err:
                                     errors.append(
