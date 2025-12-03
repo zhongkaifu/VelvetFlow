@@ -99,14 +99,18 @@ def _iter_template_references(text: str) -> Iterable[str]:
     )
 
 
-def _collect_param_bindings(obj: Any, prefix: str = "") -> List[Dict[str, str]]:
+def _collect_param_bindings(obj: Any, prefix: str = "") -> List[Dict[str, Any]]:
     """Collect bindings that carry a __from__ reference for lightweight checks."""
 
-    bindings: List[Dict[str, str]] = []
+    bindings: List[Dict[str, Any]] = []
 
     if isinstance(obj, Mapping):
         if "__from__" in obj:
-            bindings.append({"path": prefix or "params", "source": obj.get("__from__")})
+            binding: Dict[str, Any] = {"path": prefix or "params", "source": obj.get("__from__")}
+            if "__agg__" in obj:
+                binding["agg"] = obj.get("__agg__")
+            binding["binding"] = obj
+            bindings.append(binding)
         for key, value in obj.items():
             new_prefix = f"{prefix}.{key}" if prefix else str(key)
             bindings.extend(_collect_param_bindings(value, new_prefix))
