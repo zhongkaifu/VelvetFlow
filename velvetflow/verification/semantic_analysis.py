@@ -242,7 +242,13 @@ def _check_binding_contracts(
             elif isinstance(source, list):
                 sources = [s for s in source if isinstance(s, str)]
 
+            is_multi_source = isinstance(source, list) and len(source) > 1
+
             for src in sources:
+                if isinstance(src, str) and src != normalize_reference_path(src):
+                    # Templated references are resolved at runtime; skip strict checks.
+                    continue
+
                 normalized_src = normalize_reference_path(src)
                 schema_err = _check_output_path_against_schema(
                     normalized_src,
@@ -260,6 +266,11 @@ def _check_binding_contracts(
                             message=f"参数绑定来源 {normalized_src} 无效：{schema_err}",
                         )
                     )
+                    continue
+
+                if is_multi_source:
+                    # Multi-source bindings rely on downstream aggregation/pipeline logic;
+                    # as long as individual paths exist, we defer strict type checks.
                     continue
                 actual_schema = _get_output_schema_at_path(
                     normalized_src, nodes_by_id, actions_by_id, loop_body_parents

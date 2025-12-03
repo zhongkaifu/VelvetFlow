@@ -153,26 +153,26 @@ def validate_workflow_data(
     workflow_parsed = parse_result.ast if parse_result.ast is not None else workflow_raw
 
     semantic_errors = analyze_workflow_semantics(workflow_parsed, action_registry)
-    if semantic_errors:
-        return semantic_errors
+    errors.extend(semantic_errors)
 
     precheck_errors = precheck_loop_body_graphs(workflow_parsed)
-    if precheck_errors:
-        return precheck_errors
+    errors.extend(precheck_errors)
 
     try:
         workflow_model = Workflow.model_validate(workflow_parsed)
     except PydanticValidationError as exc:  # pragma: no cover - exercised via unit test
-        return _convert_pydantic_errors(workflow_parsed, exc)
+        errors.extend(_convert_pydantic_errors(workflow_parsed, exc))
+        return errors
     except Exception as exc:  # pragma: no cover
-        return [
+        errors.append(
             ValidationError(
                 code="INVALID_SCHEMA",
                 node_id=None,
                 field=None,
                 message=str(exc),
             )
-        ]
+        )
+        return errors
 
     workflow_dict = workflow_model.model_dump(by_alias=True)
     errors.extend(validate_completed_workflow(workflow_dict, action_registry))

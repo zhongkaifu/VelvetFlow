@@ -18,8 +18,37 @@ from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Mapping, Optional, Tuple
 
-from crawl4ai import AsyncWebCrawler, BrowserConfig, CacheMode, CrawlerRunConfig, LLMConfig
-from crawl4ai.extraction_strategy import LLMExtractionStrategy
+try:
+    from crawl4ai import AsyncWebCrawler, BrowserConfig, CacheMode, CrawlerRunConfig, LLMConfig
+    from crawl4ai.extraction_strategy import LLMExtractionStrategy
+    _CRAWL4AI_AVAILABLE = True
+except ModuleNotFoundError:  # pragma: no cover - exercised in environments without crawl4ai
+    _CRAWL4AI_AVAILABLE = False
+
+    class _MissingCrawlerDependency:
+        def __getattr__(self, name: str) -> None:  # pragma: no cover - defensive fallback
+            raise ImportError(
+                "crawl4ai is required for web scraping tools; install it with 'pip install crawl4ai'."
+            )
+
+        def __call__(self, *args: Any, **kwargs: Any) -> None:  # pragma: no cover - defensive fallback
+            raise ImportError(
+                "crawl4ai is required for web scraping tools; install it with 'pip install crawl4ai'."
+            )
+
+    class _MissingCacheMode:
+        BYPASS = "bypass"
+
+    AsyncWebCrawler = BrowserConfig = CrawlerRunConfig = LLMConfig = _MissingCrawlerDependency()
+    CacheMode = _MissingCacheMode()
+    LLMExtractionStrategy = _MissingCrawlerDependency()
+
+
+def _require_crawl4ai() -> None:
+    if not _CRAWL4AI_AVAILABLE:
+        raise ImportError(
+            "crawl4ai is required for web scraping tools; install it with 'pip install crawl4ai'."
+        )
 from openai import OpenAI
 
 from velvetflow.config import OPENAI_MODEL
@@ -622,6 +651,8 @@ def _scrape_single_url(
     run_coroutine: Callable[[Callable[[], Awaitable[Any]]], Any] = _run_coroutine,
 ) -> Dict[str, Any]:
     """Download and analyze a single web page according to a request."""
+
+    _require_crawl4ai()
 
     instruction = llm_instruction or textwrap.dedent(
         f"""

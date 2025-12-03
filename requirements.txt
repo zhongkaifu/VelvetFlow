@@ -1,0 +1,5 @@
+openai>=1.30.0
+numpy>=1.26.0
+pillow>=10.0.0
+pydantic>=1.10.0
+pytest>=8.0.0
