@@ -92,7 +92,11 @@ def run_lightweight_static_rules(
         bindings = _collect_param_bindings(params) if isinstance(params, Mapping) else []
         for binding in bindings:
             err = _check_output_path_against_schema(
-                binding.get("source"), nodes_by_id, actions_by_id, loop_body_parents
+                binding.get("source"),
+                nodes_by_id,
+                actions_by_id,
+                loop_body_parents,
+                context_node_id=nid,
             )
             if err:
                 binding_issues.append(f"{nid}:{binding.get('path')} -> {err}")

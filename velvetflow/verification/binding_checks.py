@@ -174,6 +174,8 @@ def _check_output_path_against_schema(
     nodes_by_id: Dict[str, Dict[str, Any]],
     actions_by_id: Dict[str, Dict[str, Any]],
     loop_body_parents: Optional[Mapping[str, str]] = None,
+    *,
+    context_node_id: Optional[str] = None,
 ) -> Optional[str]:
     source_path = normalize_reference_path(source_path)
     if not isinstance(source_path, str):
@@ -200,11 +202,24 @@ def _check_output_path_against_schema(
     if parent_loop and rest_path and rest_path[0] != "exports":
         return f"loop body 节点 '{node_id}' 只能通过 exports 暴露输出"
 
+    context_parent_loop = (
+        loop_body_parents.get(context_node_id)
+        if context_node_id and isinstance(loop_body_parents, Mapping)
+        else None
+    )
+
     if target.get("type") == "loop":
         loop_params = target.get("params") if isinstance(target, Mapping) else {}
         loop_schema = build_loop_output_schema(loop_params or {})
         if not loop_schema:
             return f"loop 节点 '{node_id}' 缺少 exports/out_schema 等输出定义，无法引用"
+
+        if context_parent_loop and context_parent_loop == node_id and rest_path:
+            if rest_path[0] == "exports":
+                return (
+                    f"loop body 节点 '{context_node_id}' 不可直接引用所属 loop "
+                    f"'{node_id}' 的 exports，请改为引用 body_subgraph 节点的输出"
+                )
 
         effective_path = rest_path[1:] if rest_path and rest_path[0] == "exports" else rest_path
         return _schema_path_error(
@@ -233,11 +248,16 @@ def _get_array_item_schema_from_output(
     loop_body_parents: Optional[Mapping[str, str]] = None,
     *,
     skip_path_check: bool = False,
+    context_node_id: Optional[str] = None,
 ) -> Optional[Mapping[str, Any]]:
     normalized_source = normalize_reference_path(source)
     if not skip_path_check:
         err = _check_output_path_against_schema(
-            normalized_source, nodes_by_id, actions_by_id, loop_body_parents
+            normalized_source,
+            nodes_by_id,
+            actions_by_id,
+            loop_body_parents,
+            context_node_id=context_node_id,
         )
         if err:
             return None
@@ -636,6 +656,8 @@ def _check_array_item_field(
     actions_by_id: Dict[str, Dict[str, Any]],
     loop_body_parents: Optional[Mapping[str, str]] = None,
     alias_schemas: Optional[Mapping[str, Mapping[str, Any]]] = None,
+    *,
+    context_node_id: Optional[str] = None,
 ) -> Optional[str]:
     normalized_source = normalize_reference_path(source)
 
@@ -644,7 +666,11 @@ def _check_array_item_field(
         return _schema_path_error(alias_schema, [field])
 
     path_error = _check_output_path_against_schema(
-        normalized_source, nodes_by_id, actions_by_id, loop_body_parents
+        normalized_source,
+        nodes_by_id,
+        actions_by_id,
+        loop_body_parents,
+        context_node_id=context_node_id,
     )
     if path_error:
         return path_error
@@ -660,6 +686,7 @@ def _check_array_item_field(
                 actions_by_id,
                 loop_body_parents,
                 skip_path_check=True,
+                context_node_id=context_node_id,
             )
             if item_schema is not None:
                 container_schema = {"type": "array", "items": item_schema}
@@ -673,6 +700,7 @@ def _check_array_item_field(
         actions_by_id,
         loop_body_parents,
         skip_path_check=True,
+        context_node_id=context_node_id,
     )
     if not item_schema:
         return f"路径 '{normalized_source}' 不是数组输出，无法访问字段 '{field}'。"

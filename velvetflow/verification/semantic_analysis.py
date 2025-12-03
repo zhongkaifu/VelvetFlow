@@ -244,11 +244,27 @@ def _check_binding_contracts(
 
             for src in sources:
                 normalized_src = normalize_reference_path(src)
+                schema_err = _check_output_path_against_schema(
+                    normalized_src,
+                    nodes_by_id,
+                    actions_by_id,
+                    loop_body_parents,
+                    context_node_id=node_id,
+                )
+                if schema_err:
+                    errors.append(
+                        ValidationError(
+                            code="SCHEMA_MISMATCH",
+                            node_id=node_id,
+                            field=field_path,
+                            message=f"参数绑定来源 {normalized_src} 无效：{schema_err}",
+                        )
+                    )
+                    continue
                 actual_schema = _get_output_schema_at_path(
                     normalized_src, nodes_by_id, actions_by_id, loop_body_parents
                 )
                 effective_schema = _apply_binding_aggregator(actual_schema, binding)
-
                 if not _schemas_compatible(expected_schema, effective_schema):
                     errors.append(
                         ValidationError(
@@ -262,19 +278,6 @@ def _check_binding_contracts(
                             ),
                         )
                     )
-                else:
-                    schema_err = _check_output_path_against_schema(
-                        normalized_src, nodes_by_id, actions_by_id, loop_body_parents
-                    )
-                    if schema_err:
-                        errors.append(
-                            ValidationError(
-                                code="SCHEMA_MISMATCH",
-                                node_id=node_id,
-                                field=field_path,
-                                message=f"参数绑定来源 {normalized_src} 无效：{schema_err}",
-                            )
-                        )
 
 
 def analyze_workflow_semantics(
