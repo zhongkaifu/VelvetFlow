@@ -84,7 +84,11 @@ def parse_field_path(path: str) -> List[Union[str, int]]:
         while cursor < len(segment):
             bracket_pos = segment.find("[", cursor)
             if bracket_pos == -1:
-                tokens.append(segment[cursor:])
+                remainder = segment[cursor:]
+                if remainder.isdigit():
+                    tokens.append(int(remainder))
+                else:
+                    tokens.append(remainder)
                 cursor = len(segment)
                 continue
 
