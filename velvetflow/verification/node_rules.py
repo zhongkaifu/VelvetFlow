@@ -412,7 +412,24 @@ def _validate_nodes_recursive(
                             continue
 
                         if ref_path.startswith("result_of."):
-                            # Template placeholders are resolved at runtime; skip strict validation.
+                            target_node = None
+                            if ref_parts and len(ref_parts) >= 2 and isinstance(ref_parts[1], str):
+                                target_node = ref_parts[1]
+
+                            if target_node and target_node not in nodes_by_id:
+                                errors.append(
+                                    ValidationError(
+                                        code="SCHEMA_MISMATCH",
+                                        node_id=nid,
+                                        field=path_prefix,
+                                        message=(
+                                            f"action 节点 '{nid}' 的模板引用 '{ref}' 无效："
+                                            f"引用了不存在的节点 '{target_node}'。"
+                                        ),
+                                    )
+                                )
+
+                            # Template placeholders are resolved at runtime; skip strict schema checks.
                             continue
 
                         if _is_self_reference_path(ref_path, nid):
