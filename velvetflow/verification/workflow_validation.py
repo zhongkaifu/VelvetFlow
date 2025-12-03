@@ -74,17 +74,7 @@ def run_lightweight_static_rules(
     actions_by_id = _index_actions_by_id(action_registry)
     loop_body_parents = index_loop_body_nodes(workflow)
 
-    invalid_edges: List[str] = []
-    for e in workflow.get("edges", []) or []:
-        frm = e.get("from")
-        to = e.get("to")
-        if frm not in node_ids or to not in node_ids:
-            invalid_edges.append(f"{frm}->{to}")
-    if invalid_edges:
-        messages.append(
-            "无效边引用: " + ", ".join(sorted(set(invalid_edges)))
-        )
-
+    inferred_edges = infer_edges_from_bindings(workflow.get("nodes") or [])
     binding_issues: List[str] = []
     for node in workflow.get("nodes", []) or []:
         nid = node.get("id")
@@ -124,9 +114,8 @@ def validate_completed_workflow(
     errors: List[ValidationError] = _RepairingErrorList(workflow)
 
     nodes = workflow.get("nodes", [])
-    # 保留原始 edges 供显式声明校验；拓扑与连通性使用推导结果，避免遗漏隐式绑定依赖。
-    declared_edges = workflow.get("edges", [])
-    topo_edges = declared_edges or infer_edges_from_bindings(nodes)
+    # 拓扑与连通性基于最新的绑定推导，避免依赖可能过期的显式快照。
+    inferred_edges = infer_edges_from_bindings(nodes)
 
     nodes_by_id = _index_nodes_by_id(workflow)
     loop_body_parents = index_loop_body_nodes(workflow)
@@ -162,31 +151,6 @@ def validate_completed_workflow(
             )
         errors.set_context(None)
 
-    # ---------- edges 校验 ----------
-    for e in declared_edges:
-        frm = e.get("from")
-        to = e.get("to")
-        errors.set_context({"edge": e})
-        if frm not in node_ids:
-            errors.append(
-                ValidationError(
-                    code="INVALID_EDGE",
-                    node_id=frm,
-                    field="from",
-                    message=f"Edge from '{frm}' -> '{to}' 中，from 节点不存在。",
-                )
-            )
-        if to not in node_ids:
-            errors.append(
-                ValidationError(
-                    code="INVALID_EDGE",
-                    node_id=to,
-                    field="to",
-                    message=f"Edge from '{frm}' -> '{to}' 中，to 节点不存在。",
-                )
-            )
-        errors.set_context(None)
-
     # ---------- 图连通性校验 ----------
     start_nodes = [n["id"] for n in nodes if n.get("type") == "start"]
     reachable: set = set()
@@ -194,7 +158,7 @@ def validate_completed_workflow(
         adj: Dict[str, List[str]] = {}
         indegree: Dict[str, int] = {nid: 0 for nid in node_ids}
 
-        for e in topo_edges:
+        for e in inferred_edges:
             frm = e.get("from")
             to = e.get("to")
             if frm in node_ids and to in node_ids:

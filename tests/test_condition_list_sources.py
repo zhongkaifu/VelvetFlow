@@ -23,6 +23,7 @@ sys.modules.setdefault(
 )
 sys.modules["crawl4ai.extraction_strategy"].LLMExtractionStrategy = None
 
+from velvetflow.bindings import BindingContext
 from velvetflow.executor import DynamicActionExecutor
 from velvetflow.models import Workflow
 from velvetflow.verification.validation import validate_completed_workflow
@@ -154,3 +155,38 @@ def test_condition_source_allows_plain_node_id():
     results = executor.run()
 
     assert results["cond_after_summarize_nvidia"].get("condition_result") is True
+
+
+def test_list_not_empty_handles_field_over_list_items():
+    workflow = Workflow.model_validate(
+        {
+            "workflow_name": "list_field_condition",
+            "description": "",
+            "nodes": [
+                {
+                    "id": "cond_list_field",
+                    "type": "condition",
+                    "params": {
+                        "kind": "list_not_empty",
+                        "source": [
+                            {"employee_id": "a01", "value": 1},
+                            {"employee_id": "a02", "value": 2},
+                        ],
+                        "field": "employee_id",
+                    },
+                    "true_to_node": None,
+                    "false_to_node": None,
+                }
+            ],
+        }
+    )
+
+    executor = DynamicActionExecutor(workflow)
+    binding_ctx = BindingContext(workflow, results={})
+
+    cond_result, debug = executor._eval_condition(
+        workflow.nodes[0].model_dump(), binding_ctx, include_debug=True
+    )
+
+    assert cond_result is True
+    assert debug.get("resolved_value") == ["a01", "a02"]

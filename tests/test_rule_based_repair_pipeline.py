@@ -41,7 +41,7 @@ def test_rule_repairs_run_before_llm_and_clear_missing_param():
     assert remaining_errors == []
     consumer = next(n for n in patched["nodes"] if n.get("id") == "consumer")
     assert consumer["params"]["text"]["__from__"] == "result_of.producer.text"
-    assert patched["edges"], "rule-based repair should add connectivity edge"
+    assert patched.get("edges", []) == []
 
 
 def test_error_summary_includes_error_specific_prompt():

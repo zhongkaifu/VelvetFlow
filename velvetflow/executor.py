@@ -83,7 +83,6 @@ class DynamicActionExecutor:
             raise ValueError(f"workflow 必须是 Workflow 对象，当前类型为 {type(workflow)}")
 
         workflow_dict = workflow.model_dump(by_alias=True)
-        workflow_dict["edges"] = [e.model_dump(by_alias=True) for e in workflow.edges]
         if not isinstance(workflow_dict.get("nodes"), list):
             raise ValueError("workflow 缺少合法的 'nodes' 列表。")
 
@@ -132,13 +131,14 @@ class DynamicActionExecutor:
                 "workflow 中存在未注册或缺失的 action_id，请在构建阶段修复: " + details
             )
 
-    def _derive_edges(self, workflow: Workflow) -> List[Any]:
-        """Rebuild implicit edges from the latest node bindings."""
-        if workflow.edges:
-            return workflow.edges
+    def _derive_edges(self, workflow: Workflow) -> List[Dict[str, Any]]:
+        """Rebuild implicit edges from the latest node bindings.
 
-        # 当缺少显式 edges 时，从节点参数中的 result_of 引用推导依赖，
-        # 确保执行顺序满足数据绑定需求。
+        返回值中的 ``from``/``to`` 字段每次调用都会重新从节点参数引用和条件
+        分支推导，保持与当前 nodes 一致，不依赖任何声明式缓存。
+        """
+
+        # 所有连线信息都由绑定实时推导，不再消费/缓存声明式 edges 字段。
         return infer_edges_from_bindings(workflow.nodes)
 
     def _find_start_nodes(self, nodes: Mapping[str, Dict[str, Any]], edges: List[Dict[str, Any]]) -> List[str]:
@@ -151,11 +151,12 @@ class DynamicActionExecutor:
 
         all_ids = set(nodes.keys())
         to_ids = set()
+        from_ids = set()
         for e in edges:
-            if hasattr(e, "to_node"):
-                to_ids.add(e.to_node)
-            elif isinstance(e, Mapping) and "to" in e:
-                to_ids.add(e.get("to"))
+            if not isinstance(e, Mapping):
+                continue
+            to_ids.add(e.get("to"))
+            from_ids.add(e.get("from"))
 
         inbound_free = list(all_ids - to_ids)
 
@@ -164,8 +165,13 @@ class DynamicActionExecutor:
             nid for nid, n in nodes.items() if n.get("type") == "condition" and nid in inbound_free
         ]
 
-        # 合并显式 start、满足条件的 condition 以及所有入度为 0 的节点
-        merged = list(dict.fromkeys(starts + condition_starts + inbound_free))
+        outbound_roots = [nid for nid in inbound_free if nid in from_ids]
+
+        if starts:
+            return list(dict.fromkeys(starts + condition_starts + outbound_roots))
+
+        # 若没有显式 start 节点，则退化为无入度节点集合以保证流程仍可执行。
+        merged = list(dict.fromkeys(condition_starts + outbound_roots + inbound_free))
         return merged
 
     def _topological_sort(self, workflow: Workflow) -> List[Node]:
@@ -183,11 +189,11 @@ class DynamicActionExecutor:
         adjacency: Dict[str, List[str]] = {n.id: [] for n in nodes}
         node_lookup: Dict[str, Node] = {n.id: n for n in nodes}
         for e in edges:
-            frm = e.from_node if hasattr(e, "from_node") else e.get("from")
-            to = e.to_node if hasattr(e, "to_node") else e.get("to")
-            if not frm or not to:
+            if not isinstance(e, Mapping):
                 continue
-            if frm not in indegree or to not in indegree:
+            frm = e.get("from")
+            to = e.get("to")
+            if not frm or not to or frm not in indegree or to not in indegree:
                 continue
             indegree[to] += 1
             adjacency[frm].append(to)
@@ -239,6 +245,9 @@ class DynamicActionExecutor:
         if nodes and len(reachable) != len(nodes):
             log_warn("存在无法从 start 节点到达的节点，将跳过这些节点。")
 
+        if reachable:
+            ordered = [nid for nid in ordered if nid in reachable]
+
         return [node_lookup[nid] for nid in ordered]
 
     def _next_nodes(
@@ -277,14 +286,16 @@ class DynamicActionExecutor:
             return []
 
         for e in edges:
-            frm = e.from_node if hasattr(e, "from_node") else e.get("from")
+            if not isinstance(e, Mapping):
+                continue
+            frm = e.get("from")
             if frm != nid:
                 continue
-            cond = e.condition if hasattr(e, "condition") else e.get("condition")
+            cond = e.get("condition")
             if cond is None:
-                res.append(e.to_node if hasattr(e, "to_node") else e.get("to"))
+                res.append(e.get("to"))
             elif cond_label is not None and cond == cond_label:
-                res.append(e.to_node if hasattr(e, "to_node") else e.get("to"))
+                res.append(e.get("to"))
         return [r for r in res if r not in {None, "null"}]
 
     def _render_template(self, value: Any, params: Mapping[str, Any]) -> Any:
@@ -470,6 +481,13 @@ class DynamicActionExecutor:
                 continue
 
             if isinstance(current, list):
+                extracted = []
+                for item in current:
+                    if isinstance(item, Mapping) and p in item:
+                        extracted.append(item.get(p))
+                if extracted:
+                    current = extracted
+                    continue
                 return None
 
             if isinstance(current, Mapping):
@@ -1360,8 +1378,10 @@ class DynamicActionExecutor:
 
         indegree = {nid: 0 for nid in nodes_data}
         for e in edges:
-            frm = e.from_node if hasattr(e, "from_node") else e.get("from")
-            to = e.to_node if hasattr(e, "to_node") else e.get("to")
+            if not isinstance(e, Mapping):
+                continue
+            frm = e.get("from")
+            to = e.get("to")
             if frm in indegree and to in indegree:
                 indegree[to] += 1
 

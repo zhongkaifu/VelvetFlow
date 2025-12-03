@@ -438,14 +438,14 @@ def _prepare_skeleton_for_coverage(
 
 def _find_nodes_without_upstream(workflow: Mapping[str, Any]) -> List[Dict[str, Any]]:
     nodes = workflow.get("nodes") if isinstance(workflow.get("nodes"), list) else []
-    edges = workflow.get("edges") if isinstance(workflow.get("edges"), list) else []
+    inferred_edges = infer_edges_from_bindings(nodes)
 
     indegree = {}
     for node in nodes:
         if isinstance(node, Mapping) and isinstance(node.get("id"), str):
             indegree[node["id"]] = 0
 
-    for edge in edges:
+    for edge in inferred_edges:
         if not isinstance(edge, Mapping):
             continue
         target = edge.get("to")

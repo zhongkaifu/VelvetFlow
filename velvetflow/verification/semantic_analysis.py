@@ -125,20 +125,27 @@ def _build_symbol_table(workflow: Mapping[str, Any], errors: List[ValidationErro
 def _check_edges_and_branches(
     workflow: Mapping[str, Any], nodes_by_id: Mapping[str, Mapping[str, Any]], errors: List[ValidationError]
 ) -> None:
-    edges = workflow.get("edges") if isinstance(workflow.get("edges"), list) else []
-    for idx, edge in enumerate(edges):
-        if not isinstance(edge, Mapping):
+    nodes = workflow.get("nodes") if isinstance(workflow.get("nodes"), list) else []
+    for node in nodes:
+        if not isinstance(node, Mapping):
             continue
-        frm = edge.get("from")
-        to = edge.get("to")
-        for field_name, target in ("from", frm), ("to", to):
-            if isinstance(target, str) and target not in nodes_by_id:
+        params = node.get("params") if isinstance(node.get("params"), Mapping) else {}
+        bindings = _collect_param_bindings(params)
+        for binding in bindings:
+            source = normalize_reference_path(binding.get("source")) if binding.get("source") else None
+            if not isinstance(source, str) or not source.startswith("result_of."):
+                continue
+            parts = source.split(".")
+            target = parts[1] if len(parts) >= 2 else None
+            if target and target not in nodes_by_id:
+                path = binding.get("path")
+                field_path = f"params.{path}" if path else "params"
                 errors.append(
                     ValidationError(
                         code="UNDEFINED_REFERENCE",
-                        node_id=None,
-                        field=f"edges[{idx}].{field_name}",
-                        message=f"边指向了未定义的节点 '{target}'。",
+                        node_id=node.get("id"),
+                        field=field_path,
+                        message=f"参数绑定引用了不存在的节点 '{target}'。",
                     )
                 )
 

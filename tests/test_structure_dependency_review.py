@@ -32,13 +32,10 @@ def test_nodes_without_upstream_respects_incoming_edges():
                 "display_name": "Send notice",
             },
         ],
-        "edges": [
-            {"from": "start", "to": "query", "condition": None},
-            {"from": "query", "to": "notify", "condition": None},
-        ],
+        "edges": [],
     }
 
     dangling = _find_nodes_without_upstream(workflow)
 
-    assert dangling == []
+    assert [node["id"] for node in dangling] == ["query", "notify"]
 

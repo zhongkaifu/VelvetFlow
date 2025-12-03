@@ -194,12 +194,29 @@ def infer_edges_from_bindings(nodes: Iterable[Any]) -> List[Dict[str, Any]]:
         if not nid:
             continue
 
+        params = _extract_params(node)
+
         # 参数依赖推导出的隐式连线
         deps = {
             ref
-            for ref in _collect_refs(_extract_params(node))
+            for ref in _collect_refs(params)
             if ref in node_ids and ref != nid
         }
+
+        # condition.source 支持直接引用节点 id，需同样计入依赖以驱动上游执行。
+        if isinstance(node, Node) and node.type == "condition":
+            cond_source = node.params.get("source")
+            if isinstance(cond_source, str) and cond_source in node_ids and cond_source != nid:
+                deps.add(cond_source)
+            if isinstance(cond_source, list):
+                deps.update({s for s in cond_source if isinstance(s, str) and s in node_ids and s != nid})
+        elif isinstance(node, Mapping) and node.get("type") == "condition":
+            cond_source = params.get("source")
+            if isinstance(cond_source, str) and cond_source in node_ids and cond_source != nid:
+                deps.add(cond_source)
+            if isinstance(cond_source, list):
+                deps.update({s for s in cond_source if isinstance(s, str) and s in node_ids and s != nid})
+
         for dep in sorted(deps):
             pair = (dep, nid)
             if pair in seen_pairs:
@@ -436,40 +453,10 @@ class Workflow:
     nodes: List[Node]
     workflow_name: str = "unnamed_workflow"
     description: str = ""
-    declared_edges: List[Edge] = field(default_factory=list)
 
     @property
     def edges(self) -> List[Edge]:
-        """Always rebuild edges from the latest node bindings.
-
-        Implicit wiring must faithfully reflect the *current* node set. The
-        derived edges are therefore regenerated on every access instead of
-        cached, ensuring callers never read stale topology after node edits.
-        """
-
-        inferred = self._infer_edges()
-        declared = self.declared_edges or []
-        if not declared:
-            return inferred
-
-        existing = {(e.from_node, e.to_node, e.condition) for e in inferred}
-        combined = list(inferred)
-        for edge in declared:
-            key = (edge.from_node, edge.to_node, edge.condition)
-            if key not in existing:
-                combined.append(edge)
-        return combined
-
-    def _infer_edges(self) -> List[Edge]:
-        """Build edges from parameter bindings declared on nodes.
-
-        The workflow DSL expresses dependencies via ``result_of.<node>`` bindings
-        rather than explicit edge arrays. This helper walks each node's params to
-        discover inbound dependencies and materializes them as edge dictionaries
-        for internal use (topological sort, reachability checks, etc.). The
-        derived edges are not part of the external contract and are regenerated
-        on demand to stay in sync with the latest node bindings.
-        """
+        """Always rebuild edges from the latest node bindings."""
 
         inferred = infer_edges_from_bindings(self.nodes)
         return [Edge(from_node=e["from"], to_node=e["to"], condition=e.get("condition")) for e in inferred]
@@ -486,15 +473,10 @@ class Workflow:
 
         errors: List[Dict[str, Any]] = []
         raw_nodes = data.get("nodes")
-        raw_edges = data.get("edges")
-
         if not isinstance(raw_nodes, list):
             errors.append({"loc": ("nodes",), "msg": "nodes 必须是数组"})
-        if raw_edges is not None and not isinstance(raw_edges, list):
-            errors.append({"loc": ("edges",), "msg": "edges 必须是数组"})
 
         parsed_nodes: List[Node] = []
-        parsed_edges: List[Edge] = []
 
         if isinstance(raw_nodes, list):
             for idx, node in enumerate(raw_nodes):
@@ -503,15 +485,6 @@ class Workflow:
                 except PydanticValidationError as exc:
                     for err in exc.errors():
                         loc = ("nodes", idx, *err.get("loc", ()))
-                        errors.append({"loc": loc, "msg": err.get("msg")})
-
-        if isinstance(raw_edges, list):
-            for idx, edge in enumerate(raw_edges):
-                try:
-                    parsed_edges.append(Edge.model_validate(edge))
-                except PydanticValidationError as exc:
-                    for err in exc.errors():
-                        loc = ("edges", idx, *err.get("loc", ()))
                         errors.append({"loc": loc, "msg": err.get("msg")})
 
         if errors:
@@ -524,24 +497,10 @@ class Workflow:
                 raise ValueError(f"重复的节点 id: {n.id}")
             seen.add(n.id)
 
-        if parsed_edges:
-            node_ids = {n.id for n in parsed_nodes}
-            special_targets = {"null"}
-            for e in parsed_edges:
-                missing_from = e.from_node not in node_ids
-                missing_to = e.to_node not in node_ids and e.to_node not in special_targets
-                if missing_from or missing_to:
-                    raise ValueError(
-                        f"边 {e.model_dump(by_alias=True)} 引用了不存在的节点，已知节点: {sorted(node_ids)}"
-                    )
-                if e.from_node == e.to_node:
-                    raise ValueError("边的 from/to 不能指向同一个节点")
-
         workflow = cls(
             workflow_name=str(data.get("workflow_name", "unnamed_workflow")),
             description=str(data.get("description", "")),
             nodes=parsed_nodes,
-            declared_edges=parsed_edges,
         )
 
         return workflow.validate_loop_body_subgraphs()
