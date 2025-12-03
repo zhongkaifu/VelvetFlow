@@ -275,6 +275,19 @@ def _safe_repair_invalid_loop_body(workflow_raw: Mapping[str, Any]) -> Workflow:
     return Workflow.model_validate(workflow_dict)
 
 
+def _ensure_workflow_dict(workflow: Any) -> Dict[str, Any]:
+    """Return a plain dictionary representation of a workflow-like object."""
+
+    if isinstance(workflow, Workflow):
+        return workflow.model_dump()
+    if isinstance(workflow, Mapping):
+        return dict(workflow)
+
+    raise TypeError(
+        f"Unsupported workflow type {type(workflow)}; expected Mapping or Workflow"
+    )
+
+
 def _repair_with_llm_and_fallback(
     *,
     broken_workflow: Dict[str, Any],
@@ -297,52 +310,58 @@ def _repair_with_llm_and_fallback(
             f"[AutoRepair] 规则修复降低错误数量：{len(validation_errors)} -> {len(remaining_errors)}"
         )
 
-    broken_workflow = patched_workflow
-    validation_errors = list(remaining_errors)
+    working_workflow = _ensure_workflow_dict(patched_workflow)
+    targeted_errors = list(remaining_errors)
 
-    error_summary = _summarize_validation_errors_for_llm(
-        validation_errors,
-        workflow=broken_workflow,
-        action_registry=action_registry,
-    )
-    try:
-        repaired_raw = repair_workflow_with_llm(
-            broken_workflow=broken_workflow,
-            validation_errors=validation_errors,
+    for err in targeted_errors:
+        error_summary = _summarize_validation_errors_for_llm(
+            [err],
+            workflow=working_workflow,
             action_registry=action_registry,
-            error_summary=error_summary,
-            model=OPENAI_MODEL,
         )
-        repaired = Workflow.model_validate(repaired_raw)
-        repaired = ensure_registered_actions(
-            repaired,
-            action_registry=action_registry,
-            search_service=search_service,
-        )
-        if not isinstance(repaired, Workflow):
-            repaired = Workflow.model_validate(repaired)
-        log_success("[AutoRepair] LLM 修复成功，继续构建 workflow。")
-        return repaired
-    except Exception as err:  # noqa: BLE001
-        log_warn(f"[AutoRepair] LLM 修复失败：{err}")
         try:
-            fallback = _safe_repair_invalid_loop_body(broken_workflow)
-            fallback = ensure_registered_actions(
-                fallback,
+            repaired_raw = repair_workflow_with_llm(
+                broken_workflow=working_workflow,
+                validation_errors=[err],
+                action_registry=action_registry,
+                error_summary=error_summary,
+                model=OPENAI_MODEL,
+            )
+            repaired = Workflow.model_validate(repaired_raw)
+            repaired = ensure_registered_actions(
+                repaired,
                 action_registry=action_registry,
                 search_service=search_service,
             )
-            if not isinstance(fallback, Workflow):
-                fallback = Workflow.model_validate(fallback)
-            log_warn("[AutoRepair] 使用未修复的结构作为回退，继续后续流程。")
-            return fallback
-        except Exception as inner_err:  # noqa: BLE001
-            log_error(
-                f"[AutoRepair] 回退到原始结构失败，将返回空的 fallback workflow：{inner_err}"
+            if not isinstance(repaired, Workflow):
+                repaired = Workflow.model_validate(repaired)
+            working_workflow = _ensure_workflow_dict(repaired)
+            log_success(
+                f"[AutoRepair] LLM 单点修复成功，错误已处理：{err.code}#{err.node_id or 'global'}"
             )
-            return Workflow(
-                workflow_name="fallback_workflow", nodes=[], declared_edges=[]
-            )
+        except Exception as err_detail:  # noqa: BLE001
+            log_warn(f"[AutoRepair] LLM 修复失败：{err_detail}")
+            try:
+                fallback = _safe_repair_invalid_loop_body(working_workflow)
+                fallback = ensure_registered_actions(
+                    fallback,
+                    action_registry=action_registry,
+                    search_service=search_service,
+                )
+                if not isinstance(fallback, Workflow):
+                    fallback = Workflow.model_validate(fallback)
+                log_warn("[AutoRepair] 使用未修复的结构作为回退，继续后续流程。")
+                working_workflow = _ensure_workflow_dict(fallback)
+            except Exception as inner_err:  # noqa: BLE001
+                log_error(
+                    "[AutoRepair] 回退到原始结构失败，将返回空的 fallback workflow："
+                    f"{inner_err}"
+                )
+                return Workflow(
+                    workflow_name="fallback_workflow", nodes=[], declared_edges=[]
+                )
+
+    return Workflow.model_validate(working_workflow)
 
 
 def repair_workflow_with_llm(
@@ -355,8 +374,17 @@ def repair_workflow_with_llm(
     client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
     action_schemas = {}
+    allowed_action_ids: set[str] = set()
+    for node in broken_workflow.get("nodes") or []:
+        if isinstance(node, Mapping):
+            action_id = node.get("action_id")
+            if isinstance(action_id, str):
+                allowed_action_ids.add(action_id)
+
     for a in action_registry:
-        aid = a["action_id"]
+        aid = a.get("action_id")
+        if not isinstance(aid, str) or aid not in allowed_action_ids:
+            continue
         action_schemas[aid] = {
             "name": a.get("name", ""),
             "description": a.get("description", ""),
@@ -422,6 +450,7 @@ validation_errors 是 JSON 数组，元素包含 code/node_id/field/message。
    - 节点的 id/type 不变；
    - 返回修复后的 workflow JSON，只返回 JSON 对象本身，不要包含代码块标记。
 10. 可用工具：当你需要结构化修改时，优先调用提供的工具（无 LLM 依赖、结果确定），用来修复 loop body 引用、补齐必填参数或写入指定字段。
+11. 本轮只处理输入的这一个 validation_error，不要尝试修复未出现在列表中的其它问题；上下文是全新的，没有历史对话。
 """
 
     messages = [
