@@ -114,6 +114,90 @@ def test_condition_validation_detects_non_list_targets():
     )
 
 
+def test_condition_validation_accepts_loop_export_field_schema():
+    workflow = {
+        "workflow_name": "loop_export_items_schema",
+        "description": "",
+        "nodes": [
+            {"id": "start", "type": "start"},
+            {
+                "id": "get_temperatures",
+                "type": "action",
+                "action_id": "hr.get_today_temperatures.v1",
+                "params": {"date": "2025-12-02"},
+            },
+            {
+                "id": "loop_check_temperature",
+                "type": "loop",
+                "params": {
+                    "loop_kind": "for_each",
+                    "item_alias": "employee",
+                    "source": "result_of.get_temperatures.data",
+                    "body_subgraph": {
+                        "entry": "cond_temp_above_38",
+                        "exit": "add_to_warning_list",
+                        "nodes": [
+                            {
+                                "id": "cond_temp_above_38",
+                                "type": "condition",
+                                "display_name": "体温是否超过38度",
+                                "params": {
+                                    "source": "employee",
+                                    "field": "temperature",
+                                    "threshold": 38,
+                                    "kind": "greater_than",
+                                },
+                                "true_to_node": "add_to_warning_list",
+                                "false_to_node": None,
+                                "parent_node_id": "loop_check_temperature",
+                            },
+                            {
+                                "id": "add_to_warning_list",
+                                "type": "action",
+                                "action_id": "hr.update_employee_health_profile.v1",
+                                "display_name": "将体温异常员工ID加入健康预警列表",
+                                "params": {
+                                    "employee_id": "{{employee.employee_id}}",
+                                    "last_temperature": "{{employee.temperature}}",
+                                    "status": "high_temperature",
+                                },
+                                "parent_node_id": "loop_check_temperature",
+                            },
+                        ],
+                    },
+                    "exports": {
+                        "items": {
+                            "from_node": "add_to_warning_list",
+                            "fields": ["employee_id"],
+                            "mode": "collect",
+                        }
+                    },
+                },
+            },
+            {
+                "id": "cond_warning_list_not_empty",
+                "type": "condition",
+                "params": {
+                    "source": "result_of.loop_check_temperature.exports.items",
+                    "field": "employee_id",
+                    "kind": "list_not_empty",
+                },
+                "true_to_node": None,
+                "false_to_node": None,
+            },
+        ],
+        "edges": [
+            {"from": "start", "to": "get_temperatures"},
+            {"from": "get_temperatures", "to": "loop_check_temperature"},
+            {"from": "loop_check_temperature", "to": "cond_warning_list_not_empty"},
+        ],
+    }
+
+    errors = validate_completed_workflow(workflow, action_registry=ACTION_REGISTRY)
+
+    assert errors == []
+
+
 def test_executor_uses_field_value_for_not_empty():
     workflow = Workflow.model_validate(_workflow_with_extracted_content_field())
     executor = DynamicActionExecutor(
