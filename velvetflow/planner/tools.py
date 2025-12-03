@@ -3,6 +3,9 @@
 
 """Planner tool definitions for LLM tool-calling."""
 
+from velvetflow.planner.recapture import RECAPTURE_TOOL
+
+
 PLANNER_TOOLS = [
     {
         "type": "function",
@@ -22,6 +25,7 @@ PLANNER_TOOLS = [
             },
         },
     },
+    RECAPTURE_TOOL,
     {
         "type": "function",
         "function": {

@@ -21,6 +21,7 @@ from velvetflow.logging_utils import (
 )
 from velvetflow.models import ALLOWED_PARAM_AGGREGATORS, Node, Workflow
 from velvetflow.planner.params_tools import build_param_completion_tool
+from velvetflow.planner.recapture import RECAPTURE_TOOL, recapture_workflow_progress
 from velvetflow.planner.relations import get_referenced_nodes
 from velvetflow.reference_utils import normalize_reference_path
 from velvetflow.verification.validation import (
@@ -361,6 +362,7 @@ def _build_validation_tool() -> Dict[str, Any]:
 def fill_params_with_llm(
     workflow_skeleton: Dict[str, Any],
     action_registry: List[Dict[str, Any]],
+    nl_requirement: str | None = None,
     model: str = OPENAI_MODEL,
 ) -> Dict[str, Any]:
     client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
@@ -379,6 +381,8 @@ def fill_params_with_llm(
     system_prompt = (
         "你是一个工作流参数补全助手。一次只处理一个节点，请根据给定的 arg_schema 补齐当前节点的 params。\n"
         "请务必调用 submit_node_params 工具提交结果，禁止返回自然语言。每次提交后必须调用 validate_node_params 工具进行校验，收到校验错误要重新分析并再次提交。\n"
+        "如需回顾已覆盖的需求点和剩余缺口，可调用 recapture_workflow_progress 工具获取摘要；"
+        "该工具仅作确定性复盘，不等价于 finalize_workflow 后的覆盖度检查。\n"
         "在补参前先阅读 global_context：理解 workflow 场景、节点之间的上下游关系，以及 entity_binding_hints 中记录的关键实体字段（如 *_id/*_code 等）来源。补参时必须保持同名实体字段的来源一致，如发现冲突请主动调整当前节点的绑定。\n"
         "当某个字段需要引用其他节点的输出时，必须使用数据绑定 DSL，并且只能引用提供的 allowed_node_ids 中的节点。\n"
         "你只能从以下节点中读取上下游结果：result_of.<node_id>.<field>...，其中 node_id 必须来自 allowed_node_ids，field 必须存在于该节点的 output_schema。\n"
@@ -465,20 +469,21 @@ def fill_params_with_llm(
 
         for round_idx in range(4):
             with child_span(f"fill_params_{node.id}_round_{round_idx}"):
-                resp = client.chat.completions.create(
-                    model=model,
-                    messages=messages,
-                    tools=[
-                        build_param_completion_tool(
-                            node,
-                            action_schemas=action_schemas,
-                            allowed_node_ids=allowed_node_ids,
-                        ),
-                        _build_validation_tool(),
-                    ],
-                    tool_choice="auto",
-                    temperature=0.1,
-                )
+                    resp = client.chat.completions.create(
+                        model=model,
+                        messages=messages,
+                        tools=[
+                            build_param_completion_tool(
+                                node,
+                                action_schemas=action_schemas,
+                                allowed_node_ids=allowed_node_ids,
+                            ),
+                            RECAPTURE_TOOL,
+                            _build_validation_tool(),
+                        ],
+                        tool_choice="auto",
+                        temperature=0.1,
+                    )
             log_llm_usage(model, getattr(resp, "usage", None), operation="fill_params")
             if not resp.choices:
                 raise RuntimeError(f"fill_params_with_llm({node.id}) 未返回任何候选消息")
@@ -579,6 +584,34 @@ def fill_params_with_llm(
                     if not validation_errors and params_to_check is not None:
                         validated_params = params_to_check
                         filled_params[node.id] = params_to_check
+
+                elif func_name == "recapture_workflow_progress":
+                    snapshot_nodes = []
+                    for snapshot_node in workflow.nodes:
+                        data = snapshot_node.model_dump(by_alias=True)
+                        data["params"] = filled_params.get(snapshot_node.id, snapshot_node.params)
+                        snapshot_nodes.append(data)
+
+                    recap_workflow = {
+                        "workflow_name": workflow.workflow_name,
+                        "description": workflow.description,
+                        "nodes": snapshot_nodes,
+                        "edges": [e.model_dump(by_alias=True) for e in workflow.edges],
+                    }
+                    recap = recapture_workflow_progress(
+                        workflow=recap_workflow,
+                        nl_requirement=nl_requirement or "",
+                        action_registry=action_registry,
+                    )
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tool_call_id,
+                            "content": json.dumps(
+                                {"status": "ok", "recap": recap}, ensure_ascii=False
+                            ),
+                        }
+                    )
 
                 else:
                     messages.append(

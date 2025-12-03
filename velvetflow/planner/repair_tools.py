@@ -10,6 +10,7 @@ import hashlib
 import json
 from typing import Any, Dict, Iterable, List, Mapping, MutableMapping, Optional, Tuple
 
+from velvetflow.planner.recapture import recapture_workflow_progress, RECAPTURE_TOOL
 from velvetflow.planner.structure import _ensure_loop_items_fields, _fallback_loop_exports
 from velvetflow.logging_utils import log_event, log_info, log_warn
 from velvetflow.models import ValidationError, Workflow
@@ -593,6 +594,7 @@ def apply_repair_tool(
     workflow: Mapping[str, Any],
     validation_errors: Iterable[ValidationError],
     action_registry: Iterable[Mapping[str, Any]],
+    nl_requirement: str | None = None,
 ) -> Tuple[Mapping[str, Any], Dict[str, Any]]:
     before_hash = _workflow_fingerprint(workflow)
     node_id = args.get("node_id") if isinstance(args, Mapping) else None
@@ -633,6 +635,13 @@ def apply_repair_tool(
         patched, summary = drop_invalid_references(
             workflow, remove_edges=bool(args.get("remove_edges", True))
         )
+    elif tool_name == "recapture_workflow_progress":
+        recap = recapture_workflow_progress(
+            workflow=workflow,
+            nl_requirement=nl_requirement or "",
+            action_registry=action_registry,
+        )
+        patched, summary = workflow, {"applied": True, "recap": recap, "reason": None}
     else:
         patched, summary = workflow, {"applied": False, "reason": f"未知工具 {tool_name}"}
 
@@ -663,6 +672,7 @@ def apply_repair_tool(
 
 
 REPAIR_TOOLS = [
+    RECAPTURE_TOOL,
     {
         "type": "function",
         "function": {
@@ -780,6 +790,7 @@ __all__ = [
     "normalize_binding_paths",
     "replace_reference_paths",
     "drop_invalid_references",
+    "recapture_workflow_progress",
     "fix_loop_body_references",
     "update_node_field",
     "REPAIR_TOOLS",
