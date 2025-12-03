@@ -266,39 +266,6 @@ def _statistical_fill(
             params[field] = choice
 
 
-def _connect_disconnected_nodes(
-    workflow: MutableMapping[str, Any],
-    nodes_by_id: Mapping[str, Mapping[str, Any]],
-    suggestions: List[RepairSuggestion],
-) -> None:
-    edges = workflow.setdefault("edges", []) if isinstance(workflow, MutableMapping) else []
-    if not isinstance(edges, list):
-        return
-    connected = {e.get("to") for e in edges if isinstance(e, Mapping)}
-    all_nodes = list(nodes_by_id.keys())
-    candidates = [n for n in all_nodes if n not in connected]
-    if len(all_nodes) < 2:
-        return
-    if not candidates:
-        return
-    hub = all_nodes[0]
-    for node_id in candidates:
-        if node_id == hub:
-            continue
-        patch = {"from": hub, "to": node_id, "condition": None}
-        edges.append(patch)
-        suggestions.append(
-            RepairSuggestion(
-                strategy="ast_template",
-                description=f"自动连接未入度节点 {node_id} -> 由 {hub} 驱动", 
-                path=f"edges[{len(edges)-1}]",
-                patch=patch,
-                confidence=0.55,
-                rationale="消除未连接节点，保证可达性",
-            )
-        )
-
-
 def generate_repair_suggestions(
     workflow_raw: Any,
     action_registry: Sequence[Mapping[str, Any]],
@@ -316,7 +283,6 @@ def generate_repair_suggestions(
     _resolve_missing_params(workflow, action_registry, nodes_by_id, actions_by_id, errors or [], suggestions)
     _solve_parameter_bindings(workflow, nodes_by_id, actions_by_id, suggestions)
     _statistical_fill(workflow, nodes_by_id, actions_by_id, suggestions)
-    _connect_disconnected_nodes(workflow, nodes_by_id, suggestions)
 
     return workflow, suggestions
 

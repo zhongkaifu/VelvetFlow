@@ -143,5 +143,5 @@ def test_disconnected_nodes_receive_edge_suggestion():
 
     patched, suggestions = generate_repair_suggestions(workflow, actions)
 
-    assert any(e.get("to") == "lonely" for e in patched.get("edges", []))
-    assert any("连接未入度节点" in s.description for s in suggestions)
+    assert patched.get("edges", []) == []
+    assert all("连接未入度节点" not in s.description for s in suggestions)

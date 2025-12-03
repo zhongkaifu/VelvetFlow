@@ -32,9 +32,16 @@ def test_duplicate_node_symbol_detected():
     assert any(err.code == "DUPLICATE_SYMBOL" for err in errors)
 
 
-def test_undefined_edge_reference_reported():
+def test_undefined_reference_from_binding_reported():
     workflow = _base_workflow()
-    workflow["edges"].append({"from": "start", "to": "missing"})
+    workflow["nodes"].append(
+        {
+            "id": "send",
+            "type": "action",
+            "action_id": "productivity.compose_outlook_email.v1",
+            "params": {"email_content": {"__from__": "result_of.missing.message"}},
+        }
+    )
 
     errors = validate_workflow_data(workflow, ACTION_REGISTRY)
 
