@@ -172,7 +172,7 @@ class DynamicActionExecutor:
         """Return execution order while validating reachability constraints.
 
         * 若存在环（例如 loop 子图），会回退为声明顺序并提示警告；
-        * 若没有入度为 0 的节点，抛出 `DISCONNECTED_GRAPH`；
+        * 若没有入度为 0 的节点，会回退为声明顺序并提示警告；
         * 若部分节点无法从起点到达，同样抛出 `DISCONNECTED_GRAPH`。
         """
 
@@ -193,28 +193,24 @@ class DynamicActionExecutor:
             adjacency[frm].append(to)
 
         queue: List[str] = [nid for nid, deg in indegree.items() if deg == 0]
-        if not queue and nodes:
-            raise ValueError(
-                ValidationError(
-                    code="DISCONNECTED_GRAPH",
-                    node_id=None,
-                    field=None,
-                    message="未找到入度为 0 的节点，无法确定拓扑起点。",
-                )
-            )
-
         ordered: List[str] = []
-        while queue:
-            nid = queue.pop(0)
-            ordered.append(nid)
-            for nxt in adjacency.get(nid, []):
-                indegree[nxt] -= 1
-                if indegree[nxt] == 0:
-                    queue.append(nxt)
 
-        if len(ordered) != len(nodes):
-            log_warn("检测到工作流包含环（例如 loop 子图），按声明顺序执行。")
+        # 若未发现入度为 0 的节点，说明存在环或入度计算异常，直接退回声明顺序
+        if not queue and nodes:
+            log_warn("未找到入度为 0 的节点，按声明顺序执行（可能存在环或隐式依赖）。")
             ordered = [n.id for n in nodes]
+        else:
+            while queue:
+                nid = queue.pop(0)
+                ordered.append(nid)
+                for nxt in adjacency.get(nid, []):
+                    indegree[nxt] -= 1
+                    if indegree[nxt] == 0:
+                        queue.append(nxt)
+
+            if len(ordered) != len(nodes):
+                log_warn("检测到工作流包含环（例如 loop 子图），按声明顺序执行。")
+                ordered = [n.id for n in nodes]
 
         nodes_dump = {n.id: n.model_dump(by_alias=True) for n in nodes}
         start_nodes = self._find_start_nodes(nodes_dump, edges)

@@ -5,7 +5,7 @@
 from collections import deque
 from typing import Any, Dict, List, Mapping, Optional
 
-from velvetflow.models import ValidationError, Workflow
+from velvetflow.models import ValidationError, Workflow, infer_edges_from_bindings
 from velvetflow.loop_dsl import index_loop_body_nodes
 
 from .binding_checks import (
@@ -124,7 +124,9 @@ def validate_completed_workflow(
     errors: List[ValidationError] = _RepairingErrorList(workflow)
 
     nodes = workflow.get("nodes", [])
-    edges = workflow.get("edges", [])
+    # 保留原始 edges 供显式声明校验；拓扑与连通性使用推导结果，避免遗漏隐式绑定依赖。
+    declared_edges = workflow.get("edges", [])
+    topo_edges = declared_edges or infer_edges_from_bindings(nodes)
 
     nodes_by_id = _index_nodes_by_id(workflow)
     loop_body_parents = index_loop_body_nodes(workflow)
@@ -161,7 +163,7 @@ def validate_completed_workflow(
         errors.set_context(None)
 
     # ---------- edges 校验 ----------
-    for e in edges:
+    for e in declared_edges:
         frm = e.get("from")
         to = e.get("to")
         errors.set_context({"edge": e})
@@ -190,17 +192,29 @@ def validate_completed_workflow(
     reachable: set = set()
     if nodes:
         adj: Dict[str, List[str]] = {}
-        to_ids: set = set()
-        for e in edges:
+        indegree: Dict[str, int] = {nid: 0 for nid in node_ids}
+
+        for e in topo_edges:
             frm = e.get("from")
             to = e.get("to")
             if frm in node_ids and to in node_ids:
                 adj.setdefault(frm, []).append(to)
-                to_ids.add(to)
+                indegree[to] += 1
+
+        zero_indegree = [nid for nid, deg in indegree.items() if deg == 0]
+        if nodes and not zero_indegree:
+            errors.append(
+                ValidationError(
+                    code="DISCONNECTED_GRAPH",
+                    node_id=None,
+                    field=None,
+                    message="未找到入度为 0 的节点，无法确定拓扑起点。",
+                )
+            )
 
         # Treat nodes without inbound references as additional roots so workflows
         # that rely solely on parameter bindings remain connected.
-        inbound_free = [nid for nid in node_ids if nid not in to_ids]
+        inbound_free = zero_indegree
         candidate_roots = list(dict.fromkeys((start_nodes or []) + inbound_free))
 
         dq = deque(candidate_roots)
@@ -212,6 +226,26 @@ def validate_completed_workflow(
             for nxt in adj.get(nid, []):
                 if nxt not in reachable:
                     dq.append(nxt)
+
+        # 检测环：拓扑排序未遍历完所有节点。
+        topo_queue = deque(zero_indegree)
+        visited = 0
+        while topo_queue:
+            nid = topo_queue.popleft()
+            visited += 1
+            for nxt in adj.get(nid, []):
+                indegree[nxt] -= 1
+                if indegree[nxt] == 0:
+                    topo_queue.append(nxt)
+        if nodes and visited != len(node_ids):
+            errors.append(
+                ValidationError(
+                    code="DISCONNECTED_GRAPH",
+                    node_id=None,
+                    field=None,
+                    message="检测到工作流包含环或互相引用，无法完成拓扑排序。",
+                )
+            )
 
         for nid in node_ids - reachable:
             errors.set_context({"node": nodes_by_id.get(nid, {})})
