@@ -177,6 +177,35 @@ def _schemas_compatible(expected: Optional[Mapping[str, Any]], actual: Optional[
     return bool(expected_types & actual_types)
 
 
+def _apply_binding_aggregator(
+    actual_schema: Optional[Mapping[str, Any]], binding: Mapping[str, Any]
+) -> Optional[Mapping[str, Any]]:
+    if not actual_schema:
+        return actual_schema
+
+    agg = binding.get("agg")
+    if not agg:
+        binding_obj = binding.get("binding") if isinstance(binding.get("binding"), Mapping) else {}
+        agg = binding_obj.get("__agg__") if isinstance(binding_obj, Mapping) else None
+
+    if not isinstance(agg, str):
+        return actual_schema
+
+    agg = agg or "identity"
+    if agg in {"count", "count_if"}:
+        return {"type": "integer"}
+    if agg in {"join", "format_join", "filter_map"}:
+        return {"type": "string"}
+    if agg == "pipeline":
+        binding_obj = binding.get("binding") if isinstance(binding.get("binding"), Mapping) else {}
+        steps = binding_obj.get("steps") if isinstance(binding_obj, Mapping) else None
+        if isinstance(steps, list) and any(
+            isinstance(step, Mapping) and step.get("op") == "format_join" for step in steps
+        ):
+            return {"type": "string"}
+    return actual_schema
+
+
 def _check_binding_contracts(
     workflow: Mapping[str, Any],
     nodes_by_id: Mapping[str, Mapping[str, Any]],
@@ -218,8 +247,9 @@ def _check_binding_contracts(
                 actual_schema = _get_output_schema_at_path(
                     normalized_src, nodes_by_id, actions_by_id, loop_body_parents
                 )
+                effective_schema = _apply_binding_aggregator(actual_schema, binding)
 
-                if not _schemas_compatible(expected_schema, actual_schema):
+                if not _schemas_compatible(expected_schema, effective_schema):
                     errors.append(
                         ValidationError(
                             code="CONTRACT_VIOLATION",
@@ -227,7 +257,8 @@ def _check_binding_contracts(
                             field=field_path,
                             message=(
                                 f"参数绑定期望类型 {expected_schema.get('type') if expected_schema else '未知'}"
-                                f"，但来源 {normalized_src} 的类型为 {actual_schema.get('type') if actual_schema else '未知'}。"
+                                f"，但来源 {normalized_src} 的类型为 {effective_schema.get('type') if effective_schema else '未知'}。"
+                                "请在下游 params 中添加格式或类型转换（例如设置合适的 __agg__ 或 pipeline 步骤）以适配输入需求。"
                             ),
                         )
                     )

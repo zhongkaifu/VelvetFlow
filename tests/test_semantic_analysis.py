@@ -75,3 +75,84 @@ def test_contract_violation_for_incompatible_binding():
 
     assert any(err.code == "CONTRACT_VIOLATION" for err in errors)
 
+
+def test_contract_violation_ignored_when_aggregator_transforms_format():
+    workflow = {
+        "workflow_name": "contract_with_transform",
+        "description": "",
+        "nodes": [
+            {"id": "start", "type": "start"},
+            {
+                "id": "get_temperature",
+                "type": "action",
+                "action_id": "hr.get_today_temperatures.v1",
+                "params": {"date": "2024-01-01"},
+            },
+            {
+                "id": "record_event",
+                "type": "action",
+                "action_id": "hr.record_health_event.v1",
+                "params": {
+                    "event_type": {
+                        "__from__": "result_of.get_temperature.data",
+                        "__agg__": "format_join",
+                        "format": "{city}:{temperature}",
+                        "sep": ";",
+                    }
+                },
+            },
+            {"id": "end", "type": "end"},
+        ],
+        "edges": [
+            {"from": "start", "to": "get_temperature"},
+            {"from": "get_temperature", "to": "record_event"},
+            {"from": "record_event", "to": "end"},
+        ],
+    }
+
+    errors = validate_workflow_data(workflow, ACTION_REGISTRY)
+
+    assert not any(err.code == "CONTRACT_VIOLATION" for err in errors)
+
+
+def test_contract_violation_ignored_when_filter_map_formats_array():
+    workflow = {
+        "workflow_name": "contract_with_filter_map",
+        "description": "",
+        "nodes": [
+            {"id": "start", "type": "start"},
+            {
+                "id": "get_temperature",
+                "type": "action",
+                "action_id": "hr.get_today_temperatures.v1",
+                "params": {"date": "2024-01-02"},
+            },
+            {
+                "id": "record_event",
+                "type": "action",
+                "action_id": "hr.record_health_event.v1",
+                "params": {
+                    "event_type": {
+                        "__from__": "result_of.get_temperature.data",
+                        "__agg__": "filter_map",
+                        "filter_field": "temperature",
+                        "filter_op": ">",
+                        "filter_value": 37,
+                        "map_field": "city",
+                        "sep": ", ",
+                    }
+                },
+            },
+            {"id": "end", "type": "end"},
+        ],
+        "edges": [
+            {"from": "start", "to": "get_temperature"},
+            {"from": "get_temperature", "to": "record_event"},
+            {"from": "record_event", "to": "end"},
+        ],
+    }
+
+    errors = validate_workflow_data(workflow, ACTION_REGISTRY)
+
+    assert not any(err.code == "CONTRACT_VIOLATION" for err in errors)
+
