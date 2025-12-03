@@ -481,6 +481,13 @@ class DynamicActionExecutor:
                 continue
 
             if isinstance(current, list):
+                extracted = []
+                for item in current:
+                    if isinstance(item, Mapping) and p in item:
+                        extracted.append(item.get(p))
+                if extracted:
+                    current = extracted
+                    continue
                 return None
 
             if isinstance(current, Mapping):
