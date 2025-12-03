@@ -326,6 +326,9 @@ def _validate_nodes_recursive(
                                     )
 
                         for src_idx, src in enumerate(sources):
+                            if isinstance(src, str) and src != normalize_reference_path(src):
+                                # Templated references are resolved at runtime; skip strict checks.
+                                continue
                             if _is_self_reference_path(src, nid):
                                 field_label = path_prefix or "params"
                                 if path_prefix and not path_prefix.startswith("params"):
@@ -406,6 +409,10 @@ def _validate_nodes_recursive(
                         try:
                             ref_parts = parse_field_path(ref_path)
                         except Exception:
+                            continue
+
+                        if ref_path.startswith("result_of."):
+                            # Template placeholders are resolved at runtime; skip strict validation.
                             continue
 
                         if _is_self_reference_path(ref_path, nid):
