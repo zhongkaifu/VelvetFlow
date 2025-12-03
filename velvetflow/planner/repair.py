@@ -275,6 +275,19 @@ def _safe_repair_invalid_loop_body(workflow_raw: Mapping[str, Any]) -> Workflow:
     return Workflow.model_validate(workflow_dict)
 
 
+def _ensure_workflow_dict(workflow: Any) -> Dict[str, Any]:
+    """Return a plain dictionary representation of a workflow-like object."""
+
+    if isinstance(workflow, Workflow):
+        return workflow.model_dump(exclude_none=False)
+    if isinstance(workflow, Mapping):
+        return dict(workflow)
+
+    raise TypeError(
+        f"Unsupported workflow type {type(workflow)}; expected Mapping or Workflow"
+    )
+
+
 def _repair_with_llm_and_fallback(
     *,
     broken_workflow: Dict[str, Any],
@@ -297,7 +310,7 @@ def _repair_with_llm_and_fallback(
             f"[AutoRepair] 规则修复降低错误数量：{len(validation_errors)} -> {len(remaining_errors)}"
         )
 
-    working_workflow = patched_workflow
+    working_workflow = _ensure_workflow_dict(patched_workflow)
     targeted_errors = list(remaining_errors)
 
     for err in targeted_errors:
@@ -322,7 +335,7 @@ def _repair_with_llm_and_fallback(
             )
             if not isinstance(repaired, Workflow):
                 repaired = Workflow.model_validate(repaired)
-            working_workflow = repaired
+            working_workflow = _ensure_workflow_dict(repaired)
             log_success(
                 f"[AutoRepair] LLM 单点修复成功，错误已处理：{err.code}#{err.node_id or 'global'}"
             )
@@ -338,7 +351,7 @@ def _repair_with_llm_and_fallback(
                 if not isinstance(fallback, Workflow):
                     fallback = Workflow.model_validate(fallback)
                 log_warn("[AutoRepair] 使用未修复的结构作为回退，继续后续流程。")
-                working_workflow = fallback
+                working_workflow = _ensure_workflow_dict(fallback)
             except Exception as inner_err:  # noqa: BLE001
                 log_error(
                     "[AutoRepair] 回退到原始结构失败，将返回空的 fallback workflow："
@@ -348,7 +361,7 @@ def _repair_with_llm_and_fallback(
                     workflow_name="fallback_workflow", nodes=[], declared_edges=[]
                 )
 
-    return working_workflow
+    return Workflow.model_validate(working_workflow)
 
 
 def repair_workflow_with_llm(
