@@ -728,6 +728,11 @@ def eval_node_params(node: Node, ctx: BindingContext) -> Dict[str, Any]:
                     parsed = json.loads(str_val)
                 except Exception:
                     parsed = None
+                if parsed is None:
+                    try:
+                        parsed = ast.literal_eval(str_val)
+                    except Exception:
+                        parsed = None
                 if isinstance(parsed, dict) and "__from__" in parsed:
                     try:
                         return ctx.resolve_binding(parsed)

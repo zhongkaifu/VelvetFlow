@@ -191,6 +191,30 @@ def test_eval_params_parses_json_string_bindings():
     assert params["text"] == "新闻一\n新闻二"
 
 
+def test_eval_params_parses_single_quoted_binding_strings():
+    workflow = Workflow.model_validate({"nodes": [{"id": "search_google_news", "type": "action"}], "edges": []})
+    ctx = BindingContext(
+        workflow,
+        {
+            "search_google_news": {
+                "results": [
+                    {"snippet": "First"},
+                    {"snippet": "Second"},
+                ]
+            }
+        },
+    )
+
+    binding_str = (
+        "{'__from__': 'result_of.search_google_news.results', '__agg__': 'format_join', 'format': '{snippet}'}"
+    )
+    node = Node(id="aggregate", type="action", params={"text": binding_str})
+
+    params = eval_node_params(node, ctx)
+
+    assert params["text"] == "First\nSecond"
+
+
 def test_template_wildcard_references_extract_list_fields():
     workflow = Workflow.model_validate({"nodes": [{"id": "start", "type": "start"}], "edges": []})
     ctx = BindingContext(
