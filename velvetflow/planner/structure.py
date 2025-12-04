@@ -109,6 +109,108 @@ def _attach_inferred_edges(workflow: Dict[str, Any]) -> Dict[str, Any]:
     return attach_condition_branches(copied)
 
 
+def _derive_subtasks_with_llm(
+    nl_requirement: str, *, client: OpenAI, max_items: int = 6
+) -> List[Dict[str, str]]:
+    """Ask the LLM to produce a compact, ordered subtask list.
+
+    The output intentionally stays small and structured so it can be fed back
+    into the main planning loop as a stable context anchor for subgraph-first
+    workflows.
+    """
+
+    guidance = (
+        "请将以下需求拆分为 3-6 个可交付的子任务，强调输入/输出接口和预期产出。"
+        "仅返回 JSON 数组，每个元素包含 id（简短标签）与 goal（任务目标描述）。"
+    )
+    messages = [
+        {"role": "system", "content": guidance},
+        {"role": "user", "content": nl_requirement},
+    ]
+
+    try:
+        resp = client.chat.completions.create(
+            model=OPENAI_MODEL,
+            messages=messages,
+            temperature=0,
+        )
+        content = resp.choices[0].message.content if resp.choices else None
+        parsed = json.loads(content) if content else []
+        subtasks: List[Dict[str, str]] = []
+        if isinstance(parsed, list):
+            for idx, item in enumerate(parsed):
+                if not isinstance(item, Mapping):
+                    continue
+                title = str(item.get("id") or f"subtask_{idx + 1}")
+                goal = str(item.get("goal") or "")
+                if goal:
+                    subtasks.append({"id": title, "goal": goal})
+        elif isinstance(parsed, Mapping):
+            subtasks.append(
+                {"id": str(parsed.get("id") or "subtask_1"), "goal": str(parsed.get("goal") or "")}
+            )
+        if not subtasks:
+            raise ValueError("empty subtasks")
+        return subtasks[:max_items]
+    except Exception:
+        return [
+            {
+                "id": "subtask_1",
+                "goal": nl_requirement[:200],
+            }
+        ]
+
+
+def _summarize_workflow_for_context(workflow: Mapping[str, Any]) -> List[Dict[str, Any]]:
+    """Provide a concise node-level summary to feed back as planning context."""
+
+    nodes = workflow.get("nodes") if isinstance(workflow.get("nodes"), list) else []
+    summary = []
+    for node in nodes:
+        if not isinstance(node, Mapping):
+            continue
+        summary.append(
+            {
+                "id": node.get("id"),
+                "type": node.get("type"),
+                "display_name": node.get("display_name"),
+                "parent_node_id": node.get("parent_node_id"),
+            }
+        )
+        if len(summary) >= 20:
+            break
+    return summary
+
+
+def _build_subtask_context_message(
+    *,
+    subtasks: List[Mapping[str, str]],
+    workflow_snapshot: Mapping[str, Any],
+    round_idx: int,
+) -> str:
+    """Remind the LLM of the subtask roadmap and current structure state."""
+
+    lines = [
+        "【子任务路线图】请按顺序完成子图，完成一个子图后先自检再进入下一个。",
+        "- 已拆解的子任务列表（包含接口/产出意识）：",
+    ]
+    for idx, task in enumerate(subtasks, start=1):
+        label = task.get("id") if isinstance(task.get("id"), str) else f"subtask_{idx}"
+        goal = task.get("goal") if isinstance(task.get("goal"), str) else ""
+        focus_hint = " ← 当前应优先完成" if idx == min(round_idx + 1, len(subtasks)) else ""
+        lines.append(f"  {idx}. {label}: {goal}{focus_hint}")
+
+    lines.extend(
+        [
+            "- 已有子图（节点前 20 个，包含 parent_node_id 以帮助识别子图归属）：",
+            json.dumps(_summarize_workflow_for_context(workflow_snapshot), ensure_ascii=False),
+            "- 注意：每个子图的输入/输出接口要与已完成子图保持一致，避免割裂。",
+            "- 在推进下一个子图前，请明确当前子图的产出并修复自检发现的问题。",
+        ]
+    )
+    return "\n".join(lines)
+
+
 def _normalize_sub_graph_nodes(
     raw: Any, *, builder: WorkflowBuilder
 ) -> tuple[List[str], Optional[Dict[str, Any]]]:
@@ -547,6 +649,7 @@ def plan_workflow_structure_with_llm(
     builder = WorkflowBuilder()
     action_schemas = _build_action_schema_map(action_registry)
     last_action_candidates: List[str] = []
+    subtasks = _derive_subtasks_with_llm(nl_requirement, client=client)
 
     system_prompt = (
         "你是一个通用业务工作流编排助手。\n"
@@ -558,6 +661,13 @@ def plan_workflow_structure_with_llm(
         "4) condition 节点必须显式提供 true_to_node 和 false_to_node，值可以是节点 id（继续执行）或 null（表示该分支结束）；通过节点 params 中的输入/输出引用表达依赖关系，不需要显式绘制 edges。\n"
         "5) 当结构完成时调用 finalize_workflow。\n\n"
         "特别注意：只有 action 节点需要 out_params_schema，condition 节点没有该属性；out_params_schema 的格式应为 {\"参数名\": \"类型\"}，仅需列出业务 action 输出参数的名称与类型，不要添加额外描述或示例。\n\n"
+        "【新的规划策略】\n"
+        "1. 先将用户自然语言需求拆解为多个可交付的子任务，并记录任务列表。\n"
+        "2. 针对每个子任务单独构建 workflow 子图，明确该子图的输入输出接口与职责。\n"
+        "3. 全局 workflow 由这些子图串联或拼接而成，子图之间的输入输出要保持一致、可复用，不允许出现割裂的接口设计。\n"
+        "4. 在规划当前子图时，必须理解整体大任务、当前子任务、已完成子任务及后续未完成子任务，充分利用已完成子图的上下文与产出。\n"
+        "5. 一旦当前子图构建完毕，其关键信息要回顾总结，作为后续子图规划时的上下文。\n"
+        "6. 每个子图完成后都要主动自检，如发现结构或依赖有误必须立即修复，再进入下一个子任务。\n\n"
         "【非常重要的原则】\n"
         "1. 所有示例（包括后续你在补参阶段看到的示例）都只是为说明“DSL 的写法”和“节点之间如何连线”，\n"
         "   不是实际的业务约束，不要在新任务里硬复用这些示例中的业务名或字段名。\n"
@@ -582,6 +692,13 @@ def plan_workflow_structure_with_llm(
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": nl_requirement},
     ]
+
+    initial_context = _build_subtask_context_message(
+        subtasks=subtasks,
+        workflow_snapshot=_attach_inferred_edges(builder.to_workflow()),
+        round_idx=0,
+    )
+    messages.append({"role": "system", "content": initial_context})
 
     finalized = False
     latest_skeleton: Dict[str, Any] = {}
@@ -1240,6 +1357,12 @@ def plan_workflow_structure_with_llm(
 
         if finalized:
             break
+
+        workflow_snapshot = _attach_inferred_edges(builder.to_workflow())
+        subtask_context = _build_subtask_context_message(
+            subtasks=subtasks, workflow_snapshot=workflow_snapshot, round_idx=round_idx
+        )
+        messages.append({"role": "system", "content": subtask_context})
 
     if not finalized:
         if latest_coverage and not latest_coverage.get("is_covered", False):
