@@ -78,6 +78,7 @@ class DynamicActionExecutor:
         simulations: Union[str, Mapping[str, Any], None] = None,
         user_role: str = "user",
         trace_context: TraceContext | None = None,
+        run_manager: Any | None = None,
     ):
         if not isinstance(workflow, Workflow):
             raise ValueError(f"workflow 必须是 Workflow 对象，当前类型为 {type(workflow)}")
@@ -92,6 +93,7 @@ class DynamicActionExecutor:
         self.nodes = {n["id"]: n for n in workflow_dict["nodes"]}
         self.user_role = user_role
         self.trace_context = trace_context
+        self.run_manager = run_manager
 
         if isinstance(simulations, str):
             self.simulation_data: SimulationData = load_simulation_data(simulations)
@@ -1357,6 +1359,17 @@ class DynamicActionExecutor:
         log_warn(f"[loop] 未知 loop_kind={loop_kind}，跳过执行")
         return {"status": "skipped", "reason": "unknown_loop_kind"}
 
+    def _record_node_metrics(self, result: Any) -> None:
+        if not self.run_manager:
+            return
+
+        success = True
+        if isinstance(result, Mapping):
+            status = result.get("status")
+            if status and str(status).lower() not in {"ok", "success", "allowed"}:
+                success = False
+        self.run_manager.metrics.record_node(success=success)
+
     def _execute_graph(
         self,
         workflow_dict: Dict[str, Any],
@@ -1422,6 +1435,8 @@ class DynamicActionExecutor:
                         "action_id": action_id,
                         "params": params,
                     },
+                    node_id=nid,
+                    action_id=action_id,
                 )
                 log_info(f"[Node {nid}] type={ntype}, display_name={display_name}, action_id={action_id}")
                 if params:
@@ -1469,6 +1484,7 @@ class DynamicActionExecutor:
                     payload = result.copy() if isinstance(result, dict) else {"value": result}
                     payload["params"] = resolved_params
                     results[nid] = payload
+                    self._record_node_metrics(payload)
                     next_ids = self._next_nodes(
                         self._derive_edges(workflow), nid, nodes_data=nodes_data
                     )
@@ -1485,6 +1501,8 @@ class DynamicActionExecutor:
                             "result": result,
                             "next_nodes": next_ids,
                         },
+                        node_id=nid,
+                        action_id=action_id,
                     )
                     continue
 
@@ -1507,6 +1525,7 @@ class DynamicActionExecutor:
                         if values is not None:
                             payload["evaluated_values"] = values
                     results[nid] = payload
+                    self._record_node_metrics(payload)
                     next_ids = self._next_nodes(
                         self._derive_edges(workflow),
                         nid,
@@ -1524,12 +1543,14 @@ class DynamicActionExecutor:
                             "condition_result": cond_value,
                             "next_nodes": next_ids,
                         },
+                        node_id=nid,
                     )
                     continue
 
                 if ntype == "loop":
                     loop_result = self._execute_loop_node(node, binding_ctx)
                     results[nid] = loop_result
+                    self._record_node_metrics(loop_result)
                     log_event(
                         "node_end",
                         {
@@ -1537,6 +1558,8 @@ class DynamicActionExecutor:
                             "type": ntype,
                             "result": loop_result,
                         },
+                        node_id=nid,
+                        action_id=action_id,
                     )
                     next_ids = self._next_nodes(
                         self._derive_edges(workflow), nid, nodes_data=nodes_data
@@ -1552,6 +1575,8 @@ class DynamicActionExecutor:
                             "next_nodes": next_ids,
                             "result": results.get(nid),
                         },
+                        node_id=nid,
+                        action_id=action_id,
                     )
                     continue
 
@@ -1570,7 +1595,9 @@ class DynamicActionExecutor:
                         "next_nodes": next_ids,
                         "result": results.get(nid),
                     },
+                    node_id=nid,
                 )
+                self._record_node_metrics(results.get(nid))
 
             pending = remaining
             if not progress:
@@ -1580,6 +1607,12 @@ class DynamicActionExecutor:
 
     def run_workflow(self, trace_context: TraceContext | None = None):
         binding_ctx = BindingContext(self.workflow, {})
+        if self.run_manager:
+            if not self.run_manager.workflow_name:
+                self.run_manager.workflow_name = self.workflow.workflow_name
+            self.run_manager.metrics.extra.setdefault(
+                "declared_nodes", len(self.workflow.nodes)
+            )
         ctx = trace_context or self.trace_context
         if ctx:
             with use_trace_context(ctx):
@@ -1593,6 +1626,8 @@ class DynamicActionExecutor:
                         context=span_ctx,
                     )
                     results = self._execute_graph(self.workflow_dict, binding_ctx)
+                    if self.run_manager:
+                        self.run_manager.metrics.extra["result_nodes"] = list(results.keys())
                     log_event(
                         "executor_finished",
                         {
@@ -1603,7 +1638,10 @@ class DynamicActionExecutor:
                     )
                     return results
 
-        return self._execute_graph(self.workflow_dict, binding_ctx)
+        results = self._execute_graph(self.workflow_dict, binding_ctx)
+        if self.run_manager:
+            self.run_manager.metrics.extra["result_nodes"] = list(results.keys())
+        return results
 
     def run(self, trace_context: TraceContext | None = None):
         return self.run_workflow(trace_context=trace_context)

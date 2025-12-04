@@ -13,7 +13,7 @@ import shutil
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Mapping, Optional
+from typing import Any, Callable, Mapping, Optional
 
 # Basic ANSI color codes for a slightly nicer CLI experience without extra deps.
 RESET = "\033[0m"
@@ -35,7 +35,17 @@ ICONS = {
     "DEBUG": "🔍",
 }
 
-LOG_FILE_PATH = Path(os.environ.get("VELVETFLOW_LOG_FILE", "velvetflow.log"))
+def _default_log_file() -> Path:
+    if env_path := os.environ.get("VELVETFLOW_LOG_FILE"):
+        return Path(env_path)
+
+    log_dir = Path(os.environ.get("VELVETFLOW_LOG_DIR", "logs"))
+    log_dir.mkdir(parents=True, exist_ok=True)
+    ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    return log_dir / f"velvetflow_{ts}.log"
+
+
+LOG_FILE_PATH = _default_log_file()
 _TRACE_ID: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
     "trace_id", default=None
 )
@@ -45,6 +55,10 @@ _SPAN_ID: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
 _SPAN_NAME: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
     "span_name", default=None
 )
+_RUN_ID: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+    "run_id", default=None
+)
+_LLM_USAGE_RECORDER: Callable[[Any], None] | None = None
 
 
 class TraceContext:
@@ -85,6 +99,36 @@ def current_trace_context() -> TraceContext | None:
     if not trace_id:
         return None
     return TraceContext(trace_id, _SPAN_ID.get() or _generate_span_id(), _SPAN_NAME.get())
+
+
+def current_run_id() -> str | None:
+    return _RUN_ID.get()
+
+
+def configure_run_logging(
+    run_id: str | None = None, log_file: str | Path | None = None
+) -> contextvars.Token[str | None] | None:
+    """Configure per-run context for structured logs.
+
+    Parameters
+    ----------
+    run_id:
+        Unique identifier for the workflow run. When provided, it will be injected into
+        every structured log record emitted by :func:`log_event`.
+    log_file:
+        Optional override for the JSONL log destination. When omitted, the default
+        timestamped path is kept.
+    """
+
+    token: contextvars.Token[str | None] | None = None
+    if run_id is not None:
+        token = _RUN_ID.set(run_id)
+
+    global LOG_FILE_PATH
+    if log_file is not None:
+        LOG_FILE_PATH = Path(log_file)
+
+    return token
 
 
 @contextlib.contextmanager
@@ -171,6 +215,11 @@ def log_debug(message: str) -> None:
     console_log("DEBUG", message)
 
 
+def set_llm_usage_recorder(recorder: Callable[[Any], None] | None) -> None:
+    global _LLM_USAGE_RECORDER
+    _LLM_USAGE_RECORDER = recorder
+
+
 def log_section(title: str, subtitle: str | None = None, char: str = "=") -> None:
     width = min(shutil.get_terminal_size((100, 20)).columns, 100)
     line = char * width
@@ -235,15 +284,37 @@ def _persist_record(record: dict[str, Any]) -> None:
         fp.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
-def log_event(event_type: str, payload: dict, context: TraceContext | None = None) -> None:
-    """Emit machine-readable JSON logs while still being human-friendly."""
+def log_event(
+    message: str,
+    payload: Mapping[str, Any] | None = None,
+    *,
+    level: str = "INFO",
+    workflow_run_id: str | None = None,
+    node_id: str | None = None,
+    action_id: str | None = None,
+    context: TraceContext | None = None,
+) -> None:
+    """Emit machine-readable JSON logs with consistent fields.
+
+    The output is a JSON line containing the timestamp, level, workflow_run_id,
+    node_id, action_id, and message so that downstream tools can easily parse and
+    aggregate logs.
+    """
 
     ctx = context or current_trace_context()
     record = {
-        "time": datetime.utcnow().isoformat(),
-        "event_type": event_type,
-        "payload": payload,
+        "timestamp": datetime.utcnow().isoformat(),
+        "level": level.upper(),
+        "workflow_run_id": workflow_run_id or current_run_id(),
+        "node_id": node_id,
+        "action_id": action_id,
+        "message": message,
     }
+    if payload:
+        record["payload"] = dict(payload)
+        if isinstance(payload, Mapping):
+            record.setdefault("node_id", payload.get("node_id"))
+            record.setdefault("action_id", payload.get("action_id"))
     if ctx:
         record.update(ctx.to_dict())
 
@@ -271,4 +342,6 @@ def log_llm_usage(model: str, usage: Any, operation: str | None = None) -> None:
         "completion_tokens": completion_tokens,
         "total_tokens": total_tokens,
     }
+    if _LLM_USAGE_RECORDER:
+        _LLM_USAGE_RECORDER(payload)
     log_event("llm_usage", payload)

@@ -1,0 +1,6 @@
+__pycache__/
+*.py[cod]
+logs/
+.pytest_cache/
+*.log
+metrics_*.txt

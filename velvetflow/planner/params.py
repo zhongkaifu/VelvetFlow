@@ -513,6 +513,8 @@ def fill_params_with_llm(
                         "tool_call_id": tool_call_id,
                         "raw_arguments": raw_args,
                     },
+                    node_id=node.id,
+                    action_id=node.action_id,
                 )
 
                 try:
@@ -542,6 +544,8 @@ def fill_params_with_llm(
                                 "tool_name": func_name,
                                 "params": tool_params,
                             },
+                            node_id=node.id,
+                            action_id=node.action_id,
                         )
                         messages.append(
                             {
