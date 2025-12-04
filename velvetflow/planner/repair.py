@@ -15,6 +15,7 @@ from velvetflow.logging_utils import (
     child_span,
     log_debug,
     log_error,
+    log_info,
     log_llm_usage,
     log_success,
     log_tool_call,
