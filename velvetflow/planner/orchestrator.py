@@ -1041,6 +1041,12 @@ def plan_workflow_with_two_pass(
                     else:
                         current_workflow = last_good_workflow
 
+        failed_repair_history: Dict[str, List[str]] = {}
+        pending_attempts: Dict[str, Dict[str, Any]] = {}
+
+        def _error_key(err: ValidationError) -> str:
+            return f"{err.code}:{err.node_id or 'global'}:{err.field or 'global'}"
+
         for repair_round in range(max_repair_rounds + 1):
             log_section(f"校验 + 自修复轮次 {repair_round}")
             log_json("当前 workflow", current_workflow.model_dump(by_alias=True))
@@ -1094,6 +1100,17 @@ def plan_workflow_with_two_pass(
                         action_registry=action_registry,
                     )
                 )
+
+            current_errors_by_key = {_error_key(e): e for e in errors}
+            if pending_attempts:
+                for key, attempt in list(pending_attempts.items()):
+                    if key in current_errors_by_key:
+                        note = (
+                            f"轮次 {attempt.get('round')} 使用 {attempt.get('method')} 未修复："
+                            f"{current_errors_by_key[key].message}"
+                        )
+                        failed_repair_history.setdefault(key, []).append(note)
+                    pending_attempts.pop(key, None)
 
             if not errors:
                 log_success("校验通过，无需进一步修复")
@@ -1183,6 +1200,13 @@ def plan_workflow_with_two_pass(
                 )
                 return last_good_workflow
 
+            current_errors_by_key = {_error_key(e): e for e in errors}
+            previous_attempts = {
+                key: failed_repair_history.get(key, [])
+                for key in current_errors_by_key
+                if failed_repair_history.get(key)
+            }
+
             log_info(f"调用 LLM 进行第 {repair_round + 1} 次修复")
             current_workflow = _repair_with_llm_and_fallback(
                 broken_workflow=current_workflow.model_dump(by_alias=True),
@@ -1190,7 +1214,13 @@ def plan_workflow_with_two_pass(
                 action_registry=action_registry,
                 search_service=search_service,
                 reason=f"修复轮次 {repair_round + 1}",
+                previous_attempts=previous_attempts,
             )
+            for key in current_errors_by_key:
+                pending_attempts[key] = {
+                    "round": repair_round + 1,
+                    "method": "LLM 修复",
+                }
             current_workflow = _ensure_actions_registered_or_repair(
                 current_workflow,
                 action_registry=action_registry,

@@ -89,6 +89,7 @@ def _summarize_validation_errors_for_llm(
     *,
     workflow: Mapping[str, Any] | None = None,
     action_registry: Sequence[Mapping[str, Any]] | None = None,
+    previous_attempts: Mapping[str, Sequence[str]] | None = None,
 ) -> str:
     """Convert validation errors to an LLM-friendly, human-readable summary."""
 
@@ -104,6 +105,10 @@ def _summarize_validation_errors_for_llm(
 
     action_map: Dict[str, Mapping[str, Any]] = {}
     node_to_action: Dict[str, str] = {}
+    previous_attempts = previous_attempts or {}
+
+    def _make_error_key(e: ValidationError) -> str:
+        return f"{e.code}:{e.node_id or 'global'}:{e.field or 'global'}"
     if action_registry:
         action_map = {
             str(a.get("action_id")): a
@@ -159,6 +164,12 @@ def _summarize_validation_errors_for_llm(
         prompt = _ERROR_TYPE_PROMPTS.get(err.code)
         if prompt:
             repair_prompts.append(f"- [{err.code}] {prompt}")
+
+        history = previous_attempts.get(_make_error_key(err))
+        if history:
+            lines.append("    历史修复尝试：")
+            for h in history:
+                lines.append(f"    - {h}")
 
     if schema_hints:
         lines.append("")
@@ -283,6 +294,7 @@ def _repair_with_llm_and_fallback(
     action_registry: List[Dict[str, Any]],
     search_service,
     reason: str,
+    previous_attempts: Mapping[str, Sequence[str]] | None = None,
 ) -> Workflow:
     log_info(f"[AutoRepair] {reason}，将错误上下文提交给 LLM 尝试修复。")
 
@@ -305,6 +317,7 @@ def _repair_with_llm_and_fallback(
         validation_errors,
         workflow=broken_workflow,
         action_registry=action_registry,
+        previous_attempts=previous_attempts,
     )
     try:
         repaired_raw = repair_workflow_with_llm(
@@ -312,6 +325,7 @@ def _repair_with_llm_and_fallback(
             validation_errors=validation_errors,
             action_registry=action_registry,
             error_summary=error_summary,
+            previous_failed_attempts=previous_attempts,
             model=OPENAI_MODEL,
         )
         repaired = Workflow.model_validate(repaired_raw)
@@ -351,6 +365,7 @@ def repair_workflow_with_llm(
     validation_errors: List[ValidationError],
     action_registry: List[Dict[str, Any]],
     error_summary: str | None = None,
+    previous_failed_attempts: Mapping[str, Sequence[str]] | None = None,
     model: str = OPENAI_MODEL,
 ) -> Dict[str, Any]:
     client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
@@ -376,6 +391,8 @@ validation_errors 是 JSON 数组，元素包含 code/node_id/field/message。
 - source/__from__ 路径引用了不存在的节点
 - source/__from__ 路径与上游 action 的 output_schema 不匹配
 - source/__from__ 指向的数组元素 schema 中不存在某个字段
+
+- previous_failed_attempts 会记录同一错误的历史修复尝试，请避免重复失败的方法，尝试不同的修复路径。
 
 - workflow 结构不符合 DSL schema（例如节点 type 非法）
 
@@ -434,6 +451,7 @@ validation_errors 是 JSON 数组，元素包含 code/node_id/field/message。
                     "workflow": broken_workflow,
                     "validation_error_summary": error_summary,
                     "validation_errors": [asdict(e) for e in validation_errors],
+                    "previous_failed_attempts": previous_failed_attempts,
                     "action_schemas": action_schemas,
                 },
                 ensure_ascii=False,
