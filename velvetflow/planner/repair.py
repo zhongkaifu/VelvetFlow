@@ -283,6 +283,7 @@ def _repair_with_llm_and_fallback(
     action_registry: List[Dict[str, Any]],
     search_service,
     reason: str,
+    nl_requirement: str | None = None,
 ) -> Workflow:
     log_info(f"[AutoRepair] {reason}，将错误上下文提交给 LLM 尝试修复。")
 
@@ -312,6 +313,7 @@ def _repair_with_llm_and_fallback(
             validation_errors=validation_errors,
             action_registry=action_registry,
             error_summary=error_summary,
+            nl_requirement=nl_requirement,
             model=OPENAI_MODEL,
         )
         repaired = Workflow.model_validate(repaired_raw)
@@ -351,6 +353,7 @@ def repair_workflow_with_llm(
     validation_errors: List[ValidationError],
     action_registry: List[Dict[str, Any]],
     error_summary: str | None = None,
+    nl_requirement: str | None = None,
     model: str = OPENAI_MODEL,
 ) -> Dict[str, Any]:
     client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
@@ -422,7 +425,7 @@ validation_errors 是 JSON 数组，元素包含 code/node_id/field/message。
    - 保持顶层结构：workflow_name/description/nodes/edges 不变（仅节点内部内容可调整）；
    - 节点的 id/type 不变；
    - 返回修复后的 workflow JSON，只返回 JSON 对象本身，不要包含代码块标记。
-10. 可用工具：当你需要结构化修改时，优先调用提供的工具（无 LLM 依赖、结果确定），用来修复 loop body 引用、补齐必填参数或写入指定字段。
+10. 可用工具：当你需要结构化修改时，优先调用提供的工具（无 LLM 依赖、结果确定），用来修复 loop body 引用、补齐必填参数或写入指定字段；也可以调用 recapture_workflow_progress 回顾当前 workflow 相对需求的覆盖情况，辅助决定下一步修复重点。recapture 属于确定性的复盘，不等价于 finalize_workflow 后的 LLM 覆盖度审查。
 """
 
     messages = [
@@ -435,6 +438,7 @@ validation_errors 是 JSON 数组，元素包含 code/node_id/field/message。
                     "validation_error_summary": error_summary,
                     "validation_errors": [asdict(e) for e in validation_errors],
                     "action_schemas": action_schemas,
+                    "nl_requirement": nl_requirement,
                 },
                 ensure_ascii=False,
             ),
@@ -480,6 +484,7 @@ validation_errors 是 JSON 数组，元素包含 code/node_id/field/message。
                     workflow=working_workflow,
                     validation_errors=validation_errors,
                     action_registry=action_registry,
+                    nl_requirement=nl_requirement,
                 )
                 log_tool_call(
                     source="repair_workflow_with_llm",

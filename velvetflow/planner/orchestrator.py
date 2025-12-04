@@ -850,6 +850,7 @@ def _ensure_actions_registered_or_repair(
         action_registry=action_registry,
         search_service=search_service,
         reason=reason,
+        nl_requirement=nl_requirement,
     )
     final_workflow = repaired if isinstance(repaired, Workflow) else Workflow.model_validate(repaired)
     return _attach_out_params_schema(final_workflow, actions_by_id)
@@ -934,6 +935,7 @@ def plan_workflow_with_two_pass(
                 action_registry=action_registry,
                 search_service=search_service,
                 reason="结构规划阶段校验失败",
+                nl_requirement=nl_requirement,
             )
         else:
             try:
@@ -951,6 +953,7 @@ def plan_workflow_with_two_pass(
                     action_registry=action_registry,
                     search_service=search_service,
                     reason="结构规划阶段校验失败",
+                    nl_requirement=nl_requirement,
                 )
         log_event("plan_structure_done", {"workflow": skeleton.model_dump()})
         skeleton = _ensure_actions_registered_or_repair(
@@ -965,6 +968,7 @@ def plan_workflow_with_two_pass(
                 completed_workflow_raw = fill_params_with_llm(
                     workflow_skeleton=skeleton.model_dump(by_alias=True),
                     action_registry=action_registry,
+                    nl_requirement=nl_requirement,
                     model=OPENAI_MODEL,
                 )
         except Exception as err:  # noqa: BLE001
@@ -979,6 +983,7 @@ def plan_workflow_with_two_pass(
                 action_registry=action_registry,
                 search_service=search_service,
                 reason="参数补全异常，尝试直接基于 skeleton 修复",
+                nl_requirement=nl_requirement,
             )
             current_workflow = _ensure_actions_registered_or_repair(
                 current_workflow,
@@ -1000,6 +1005,7 @@ def plan_workflow_with_two_pass(
                     action_registry=action_registry,
                     search_service=search_service,
                     reason="补参结果校验失败",
+                    nl_requirement=nl_requirement,
                 )
                 current_workflow = _ensure_actions_registered_or_repair(
                     current_workflow,
@@ -1030,6 +1036,7 @@ def plan_workflow_with_two_pass(
                             action_registry=action_registry,
                             search_service=search_service,
                             reason="补参结果校验失败",
+                            nl_requirement=nl_requirement,
                         )
                         current_workflow = _ensure_actions_registered_or_repair(
                             current_workflow,
@@ -1190,6 +1197,7 @@ def plan_workflow_with_two_pass(
                 action_registry=action_registry,
                 search_service=search_service,
                 reason=f"修复轮次 {repair_round + 1}",
+                nl_requirement=nl_requirement,
             )
             current_workflow = _ensure_actions_registered_or_repair(
                 current_workflow,

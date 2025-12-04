@@ -26,6 +26,7 @@ from velvetflow.logging_utils import (
 from velvetflow.planner.action_guard import ensure_registered_actions
 from velvetflow.planner.approval import detect_missing_approval_nodes
 from velvetflow.planner.coverage import check_requirement_coverage_with_llm
+from velvetflow.planner.recapture import recapture_workflow_progress
 from velvetflow.planner.tools import PLANNER_TOOLS
 from velvetflow.planner.workflow_builder import (
     WorkflowBuilder,
@@ -571,6 +572,8 @@ def plan_workflow_structure_with_llm(
         "4. 循环节点的内部数据只能通过 loop.exports 暴露给外部，下游引用循环结果时必须使用 result_of.<loop_id>.items（或 result_of.<loop_id>.exports.items）/ result_of.<loop_id>.aggregates.*，禁止直接引用 body 子图的节点。\n"
         "5. loop.exports 应定义在 params.exports 下，请勿写在 body_subgraph 内。\n"
         "6. 禁止嵌套循环：loop 节点不能放入其他 loop 的 body_subgraph，parent_node_id 也不能指向 loop 节点。\n\n"
+        "7. 如需回顾当前结构相对 nl_requirement 的覆盖情况，可随时调用 recapture_workflow_progress 工具获取摘要，"
+        "该工具是确定性的进度回顾，不等价于 finalize_workflow 后执行的 LLM 覆盖度审查。\n\n"
         "【覆盖度要求】\n"
         "你必须确保工作流结构能够完全覆盖用户自然语言需求中的每个子任务，而不是只覆盖前半部分：\n"
         "例如，如果需求包含：触发 + 查询 + 筛选 + 总结 + 通知，你不能只实现触发 + 查询，\n"
@@ -656,6 +659,19 @@ def plan_workflow_structure_with_llm(
                     "actions": actions_raw,
                     "candidates": candidates,
                 }
+
+            elif func_name == "recapture_workflow_progress":
+                snapshot = builder.to_workflow()
+                recap = recapture_workflow_progress(
+                    workflow=snapshot,
+                    nl_requirement=nl_requirement,
+                    action_registry=action_registry,
+                )
+                log_event(
+                    "recapture_progress",
+                    {"workflow": snapshot, "nl_requirement": nl_requirement, "summary": recap},
+                )
+                tool_result = {"status": "ok", "recap": recap}
 
             elif func_name == "set_workflow_meta":
                 builder.set_meta(args.get("workflow_name", ""), args.get("description"))
