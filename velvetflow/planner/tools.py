@@ -158,6 +158,34 @@ PLANNER_TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "plan_remaining_subtasks",
+            "description": (
+                "根据用户的自然语言需求和当前 workflow DSL（可为空），"
+                "返回尚未覆盖的子任务列表，帮助你规划接下来的补充步骤。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "requirement": {
+                        "type": "string",
+                        "description": "用户的自然语言需求，如为空则使用系统提供的原始需求。",
+                    },
+                    "workflow": {
+                        "type": "object",
+                        "description": "当前已构建的 workflow DSL，缺省则使用最新的构建状态。",
+                        "additionalProperties": True,
+                    },
+                    "use_llm": {
+                        "type": "boolean",
+                        "description": "是否调用 LLM 进行剩余子任务推理，默认为根据 OPENAI_API_KEY 自动判断。",
+                    },
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "update_action_node",
             "description": (
                 "更新已创建的 action 节点字段，支持直接覆盖 display_name/params/out_params_schema/action_id，"
