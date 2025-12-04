@@ -175,6 +175,10 @@ PLANNER_TOOLS = [
                         "description": "当前已构建的 workflow DSL，缺省则使用最新的构建状态。",
                         "additionalProperties": True,
                     },
+                    "use_llm": {
+                        "type": "boolean",
+                        "description": "是否调用 LLM 进行剩余子任务推理，默认为根据 OPENAI_API_KEY 自动判断。",
+                    },
                 },
             },
         },

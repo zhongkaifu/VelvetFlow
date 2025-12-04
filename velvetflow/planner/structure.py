@@ -676,6 +676,7 @@ def plan_workflow_structure_with_llm(
                 tool_result = plan_remaining_subtasks(
                     nl_requirement=requirement_override,
                     workflow=workflow_payload,
+                    use_llm=args.get("use_llm"),
                 )
 
             elif func_name == "add_action_node":
