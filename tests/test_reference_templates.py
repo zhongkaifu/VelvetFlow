@@ -41,6 +41,17 @@ def test_binding_context_supports_templated_references():
     assert params_with_dollar["message"] == "ok"
 
 
+def test_plain_reference_strings_are_not_resolved_without_templates():
+    workflow = Workflow.model_validate({"nodes": [{"id": "start", "type": "start"}], "edges": []})
+    ctx = BindingContext(workflow, {"start": {"status": "ok"}})
+
+    node = Node(id="notify", type="action", params={"message": "result_of.start.status"})
+
+    params = eval_node_params(node, ctx)
+
+    assert params["message"] == "result_of.start.status"
+
+
 def test_eval_params_canonicalizes_unresolved_placeholders():
     workflow = Workflow.model_validate({"nodes": [{"id": "start", "type": "start"}], "edges": []})
     ctx = BindingContext(workflow, {"start": {"status": "ok"}})
@@ -519,7 +530,7 @@ def test_loop_context_allows_fully_qualified_paths():
         id="check",
         type="condition",
         params={
-            "value": "loop_check_each_employee.current_item.temperature",
+            "value": "{{loop_check_each_employee.current_item.temperature}}",
             "message": "体温：{{loop_check_each_employee.current_item.temperature}}",
         },
     )

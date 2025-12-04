@@ -39,7 +39,7 @@ def test_loop_body_exports_must_target_existing_nodes():
                 "type": "loop",
                 "params": {
                     "loop_kind": "for_each",
-                    "source": "result_of.search_news.results",
+                    "source": "{{result_of.search_news.results}}",
                     "item_alias": "news_item",
                     "body_subgraph": {
                         "nodes": [
@@ -115,7 +115,7 @@ def test_loop_body_allows_edge_free_body():
                 "type": "loop",
                 "params": {
                     "loop_kind": "for_each",
-                    "source": "result_of.search_news.results",
+                    "source": "{{result_of.search_news.results}}",
                     "item_alias": "news_item",
                     "body_subgraph": {
                         "nodes": [
@@ -166,7 +166,7 @@ def test_loop_body_action_missing_required_param_is_caught():
                 "type": "loop",
                 "params": {
                     "loop_kind": "for_each",
-                    "source": "result_of.search_news_nvidia_google.results",
+                    "source": "{{result_of.search_news_nvidia_google.results}}",
                     "item_alias": "news_item",
                     "body_subgraph": {
                         "nodes": [
@@ -235,7 +235,7 @@ def test_loop_body_template_respects_item_schema():
                 "type": "loop",
                 "params": {
                     "loop_kind": "for_each",
-                    "source": "result_of.search_news.results",
+                    "source": "{{result_of.search_news.results}}",
                     "item_alias": "news_item",
                     "body_subgraph": {
                         "nodes": [
@@ -289,7 +289,7 @@ def test_stringified_binding_referencing_loop_body_is_flagged():
                 "type": "loop",
                 "params": {
                     "loop_kind": "for_each",
-                    "source": "result_of.search_news_nvidia_google.results",
+                    "source": "{{result_of.search_news_nvidia_google.results}}",
                     "item_alias": "news_item",
                     "body_subgraph": {
                         "nodes": [
@@ -350,7 +350,7 @@ def test_precheck_is_available_for_planner_users():
                 "type": "loop",
                 "params": {
                     "loop_kind": "for_each",
-                    "source": "result_of.search_news.results",
+                    "source": "{{result_of.search_news.results}}",
                     "body_subgraph": {
                         "nodes": [
                             {
@@ -384,7 +384,7 @@ def test_loop_body_pydantic_errors_are_preserved():
                 "type": "loop",
                 "params": {
                     "loop_kind": "for_each",
-                    "source": "result_of.search_news.results",
+                    "source": "{{result_of.search_news.results}}",
                     # body_subgraph 缺少节点 id，会触发 Pydantic 校验错误
                     "body_subgraph": {"nodes": [{"type": "action"}], "edges": []},
                 },
@@ -416,7 +416,7 @@ def test_loop_missing_item_alias_is_reported():
                 "type": "loop",
                 "params": {
                     "loop_kind": "for_each",
-                    "source": "result_of.search_news.results",
+                    "source": "{{result_of.search_news.results}}",
                     "exports": {
                         "items": {
                             "from_node": "exit",
@@ -466,7 +466,7 @@ def test_while_loop_requires_condition():
                 "type": "loop",
                 "params": {
                     "loop_kind": "while",
-                    "source": "result_of.search_news.results",
+                    "source": "{{result_of.search_news.results}}",
                     "item_alias": "news_item",
                     "exports": {
                         "items": {
@@ -519,7 +519,7 @@ def test_loop_exports_should_not_live_in_body_subgraph():
                 "type": "loop",
                 "params": {
                     "loop_kind": "for_each",
-                    "source": "result_of.search_news.results",
+                    "source": "{{result_of.search_news.results}}",
                     "item_alias": "news_item",
                     "body_subgraph": {
                         "nodes": [
@@ -571,7 +571,7 @@ def test_loop_body_nodes_should_not_reference_loop_exports():
                 "type": "loop",
                 "params": {
                     "loop_kind": "for_each",
-                    "source": "result_of.search_news.results",
+                    "source": "{{result_of.search_news.results}}",
                     "item_alias": "news_item",
                     "body_subgraph": {
                         "nodes": [
@@ -627,7 +627,7 @@ def test_condition_cannot_reference_missing_loop_export_field():
                 "type": "loop",
                 "params": {
                     "loop_kind": "for_each",
-                    "source": "result_of.fetch_news.results",
+                    "source": "{{result_of.fetch_news.results}}",
                     "item_alias": "news_item",
                     "body_subgraph": {
                         "nodes": [
@@ -655,7 +655,7 @@ def test_condition_cannot_reference_missing_loop_export_field():
                 "false_to_node": None,
                 "params": {
                     "kind": "any_greater_than",
-                    "source": "result_of.loop_check_temperatures.exports",
+                    "source": "{{result_of.loop_check_temperatures.exports}}",
                     "field": "status",
                     "threshold": 1,
                 },
@@ -694,7 +694,7 @@ def test_condition_field_on_loop_item_alias_should_be_allowed():
                 "type": "loop",
                 "params": {
                     "loop_kind": "for_each",
-                    "source": "result_of.get_temperatures.data",
+                    "source": "{{result_of.get_temperatures.data}}",
                     "item_alias": "employee_temp",
                     "body_subgraph": {
                         "nodes": [
@@ -704,7 +704,7 @@ def test_condition_field_on_loop_item_alias_should_be_allowed():
                                 "display_name": "体温是否超过38度",
                                 "params": {
                                     "kind": "any_greater_than",
-                                    "source": "employee_temp",
+                                    "source": "{{employee_temp}}",
                                     "field": "temperature",
                                     "threshold": 38,
                                 },
@@ -717,8 +717,8 @@ def test_condition_field_on_loop_item_alias_should_be_allowed():
                                 "display_name": "加入健康预警列表",
                                 "action_id": "hr.update_employee_health_profile.v1",
                                 "params": {
-                                    "employee_id": "employee_temp.employee_id",
-                                    "last_temperature": "employee_temp.temperature",
+                                    "employee_id": "{{employee_temp.employee_id}}",
+                                    "last_temperature": "{{employee_temp.temperature}}",
                                     "status": "预警",
                                 },
                             },

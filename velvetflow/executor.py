@@ -25,6 +25,7 @@ from velvetflow.logging_utils import (
 )
 from velvetflow.reference_utils import (
     canonicalize_template_placeholders,
+    normalize_reference_path,
     parse_field_path,
 )
 from velvetflow.models import Node, ValidationError, Workflow, infer_edges_from_bindings
@@ -393,20 +394,15 @@ class DynamicActionExecutor:
             return ctx.resolve_binding(source)
 
         if isinstance(source, str):
-            # 兼容部分工作流直接使用节点 id 作为 source 的写法，默认视为
-            # "result_of.<node_id>"，避免因缺失前缀导致条件评估失败。
-            if source in ctx.results:
-                return ctx.results[source]
+            normalized = canonicalize_template_placeholders(source)
+            template_match = re.fullmatch(r"\{\{\s*([^{}]+?)\s*\}\}", normalized)
 
-            if source.startswith("result_of."):
-                return ctx.get_value(source)
+            if template_match:
+                normalized_path = normalize_reference_path(normalized)
+                qualified_path = ctx._qualify_context_path(normalized_path)
+                return ctx.get_value(qualified_path)
 
-            # 如果缺失 "result_of." 前缀，尝试补全后解析；解析失败则回退到
-            # 直接解析原始路径以保留原有行为。
-            try:
-                return ctx.get_value(f"result_of.{source}")
-            except Exception:
-                return ctx.get_value(source)
+            return source
 
         return source
 
