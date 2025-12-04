@@ -16,6 +16,7 @@ from velvetflow.logging_utils import (
     log_debug,
     log_error,
     log_info,
+    log_llm_message,
     log_llm_usage,
     log_success,
     log_tool_call,
@@ -475,6 +476,11 @@ validation_errors 是 JSON 数组，元素包含 code/node_id/field/message。
             raise RuntimeError("repair_workflow_with_llm 未返回任何候选消息")
 
         msg = resp.choices[0].message
+        log_llm_message(
+            model,
+            msg,
+            operation="repair_workflow",
+        )
         if msg.tool_calls:
             messages.append({"role": "assistant", "content": msg.content or "", "tool_calls": msg.tool_calls})
             for tc in msg.tool_calls:

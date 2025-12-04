@@ -11,7 +11,13 @@ from typing import Any, Dict
 from openai import OpenAI
 
 from velvetflow.config import OPENAI_MODEL
-from velvetflow.logging_utils import child_span, log_debug, log_error, log_llm_usage
+from velvetflow.logging_utils import (
+    child_span,
+    log_debug,
+    log_error,
+    log_llm_message,
+    log_llm_usage,
+)
 
 
 def check_requirement_coverage_with_llm(
@@ -79,7 +85,10 @@ def check_requirement_coverage_with_llm(
     if not resp.choices:
         raise RuntimeError("check_requirement_coverage_with_llm 未返回任何候选消息")
 
-    content = resp.choices[0].message.content or ""
+    message = resp.choices[0].message
+    log_llm_message(model, message, operation="coverage_check")
+
+    content = message.content or ""
     text = content.strip()
     if text.startswith("```"):
         text = text.strip("`")

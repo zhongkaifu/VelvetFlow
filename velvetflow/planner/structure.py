@@ -17,6 +17,7 @@ from velvetflow.logging_utils import (
     log_error,
     log_event,
     log_json,
+    log_llm_message,
     log_llm_usage,
     log_section,
     log_success,
@@ -606,6 +607,7 @@ def plan_workflow_structure_with_llm(
             raise RuntimeError("plan_workflow_structure_with_llm 未返回任何候选消息")
 
         msg = resp.choices[0].message
+        log_llm_message(OPENAI_MODEL, msg, operation="structure_planning")
         messages.append(
             {
                 "role": "assistant",

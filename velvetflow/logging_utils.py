@@ -345,3 +345,67 @@ def log_llm_usage(model: str, usage: Any, operation: str | None = None) -> None:
     if _LLM_USAGE_RECORDER:
         _LLM_USAGE_RECORDER(payload)
     log_event("llm_usage", payload)
+
+
+def _serialize_tool_call(tc: Any) -> dict[str, Any]:
+    if isinstance(tc, Mapping):
+        return dict(tc)
+
+    func = getattr(tc, "function", None)
+    return {
+        "id": getattr(tc, "id", None),
+        "type": getattr(tc, "type", None),
+        "function": {
+            "name": getattr(func, "name", None) if func else None,
+            "arguments": getattr(func, "arguments", None) if func else None,
+        },
+    }
+
+
+def _serialize_llm_message(message: Any) -> dict[str, Any]:
+    if isinstance(message, Mapping):
+        return dict(message)
+
+    payload: dict[str, Any] = {
+        "role": getattr(message, "role", None),
+        "content": getattr(message, "content", None),
+    }
+    name = getattr(message, "name", None)
+    if name:
+        payload["name"] = name
+
+    tool_calls = getattr(message, "tool_calls", None)
+    if tool_calls:
+        payload["tool_calls"] = [_serialize_tool_call(tc) for tc in tool_calls]
+
+    return payload
+
+
+def log_llm_message(
+    model: str,
+    message: Any,
+    *,
+    operation: str | None = None,
+    workflow_run_id: str | None = None,
+    node_id: str | None = None,
+    action_id: str | None = None,
+) -> None:
+    """Persist and print LLM reasoning messages for debugging and tracing."""
+
+    serialized = _serialize_llm_message(message)
+    role = serialized.get("role", "assistant")
+    content = serialized.get("content")
+    console_summary = f"[LLM {operation or model}] ({role})"
+    if content:
+        console_summary += f" {content}"
+    console_log("INFO", console_summary)
+
+    payload = {"model": model, "operation": operation or "unknown", "message": serialized}
+    log_event(
+        "llm_message",
+        payload,
+        level="INFO",
+        workflow_run_id=workflow_run_id,
+        node_id=node_id,
+        action_id=action_id,
+    )
