@@ -591,6 +591,16 @@ class BindingContext:
 
                     raise ValueError(f"{_fmt_path(p)}: 不支持的内建函数 '{func_name}'")
 
+                if p == "length":
+                    try:
+                        cur = len(cur)
+                    except Exception:
+                        raise TypeError(
+                            f"{_fmt_path()}: 值类型为 {type(cur).__name__}，不支持 length 访问"
+                        )
+                    _append_token(p)
+                    continue
+
             if p == "*":
                 if not isinstance(cur, list):
                     raise TypeError(

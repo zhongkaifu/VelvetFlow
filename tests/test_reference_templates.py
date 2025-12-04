@@ -41,6 +41,44 @@ def test_binding_context_supports_templated_references():
     assert params_with_dollar["message"] == "ok"
 
 
+def test_binding_context_resolves_length_field():
+    workflow = Workflow.model_validate(
+        {
+            "nodes": [
+                {
+                    "id": "loop_check_temperature",
+                    "type": "action",
+                    "action_id": "hr.check_temperature",
+                    "params": {},
+                }
+            ],
+            "edges": [],
+        }
+    )
+    ctx = BindingContext(
+        workflow,
+        {"loop_check_temperature": {"exports": {"items": [{"v": 1}, {"v": 2}, {"v": 3}]}}},
+    )
+
+    assert (
+        ctx.get_value("result_of.loop_check_temperature.exports.items.length")
+        == 3
+    )
+
+    node = Node(
+        id="generate_warning_report",
+        type="action",
+        action_id="hr.record_health_event.v1",
+        params={
+            "abnormal_count": "${result_of.loop_check_temperature.exports.items.length}",
+        },
+    )
+
+    params = eval_node_params(node, ctx)
+
+    assert params["abnormal_count"] == 3
+
+
 def test_eval_params_canonicalizes_unresolved_placeholders():
     workflow = Workflow.model_validate({"nodes": [{"id": "start", "type": "start"}], "edges": []})
     ctx = BindingContext(workflow, {"start": {"status": "ok"}})
