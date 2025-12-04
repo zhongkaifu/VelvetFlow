@@ -50,9 +50,9 @@ def update_workflow_with_llm(
 
     system_prompt = (
         "你是一名资深的工作流设计师，负责修改现有的 workflow JSON 以满足新的业务需求。\n"
-        "输入包含自然语言需求、当前 workflow 以及动作库的 schema。你需要在保持结构可读和可执行的前提下，输出更新后的 workflow JSON。\n\n"
+        "输入包含自然语言需求、当前 workflow 以及动作库的 schema。当前 workflow 往往是用户提供的 DSL 模版，除非需求明确要求替换，否则应视为起点并在其上做增量修改。\n\n"
         "约束与建议：\n"
-        "1) 优先复用现有节点/边，如需新增节点请保持 id 唯一，并确保入口出口连通。\n"
+        "1) 优先复用现有节点/边，保持未提及的结构与模版一致；如需新增节点请保持 id 唯一，并确保入口出口连通。\n"
         "2) 所有 action_id 必须出现在动作库中，并且 params 必须符合对应 arg_schema；必要时修正 display_name 以反映新需求。\n"
         "3) condition/loop/parallel 节点需要补齐必填字段：condition 必须提供 true_to_node/false_to_node（指向真实存在的下游节点，或设置为 null 表示该分支结束），并补齐 op/source/value 等；loop 需包含 iter/body_subgraph/exports 等，引用路径必须合法。\n"
         "4) 允许增删边以满足新需求，但请保持 DAG 合法且没有孤立节点；入口节点通常是 type=start，出口节点通常是 type=end。\n"

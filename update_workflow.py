@@ -9,13 +9,13 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from typing import Any
 
-from velvetflow.models import Workflow
 from velvetflow.config import OPENAI_MODEL
-from velvetflow.planner.update import update_workflow_with_llm
+from velvetflow.models import Workflow
+from velvetflow.planner import update_workflow_with_two_pass
+from velvetflow.search import build_search_service_from_registry
 
-from validate_workflow import _format_errors, _load_action_registry, validate_workflow_data
+from validate_workflow import _load_action_registry
 
 
 def _resolve_requirement(args: argparse.Namespace) -> str:
@@ -32,9 +32,11 @@ def _resolve_requirement(args: argparse.Namespace) -> str:
     return requirement
 
 
-def _save_workflow(path: Path, workflow_dict: Any) -> None:
-    normalized = Workflow.model_validate(workflow_dict).model_dump(by_alias=True)
-    path.write_text(json.dumps(normalized, ensure_ascii=False, indent=2), encoding="utf-8")
+def _save_workflow(path: Path, workflow: Workflow) -> None:
+    normalized = workflow.model_dump(by_alias=True)
+    path.write_text(
+        json.dumps(normalized, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -90,47 +92,25 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     try:
-        updated = update_workflow_with_llm(
-            workflow_raw,
+        search_service = build_search_service_from_registry(action_registry)
+    except Exception as exc:  # noqa: BLE001 - surface model/IO issues
+        print(f"构建动作检索服务失败: {exc}", file=sys.stderr)
+        return 2
+
+    try:
+        updated_workflow = update_workflow_with_two_pass(
+            existing_workflow=workflow_raw,
             requirement=requirement,
+            search_service=search_service,
             action_registry=action_registry,
+            max_repair_rounds=3,
             model=args.model or OPENAI_MODEL,
         )
     except Exception as exc:  # noqa: BLE001 - surface model/IO issues
         print(f"更新 workflow 失败: {exc}", file=sys.stderr)
         return 2
 
-    errors = validate_workflow_data(updated, action_registry)
-    repair_round = 0
-    max_rounds = 3
-    while errors and repair_round < max_rounds:
-        repair_round += 1
-        print(
-            f"更新后的 workflow 未通过校验（第 {repair_round} 次尝试修复），问题列表：",
-            file=sys.stderr,
-        )
-        print(_format_errors(errors), file=sys.stderr)
-
-        try:
-            updated = update_workflow_with_llm(
-                updated,
-                requirement=requirement,
-                action_registry=action_registry,
-                model=args.model or OPENAI_MODEL,
-                validation_errors=errors,
-            )
-        except Exception as exc:  # noqa: BLE001 - surface model/IO issues
-            print(f"LLM 修复失败: {exc}", file=sys.stderr)
-            return 2
-
-        errors = validate_workflow_data(updated, action_registry)
-
-    if errors:
-        print("多轮修复后仍未通过校验，问题列表：", file=sys.stderr)
-        print(_format_errors(errors), file=sys.stderr)
-        return 1
-
-    _save_workflow(args.output, updated)
+    _save_workflow(args.output, updated_workflow)
     print(f"更新完成并已保存到 {args.output}")
     return 0
 
