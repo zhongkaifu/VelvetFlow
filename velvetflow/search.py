@@ -270,3 +270,32 @@ class HybridActionSearchService:
                 context=span_ctx,
             )
             return results
+
+
+def build_search_service_from_registry(
+    actions: List[Dict[str, Any]], *, alpha: float = 0.6
+) -> HybridActionSearchService:
+    """Construct a hybrid search service for a given action registry."""
+
+    fake_es = FakeElasticsearch(actions)
+    vec_client = VectorClient(dim=None)
+
+    for action in actions:
+        text = (
+            (action.get("name", "") or "")
+            + " "
+            + (action.get("description", "") or "")
+            + " "
+            + (action.get("domain", "") or "")
+            + " "
+            + " ".join(action.get("tags", []) or [])
+        )
+        emb = embed_text_openai(text, model=DEFAULT_EMBEDDING_MODEL)
+        vec_client.upsert(action["action_id"], emb)
+
+    return HybridActionSearchService(
+        es=fake_es,
+        vector_client=vec_client,
+        embed_fn=lambda q: embed_text_openai(q, model=DEFAULT_EMBEDDING_MODEL),
+        alpha=alpha,
+    )

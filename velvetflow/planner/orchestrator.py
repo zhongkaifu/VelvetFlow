@@ -50,6 +50,7 @@ from velvetflow.planner.repair_tools import (
     _apply_local_repairs_for_unknown_params,
 )
 from velvetflow.planner.structure import plan_workflow_structure_with_llm
+from velvetflow.planner.update import update_workflow_with_llm
 from velvetflow.reference_utils import parse_field_path
 from velvetflow.verification import (
     precheck_loop_body_graphs,
@@ -855,6 +856,216 @@ def _ensure_actions_registered_or_repair(
     return _attach_out_params_schema(final_workflow, actions_by_id)
 
 
+def _validate_and_repair_workflow(
+    current_workflow: Workflow,
+    *,
+    action_registry: List[Dict[str, Any]],
+    search_service: HybridActionSearchService,
+    max_repair_rounds: int,
+    last_good_workflow: Workflow | None = None,
+    trace_event_prefix: str = "planner",
+) -> Workflow:
+    failed_repair_history: Dict[str, List[str]] = {}
+    pending_attempts: Dict[str, Dict[str, Any]] = {}
+
+    def _error_key(err: ValidationError) -> str:
+        return f"{err.code}:{err.node_id or 'global'}:{err.field or 'global'}"
+
+    last_good_workflow = last_good_workflow or current_workflow
+
+    for repair_round in range(max_repair_rounds + 1):
+        log_section(f"校验 + 自修复轮次 {repair_round}")
+        log_json("当前 workflow", current_workflow.model_dump(by_alias=True))
+
+        current_workflow, coercion_errors = _coerce_condition_param_types(
+            current_workflow, action_registry=action_registry
+        )
+
+        current_workflow, reference_errors = _align_reference_field_types(
+            current_workflow, action_registry=action_registry
+        )
+
+        loop_exports_workflow, loop_export_summary = fill_loop_exports_defaults(
+            current_workflow.model_dump(by_alias=True),
+            action_registry=action_registry,
+        )
+        if loop_export_summary.get("applied"):
+            log_info(
+                "[AutoRepair] loop.exports 缺失或不完整，已自动填充：",
+                f"summary={loop_export_summary}",
+            )
+            current_workflow = Workflow.model_validate(loop_exports_workflow)
+            last_good_workflow = current_workflow
+
+        normalized_workflow, normalize_summary = normalize_binding_paths(
+            current_workflow.model_dump(by_alias=True)
+        )
+        if normalize_summary.get("applied"):
+            log_info(
+                "[AutoRepair] 已规范化绑定路径，减少进入 LLM 的次数。",
+                f"summary={normalize_summary}",
+            )
+            current_workflow = Workflow.model_validate(normalized_workflow)
+            last_good_workflow = current_workflow
+
+        static_errors = run_lightweight_static_rules(
+            current_workflow.model_dump(by_alias=True),
+            action_registry=action_registry,
+        )
+
+        errors: List[ValidationError] = []
+        errors.extend(coercion_errors)
+        errors.extend(reference_errors)
+
+        if static_errors:
+            errors.extend(static_errors)
+        else:
+            errors.extend(
+                validate_completed_workflow(
+                    current_workflow.model_dump(by_alias=True),
+                    action_registry=action_registry,
+                )
+            )
+
+        current_errors_by_key = {_error_key(e): e for e in errors}
+        if pending_attempts:
+            for key, attempt in list(pending_attempts.items()):
+                if key in current_errors_by_key:
+                    note = (
+                        f"轮次 {attempt.get('round')} 使用 {attempt.get('method')} 未修复："
+                        f"{current_errors_by_key[key].message}"
+                    )
+                    failed_repair_history.setdefault(key, []).append(note)
+                pending_attempts.pop(key, None)
+
+        if not errors:
+            log_success("校验通过，无需进一步修复")
+            last_good_workflow = current_workflow
+            log_event(
+                f"{trace_event_prefix}_completed",
+                {
+                    "status": "success",
+                    "repair_rounds": repair_round,
+                    "has_errors": False,
+                },
+            )
+            return current_workflow
+
+        code_counts: Dict[str, int] = {}
+        for e in errors:
+            code_counts[e.code] = code_counts.get(e.code, 0) + 1
+
+        log_event(
+            "validation_errors_distribution",
+            {
+                "round": repair_round,
+                "counts": code_counts,
+                "total": len(errors),
+            },
+        )
+        log_warn("校验未通过，错误列表：")
+        for e in errors:
+            log_error(
+                f"[code={e.code}] node={e.node_id} field={e.field} message={e.message}"
+            )
+
+        locally_repaired = _apply_local_repairs_for_unknown_params(
+            current_workflow=current_workflow,
+            validation_errors=errors,
+            action_registry=action_registry,
+        )
+        if locally_repaired is None:
+            locally_repaired = _apply_local_repairs_for_missing_params(
+                current_workflow=current_workflow,
+                validation_errors=errors,
+                action_registry=action_registry,
+            )
+        if locally_repaired is None:
+            locally_repaired = _apply_local_repairs_for_schema_mismatch(
+                current_workflow=current_workflow,
+                validation_errors=errors,
+                action_registry=action_registry,
+            )
+        if locally_repaired is not None:
+            log_info("[AutoRepair] 检测到可预测的字段缺失/多余/类型不匹配问题，已在本地修正并重新校验。")
+            current_workflow = locally_repaired
+            last_good_workflow = current_workflow
+
+            errors = validate_completed_workflow(
+                current_workflow.model_dump(by_alias=True),
+                action_registry=action_registry,
+            )
+
+            if not errors:
+                log_success("本地修正后校验通过，无需调用 LLM 继续修复。")
+                log_event(
+                    f"{trace_event_prefix}_completed",
+                    {
+                        "status": "success_after_local_repair",
+                        "repair_rounds": repair_round,
+                        "has_errors": False,
+                    },
+                )
+                return current_workflow
+
+                log_warn("本地修正后仍有错误，将继续进入 LLM 修复流程：")
+                for e in errors:
+                    log_error(
+                        f"[code={e.code}] node={e.node_id} field={e.field} message={e.message}"
+                    )
+
+        if repair_round == max_repair_rounds:
+            log_warn("已到最大修复轮次，仍有错误，返回最后一个合法结构版本")
+            log_event(
+                f"{trace_event_prefix}_completed",
+                {
+                    "status": "reached_max_rounds",
+                    "repair_rounds": repair_round,
+                    "last_good_returned": True,
+                },
+            )
+            return last_good_workflow
+
+        current_errors_by_key = {_error_key(e): e for e in errors}
+        previous_attempts = {
+            key: failed_repair_history.get(key, [])
+            for key in current_errors_by_key
+            if failed_repair_history.get(key)
+        }
+
+        log_info(f"调用 LLM 进行第 {repair_round + 1} 次修复")
+        current_workflow = _repair_with_llm_and_fallback(
+            broken_workflow=current_workflow.model_dump(by_alias=True),
+            validation_errors=errors,
+            action_registry=action_registry,
+            search_service=search_service,
+            reason=f"修复轮次 {repair_round + 1}",
+            previous_attempts=previous_attempts,
+        )
+        for key in current_errors_by_key:
+            pending_attempts[key] = {
+                "round": repair_round + 1,
+                "method": "LLM 修复",
+            }
+        current_workflow = _ensure_actions_registered_or_repair(
+            current_workflow,
+            action_registry=action_registry,
+            search_service=search_service,
+            reason=f"修复轮次 {repair_round + 1} 后校验 action_id",
+        )
+        last_good_workflow = current_workflow
+
+    log_event(
+        f"{trace_event_prefix}_completed",
+        {
+            "status": "exhausted_rounds",
+            "repair_rounds": max_repair_rounds,
+            "last_good_returned": True,
+        },
+    )
+    return last_good_workflow
+
+
 def plan_workflow_with_two_pass(
     nl_requirement: str,
     search_service: HybridActionSearchService,
@@ -1041,203 +1252,119 @@ def plan_workflow_with_two_pass(
                     else:
                         current_workflow = last_good_workflow
 
-        failed_repair_history: Dict[str, List[str]] = {}
-        pending_attempts: Dict[str, Dict[str, Any]] = {}
-
-        def _error_key(err: ValidationError) -> str:
-            return f"{err.code}:{err.node_id or 'global'}:{err.field or 'global'}"
-
-        for repair_round in range(max_repair_rounds + 1):
-            log_section(f"校验 + 自修复轮次 {repair_round}")
-            log_json("当前 workflow", current_workflow.model_dump(by_alias=True))
-
-            current_workflow, coercion_errors = _coerce_condition_param_types(
-                current_workflow, action_registry=action_registry
-            )
-
-            current_workflow, reference_errors = _align_reference_field_types(
-                current_workflow, action_registry=action_registry
-            )
-
-            loop_exports_workflow, loop_export_summary = fill_loop_exports_defaults(
-                current_workflow.model_dump(by_alias=True),
-                action_registry=action_registry,
-            )
-            if loop_export_summary.get("applied"):
-                log_info(
-                    "[AutoRepair] loop.exports 缺失或不完整，已自动填充：",
-                    f"summary={loop_export_summary}"
-                )
-                current_workflow = Workflow.model_validate(loop_exports_workflow)
-                last_good_workflow = current_workflow
-
-            normalized_workflow, normalize_summary = normalize_binding_paths(
-                current_workflow.model_dump(by_alias=True)
-            )
-            if normalize_summary.get("applied"):
-                log_info(
-                    "[AutoRepair] 已规范化绑定路径，减少进入 LLM 的次数。",
-                    f"summary={normalize_summary}"
-                )
-                current_workflow = Workflow.model_validate(normalized_workflow)
-                last_good_workflow = current_workflow
-
-            static_errors = run_lightweight_static_rules(
-                current_workflow.model_dump(by_alias=True),
-                action_registry=action_registry,
-            )
-
-            errors: List[ValidationError] = []
-            errors.extend(coercion_errors)
-            errors.extend(reference_errors)
-
-            if static_errors:
-                errors.extend(static_errors)
-            else:
-                errors.extend(
-                    validate_completed_workflow(
-                        current_workflow.model_dump(by_alias=True),
-                        action_registry=action_registry,
-                    )
-                )
-
-            current_errors_by_key = {_error_key(e): e for e in errors}
-            if pending_attempts:
-                for key, attempt in list(pending_attempts.items()):
-                    if key in current_errors_by_key:
-                        note = (
-                            f"轮次 {attempt.get('round')} 使用 {attempt.get('method')} 未修复："
-                            f"{current_errors_by_key[key].message}"
-                        )
-                        failed_repair_history.setdefault(key, []).append(note)
-                    pending_attempts.pop(key, None)
-
-            if not errors:
-                log_success("校验通过，无需进一步修复")
-                last_good_workflow = current_workflow
-                log_event(
-                    "planner_completed",
-                    {
-                        "status": "success",
-                        "repair_rounds": repair_round,
-                        "has_errors": False,
-                    },
-                )
-                return current_workflow
-
-            code_counts: Dict[str, int] = {}
-            for e in errors:
-                code_counts[e.code] = code_counts.get(e.code, 0) + 1
-
-            log_event(
-                "validation_errors_distribution",
-                {
-                    "round": repair_round,
-                    "counts": code_counts,
-                    "total": len(errors),
-                },
-            )
-            log_warn("校验未通过，错误列表：")
-            for e in errors:
-                log_error(
-                    f"[code={e.code}] node={e.node_id} field={e.field} message={e.message}"
-                )
-
-            locally_repaired = _apply_local_repairs_for_unknown_params(
-                current_workflow=current_workflow,
-                validation_errors=errors,
-                action_registry=action_registry,
-            )
-            if locally_repaired is None:
-                locally_repaired = _apply_local_repairs_for_missing_params(
-                    current_workflow=current_workflow,
-                    validation_errors=errors,
-                    action_registry=action_registry,
-                )
-            if locally_repaired is None:
-                locally_repaired = _apply_local_repairs_for_schema_mismatch(
-                    current_workflow=current_workflow,
-                    validation_errors=errors,
-                    action_registry=action_registry,
-                )
-            if locally_repaired is not None:
-                log_info("[AutoRepair] 检测到可预测的字段缺失/多余/类型不匹配问题，已在本地修正并重新校验。")
-                current_workflow = locally_repaired
-                last_good_workflow = current_workflow
-
-                errors = validate_completed_workflow(
-                    current_workflow.model_dump(by_alias=True),
-                    action_registry=action_registry,
-                )
-
-                if not errors:
-                    log_success("本地修正后校验通过，无需调用 LLM 继续修复。")
-                    log_event(
-                        "planner_completed",
-                        {
-                            "status": "success_after_local_repair",
-                            "repair_rounds": repair_round,
-                            "has_errors": False,
-                        },
-                    )
-                    return current_workflow
-
-                log_warn("本地修正后仍有错误，将继续进入 LLM 修复流程：")
-                for e in errors:
-                    log_error(
-                        f"[code={e.code}] node={e.node_id} field={e.field} message={e.message}"
-                    )
-
-            if repair_round == max_repair_rounds:
-                log_warn("已到最大修复轮次，仍有错误，返回最后一个合法结构版本")
-                log_event(
-                    "planner_completed",
-                    {
-                        "status": "reached_max_rounds",
-                        "repair_rounds": repair_round,
-                        "last_good_returned": True,
-                    },
-                )
-                return last_good_workflow
-
-            current_errors_by_key = {_error_key(e): e for e in errors}
-            previous_attempts = {
-                key: failed_repair_history.get(key, [])
-                for key in current_errors_by_key
-                if failed_repair_history.get(key)
-            }
-
-            log_info(f"调用 LLM 进行第 {repair_round + 1} 次修复")
-            current_workflow = _repair_with_llm_and_fallback(
-                broken_workflow=current_workflow.model_dump(by_alias=True),
-                validation_errors=errors,
-                action_registry=action_registry,
-                search_service=search_service,
-                reason=f"修复轮次 {repair_round + 1}",
-                previous_attempts=previous_attempts,
-            )
-            for key in current_errors_by_key:
-                pending_attempts[key] = {
-                    "round": repair_round + 1,
-                    "method": "LLM 修复",
-                }
-            current_workflow = _ensure_actions_registered_or_repair(
-                current_workflow,
-                action_registry=action_registry,
-                search_service=search_service,
-                reason=f"修复轮次 {repair_round + 1} 后校验 action_id",
-            )
-            last_good_workflow = current_workflow
-
-        log_event(
-            "planner_completed",
-            {
-                "status": "exhausted_rounds",
-                "repair_rounds": max_repair_rounds,
-                "last_good_returned": True,
-            },
+        return _validate_and_repair_workflow(
+            current_workflow,
+            action_registry=action_registry,
+            search_service=search_service,
+            max_repair_rounds=max_repair_rounds,
+            last_good_workflow=last_good_workflow,
+            trace_event_prefix="planner",
         )
-        return last_good_workflow
 
 
-__all__ = ["plan_workflow_with_two_pass"]
+def update_workflow_with_two_pass(
+    existing_workflow: Mapping[str, Any],
+    requirement: str,
+    search_service: HybridActionSearchService,
+    action_registry: List[Dict[str, Any]],
+    *,
+    max_repair_rounds: int = 3,
+    model: str = OPENAI_MODEL,
+    trace_context: TraceContext | None = None,
+    trace_id: str | None = None,
+) -> Workflow:
+    """Update an existing workflow using the same validation/repair pipeline as planning.
+
+    The ``existing_workflow`` is treated as a trusted DSL 模版 whenever possible. We
+    attempt to preserve untouched nodes/edges while satisfying the new ``requirement``
+    through incremental changes plus validation-driven self-repair.
+    """
+
+    context = trace_context or TraceContext.create(trace_id=trace_id, span_name="update_orchestrator")
+    with use_trace_context(context):
+        log_event(
+            "update_start",
+            {
+                "max_repair_rounds": max_repair_rounds,
+            },
+            context=context,
+        )
+
+        try:
+            base_workflow = Workflow.model_validate(existing_workflow)
+        except PydanticValidationError as e:
+            log_warn("[update_workflow_with_two_pass] 输入 workflow 校验失败，进入修复流程。")
+            validation_errors = _convert_pydantic_errors(existing_workflow, e) or [
+                _make_failure_validation_error(str(e))
+            ]
+            base_workflow = _repair_with_llm_and_fallback(
+                broken_workflow=existing_workflow if isinstance(existing_workflow, dict) else {},
+                validation_errors=validation_errors,
+                action_registry=action_registry,
+                search_service=search_service,
+                reason="更新前的输入校验失败",
+            )
+
+        base_workflow = _ensure_actions_registered_or_repair(
+            base_workflow,
+            action_registry=action_registry,
+            search_service=search_service,
+            reason="更新前校验 action_id",
+        )
+        last_good_workflow = base_workflow
+
+        with child_span("llm_update"):
+            updated_raw = update_workflow_with_llm(
+                workflow_raw=base_workflow.model_dump(by_alias=True),
+                requirement=requirement,
+                action_registry=action_registry,
+                model=model,
+            )
+
+        precheck_errors = precheck_loop_body_graphs(updated_raw)
+        if precheck_errors:
+            log_warn("[update_workflow_with_two_pass] 更新结果包含 loop body 缺失节点，将交给 LLM 修复。")
+            updated_workflow = _repair_with_llm_and_fallback(
+                broken_workflow=updated_raw if isinstance(updated_raw, dict) else {},
+                validation_errors=precheck_errors,
+                action_registry=action_registry,
+                search_service=search_service,
+                reason="更新结果校验失败",
+            )
+        else:
+            try:
+                updated_workflow = Workflow.model_validate(updated_raw)
+            except PydanticValidationError as e:
+                log_warn(
+                    "[update_workflow_with_two_pass] 更新结果无法通过校验，进入自修复。"
+                )
+                validation_errors = _convert_pydantic_errors(updated_raw, e) or [
+                    _make_failure_validation_error(str(e))
+                ]
+                updated_workflow = _repair_with_llm_and_fallback(
+                    broken_workflow=updated_raw if isinstance(updated_raw, dict) else {},
+                    validation_errors=validation_errors,
+                    action_registry=action_registry,
+                    search_service=search_service,
+                    reason="更新结果校验失败",
+                )
+
+        updated_workflow = _ensure_actions_registered_or_repair(
+            updated_workflow,
+            action_registry=action_registry,
+            search_service=search_service,
+            reason="更新结果校验 action_id",
+        )
+        last_good_workflow = updated_workflow
+
+        return _validate_and_repair_workflow(
+            updated_workflow,
+            action_registry=action_registry,
+            search_service=search_service,
+            max_repair_rounds=max_repair_rounds,
+            last_good_workflow=last_good_workflow,
+            trace_event_prefix="update",
+        )
+
+
+__all__ = ["plan_workflow_with_two_pass", "update_workflow_with_two_pass"]
