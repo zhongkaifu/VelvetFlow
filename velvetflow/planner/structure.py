@@ -26,6 +26,7 @@ from velvetflow.logging_utils import (
 from velvetflow.planner.action_guard import ensure_registered_actions
 from velvetflow.planner.approval import detect_missing_approval_nodes
 from velvetflow.planner.coverage import check_requirement_coverage_with_llm
+from velvetflow.planner.subtask_planner import plan_remaining_subtasks
 from velvetflow.planner.tools import PLANNER_TOOLS
 from velvetflow.planner.workflow_builder import (
     WorkflowBuilder,
@@ -660,6 +661,22 @@ def plan_workflow_structure_with_llm(
             elif func_name == "set_workflow_meta":
                 builder.set_meta(args.get("workflow_name", ""), args.get("description"))
                 tool_result = {"status": "ok", "type": "meta_set"}
+
+            elif func_name == "plan_remaining_subtasks":
+                requirement_override = args.get("requirement") or nl_requirement
+                workflow_payload = args.get("workflow")
+
+                if not isinstance(workflow_payload, Mapping):
+                    workflow_payload = _prepare_skeleton_for_coverage(
+                        builder=builder,
+                        action_registry=action_registry,
+                        search_service=search_service,
+                    )
+
+                tool_result = plan_remaining_subtasks(
+                    nl_requirement=requirement_override,
+                    workflow=workflow_payload,
+                )
 
             elif func_name == "add_action_node":
                 action_id = args.get("action_id")
