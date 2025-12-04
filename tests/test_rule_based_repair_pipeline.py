@@ -57,3 +57,19 @@ def test_error_summary_includes_error_specific_prompt():
     assert "错误特定提示" in summary
     assert "INVALID_EDGE" in summary and "EMPTY_PARAMS" in summary
     assert "连接无入度" in summary or "修复边" in summary
+
+
+def test_error_summary_includes_previous_attempts():
+    summary = _summarize_validation_errors_for_llm(
+        [
+            ValidationError(
+                code="INVALID_EDGE", node_id="b", field="from", message="still missing"
+            )
+        ],
+        workflow={},
+        action_registry=[],
+        previous_attempts={"INVALID_EDGE:b:from": ["轮次 1 使用 LLM 修复 未修复：missing"]},
+    )
+
+    assert "历史修复尝试" in summary
+    assert "轮次 1 使用 LLM 修复 未修复" in summary
