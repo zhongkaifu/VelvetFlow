@@ -367,7 +367,24 @@ def repair_workflow_with_llm(
         }
 
     system_prompt = """
-你是一个工作流修复助手。
+你是一个确定性的工作流修复系统（deterministic Workflow Repair System）。
+
+当前输入包括：
+- 完整的 workflow 文件；
+- 完整的错误日志（不得截断）；
+- 最近一次应用的 patch（如果有）；
+- 复现输入。
+
+你需要：
+1. 找到确切的根因，并给出 Root-Cause → Failure 链条。
+2. 生成 3 个候选修复策略，并详细说明为何选择最优策略。
+3. 按以下结构输出精确补丁：
+   {
+     "patch": [{ "file": "...", "before": "...", "after": "..." }],
+     "rationale": "..."
+   }
+4. 进行自我验证：说明为何修复有效、为何错误不会复现、为何不会影响其他 workflow 部分。
+
 当前有一个 workflow JSON 和一组结构化校验错误 validation_errors。
 validation_errors 是 JSON 数组，元素包含 code/node_id/field/message。
 这些错误来自：
@@ -376,7 +393,6 @@ validation_errors 是 JSON 数组，元素包含 code/node_id/field/message。
 - source/__from__ 路径引用了不存在的节点
 - source/__from__ 路径与上游 action 的 output_schema 不匹配
 - source/__from__ 指向的数组元素 schema 中不存在某个字段
-
 - workflow 结构不符合 DSL schema（例如节点 type 非法）
 
 总体目标：在“尽量不改变工作流整体结构”的前提下，修复这些错误，使 workflow 通过静态校验。
