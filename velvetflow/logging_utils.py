@@ -221,9 +221,11 @@ def log_tool_call(
     args_text = _stringify_args(args)
     args_suffix = f" args={args_text}" if args_text else ""
 
+    tool_name_colored = f"{COLORS['blue']}{tool_name}{RESET}"
+
     console_log(
         "INFO",
-        f"{COLORS['yellow']}🛠️{RESET} [LLM ToolCall] {source}: {tool_name}{metadata}{args_suffix}",
+        f"{COLORS['yellow']}🛠️{RESET} [LLM ToolCall] {source}: {tool_name_colored}{metadata}{args_suffix}",
     )
 
 
