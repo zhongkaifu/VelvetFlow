@@ -8,6 +8,7 @@ import json
 import os
 
 from velvetflow.executor import DynamicActionExecutor, load_simulation_data
+from velvetflow.metrics import RunManager
 from velvetflow.models import Workflow
 
 DEFAULT_WORKFLOW_JSON = "workflow_output.json"
@@ -42,8 +43,11 @@ def main():
     simulation_path = os.path.join(os.path.dirname(__file__), "velvetflow", "simulation_data.json")
     simulation_data = load_simulation_data(simulation_path)
 
-    executor = DynamicActionExecutor(workflow, simulations=simulation_data)
-    executor.run()
+    with RunManager(workflow_name=workflow.workflow_name) as run_manager:
+        executor = DynamicActionExecutor(
+            workflow, simulations=simulation_data, run_manager=run_manager
+        )
+        executor.run()
 
 
 if __name__ == "__main__":

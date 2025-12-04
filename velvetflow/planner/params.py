@@ -17,6 +17,7 @@ from velvetflow.logging_utils import (
     log_debug,
     log_error,
     log_event,
+    log_llm_message,
     log_llm_usage,
     log_tool_call,
 )
@@ -488,6 +489,13 @@ def fill_params_with_llm(
                 raise RuntimeError(f"fill_params_with_llm({node.id}) 未返回任何候选消息")
 
             message = resp.choices[0].message
+            log_llm_message(
+                model,
+                message,
+                operation="fill_params",
+                node_id=node.id,
+                action_id=node.action_id,
+            )
             tool_calls = getattr(message, "tool_calls", None) or []
             messages.append(
                 {
@@ -513,6 +521,8 @@ def fill_params_with_llm(
                         "tool_call_id": tool_call_id,
                         "raw_arguments": raw_args,
                     },
+                    node_id=node.id,
+                    action_id=node.action_id,
                 )
 
                 try:
@@ -542,6 +552,8 @@ def fill_params_with_llm(
                                 "tool_name": func_name,
                                 "params": tool_params,
                             },
+                            node_id=node.id,
+                            action_id=node.action_id,
                         )
                         messages.append(
                             {

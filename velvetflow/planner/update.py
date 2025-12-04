@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence
 from openai import OpenAI
 
 from velvetflow.config import OPENAI_MODEL
+from velvetflow.logging_utils import log_llm_message, log_llm_usage
 from velvetflow.models import ValidationError
 
 
@@ -89,10 +90,15 @@ def update_workflow_with_llm(
         temperature=0.2,
     )
 
+    log_llm_usage(model, getattr(resp, "usage", None), operation="update_workflow")
+
     if not resp.choices:
         raise RuntimeError("update_workflow_with_llm 未返回任何候选消息")
 
-    content = resp.choices[0].message.content or ""
+    message = resp.choices[0].message
+    log_llm_message(model, message, operation="update_workflow")
+
+    content = message.content or ""
     text = content.strip()
     if text.startswith("```"):
         text = text.strip("`")

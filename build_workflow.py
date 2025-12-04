@@ -21,6 +21,7 @@ import traceback
 from typing import Optional
 
 from velvetflow.action_registry import BUSINESS_ACTIONS
+from velvetflow.metrics import RunManager
 from velvetflow.planner import plan_workflow_with_two_pass
 from velvetflow.visualization import render_workflow_dag
 from velvetflow.search import (
@@ -98,14 +99,17 @@ def main():
 
     user_nl = prompt_requirement()
 
-    try:
-        workflow = plan_workflow(user_nl)
-    except Exception as e:
-        print("\n[main] 工作流生成/补参/修复失败：", repr(e))
-        print("[main] 异常类型：", type(e).__name__)
-        print("[main] 需求输入：", user_nl)
-        print("[main] Call stack:\n", traceback.format_exc())
-        return
+    with RunManager(workflow_name="planning") as run_manager:
+        try:
+            workflow = plan_workflow(user_nl)
+            run_manager.workflow_name = workflow.workflow_name or run_manager.workflow_name
+            run_manager.metrics.extra["planned_nodes"] = len(workflow.nodes)
+        except Exception as e:
+            print("\n[main] 工作流生成/补参/修复失败：", repr(e))
+            print("[main] 异常类型：", type(e).__name__)
+            print("[main] 需求输入：", user_nl)
+            print("[main] Call stack:\n", traceback.format_exc())
+            return
 
     print("\n==== 最终用于保存的 Workflow DSL ====\n")
     print(json.dumps(workflow.model_dump(by_alias=True), indent=2, ensure_ascii=False))
