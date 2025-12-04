@@ -1,4 +1,5 @@
-# VelvetFlow
+# VelvetFlow [![CI](https://github.com/zhongkaifu/VelvetFlow/actions/workflows/ci.yml/badge.svg)](https://github.com/zhongkaifu/VelvetFlow/actions/workflows/ci.yml)
+[![](logo.jpg)](logo.jpg)
 
 VelvetFlow 是一个可复用的 LLM 驱动工作流规划与执行演示项目。项目包含混合检索、两阶段 LLM 规划（结构 + 补参）、静态校验与自修复、参数绑定 DSL、可模拟执行器与 DAG 可视化，帮助从自然语言需求自动构建并运行业务流程。
 
