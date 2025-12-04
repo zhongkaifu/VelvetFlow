@@ -13,6 +13,7 @@ from openai import OpenAI
 from velvetflow.config import OPENAI_MODEL
 from velvetflow.logging_utils import (
     child_span,
+    log_info,
     log_error,
     log_event,
     log_json,
