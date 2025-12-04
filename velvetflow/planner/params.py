@@ -149,7 +149,9 @@ def _summarize_node_outputs(
 
     if not node.action_id:
         return []
-    schema = node.out_params_schema or action_schemas.get(node.action_id, {}).get("output_schema")
+    schema = getattr(node, "out_params_schema", None) or action_schemas.get(
+        node.action_id, {}
+    ).get("output_schema")
     return _summarize_output_fields_from_schema(schema)
 
 
@@ -175,7 +177,8 @@ def _build_global_context(
                 "action_id": n.action_id,
                 "display_name": n.display_name,
                 "domain": schema.get("domain"),
-                "out_params_schema": n.out_params_schema or schema.get("output_schema"),
+                "out_params_schema": getattr(n, "out_params_schema", None)
+                or schema.get("output_schema"),
                 "output_fields": _summarize_node_outputs(n, action_schemas),
                 "arg_required_fields": (
                     schema.get("arg_schema", {}).get("required") if isinstance(schema.get("arg_schema"), Mapping) else None
