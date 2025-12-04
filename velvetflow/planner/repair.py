@@ -15,9 +15,9 @@ from velvetflow.logging_utils import (
     child_span,
     log_debug,
     log_error,
-    log_info,
     log_llm_usage,
     log_success,
+    log_tool_call,
     log_warn,
 )
 from velvetflow.models import Node, PydanticValidationError, ValidationError, Workflow
@@ -467,7 +467,12 @@ validation_errors 是 JSON 数组，元素包含 code/node_id/field/message。
                     log_error(f"[repair_workflow_with_llm] 无法解析工具参数: {raw_args}")
                     args = {}
 
-                log_info(f"[repair_workflow_with_llm] 调用修复工具 {func_name}，参数: {args}")
+                log_tool_call(
+                    source="repair_workflow_with_llm",
+                    tool_name=func_name,
+                    tool_call_id=tc.id,
+                    args=args or raw_args,
+                )
                 patched_workflow, summary = apply_repair_tool(
                     tool_name=func_name,
                     args=args,
@@ -475,9 +480,11 @@ validation_errors 是 JSON 数组，元素包含 code/node_id/field/message。
                     validation_errors=validation_errors,
                     action_registry=action_registry,
                 )
-                log_info(
-                    "[repair_workflow_with_llm] 工具调用完成："
-                    f"tool={func_name}, args={args}, summary={summary}"
+                log_tool_call(
+                    source="repair_workflow_with_llm",
+                    tool_name=f"{func_name} 完成",
+                    tool_call_id=tc.id,
+                    args=summary,
                 )
                 if summary.get("applied"):
                     working_workflow = patched_workflow

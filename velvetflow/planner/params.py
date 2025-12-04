@@ -18,6 +18,7 @@ from velvetflow.logging_utils import (
     log_error,
     log_event,
     log_llm_usage,
+    log_tool_call,
 )
 from velvetflow.models import ALLOWED_PARAM_AGGREGATORS, Node, Workflow
 from velvetflow.planner.params_tools import build_param_completion_tool
@@ -493,31 +494,37 @@ def fill_params_with_llm(
                 }
             )
 
-            if tool_calls:
-                for tc in tool_calls:
-                    log_event(
-                        "params_tool_call",
-                        {
-                            "node_id": node.id,
-                            "tool_name": tc.function.name,
-                            "tool_call_id": getattr(tc, "id", None),
-                            "raw_arguments": tc.function.arguments,
-                        },
-                    )
-
             validation_performed = False
             validation_errors: List[str] = []
 
             for tc in tool_calls:
                 tool_call_id = getattr(tc, "id", None)
                 func_name = tc.function.name
+                raw_args = tc.function.arguments
+
+                log_event(
+                    "params_tool_call",
+                    {
+                        "node_id": node.id,
+                        "tool_name": func_name,
+                        "tool_call_id": tool_call_id,
+                        "raw_arguments": raw_args,
+                    },
+                )
 
                 try:
-                    args = json.loads(tc.function.arguments or "{}")
+                    args = json.loads(raw_args or "{}")
                 except json.JSONDecodeError:
                     log_error("[fill_params_with_llm] 无法解析 tool_call 参数 JSON")
-                    log_debug(tc.function.arguments)
+                    log_debug(raw_args)
                     args = {}
+
+                log_tool_call(
+                    source=f"fill_params:{node.id}",
+                    tool_name=func_name,
+                    tool_call_id=tool_call_id,
+                    args=args or raw_args,
+                )
 
                 if func_name == "submit_node_params":
                     if args.get("id") != node.id:

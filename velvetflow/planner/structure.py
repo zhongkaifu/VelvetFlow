@@ -15,12 +15,12 @@ from velvetflow.logging_utils import (
     child_span,
     log_error,
     log_event,
-    log_info,
     log_json,
     log_llm_usage,
     log_section,
     log_success,
     log_warn,
+    log_tool_call,
 )
 from velvetflow.planner.action_guard import ensure_registered_actions
 from velvetflow.planner.approval import detect_missing_approval_nodes
@@ -627,7 +627,12 @@ def plan_workflow_structure_with_llm(
                 log_error(f"[Error] 解析工具参数失败: {raw_args}")
                 args = {}
 
-            log_info(f"[Planner] 调用工具: {func_name}({args})")
+            log_tool_call(
+                source="plan_workflow_structure",
+                tool_name=func_name,
+                tool_call_id=tool_call_id,
+                args=args or raw_args,
+            )
 
             if func_name == "search_business_actions":
                 query = args.get("query", "")

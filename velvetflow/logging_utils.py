@@ -193,6 +193,40 @@ def log_json(label: str, data: Mapping[str, Any] | list[Any] | Any) -> None:
     console_log("DEBUG", f"{label}:\n{payload}")
 
 
+def _stringify_args(args: Any) -> str:
+    if args is None:
+        return ""
+    if isinstance(args, (dict, list)):
+        try:
+            return json.dumps(args, ensure_ascii=False)
+        except TypeError:
+            return str(args)
+    return str(args)
+
+
+def log_tool_call(
+    source: str,
+    tool_name: str,
+    *,
+    args: Any | None = None,
+    tool_call_id: str | None = None,
+) -> None:
+    """Highlight LLM tool invocations in logs for easier debugging."""
+
+    metadata_parts = []
+    if tool_call_id:
+        metadata_parts.append(f"id={tool_call_id}")
+    metadata = f" ({', '.join(metadata_parts)})" if metadata_parts else ""
+
+    args_text = _stringify_args(args)
+    args_suffix = f" args={args_text}" if args_text else ""
+
+    console_log(
+        "INFO",
+        f"{COLORS['yellow']}🛠️{RESET} [LLM ToolCall] {source}: {tool_name}{metadata}{args_suffix}",
+    )
+
+
 def _persist_record(record: dict[str, Any]) -> None:
     LOG_FILE_PATH.parent.mkdir(parents=True, exist_ok=True)
     with open(LOG_FILE_PATH, "a", encoding="utf-8") as fp:
