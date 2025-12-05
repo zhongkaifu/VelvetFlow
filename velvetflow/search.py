@@ -5,8 +5,13 @@
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-import faiss
 import numpy as np
+try:  # pragma: no cover - import guard for environments without real numpy/faiss
+    import faiss  # type: ignore
+    _faiss_import_error: Optional[Exception] = None
+except Exception as exc:  # pragma: no cover - we want module import to survive in tests
+    faiss = None  # type: ignore
+    _faiss_import_error = exc
 from openai import OpenAI
 
 from velvetflow.action_registry import get_action_by_id
@@ -95,12 +100,16 @@ class FaissVectorIndex:
 
     def __init__(self, dim: Optional[int]):
         self.dim = dim
-        self._index: Optional[faiss.IndexIDMap] = None
+        self._index: Optional[Any] = None
         self._id_map: Dict[str, int] = {}
         self._reverse_id_map: Dict[int, str] = {}
         self._next_internal_id = 0
 
     def _ensure_index(self) -> None:
+        if faiss is None:
+            raise ImportError(
+                "Faiss is unavailable; ensure faiss is installed with a real numpy or install optional dependency."
+            ) from _faiss_import_error
         if self._index is None:
             if self.dim is None:
                 raise ValueError("向量维度未知，无法初始化 Faiss 索引")
