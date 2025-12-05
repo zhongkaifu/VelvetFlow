@@ -16,7 +16,7 @@ from velvetflow.models import PydanticValidationError, Workflow
 from velvetflow.verification import precheck_loop_body_graphs
 
 ACTION_REGISTRY = json.loads(
-    (Path(__file__).parent.parent / "velvetflow" / "business_actions.json").read_text(
+    (Path(__file__).parent.parent / "tools" / "business_actions.json").read_text(
         encoding="utf-8"
     )
 )
