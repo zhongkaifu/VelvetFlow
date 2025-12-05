@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import re
-from typing import Any, List, Union
+from typing import Any, List, Mapping, Union
 
 
 _REFERENCE_PATTERNS = [
@@ -17,6 +17,10 @@ _REFERENCE_PATTERNS = [
 
 _TEMPLATE_CANONICALIZE_PATTERN = re.compile(
     r"\$\{\{\s*([^{}]+?)\s*\}\}|\$\{\s*([^{}]+?)\s*\}",
+)
+
+_TEMPLATE_REF_PATTERN = re.compile(
+    r"\{\{\s*([^{}]+?)\s*\}\}|\$\{\{\s*([^{}]+?)\s*\}\}|\$\{\s*([^{}]+?)\s*\}",
 )
 
 
@@ -60,6 +64,62 @@ def canonicalize_template_placeholders(text: Any) -> Any:
         return f"{{{{{path.strip()}}}}}"
 
     return _TEMPLATE_CANONICALIZE_PATTERN.sub(_replace, text)
+
+
+def _normalize_template_reference_path(path: str) -> str | None:
+    """Best-effort cleanup for template reference paths.
+
+    The planner sometimes produces placeholders with excessive whitespace
+    around dots or list indices (e.g., ``{{result_of.foo[ 0 ].bar}}``) which
+    would otherwise fail ``parse_field_path`` during validation. This helper
+    trims those artifacts so downstream checks can operate on a consistent
+    representation. ``None`` is returned when the path cannot be repaired.
+    """
+
+    if not isinstance(path, str):
+        return None
+
+    normalized = normalize_reference_path(path)
+    if not isinstance(normalized, str):
+        return None
+
+    candidates = [normalized]
+    compact_dots = re.sub(r"\s*\.\s*", ".", normalized).strip(" .")
+    compact_indices = re.sub(r"\[\s*([^\]]+?)\s*\]", r"[\1]", compact_dots)
+    candidates.append(compact_indices)
+
+    for candidate in candidates:
+        try:
+            parse_field_path(candidate)
+            return candidate
+        except Exception:
+            continue
+
+    return None
+
+
+def normalize_template_placeholders(obj: Any) -> Any:
+    """Recursively canonicalize template placeholders across a workflow tree."""
+
+    if isinstance(obj, str):
+        normalized = canonicalize_template_placeholders(obj)
+
+        def _repair(match: re.Match[str]) -> str:
+            raw = match.group(1) or match.group(2) or match.group(3) or ""
+            repaired = _normalize_template_reference_path(raw)
+            if not repaired:
+                return match.group(0)
+            return f"{{{{{repaired}}}}}"
+
+        return _TEMPLATE_REF_PATTERN.sub(_repair, normalized)
+
+    if isinstance(obj, list):
+        return [normalize_template_placeholders(item) for item in obj]
+
+    if isinstance(obj, Mapping):
+        return {k: normalize_template_placeholders(v) for k, v in obj.items()}
+
+    return obj
 
 
 def parse_field_path(path: str) -> List[Union[str, int]]:

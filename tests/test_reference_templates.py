@@ -205,6 +205,35 @@ def test_validation_rejects_invalid_double_dollar_template_reference():
     assert "missing" in errors[0].message
 
 
+def test_validation_repairs_whitespace_in_template_indices():
+    workflow = {
+        "workflow_name": "demo",
+        "description": "",
+        "nodes": [
+            {"id": "start", "type": "start"},
+            {
+                "id": "notify",
+                "type": "action",
+                "action_id": "hr.update_employee_health_profile.v1",
+                "params": {
+                    "employee_id": "E001",
+                    "status": "无法找到节点：{{ result_of.missing.items[ 0 ].status }}",
+                },
+            },
+            {"id": "end", "type": "end"},
+        ],
+        "edges": [{"from": "start", "to": "notify"}, {"from": "notify", "to": "end"}],
+    }
+
+    errors = validate_workflow_data(workflow, ACTION_REGISTRY)
+
+    assert len(errors) == 1
+    assert errors[0].node_id == "notify"
+    assert errors[0].field == "status"
+    assert "模板" in errors[0].message
+    assert "missing" in errors[0].message
+
+
 def test_eval_params_parses_json_string_bindings():
     workflow = Workflow.model_validate({"nodes": [{"id": "start", "type": "start"}], "edges": []})
     ctx = BindingContext(
