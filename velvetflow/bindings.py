@@ -193,6 +193,8 @@ class BindingContext:
             # 非字典元素：直接字符串化或用默认字段选择
             selected = val
             if fmt:
+                if selected is None:
+                    return ""
                 try:
                     return fmt.format_map(_SafeDict({}))
                 except Exception:
@@ -526,6 +528,8 @@ class BindingContext:
             else:
                 resolved_parts.append(str(token))
 
+        source_node: Node | None = None
+
         if self.loop_id and parts[0] == self.loop_id:
             cur = self.loop_ctx
             _append_token(parts[0])
@@ -556,6 +560,7 @@ class BindingContext:
             resolved_parts.extend(["result_of", str(first_key)])
             rest = parts[2:]
             node = self._nodes.get(first_key)
+            source_node = node
             if node and node.type == "loop" and rest and rest[0] == "exports":
                 rest = rest[1:]
         else:
@@ -566,7 +571,7 @@ class BindingContext:
             _append_token(parts[0])
             rest = parts[1:]
 
-        for p in rest:
+        for idx, p in enumerate(rest):
             if isinstance(p, str):
                 func_match = re.match(r"^(?P<name>[A-Za-z_][A-Za-z0-9_]*)\((?P<args>.*)\)$", p)
                 if func_match:
@@ -620,6 +625,17 @@ class BindingContext:
 
             if isinstance(cur, dict):
                 if p not in cur:
+                    if source_node and source_node.type == "action":
+                        schema = source_node.out_params_schema
+                        if not schema and source_node.action_id:
+                            action = get_action_by_id(source_node.action_id)
+                            if action:
+                                schema = action.get("output_schema")
+
+                        remaining_path = list(rest[idx:])
+                        if schema and self._schema_has_path(schema, remaining_path):
+                            return None
+
                     raise KeyError(
                         f"{_fmt_path(p)}: 字段不存在，当前可用键: {sorted(cur.keys())}"
                     )
@@ -668,7 +684,7 @@ class _SafeDict(dict):
     """A dict that leaves unknown placeholders intact during formatting."""
 
     def __missing__(self, key: str) -> str:
-        return "{" + key + "}"
+        return ""
 
 
 def eval_node_params(node: Node, ctx: BindingContext) -> Dict[str, Any]:
