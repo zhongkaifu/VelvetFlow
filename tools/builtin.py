@@ -642,6 +642,216 @@ def _run_coroutine(factory: Callable[[], Awaitable[Any]]) -> Any:
             loop.close()
 
 
+def _normalize_internal_url(candidate: str, base_url: str) -> str:
+    """Resolve and validate that the candidate URL stays within the base domain."""
+
+    if not candidate:
+        return ""
+
+    joined = urllib.parse.urljoin(base_url, candidate)
+    parsed_base = urllib.parse.urlparse(base_url)
+    parsed_candidate = urllib.parse.urlparse(joined)
+
+    if parsed_candidate.scheme not in {"http", "https"}:
+        return ""
+
+    base_host = parsed_base.netloc.lower().lstrip("www.")
+    candidate_host = parsed_candidate.netloc.lower().lstrip("www.")
+
+    if base_host != candidate_host:
+        return ""
+
+    return joined
+
+
+def _extract_internal_links(result: Any, base_url: str) -> List[str]:
+    """Best-effort extraction of in-domain links from a crawl result."""
+
+    raw_collections: List[Any] = []
+
+    for attr in ("links", "hyperlinks", "anchors"):
+        value = getattr(result, attr, None)
+        if value:
+            raw_collections.append(value)
+
+    candidates: List[str] = []
+
+    for collection in raw_collections:
+        if isinstance(collection, Mapping):
+            candidates.extend(str(item) for item in collection.values())
+        elif isinstance(collection, list):
+            for entry in collection:
+                if isinstance(entry, str):
+                    candidates.append(entry)
+                elif isinstance(entry, Mapping):
+                    href = entry.get("url") or entry.get("href") or ""
+                    if href:
+                        candidates.append(str(href))
+                elif hasattr(entry, "url"):
+                    href = getattr(entry, "url")
+                    if href:
+                        candidates.append(str(href))
+        elif isinstance(collection, str):
+            candidates.append(collection)
+
+    normalized: List[str] = []
+    seen: set[str] = set()
+
+    for candidate in candidates:
+        normalized_candidate = _normalize_internal_url(candidate, base_url)
+        if normalized_candidate and normalized_candidate not in seen:
+            normalized.append(normalized_candidate)
+            seen.add(normalized_candidate)
+
+    return normalized
+
+
+def _truncate_for_llm(text: str, limit: int = 1200) -> str:
+    if len(text) <= limit:
+        return text
+    return text[:limit] + "\n...[truncated]"
+
+
+def _should_continue_crawling(
+    user_request: str,
+    pages: List[Dict[str, Any]],
+    remaining_links: List[str],
+    api_token: Optional[str],
+    llm_provider: str,
+    max_pages: int,
+) -> Tuple[bool, List[str]]:
+    """Use an LLM to decide whether deeper in-site crawling is needed."""
+
+    if not api_token:
+        return len(pages) >= 1, []
+
+    client = OpenAI(api_key=api_token)
+
+    page_summaries = []
+    for page in pages[-3:]:  # limit context size
+        content = str(page.get("extracted_content", ""))
+        page_summaries.append(
+            {
+                "url": page.get("url"),
+                "content": _truncate_for_llm(content),
+                "status": page.get("status"),
+            }
+        )
+
+    prompt = textwrap.dedent(
+        f"""
+        You are deciding if the current crawl satisfies the user's request or needs to go deeper.
+        User request: {user_request}
+
+        Pages already crawled (most recent first, trimmed content included):
+        {json.dumps(page_summaries, ensure_ascii=False)}
+
+        Remaining in-site links that can be crawled next (respect domain boundaries only):
+        {json.dumps(remaining_links, ensure_ascii=False)}
+
+        Respond with strict JSON using keys:
+        - satisfied (boolean): whether the existing pages already satisfy the request.
+        - reason (string): brief justification.
+        - next_links (array of strings): optional prioritized subset of remaining links to crawl next.
+
+        If the request is already satisfied or no useful links remain, set satisfied to true.
+        """
+    ).strip()
+
+    response = client.chat.completions.create(
+        model=llm_provider,
+        messages=[{"role": "system", "content": "You are a crawl coordinator."}, {"role": "user", "content": prompt}],
+        max_tokens=256,
+    )
+
+    content = (response.choices[0].message.content or "{}") if response.choices else "{}"
+
+    try:
+        data = json.loads(content)
+    except json.JSONDecodeError:
+        data = {}
+
+    satisfied = bool(data.get("satisfied")) or len(pages) >= max_pages or not remaining_links
+    next_links_raw = data.get("next_links") or []
+
+    prioritized: List[str] = []
+    for link in next_links_raw:
+        if isinstance(link, str) and link in remaining_links and link not in prioritized:
+            prioritized.append(link)
+
+    return satisfied, prioritized
+
+
+def _crawl_page_once(
+    url: str,
+    instruction: str,
+    api_token: Optional[str],
+    llm_provider: str,
+    run_coroutine: Callable[[Callable[[], Awaitable[Any]]], Any],
+) -> Dict[str, Any]:
+    """Crawl a single URL and return extracted content plus in-domain links."""
+
+    async def _scrape() -> tuple[Any, List[Dict[str, Any]]]:
+        browser_conf = BrowserConfig(headless=True, verbose=False)
+        attempts: List[Dict[str, Any]] = []
+
+        async with AsyncWebCrawler(config=browser_conf) as crawler:
+            if api_token:
+                llm_conf = LLMConfig(provider=llm_provider, api_token=api_token)
+                llm_strategy = LLMExtractionStrategy(
+                    llm_config=llm_conf,
+                    schema=None,
+                    extraction_type="text",
+                    instruction=instruction,
+                    input_format="markdown",
+                    verbose=False,
+                )
+                llm_run = CrawlerRunConfig(cache_mode=CacheMode.BYPASS, extraction_strategy=llm_strategy)
+                llm_result = await crawler.arun(url=url, config=llm_run)
+                attempts.append(
+                    {
+                        "method": "llm_extraction",
+                        "success": llm_result.success,
+                        "status_code": llm_result.status_code,
+                        "error": llm_result.error_message,
+                    }
+                )
+                if llm_result.success:
+                    return llm_result, attempts
+
+            fallback_run = CrawlerRunConfig(cache_mode=CacheMode.BYPASS)
+            fallback_result = await crawler.arun(url=url, config=fallback_run)
+            attempts.append(
+                {
+                    "method": "raw_scrape",
+                    "success": fallback_result.success,
+                    "status_code": fallback_result.status_code,
+                    "error": fallback_result.error_message,
+                }
+            )
+            return fallback_result, attempts
+
+    result, _attempts = run_coroutine(_scrape)
+
+    raw_content = getattr(result, "extracted_content", "") or ""
+    if isinstance(raw_content, (dict, list)):
+        extracted_content = json.dumps(raw_content, ensure_ascii=False)
+    else:
+        extracted_content = str(raw_content).strip()
+
+    if not extracted_content and getattr(result, "markdown", None):
+        extracted_content = str(getattr(result, "markdown")).strip()
+
+    links = _extract_internal_links(result, url)
+    status = "ok" if getattr(result, "success", False) else "error"
+
+    return {
+        "status": status,
+        "extracted_content": extracted_content,
+        "links": links,
+    }
+
+
 def _scrape_single_url(
     url: str,
     user_request: str,
@@ -667,66 +877,62 @@ def _scrape_single_url(
     ).strip()
 
     api_token = os.getenv("OPENAI_API_KEY")
-    use_llm = bool(api_token)
+    max_pages = 6
 
-    async def _scrape() -> tuple[Any, List[Dict[str, Any]]]:
-        browser_conf = BrowserConfig(headless=True, verbose=False)
-        attempts: List[Dict[str, Any]] = []
+    visited: set[str] = set()
+    to_visit: List[str] = [url]
+    collected: List[Dict[str, Any]] = []
+    aggregated_contents: List[str] = []
 
-        async with AsyncWebCrawler(config=browser_conf) as crawler:
-            if use_llm:
-                llm_conf = LLMConfig(provider=llm_provider, api_token=api_token)
-                llm_strategy = LLMExtractionStrategy(
-                    llm_config=llm_conf,
-                    schema=None,
-                    extraction_type="text",
-                    instruction=instruction,
-                    input_format="markdown",
-                    verbose=False,
-                )
-                llm_run = CrawlerRunConfig(
-                    cache_mode=CacheMode.BYPASS, extraction_strategy=llm_strategy
-                )
-                llm_result = await crawler.arun(url=url, config=llm_run)
-                attempts.append(
-                    {
-                        "method": "llm_extraction",
-                        "success": llm_result.success,
-                        "status_code": llm_result.status_code,
-                        "error": llm_result.error_message,
-                    }
-                )
-                if llm_result.success:
-                    return llm_result, attempts
+    while to_visit and len(collected) < max_pages:
+        current = to_visit.pop(0)
+        if current in visited:
+            continue
 
-            fallback_run = CrawlerRunConfig(cache_mode=CacheMode.BYPASS)
-            fallback_result = await crawler.arun(url=url, config=fallback_run)
-            attempts.append(
-                {
-                    "method": "raw_scrape",
-                    "success": fallback_result.success,
-                    "status_code": fallback_result.status_code,
-                    "error": fallback_result.error_message,
-                }
-            )
-            return fallback_result, attempts
+        visited.add(current)
+        page_result = _crawl_page_once(
+            current,
+            instruction,
+            api_token,
+            llm_provider,
+            run_coroutine,
+        )
+        page_result["url"] = current
+        collected.append(page_result)
 
-    result, attempts = run_coroutine(_scrape)
+        content = page_result.get("extracted_content")
+        if content:
+            aggregated_contents.append(str(content))
 
-    raw_content = result.extracted_content or ""
-    if isinstance(raw_content, (dict, list)):
-        extracted_content = json.dumps(raw_content, ensure_ascii=False)
-    else:
-        extracted_content = str(raw_content).strip()
+        for link in page_result.get("links", []):
+            normalized_link = _normalize_internal_url(link, current)
+            if normalized_link and normalized_link not in visited and normalized_link not in to_visit:
+                to_visit.append(normalized_link)
 
-    if not extracted_content and getattr(result, "markdown", None):
-        extracted_content = str(result.markdown).strip()
+        satisfied, prioritized_links = _should_continue_crawling(
+            user_request,
+            collected,
+            to_visit,
+            api_token,
+            llm_provider,
+            max_pages,
+        )
 
-    status = "ok" if result.success else "error"
+        if prioritized_links:
+            remaining = [link for link in to_visit if link not in prioritized_links]
+            to_visit = prioritized_links + remaining
+
+        if satisfied:
+            break
+
+    successes = [item.get("status") == "ok" for item in collected]
+    overall_status = "ok" if any(successes) else "error"
+
+    aggregated_content = "\n".join(aggregated_contents)
 
     return {
-        "status": status,
-        "extracted_content": extracted_content,
+        "status": overall_status,
+        "extracted_content": aggregated_content,
     }
 
 
