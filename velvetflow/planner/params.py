@@ -628,16 +628,14 @@ def fill_params_with_llm(
                     action_schemas=action_schemas,
                     binding_memory=binding_memory,
                 )
-                auto_call_id = f"auto_validate_{round_idx}_{node.id}"
                 messages.append(
                     {
-                        "role": "tool",
-                        "tool_call_id": auto_call_id,
+                        "role": "user",
                         "content": json.dumps(
                             {
                                 "status": "error" if validation_errors else "ok",
                                 "errors": validation_errors or None,
-                                "message": "自动校验提交的 params。",
+                                "message": "自动校验提交的 params。请根据校验结果修正参数并再次调用 submit_node_params 和 validate_node_params。",
                             },
                             ensure_ascii=False,
                         ),
