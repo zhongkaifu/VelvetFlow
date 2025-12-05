@@ -852,6 +852,10 @@ def _crawl_page_once(
     }
 
 
+# Preserve the default implementation so tests can detect when it has been patched.
+_DEFAULT_CRAWL_PAGE_ONCE = _crawl_page_once
+
+
 def _scrape_single_url(
     url: str,
     user_request: str,
@@ -862,7 +866,10 @@ def _scrape_single_url(
 ) -> Dict[str, Any]:
     """Download and analyze a single web page according to a request."""
 
-    _require_crawl4ai()
+    if _CRAWL4AI_AVAILABLE or _crawl_page_once is not _DEFAULT_CRAWL_PAGE_ONCE:
+        pass
+    else:
+        _require_crawl4ai()
 
     instruction = llm_instruction or textwrap.dedent(
         f"""
