@@ -411,12 +411,14 @@ def _validate_nodes_recursive(
                         except Exception:
                             continue
 
+                        missing_target_node = False
                         if ref_path.startswith("result_of."):
                             target_node = None
                             if ref_parts and len(ref_parts) >= 2 and isinstance(ref_parts[1], str):
                                 target_node = ref_parts[1]
 
                             if target_node and target_node not in nodes_by_id:
+                                missing_target_node = True
                                 errors.append(
                                     ValidationError(
                                         code="SCHEMA_MISMATCH",
@@ -429,8 +431,8 @@ def _validate_nodes_recursive(
                                     )
                                 )
 
-                            # Template placeholders are resolved at runtime; skip strict schema checks.
-                            continue
+                            if missing_target_node:
+                                continue
 
                         if _is_self_reference_path(ref_path, nid):
                             field_label = path_prefix or "params"
