@@ -404,16 +404,17 @@
     "enabled": true
   },
   {
-    "action_id": "common.business_action.v1",
-    "name": "Business Action",
+    "action_id": "common.search_and_crawl_web_content.v1",
+    "name": "Search, crawl, and summarize web content",
     "domain": "common",
-    "description": "根据自然语言需求自动搜索匹配的网址并用 crawl4ai 抓取站内页面，汇总满足需求的内容。",
-    "tool_name": "business_action",
+    "description": "围绕用户的自然语言查询自动完成三步：先用搜索引擎检索候选网址，仅保留同域链接进行 crawl4ai 抓取，并由 LLM 判断是否满足查询、需要继续深入抓取，最终输出跨页面的汇总。",
+    "tool_name": "search_and_crawl_web_content",
     "tags": [
-      "search",
-      "crawl",
-      "llm",
-      "web"
+      "web-search",
+      "in-domain-crawl",
+      "llm-judgment",
+      "content-aggregation",
+      "auto-iteration"
     ],
     "arg_schema": {
       "type": "object",
