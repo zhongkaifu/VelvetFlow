@@ -115,7 +115,12 @@ def test_validation_accepts_templated_result_reference():
 
     errors = validate_workflow_data(workflow, ACTION_REGISTRY)
 
-    assert errors == []
+    assert len(errors) == 1
+    assert errors[0].code == "SCHEMA_MISMATCH"
+    assert errors[0].node_id == "notify"
+    assert errors[0].field == "email_content.__from__"
+    assert "start" in errors[0].message
+    assert "status" in errors[0].message
 
 
 def test_validation_rejects_invalid_template_reference():
