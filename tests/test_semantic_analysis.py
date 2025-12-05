@@ -5,7 +5,7 @@ from validate_workflow import validate_workflow_data
 
 
 ACTION_REGISTRY = json.loads(
-    (Path(__file__).parent.parent / "velvetflow" / "business_actions.json").read_text(
+    (Path(__file__).parent.parent / "tools" / "business_actions.json").read_text(
         encoding="utf-8"
     )
 )

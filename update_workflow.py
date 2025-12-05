@@ -63,7 +63,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--action-registry",
         type=Path,
-        default=Path(__file__).resolve().parent / "velvetflow" / "business_actions.json",
+        default=Path(__file__).resolve().parent / "tools" / "business_actions.json",
         help="动作库 JSON 路径（默认使用内置动作库）",
     )
     parser.add_argument(

@@ -186,7 +186,7 @@ def main(argv: list[str] | None = None) -> int:
         "--action-registry",
         type=Path,
         default=Path(__file__).resolve().parent
-        / "velvetflow"
+        / "tools"
         / "business_actions.json",
         help="Path to action registry JSON file (defaults to built-in registry).",
     )

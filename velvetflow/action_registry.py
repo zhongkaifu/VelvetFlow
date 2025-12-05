@@ -15,7 +15,7 @@ def _with_security_defaults(action: Dict[str, Any]) -> Dict[str, Any]:
     return action
 
 
-_ACTIONS_DATA_PATH = Path(__file__).with_name("business_actions.json")
+_ACTIONS_DATA_PATH = Path(__file__).resolve().parents[1] / "tools" / "business_actions.json"
 
 
 def _load_business_actions() -> List[Dict[str, Any]]:

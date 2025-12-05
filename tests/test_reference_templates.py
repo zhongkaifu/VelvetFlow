@@ -15,7 +15,7 @@ from velvetflow.models import Node, Workflow, infer_edges_from_bindings
 from velvetflow.verification.validation import _schema_path_error
 
 ACTION_REGISTRY = json.loads(
-    (Path(__file__).parent.parent / "velvetflow" / "business_actions.json").read_text(
+    (Path(__file__).parent.parent / "tools" / "business_actions.json").read_text(
         encoding="utf-8"
     )
 )
