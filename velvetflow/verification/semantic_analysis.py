@@ -175,8 +175,10 @@ def _schema_types(schema: Mapping[str, Any]) -> set[str]:
 
 
 def _schemas_compatible(expected: Optional[Mapping[str, Any]], actual: Optional[Mapping[str, Any]]) -> bool:
-    if not expected or not actual:
+    if not expected:
         return True
+    if not actual:
+        return False
     expected_types = _schema_types(expected)
     actual_types = _schema_types(actual)
     if not expected_types or not actual_types:
@@ -249,8 +251,6 @@ def _check_binding_contracts(
             elif isinstance(source, list):
                 sources = [s for s in source if isinstance(s, str)]
 
-            is_multi_source = isinstance(source, list) and len(source) > 1
-
             for src in sources:
                 if isinstance(src, str) and src != normalize_reference_path(src):
                     # Templated references are resolved at runtime; skip strict checks.
@@ -275,14 +275,24 @@ def _check_binding_contracts(
                     )
                     continue
 
-                if is_multi_source:
-                    # Multi-source bindings rely on downstream aggregation/pipeline logic;
-                    # as long as individual paths exist, we defer strict type checks.
-                    continue
                 actual_schema = _get_output_schema_at_path(
                     normalized_src, nodes_by_id, actions_by_id, loop_body_parents
                 )
                 effective_schema = _apply_binding_aggregator(actual_schema, binding)
+                if expected_schema and not actual_schema:
+                    errors.append(
+                        ValidationError(
+                            code="CONTRACT_VIOLATION",
+                            node_id=node_id,
+                            field=field_path,
+                            message=(
+                                f"参数绑定期望类型 {expected_schema.get('type') if expected_schema else '未知'}"
+                                f"，但来源 {normalized_src} 缺少输出类型定义。"
+                                "请在构建 workflow 时补充上游输出 schema 或通过 __agg__/pipeline 进行类型转换。"
+                            ),
+                        )
+                    )
+                    continue
                 if not _schemas_compatible(expected_schema, effective_schema):
                     errors.append(
                         ValidationError(
