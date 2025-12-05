@@ -404,6 +404,76 @@
     "enabled": true
   },
   {
+    "action_id": "common.business_action.v1",
+    "name": "Business Action",
+    "domain": "common",
+    "description": "根据自然语言需求自动搜索匹配的网址并用 crawl4ai 抓取站内页面，汇总满足需求的内容。",
+    "tool_name": "business_action",
+    "tags": [
+      "search",
+      "crawl",
+      "llm",
+      "web"
+    ],
+    "arg_schema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "description": "用户的自然语言查询需求"
+        },
+        "search_limit": {
+          "type": "integer",
+          "default": 5,
+          "description": "搜索引擎返回结果数量上限"
+        },
+        "llm_provider": {
+          "type": "string",
+          "default": "openai/gpt-4o-mini",
+          "description": "用于判断是否继续抓取的 LLM provider"
+        }
+      },
+      "required": [
+        "query"
+      ]
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "type": "string",
+          "description": "整体抓取状态（ok/partial/error/not_found）"
+        },
+        "summary": {
+          "type": "string",
+          "description": "对抓取结果的汇总说明"
+        },
+        "results": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "title": {"type": "string"},
+              "url": {"type": "string"},
+              "snippet": {"type": "string"},
+              "scrape": {
+                "type": "object",
+                "additionalProperties": true,
+                "description": "crawl4ai 抓取返回的原始结果"
+              }
+            }
+          }
+        }
+      },
+      "required": [
+        "status",
+        "summary",
+        "results"
+      ]
+    },
+    "enabled": true
+  },
+  {
     "action_id": "common.list_files.v1",
     "name": "List files",
     "domain": "common",

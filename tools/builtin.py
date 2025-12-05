@@ -1017,6 +1017,84 @@ def scrape_web_page(
     }
 
 
+def business_action(
+    query: str,
+    *,
+    search_limit: int = 5,
+    llm_provider: str = "openai/gpt-4o-mini",
+) -> Dict[str, Any]:
+    """Search the web, crawl relevant pages, and summarize findings."""
+
+    if not query:
+        raise ValueError("query is required for business_action")
+
+    search_output = search_web(query, limit=search_limit)
+    search_results = search_output.get("results", []) if isinstance(search_output, Mapping) else []
+
+    if not search_results:
+        return {
+            "status": "not_found",
+            "summary": f"No search results found for query: {query}",
+            "results": [],
+        }
+
+    crawled: List[Dict[str, Any]] = []
+
+    for entry in search_results:
+        url = entry.get("url") if isinstance(entry, Mapping) else None
+        if not url:
+            continue
+
+        scrape_result = _scrape_single_url(url, query, llm_provider=llm_provider)
+
+        crawled.append(
+            {
+                "title": entry.get("title", "") if isinstance(entry, Mapping) else "",
+                "url": url,
+                "snippet": entry.get("snippet", "") if isinstance(entry, Mapping) else "",
+                "scrape": scrape_result,
+            }
+        )
+
+    if not crawled:
+        return {
+            "status": "not_found",
+            "summary": f"Search results lacked crawlable URLs for query: {query}",
+            "results": [],
+        }
+
+    analysis_inputs = []
+    successes: List[bool] = []
+
+    for item in crawled:
+        scrape = item.get("scrape") or {}
+        status = scrape.get("status")
+        successes.append(status == "ok")
+        analysis_inputs.append(
+            {
+                "url": item.get("url"),
+                "status": status,
+                "analysis": scrape.get("extracted_content"),
+            }
+        )
+
+    ok_count = sum(successes)
+    if ok_count == len(successes):
+        overall_status = "ok"
+    elif ok_count > 0:
+        overall_status = "partial"
+    else:
+        overall_status = "error"
+
+    summary = _aggregate_scrape_results(analysis_inputs, query)
+
+    return {
+        "status": overall_status,
+        "summary": summary,
+        "results": crawled,
+    }
+
+
 def register_builtin_tools() -> None:
     """Register all built-in tools in the global registry."""
 
@@ -1219,6 +1297,25 @@ def register_builtin_tools() -> None:
         )
     )
 
+    register_tool(
+        Tool(
+            name="business_action",
+            description=(
+                "Search the web for a natural-language query, crawl matching pages, and summarize results."
+            ),
+            function=business_action,
+            args_schema={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"},
+                    "search_limit": {"type": "integer", "default": 5},
+                    "llm_provider": {"type": "string", "default": "openai/gpt-4o-mini"},
+                },
+                "required": ["query"],
+            },
+        )
+    )
+
 
 __all__ = [
     "register_builtin_tools",
@@ -1233,4 +1330,5 @@ __all__ = [
     "summarize",
     "compose_outlook_email",
     "scrape_web_page",
+    "business_action",
 ]
