@@ -1,13 +1,14 @@
 [
   {
     "action_id": "hr.record_health_event.v1",
-    "name": "Record a business event",
+    "name": "Record employee health event",
     "domain": "hr",
-    "description": "Record a generic business event into the HR event stream.",
+    "description": "Store a structured employee health event (type/date/abnormal_count) into the HR health stream for downstream monitoring and auditing.",
     "tags": [
-      "event",
-      "log",
-      "hr"
+      "hr",
+      "health-monitoring",
+      "event-log",
+      "temperature-tracking"
     ],
     "arg_schema": {
       "type": "object",
@@ -37,16 +38,19 @@
         }
       }
     },
-    "enabled": true
+    "enabled": true,
+    "tool_name": "record_health_event"
   },
   {
     "action_id": "hr.get_today_temperatures.v1",
-    "name": "Get today's employee temperature readings",
+    "name": "Retrieve daily employee temperature readings",
     "domain": "hr",
-    "description": "Fetch today's temperature readings for all employees.",
+    "description": "Return the temperature log for the requested date so HR can screen for anomalies or trigger follow-up actions.",
     "tags": [
-      "health",
+      "hr",
+      "health-monitoring",
       "temperature",
+      "reporting",
       "fetch"
     ],
     "arg_schema": {
@@ -90,17 +94,20 @@
         "data"
       ]
     },
-    "enabled": true
+    "enabled": true,
+    "tool_name": "get_today_temperatures"
   },
   {
     "action_id": "hr.update_employee_health_profile.v1",
-    "name": "Update an employee health profile",
+    "name": "Update employee health profile with latest vitals",
     "domain": "hr",
-    "description": "Upsert employee health profile with the latest temperature data and status.",
+    "description": "Upsert an employee's health profile using the latest temperature reading, status, and check date to keep wellness records current.",
     "tags": [
-      "health",
-      "profile",
-      "update"
+      "hr",
+      "health-profile",
+      "temperature",
+      "status",
+      "upsert"
     ],
     "arg_schema": {
       "type": "object",
@@ -124,33 +131,36 @@
     },
     "output_schema": {
       "type": "object",
-            "properties": {
-              "employee_id": {
-                "type": "string"
-              },
-              "last_temperature": {
-                "type": "number"
-              },
-              "status": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "employee_id",
-              "last_temperature"
-            ]
+      "properties": {
+        "employee_id": {
+          "type": "string"
+        },
+        "last_temperature": {
+          "type": "number"
+        },
+        "status": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "employee_id",
+        "last_temperature"
+      ]
     },
-    "enabled": true
+    "enabled": true,
+    "tool_name": "update_employee_health_profile"
   },
   {
     "action_id": "ops.create_incident.v1",
-    "name": "Create incident ticket",
+    "name": "Open ops incident ticket",
     "domain": "ops",
-    "description": "Create an incident ticket in the incident management system.",
+    "description": "Create a new incident record in the operations incident system with title, description, and severity for triage.",
     "tags": [
+      "ops",
       "incident",
       "ticket",
-      "ops"
+      "oncall",
+      "severity"
     ],
     "arg_schema": {
       "type": "object",
@@ -180,16 +190,20 @@
         }
       }
     },
-    "enabled": true
+    "enabled": true,
+    "tool_name": "create_incident"
   },
   {
     "action_id": "crm.create_lead.v1",
-    "name": "Create CRM lead record",
+    "name": "Create CRM lead",
     "domain": "crm",
-    "description": "Create a new lead record in CRM system.",
+    "description": "Add a new lead into the CRM with contact details and source attribution so sales can follow up.",
     "tags": [
       "crm",
-      "lead"
+      "lead",
+      "capture",
+      "sales",
+      "prospect"
     ],
     "arg_schema": {
       "type": "object",
@@ -219,17 +233,20 @@
         }
       }
     },
-    "enabled": true
+    "enabled": true,
+    "tool_name": "create_lead"
   },
   {
     "action_id": "crm.log_interaction.v1",
-    "name": "Log customer interaction",
+    "name": "Log CRM interaction note",
     "domain": "crm",
-    "description": "Log a customer interaction note in CRM.",
+    "description": "Attach a chronological interaction note to a CRM lead or contact to preserve engagement history.",
     "tags": [
       "crm",
-      "log",
-      "interaction"
+      "interaction",
+      "note",
+      "timeline",
+      "engagement"
     ],
     "arg_schema": {
       "type": "object",
@@ -254,18 +271,20 @@
         }
       }
     },
-    "enabled": true
+    "enabled": true,
+    "tool_name": "log_interaction"
   },
   {
     "action_id": "common.ask_ai.v1",
-    "name": "AskAI",
+    "name": "AskAI LLM orchestrator",
     "domain": "common",
-    "description": "LLM fallback action when no suitable business tools are available. Collects context along dependency paths (upstream tool descriptions, inputs, outputs), can call provided business tools in multi-round conversations, analyzes their results, and returns a structured JSON answer. Always prefer concrete business tools; call AskAI only when none are appropriate.",
+    "description": "LLM fallback that reasons over upstream tool context, optionally calls provided business tools, and returns structured JSON answers when no direct tool fits.",
     "tool_name": "ask_ai",
     "tags": [
       "fallback",
       "llm",
-      "ask",
+      "reasoning",
+      "tool-orchestration",
       "context"
     ],
     "arg_schema": {
@@ -316,8 +335,16 @@
         }
       },
       "oneOf": [
-        { "required": ["prompt"] },
-        { "required": ["question"] }
+        {
+          "required": [
+            "prompt"
+          ]
+        },
+        {
+          "required": [
+            "question"
+          ]
+        }
       ]
     },
     "output_schema": {
@@ -342,13 +369,15 @@
   },
   {
     "action_id": "common.search_web.v1",
-    "name": "Search web",
+    "name": "Search the web (SERP lookup)",
     "domain": "common",
-    "description": "Perform a Bing web search and return the top result titles, URLs, and snippets.",
+    "description": "Run a web search (Bing SERP) for a query and return top result titles, URLs, and snippets for downstream retrieval or reasoning.",
     "tool_name": "search_web",
     "tags": [
       "search",
       "web",
+      "serp",
+      "bing",
       "information"
     ],
     "arg_schema": {
@@ -405,16 +434,16 @@
   },
   {
     "action_id": "common.search_and_crawl_web_content.v1",
-    "name": "Search, crawl, and summarize web content",
+    "name": "Search then crawl in-domain content with LLM guidance",
     "domain": "common",
-    "description": "围绕用户的自然语言查询自动完成三步：先用搜索引擎检索候选网址，仅保留同域链接进行 crawl4ai 抓取，并由 LLM 判断是否满足查询、需要继续深入抓取，最终输出跨页面的汇总。",
+    "description": "围绕用户的自然语言查询自动完成三步：先用搜索引擎检索候选网址，仅保留同域链接进行 crawl4ai 抓取；再由 LLM 判断是否已满足需求、是否需要深入同站点；最终汇总跨页面内容返回。",
     "tool_name": "search_and_crawl_web_content",
     "tags": [
       "web-search",
       "in-domain-crawl",
-      "llm-judgment",
-      "content-aggregation",
-      "auto-iteration"
+      "llm-evaluation",
+      "multi-page",
+      "summarization"
     ],
     "arg_schema": {
       "type": "object",
@@ -454,9 +483,15 @@
           "items": {
             "type": "object",
             "properties": {
-              "title": {"type": "string"},
-              "url": {"type": "string"},
-              "snippet": {"type": "string"},
+              "title": {
+                "type": "string"
+              },
+              "url": {
+                "type": "string"
+              },
+              "snippet": {
+                "type": "string"
+              },
               "scrape": {
                 "type": "object",
                 "additionalProperties": true,
@@ -476,13 +511,14 @@
   },
   {
     "action_id": "common.list_files.v1",
-    "name": "List files",
+    "name": "List directory entries with metadata",
     "domain": "common",
-    "description": "List files and folders under a directory with basic metadata.",
+    "description": "Enumerate files and folders under a directory (optionally including hidden items) with path and type metadata for workflow navigation.",
     "tool_name": "list_files",
     "tags": [
       "filesystem",
-      "list",
+      "discovery",
+      "listing",
       "metadata"
     ],
     "arg_schema": {
@@ -542,14 +578,16 @@
   },
   {
     "action_id": "common.search_news.v1",
-    "name": "Search news",
+    "name": "Search recent news",
     "domain": "common",
-    "description": "Search recent news headlines and return the top results with snippets.",
+    "description": "Query a news search endpoint for recent headlines and snippets to support news monitoring and summarization workflows.",
     "tool_name": "search_news",
     "tags": [
       "search",
       "news",
-      "information"
+      "headlines",
+      "information",
+      "serp"
     ],
     "arg_schema": {
       "type": "object",
@@ -605,14 +643,15 @@
   },
   {
     "action_id": "common.classify_text.v1",
-    "name": "Classify text",
+    "name": "Classify text with LLM labels",
     "domain": "common",
-    "description": "Classify input text into one or more labels using the configured LLM.",
+    "description": "Assign one or more labels to input text using the configured LLM model for routing, triage, or content tagging.",
     "tool_name": "classify_text",
     "tags": [
       "classification",
       "llm",
-      "text"
+      "labels",
+      "text-analysis"
     ],
     "arg_schema": {
       "type": "object",
@@ -676,14 +715,15 @@
   },
   {
     "action_id": "common.read_file.v1",
-    "name": "Read file",
+    "name": "Read text file with safety limits",
     "domain": "common",
-    "description": "Read a UTF-8 text file with a safety size limit.",
+    "description": "Load a UTF-8 text file (respecting size and encoding limits) so downstream nodes can parse or summarize its contents.",
     "tool_name": "read_file",
     "tags": [
       "filesystem",
       "read",
-      "content"
+      "content",
+      "safety"
     ],
     "arg_schema": {
       "type": "object",
@@ -726,14 +766,16 @@
   },
   {
     "action_id": "common.summarize.v1",
-    "name": "Summarize text",
+    "name": "Summarize text with LLM",
     "domain": "common",
-    "description": "Summarize text with the LLM for concise overviews.",
+    "description": "Generate a concise summary of the provided text using the LLM, optionally constrained by sentence count.",
     "tool_name": "summarize",
     "tags": [
       "text",
       "summarize",
-      "nlp"
+      "nlp",
+      "abstraction",
+      "llm"
     ],
     "arg_schema": {
       "type": "object",
@@ -768,14 +810,16 @@
   },
   {
     "action_id": "common.scrape_web_page.v1",
-    "name": "Scrape and analyze web page",
+    "name": "Scrape and analyze web pages in-domain",
     "domain": "common",
-    "description": "Download web pages and analyze their contents against a natural-language request.",
+    "description": "Use crawl4ai to download web pages, stay within the source domain, and apply LLM analysis against a user request to decide if further same-site pages should be crawled.",
     "tool_name": "scrape_web_page",
     "tags": [
       "web",
       "scrape",
-      "analysis"
+      "analysis",
+      "in-domain",
+      "llm-guided"
     ],
     "arg_schema": {
       "type": "object",
@@ -821,14 +865,15 @@
   },
   {
     "action_id": "common.join_list.v1",
-    "name": "Join list into string",
+    "name": "Join list of strings",
     "domain": "common",
-    "description": "Join a list of strings using the provided separator.",
+    "description": "Concatenate a list of strings using a separator to produce a single formatted string for prompts or output.",
     "tool_name": "join_list",
     "tags": [
       "string",
       "list",
-      "join"
+      "join",
+      "formatting"
     ],
     "arg_schema": {
       "type": "object",
@@ -865,12 +910,13 @@
     "action_id": "common.split_list.v1",
     "name": "Split string into list",
     "domain": "common",
-    "description": "Split a string into a list using the provided separator.",
+    "description": "Split an input string by a separator into a list of values for downstream iteration or validation.",
     "tool_name": "split_list",
     "tags": [
       "string",
       "list",
-      "split"
+      "split",
+      "parsing"
     ],
     "arg_schema": {
       "type": "object",
@@ -905,13 +951,15 @@
   },
   {
     "action_id": "productivity.compose_outlook_email.v1",
-    "name": "Open Outlook and compose an email",
+    "name": "Compose Outlook email draft locally",
     "domain": "productivity",
-    "description": "Automatically open the local Outlook client, create a new email draft, and paste provided content into the body.",
+    "description": "Open the local Outlook client, create a draft, and paste provided content into the body so the user can review and send.",
     "tags": [
       "outlook",
       "email",
-      "productivity"
+      "drafting",
+      "productivity",
+      "client-automation"
     ],
     "arg_schema": {
       "type": "object",
