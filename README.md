@@ -8,6 +8,7 @@ VelvetFlow 是一个可复用的 LLM 驱动工作流规划与执行演示项目�
 ## 项目结构
 ```
 VelvetFlow (repo root)
+├── build_action_index.py        # 离线构建动作检索索引
 ├── velvetflow/
 │   ├── action_registry.py       # 从 tools/business_actions.json 读取动作，附加安全元数据
 │   ├── bindings.py              # 参数绑定 DSL 解析/校验
@@ -24,7 +25,6 @@ VelvetFlow (repo root)
 │   └── visualization.py         # 将 workflow 渲染为 JPEG DAG
 ├── tools/
 │   ├── business_actions.json    # HR/OPS/CRM 等示例动作库
-│   ├── build_action_index.py    # 离线构建动作检索索引
 │   └── ...
 ├── build_workflow.py                  # 端到端生成 + 可视化示例入口
 ├── execute_workflow.py                 # 从已保存 JSON 执行 workflow
@@ -33,7 +33,7 @@ VelvetFlow (repo root)
 
 ## 核心能力
 - **业务动作注册表**：`action_registry.py` 从 `tools/business_actions.json` 载入动作，自动补齐 `requires_approval` / `allowed_roles` 安全字段，并提供 `get_action_by_id` 查询。
-- **离线索引 + 在线混合检索**：`search_index.py` 使用 OpenAI `text-embedding-3-large` 将业务动作构建为关键词与 embedding 索引，可由 `tools/build_action_index.py` 独立运行生成；`search.py` 读取索引并使用 `FakeElasticsearch`（关键词计分）与 `VectorClient`（余弦相似度）混合排序，在线检索阶段仅对 query 进行 OpenAI embedding 再与索引中已有的动作 embedding 做匹配，`HybridActionSearchService` 提供工作流规划阶段的工具召回。
+- **离线索引 + 在线混合检索**：`search_index.py` 使用 OpenAI `text-embedding-3-large` 将业务动作构建为关键词与 embedding 索引，可由 `./build_action_index.py` 独立运行生成；`search.py` 读取索引并使用 `FakeElasticsearch`（关键词计分）与基于 Faiss 的向量检索（余弦相似度）混合排序，在线检索阶段仅对 query 进行 OpenAI embedding 再与索引中已有的动作 embedding 做匹配，`HybridActionSearchService` 提供工作流规划阶段的工具召回。
 - **工作流规划 Orchestrator**：`planner/orchestrator.py` 实现两阶段 `plan_workflow_with_two_pass`，在结构规划 + 补参后还会自动做动作合法性守卫、字段类型比对、缺省导出填充，再进入 LLM 修复循环：
   - 结构规划通过覆盖度检查、自动补边/修补循环 exports、审批节点检查等提升连通性与完备性，同时提前验证 loop body 的节点引用是否存在。
   - 补参阶段后增加“Action Guard”，若发现未注册或缺失的 `action_id` 会先尝试用混合检索一键替换，失败再引导 LLM 修复；并在条件/引用绑定上自动做类型矫正或生成可操作的错误提示。
@@ -59,28 +59,34 @@ VelvetFlow (repo root)
    ```bash
    export OPENAI_API_KEY="<your_api_key>"
    ```
-3. **运行端到端示例**
+3. **离线构建工具集索引（可选）**
+   - 若需根据最新的 `tools/business_actions.json` 重建关键词与向量索引，可运行：
+     ```bash
+     python build_action_index.py --output tools/action_index.json --model text-embedding-3-large
+     ```
+   - 该脚本会调用 OpenAI embedding 生成 `tools/action_index.json`，供在线阶段的混合检索（FakeElasticsearch + Faiss 向量检索）读取。
+4. **运行端到端示例**
    ```bash
    python build_workflow.py
    ```
    - 按提示输入自然语言需求（或直接回车使用默认示例），程序将构建混合检索服务、两阶段规划工作流，并打印最终 DSL。
    - 结果会持久化到 `workflow_output.json`，并生成 `workflow_dag.jpg`。
-4. **从已保存 JSON 执行工作流**
+5. **从已保存 JSON 执行工作流**
    ```bash
    python execute_workflow.py --workflow-json workflow_output.json
    ```
    - 执行器会解析绑定 DSL、运行条件/循环节点，并使用 `velvetflow/simulation_data.json` 生成模拟结果。
-5. **从 JSON 绘制工作流 DAG**
+6. **从 JSON 绘制工作流 DAG**
    ```bash
    python render_workflow_image.py --workflow-json workflow_output.json --output workflow_dag.jpg
    ```
    - 读取已有的 workflow JSON，将 DAG 渲染成 JPEG。对于 action 节点，会额外显示调用的工具名称和输入参数。
-6. **校验任意 workflow JSON（可选）**
+7. **校验任意 workflow JSON（可选）**
    ```bash
    python validate_workflow.py path/to/workflow.json --action-registry tools/business_actions.json --print-normalized
    ```
    - 复用规划阶段的静态规则与 Pydantic 校验，输出详细错误；`--print-normalized` 可打印归一化后的 DSL。
-7. **在现有 workflow 上迭代需求（可选）**
+8. **在现有 workflow 上迭代需求（可选）**
    ```bash
    python update_workflow.py path/to/workflow.json --requirement "新增审批环节" --output workflow_updated.json
    ```

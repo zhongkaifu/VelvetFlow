@@ -5,6 +5,7 @@
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
+import faiss
 import numpy as np
 from openai import OpenAI
 
@@ -83,37 +84,69 @@ class FakeElasticsearch:
         return {"hits": {"hits": hits}}
 
 
-class VectorClient:
+class FaissVectorIndex:
     """
-    内存版向量库：用于演示向量相似度。
+    使用 Faiss 的向量检索实现，用于在线余弦相似度搜索。
+
+    - 通过 IndexIDMap 保存 action_id 到内部整数 ID 的映射，便于去重和更新；
+    - 使用内积并在入库前做 L2 归一化，相当于计算余弦相似度；
+    - 支持增量 upsert（同 action_id 会覆盖旧向量）。
     """
 
     def __init__(self, dim: Optional[int]):
         self.dim = dim
-        self._store: Dict[str, np.ndarray] = {}
+        self._index: Optional[faiss.IndexIDMap] = None
+        self._id_map: Dict[str, int] = {}
+        self._reverse_id_map: Dict[int, str] = {}
+        self._next_internal_id = 0
 
-    def upsert(self, action_id: str, embedding: List[float]):
-        v = np.array(embedding, dtype=np.float32)
+    def _ensure_index(self) -> None:
+        if self._index is None:
+            if self.dim is None:
+                raise ValueError("向量维度未知，无法初始化 Faiss 索引")
+            self._index = faiss.IndexIDMap(faiss.IndexFlatIP(self.dim))
+
+    def upsert(self, action_id: str, embedding: List[float]) -> None:
+        vec = np.array(embedding, dtype=np.float32)
         if self.dim is None:
-            self.dim = v.shape[0]
-        if v.shape[0] != self.dim:
-            raise ValueError(f"向量维度不匹配: expected {self.dim}, got {v.shape[0]}")
-        self._store[action_id] = v
+            self.dim = vec.shape[0]
+        if vec.shape[0] != self.dim:
+            raise ValueError(f"向量维度不匹配: expected {self.dim}, got {vec.shape[0]}")
+
+        self._ensure_index()
+
+        if action_id in self._id_map:
+            old_internal_id = self._id_map[action_id]
+            self._index.remove_ids(np.array([old_internal_id], dtype=np.int64))
+
+        internal_id = self._next_internal_id
+        self._next_internal_id += 1
+        self._id_map[action_id] = internal_id
+        self._reverse_id_map[internal_id] = action_id
+
+        vec = vec.reshape(1, -1)
+        faiss.normalize_L2(vec)
+        self._index.add_with_ids(vec, np.array([internal_id], dtype=np.int64))
 
     def search(self, query_emb: List[float], top_k: int = 10) -> List[Tuple[str, float]]:
-        if not self._store:
+        if self._index is None or self._index.ntotal == 0:
             return []
-        q = np.array(query_emb, dtype=np.float32)
-        if self.dim and q.shape[0] != self.dim:
-            raise ValueError(f"查询向量维度不匹配: expected {self.dim}, got {q.shape[0]}")
+
+        q = np.array(query_emb, dtype=np.float32).reshape(1, -1)
+        if self.dim and q.shape[1] != self.dim:
+            raise ValueError(f"查询向量维度不匹配: expected {self.dim}, got {q.shape[1]}")
+
+        faiss.normalize_L2(q)
+        scores, ids = self._index.search(q, top_k)
         results: List[Tuple[str, float]] = []
-        for aid, emb in self._store.items():
-            num = float(np.dot(q, emb))
-            denom = float(np.linalg.norm(q) * np.linalg.norm(emb) + 1e-8)
-            sim = num / denom
-            results.append((aid, sim))
-        results.sort(key=lambda x: x[1], reverse=True)
-        return results[:top_k]
+        for internal_id, score in zip(ids[0], scores[0]):
+            if internal_id == -1:
+                continue
+            aid = self._reverse_id_map.get(int(internal_id))
+            if aid is None:
+                continue
+            results.append((aid, float(score)))
+        return results
 
 
 DEFAULT_EMBEDDING_MODEL = "text-embedding-3-large"
@@ -141,10 +174,11 @@ def _select_query_embed_fn(index: ActionIndex):
 
 
 class HybridActionSearchService:
-    def __init__(self, es: FakeElasticsearch, vector_client: VectorClient,
-                 embed_fn, alpha: float = 0.6):
+    def __init__(
+        self, es: FakeElasticsearch, vector_index: FaissVectorIndex, embed_fn, alpha: float = 0.6
+    ):
         self.es = es
-        self.vector_client = vector_client
+        self.vector_index = vector_index
         self.embed_fn = embed_fn
         self.alpha = alpha
 
@@ -188,7 +222,7 @@ class HybridActionSearchService:
                 bm25_scores[aid] = hit["_score"]
                 es_actions[aid] = src
 
-            vec_results = self.vector_client.search(q_emb, top_k=50)
+            vec_results = self.vector_index.search(q_emb, top_k=50)
             vec_scores: Dict[str, float] = {aid: score for aid, score in vec_results}
 
             all_ids = set(bm25_scores.keys()) | set(vec_scores.keys())
@@ -257,13 +291,13 @@ def build_search_service_from_index(
     alpha: float = 0.6,
 ) -> HybridActionSearchService:
     fake_es = FakeElasticsearch(index.actions)
-    vec_client = VectorClient(dim=index.embedding_dim or None)
+    vec_client = FaissVectorIndex(dim=index.embedding_dim or None)
     for action_id, emb in index.embeddings.items():
         vec_client.upsert(action_id, emb)
 
     return HybridActionSearchService(
         es=fake_es,
-        vector_client=vec_client,
+        vector_index=vec_client,
         embed_fn=embed_fn,
         alpha=alpha,
     )
