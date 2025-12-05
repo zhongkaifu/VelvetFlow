@@ -844,6 +844,19 @@ def _validate_nodes_recursive(
                             message=f"loop 节点 '{nid}' 的 source 无效：{src_err}",
                         )
                     )
+                elif isinstance(item_alias, str):
+                    nested_schema = _get_array_item_schema_from_output(
+                        normalize_reference_path(source),
+                        nodes_by_id,
+                        actions_by_id,
+                        loop_body_parents,
+                        context_node_id=nid,
+                    )
+                    if nested_schema:
+                        alias_schemas = dict(alias_schemas or {})
+                        alias_schemas[normalize_reference_path(item_alias)] = (
+                            nested_schema
+                        )
             elif isinstance(source, Mapping):
                 src_err = validate_param_binding(source)
                 if src_err:
@@ -1021,6 +1034,15 @@ def _validate_nodes_recursive(
                             )
                         )
                     else:
+                        body_nodes = (params.get("body_subgraph") or {}).get(
+                            "nodes", []
+                        )
+                        body_node_ids = {
+                            bn.get("id")
+                            for bn in body_nodes
+                            if isinstance(bn, Mapping)
+                            and isinstance(bn.get("id"), str)
+                        }
                         for idx, agg in enumerate(aggregates):
                             if not isinstance(agg, Mapping):
                                 continue
@@ -1077,9 +1099,9 @@ def _validate_nodes_recursive(
                                             field=f"exports.aggregates[{idx}].source",
                                             message=f"loop 节点 '{nid}' 的聚合 source 无效：{schema_err}",
                                         )
-                                    )
+                                )
 
-                            if not isinstance(from_node, str) or (params and from_node not in (params.get("body_subgraph", {}).get("nodes", []) or [])):
+                            if not isinstance(from_node, str) or from_node not in body_node_ids:
                                 errors.append(
                                     ValidationError(
                                         code="SCHEMA_MISMATCH",
