@@ -8,8 +8,15 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 from openai import OpenAI
 
-from velvetflow.action_registry import BUSINESS_ACTIONS, get_action_by_id
+from velvetflow.action_registry import get_action_by_id
 from velvetflow.logging_utils import child_span, log_event
+from velvetflow.search_index import (
+    DEFAULT_INDEX_PATH,
+    ActionIndex,
+    build_action_index,
+    build_vocab_from_actions,
+    load_default_actions,
+)
 
 
 class FakeElasticsearch:
@@ -109,41 +116,7 @@ class VectorClient:
         return results[:top_k]
 
 
-def build_vocab_from_actions(actions: List[Dict[str, Any]]) -> List[str]:
-    vocab = set()
-    for a in actions:
-        text = (
-            (a.get("name", "") or "")
-            + " "
-            + (a.get("description", "") or "")
-            + " "
-            + (a.get("domain", "") or "")
-            + " "
-            + " ".join(a.get("tags", []) or [])
-        ).lower()
-        tokens = text.split()
-        vocab.update(tokens)
-    return sorted(vocab)
-
-
-GLOBAL_VOCAB = build_vocab_from_actions(BUSINESS_ACTIONS)
-VOCAB_INDEX = {tok: idx for idx, tok in enumerate(GLOBAL_VOCAB)}
-
-
-def embed_text_local(text: str) -> List[float]:
-    tokens = (text or "").lower().split()
-    if not tokens or not GLOBAL_VOCAB:
-        return [0.0] * len(GLOBAL_VOCAB)
-    vec = np.zeros(len(GLOBAL_VOCAB), dtype=np.float32)
-    for t in tokens:
-        idx = VOCAB_INDEX.get(t)
-        if idx is not None:
-            vec[idx] += 1.0
-    vec = vec / (len(tokens) + 1e-8)
-    return vec.tolist()
-
-
-DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"
+DEFAULT_EMBEDDING_MODEL = "text-embedding-3-large"
 _openai_client: Optional[OpenAI] = None
 
 
@@ -160,6 +133,11 @@ def embed_text_openai(text: str, model: str = DEFAULT_EMBEDDING_MODEL) -> List[f
     if not response.data:
         raise ValueError("未从 OpenAI 获取到有效的 embedding 结果")
     return list(response.data[0].embedding)
+
+
+def _select_query_embed_fn(index: ActionIndex):
+    model = index.embedding_model or DEFAULT_EMBEDDING_MODEL
+    return lambda text: embed_text_openai(text, model=model)
 
 
 class HybridActionSearchService:
@@ -272,30 +250,57 @@ class HybridActionSearchService:
             return results
 
 
-def build_search_service_from_registry(
-    actions: List[Dict[str, Any]], *, alpha: float = 0.6
+def build_search_service_from_index(
+    index: ActionIndex,
+    *,
+    embed_fn,
+    alpha: float = 0.6,
 ) -> HybridActionSearchService:
-    """Construct a hybrid search service for a given action registry."""
-
-    fake_es = FakeElasticsearch(actions)
-    vec_client = VectorClient(dim=None)
-
-    for action in actions:
-        text = (
-            (action.get("name", "") or "")
-            + " "
-            + (action.get("description", "") or "")
-            + " "
-            + (action.get("domain", "") or "")
-            + " "
-            + " ".join(action.get("tags", []) or [])
-        )
-        emb = embed_text_openai(text, model=DEFAULT_EMBEDDING_MODEL)
-        vec_client.upsert(action["action_id"], emb)
+    fake_es = FakeElasticsearch(index.actions)
+    vec_client = VectorClient(dim=index.embedding_dim or None)
+    for action_id, emb in index.embeddings.items():
+        vec_client.upsert(action_id, emb)
 
     return HybridActionSearchService(
         es=fake_es,
         vector_client=vec_client,
-        embed_fn=lambda q: embed_text_openai(q, model=DEFAULT_EMBEDDING_MODEL),
+        embed_fn=embed_fn,
         alpha=alpha,
     )
+
+
+def build_search_service_from_actions(
+    actions: List[Dict[str, Any]],
+    *,
+    alpha: float = 0.6,
+    embedding_model: str = DEFAULT_EMBEDDING_MODEL,
+) -> HybridActionSearchService:
+    vocab = build_vocab_from_actions(actions)
+    embed_fn = lambda text: embed_text_openai(text, model=embedding_model)
+    index = build_action_index(
+        actions,
+        embed_fn=embed_fn,
+        vocab=vocab,
+        embedding_model=embedding_model,
+    )
+    query_embed_fn = _select_query_embed_fn(index)
+    return build_search_service_from_index(index, embed_fn=query_embed_fn, alpha=alpha)
+
+
+def build_default_search_service(
+    *, index_path: str = str(DEFAULT_INDEX_PATH), alpha: float = 0.6
+) -> HybridActionSearchService:
+    try:
+        index = ActionIndex.load(index_path)
+    except FileNotFoundError:
+        actions = load_default_actions()
+        vocab = build_vocab_from_actions(actions)
+        embed_fn = lambda text: embed_text_openai(text, model=DEFAULT_EMBEDDING_MODEL)
+        index = build_action_index(
+            actions,
+            embed_fn=embed_fn,
+            vocab=vocab,
+            embedding_model=DEFAULT_EMBEDDING_MODEL,
+        )
+    query_embed_fn = _select_query_embed_fn(index)
+    return build_search_service_from_index(index, embed_fn=query_embed_fn, alpha=alpha)

@@ -19,7 +19,8 @@ VelvetFlow (repo root)
 │   ├── models.py                # Workflow/Node/Edge 强类型模型与校验
 │   ├── planner/                 # 结构规划、补参与自修复模块
 │   ├── verification/            # 规划/更新/执行共享的静态校验模块
-│   ├── search.py                # Fake ES + 内存向量库的混合检索服务
+│   ├── search.py                # 在线检索：基于离线索引的混合排序
+│   ├── search_index.py          # 离线索引：关键词与向量索引的构建/持久化
 │   ├── simulation_data.json     # 执行动作的模拟返回模板
 │   └── visualization.py         # 将 workflow 渲染为 JPEG DAG
 ├── build_workflow.py                  # 端到端生成 + 可视化示例入口
@@ -29,7 +30,7 @@ VelvetFlow (repo root)
 
 ## 核心能力
 - **业务动作注册表**：`action_registry.py` 从 `business_actions.json` 载入动作，自动补齐 `requires_approval` / `allowed_roles` 安全字段，并提供 `get_action_by_id` 查询。
-- **混合检索**：`search.py` 提供 `FakeElasticsearch`（基于关键词计分）、`VectorClient`（余弦相似度）以及 `embed_text_openai`。`HybridActionSearchService` 将 BM25 与向量分数归一化后加权融合，返回动作候选。
+- **离线索引 + 在线混合检索**：`search_index.py` 使用 OpenAI `text-embedding-3-large` 将业务动作构建为关键词与 embedding 索引，可由 `tools/build_action_index.py` 独立运行生成；`search.py` 读取索引并使用 `FakeElasticsearch`（关键词计分）与 `VectorClient`（余弦相似度）混合排序，在线检索阶段仅对 query 进行 OpenAI embedding 再与索引中已有的动作 embedding 做匹配，`HybridActionSearchService` 提供工作流规划阶段的工具召回。
 - **工作流规划 Orchestrator**：`planner/orchestrator.py` 实现两阶段 `plan_workflow_with_two_pass`，在结构规划 + 补参后还会自动做动作合法性守卫、字段类型比对、缺省导出填充，再进入 LLM 修复循环：
   - 结构规划通过覆盖度检查、自动补边/修补循环 exports、审批节点检查等提升连通性与完备性，同时提前验证 loop body 的节点引用是否存在。
   - 补参阶段后增加“Action Guard”，若发现未注册或缺失的 `action_id` 会先尝试用混合检索一键替换，失败再引导 LLM 修复；并在条件/引用绑定上自动做类型矫正或生成可操作的错误提示。

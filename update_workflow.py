@@ -13,7 +13,7 @@ from pathlib import Path
 from velvetflow.config import OPENAI_MODEL
 from velvetflow.models import Workflow
 from velvetflow.planner import update_workflow_with_two_pass
-from velvetflow.search import build_search_service_from_registry
+from velvetflow.search import build_search_service_from_actions
 
 from validate_workflow import _load_action_registry
 
@@ -92,7 +92,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     try:
-        search_service = build_search_service_from_registry(action_registry)
+        search_service = build_search_service_from_actions(action_registry)
     except Exception as exc:  # noqa: BLE001 - surface model/IO issues
         print(f"构建动作检索服务失败: {exc}", file=sys.stderr)
         return 2

@@ -24,13 +24,16 @@ from velvetflow.action_registry import BUSINESS_ACTIONS
 from velvetflow.metrics import RunManager
 from velvetflow.planner import plan_workflow_with_two_pass
 from velvetflow.visualization import render_workflow_dag
-from velvetflow.search import HybridActionSearchService, build_search_service_from_registry
+from velvetflow.search import (
+    HybridActionSearchService,
+    build_default_search_service,
+)
 
 DEFAULT_WORKFLOW_JSON = "workflow_output.json"
 
 
-def build_default_search_service() -> HybridActionSearchService:
-    return build_search_service_from_registry(BUSINESS_ACTIONS)
+def create_default_search_service() -> HybridActionSearchService:
+    return build_default_search_service()
 
 
 def prompt_requirement() -> str:
@@ -45,7 +48,7 @@ def prompt_requirement() -> str:
 
 
 def plan_workflow(user_nl: str, search_service: Optional[HybridActionSearchService] = None):
-    hybrid_searcher = search_service or build_default_search_service()
+    hybrid_searcher = search_service or create_default_search_service()
     return plan_workflow_with_two_pass(
         nl_requirement=user_nl,
         search_service=hybrid_searcher,
