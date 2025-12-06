@@ -163,3 +163,38 @@ def test_contract_violation_ignored_when_filter_map_formats_array():
 
     assert not any(err.code == "CONTRACT_VIOLATION" for err in errors)
 
+
+def test_contract_violation_for_array_item_type_mismatch():
+    workflow = {
+        "workflow_name": "contract_array_item_mismatch",
+        "description": "",
+        "nodes": [
+            {"id": "start", "type": "start"},
+            {
+                "id": "search_news",
+                "type": "action",
+                "action_id": "common.search_news.v1",
+                "params": {"query": "AI"},
+            },
+            {
+                "id": "classify",
+                "type": "action",
+                "action_id": "common.classify_text.v1",
+                "params": {
+                    "text": "placeholder",
+                    "labels": {"__from__": "result_of.search_news.results"},
+                },
+            },
+            {"id": "end", "type": "end"},
+        ],
+        "edges": [
+            {"from": "start", "to": "search_news"},
+            {"from": "search_news", "to": "classify"},
+            {"from": "classify", "to": "end"},
+        ],
+    }
+
+    errors = validate_workflow_data(workflow, ACTION_REGISTRY)
+
+    assert any(err.code == "CONTRACT_VIOLATION" for err in errors)
+

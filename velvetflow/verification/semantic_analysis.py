@@ -183,7 +183,17 @@ def _schemas_compatible(expected: Optional[Mapping[str, Any]], actual: Optional[
     actual_types = _schema_types(actual)
     if not expected_types or not actual_types:
         return True
-    return bool(expected_types & actual_types)
+    overlapping = expected_types & actual_types
+    if not overlapping:
+        return False
+
+    if "array" in overlapping:
+        expected_items = expected.get("items") if isinstance(expected.get("items"), Mapping) else None
+        actual_items = actual.get("items") if isinstance(actual.get("items"), Mapping) else None
+        if expected_items or actual_items:
+            return _schemas_compatible(expected_items, actual_items)
+
+    return True
 
 
 def _apply_binding_aggregator(
