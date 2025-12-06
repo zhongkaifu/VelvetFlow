@@ -13,6 +13,7 @@ if str(ROOT_DIR) not in sys.path:
 
 from validate_workflow import validate_workflow_data
 from velvetflow.models import PydanticValidationError, Workflow
+from velvetflow.loop_dsl import index_loop_body_nodes
 from velvetflow.verification import precheck_loop_body_graphs
 
 ACTION_REGISTRY = json.loads(
@@ -740,4 +741,49 @@ def test_condition_field_on_loop_item_alias_should_be_allowed():
         and e.field == "field"
         for e in errors
     )
+
+
+def test_index_loop_body_nodes_includes_nested_loops():
+    workflow = {
+        "workflow_name": "nested_loop_mapping",
+        "nodes": [
+            {
+                "id": "outer_loop",
+                "type": "loop",
+                "params": {
+                    "loop_kind": "for_each",
+                    "source": [],
+                    "item_alias": "item",
+                    "body_subgraph": {
+                        "nodes": [
+                            {
+                                "id": "inner_loop",
+                                "type": "loop",
+                                "params": {
+                                    "loop_kind": "for_each",
+                                    "source": [],
+                                    "item_alias": "sub_item",
+                                    "body_subgraph": {
+                                        "nodes": [
+                                            {
+                                                "id": "inner_action",
+                                                "type": "action",
+                                                "action_id": "demo.action",
+                                                "params": {},
+                                            }
+                                        ]
+                                    },
+                                },
+                            }
+                        ]
+                    },
+                },
+            }
+        ],
+    }
+
+    mapping = index_loop_body_nodes(workflow)
+
+    assert mapping["inner_loop"] == "outer_loop"
+    assert mapping["inner_action"] == "inner_loop"
 

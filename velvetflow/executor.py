@@ -1204,12 +1204,27 @@ class DynamicActionExecutor:
         entry = body_graph.get("entry")
         exit_node = body_graph.get("exit")
 
-        body_node_ids: List[str] = []
-        for n in body_nodes:
-            if isinstance(n, Mapping):
+        def _collect_body_node_ids(nodes: List[Any]) -> List[str]:
+            collected: List[str] = []
+            for n in nodes:
+                if not isinstance(n, Mapping):
+                    continue
                 nid = n.get("id")
                 if isinstance(nid, str):
-                    body_node_ids.append(nid)
+                    collected.append(nid)
+                if n.get("type") == "loop":
+                    params = n.get("params") or {}
+                    nested_body = params.get("body_subgraph")
+                    if isinstance(nested_body, Mapping):
+                        nested_nodes = nested_body.get("nodes") or []
+                    elif isinstance(nested_body, list):
+                        nested_nodes = nested_body
+                    else:
+                        nested_nodes = []
+                    collected.extend(_collect_body_node_ids(list(nested_nodes)))
+            return collected
+
+        body_node_ids = _collect_body_node_ids(list(body_nodes))
 
         extra_node_models: Dict[str, Node] = {}
         try:

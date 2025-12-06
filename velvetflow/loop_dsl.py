@@ -23,7 +23,6 @@ def build_loop_output_schema(loop_params: Mapping[str, Any]) -> Optional[Dict[st
         "status": {"type": "string"},
         "loop_kind": {"type": "string"},
         "iterations": {"type": "array", "items": {"type": "object"}},
-        "accumulator": {"type": "object"},
     }
 
     items_spec = exports.get("items")
@@ -52,12 +51,31 @@ def index_loop_body_nodes(workflow: Mapping[str, Any]) -> Dict[str, str]:
     """Build a mapping of loop body node id -> parent loop id."""
 
     body_to_loop: Dict[str, str] = {}
+
+    def _visit_body(nodes: Iterable[Any], parent_loop_id: Optional[str]):
+        for child in nodes or []:
+            if not isinstance(child, Mapping):
+                continue
+
+            child_id = child.get("id")
+            if isinstance(child_id, str) and parent_loop_id:
+                body_to_loop[child_id] = parent_loop_id
+
+            if child.get("type") == "loop":
+                params = child.get("params") or {}
+                body = params.get("body_subgraph")
+                if isinstance(body, Mapping):
+                    body_nodes = body.get("nodes") or []
+                elif isinstance(body, list):
+                    body_nodes = body
+                else:
+                    body_nodes = []
+                _visit_body(body_nodes, child_id if isinstance(child_id, str) else None)
+
     for node in workflow.get("nodes", []):
-        if not isinstance(node, Mapping):
+        if not isinstance(node, Mapping) or node.get("type") != "loop":
             continue
-        if node.get("type") != "loop":
-            continue
-        loop_id = node.get("id")
+        loop_id = node.get("id") if isinstance(node.get("id"), str) else None
         params = node.get("params") or {}
         body = params.get("body_subgraph")
         if isinstance(body, Mapping):
@@ -66,10 +84,8 @@ def index_loop_body_nodes(workflow: Mapping[str, Any]) -> Dict[str, str]:
             body_nodes = body
         else:
             body_nodes = []
+        _visit_body(body_nodes, loop_id)
 
-        for child in body_nodes or []:
-            if isinstance(child, Mapping) and isinstance(child.get("id"), str):
-                body_to_loop[child["id"]] = loop_id
     return body_to_loop
 
 

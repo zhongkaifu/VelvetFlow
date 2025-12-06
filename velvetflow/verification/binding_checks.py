@@ -237,6 +237,15 @@ def _check_output_path_against_schema(
         if not loop_schema:
             return f"loop 节点 '{node_id}' 缺少 exports/out_schema 等输出定义，无法引用"
 
+        allowed_meta_fields = {"status", "loop_kind", "iterations"}
+        if rest_path:
+            root_field = rest_path[0]
+            if root_field not in {"items", "exports", "aggregates", *allowed_meta_fields}:
+                return (
+                    f"loop 节点 '{node_id}' 的输出只能通过 exports.items/exports.aggregates "
+                    f"或内置状态字段 {', '.join(sorted(allowed_meta_fields))} 暴露，找不到字段 '{root_field}'"
+                )
+
         if context_parent_loop and context_parent_loop == node_id and rest_path:
             if rest_path[0] == "exports":
                 return (
