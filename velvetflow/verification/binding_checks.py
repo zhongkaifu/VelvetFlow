@@ -391,7 +391,13 @@ def _get_output_schema_at_path(
         normalized_path = _normalize_field_tokens(list(effective_path))
         if normalized_path and normalized_path[-1] in {"length", "count"}:
             container_schema = _walk_schema_with_tokens(loop_schema, normalized_path[:-1])
-            if isinstance(container_schema, Mapping):
+            properties = (
+                container_schema.get("properties")
+                if isinstance(container_schema, Mapping)
+                and isinstance(container_schema.get("properties"), Mapping)
+                else {}
+            )
+            if normalized_path[-1] not in properties and isinstance(container_schema, Mapping):
                 container_type = container_schema.get("type")
                 if normalized_path[-1] == "length" and container_type == "array":
                     return {"type": "integer"}
@@ -404,7 +410,13 @@ def _get_output_schema_at_path(
     normalized_path = _normalize_field_tokens(list(rest_path))
     if normalized_path and normalized_path[-1] in {"length", "count"}:
         container_schema = _walk_schema_with_tokens(schema_obj, normalized_path[:-1])
-        if isinstance(container_schema, Mapping):
+        properties = (
+            container_schema.get("properties")
+            if isinstance(container_schema, Mapping)
+            and isinstance(container_schema.get("properties"), Mapping)
+            else {}
+        )
+        if normalized_path[-1] not in properties and isinstance(container_schema, Mapping):
             container_type = container_schema.get("type")
             if normalized_path[-1] == "length" and container_type == "array":
                 return {"type": "integer"}
@@ -505,6 +517,11 @@ def _get_builtin_field_schema(schema: Mapping[str, Any], field: str) -> Optional
 
     field = str(field)
     typ = schema.get("type")
+    properties = schema.get("properties") if isinstance(schema.get("properties"), Mapping) else {}
+
+    # Prefer explicit schema definitions over builtin fallbacks when the field is defined.
+    if field in properties:
+        return None
 
     if field == "length" and typ == "array":
         return {"type": "integer"}
