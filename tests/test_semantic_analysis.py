@@ -122,6 +122,45 @@ def test_contract_violation_ignored_when_aggregator_transforms_format():
     assert not any(err.code == "CONTRACT_VIOLATION" for err in errors)
 
 
+def test_count_aggregator_matches_expected_integer():
+    workflow = {
+        "workflow_name": "contract_with_count",
+        "description": "",
+        "nodes": [
+            {"id": "start", "type": "start"},
+            {
+                "id": "get_temperature",
+                "type": "action",
+                "action_id": "hr.get_today_temperatures.v1",
+                "params": {"date": "2024-01-01"},
+            },
+            {
+                "id": "record_event",
+                "type": "action",
+                "action_id": "hr.record_health_event.v1",
+                "params": {
+                    "event_type": "健康预警",
+                    "date": {"__from__": "result_of.get_temperature.date"},
+                    "abnormal_count": {
+                        "__from__": "result_of.get_temperature.data",
+                        "__agg__": "count",
+                    },
+                },
+            },
+            {"id": "end", "type": "end"},
+        ],
+        "edges": [
+            {"from": "start", "to": "get_temperature"},
+            {"from": "get_temperature", "to": "record_event"},
+            {"from": "record_event", "to": "end"},
+        ],
+    }
+
+    errors = validate_workflow_data(workflow, ACTION_REGISTRY)
+
+    assert not any(err.code == "CONTRACT_VIOLATION" for err in errors)
+
+
 def test_contract_violation_ignored_when_filter_map_formats_array():
     workflow = {
         "workflow_name": "contract_with_filter_map",
@@ -191,6 +230,44 @@ def test_contract_violation_for_array_item_type_mismatch():
             {"from": "start", "to": "search_news"},
             {"from": "search_news", "to": "classify"},
             {"from": "classify", "to": "end"},
+        ],
+    }
+
+    errors = validate_workflow_data(workflow, ACTION_REGISTRY)
+
+    assert any(err.code == "CONTRACT_VIOLATION" for err in errors)
+
+
+def test_aggregator_input_type_mismatch_is_reported():
+    workflow = {
+        "workflow_name": "contract_with_bad_count_input",
+        "description": "",
+        "nodes": [
+            {"id": "start", "type": "start"},
+            {
+                "id": "compose_email",
+                "type": "action",
+                "action_id": "productivity.compose_outlook_email.v1",
+                "params": {"email_content": "hello"},
+            },
+            {
+                "id": "record_event",
+                "type": "action",
+                "action_id": "hr.record_health_event.v1",
+                "params": {
+                    "event_type": "alert",
+                    "abnormal_count": {
+                        "__from__": "result_of.compose_email.message",
+                        "__agg__": "count",
+                    },
+                },
+            },
+            {"id": "end", "type": "end"},
+        ],
+        "edges": [
+            {"from": "start", "to": "compose_email"},
+            {"from": "compose_email", "to": "record_event"},
+            {"from": "record_event", "to": "end"},
         ],
     }
 
