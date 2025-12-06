@@ -440,3 +440,90 @@ def test_loop_aggregates_count_reference_allowed_for_plain_string():
     errors = validate_workflow_data(workflow, ACTION_REGISTRY)
 
     assert errors == []
+
+
+def test_loop_invalid_accumulator_reference_is_repaired():
+    workflow = {
+        "workflow_name": "news_summary",
+        "description": "",
+        "nodes": [
+            {"id": "start", "type": "start"},
+            {
+                "id": "search_news_nvidia",
+                "type": "action",
+                "action_id": "common.search_news.v1",
+                "display_name": "搜索Nvidia相关新闻",
+                "params": {"query": "Nvidia", "limit": 5, "timeout": 8},
+            },
+            {
+                "id": "loop_summarize_nvidia",
+                "type": "loop",
+                "display_name": "循环总结Nvidia新闻",
+                "params": {
+                    "loop_kind": "for_each",
+                    "source": {"__from__": "result_of.search_news_nvidia.results"},
+                    "item_alias": "news_item",
+                    "body_subgraph": {
+                        "nodes": [
+                            {
+                                "id": "summarize_nvidia",
+                                "type": "action",
+                                "action_id": "common.summarize.v1",
+                                "display_name": "总结Nvidia新闻内容",
+                                "params": {
+                                    "text": "{{news_item.snippet}}",
+                                    "max_sentences": 3,
+                                },
+                                "parent_node_id": "loop_summarize_nvidia",
+                            }
+                        ],
+                        "entry": "summarize_nvidia",
+                        "exit": "summarize_nvidia",
+                    },
+                    "exports": {
+                        "items": {
+                            "from_node": "summarize_nvidia",
+                            "fields": ["summary"],
+                        }
+                    },
+                },
+            },
+            {
+                "id": "send_email",
+                "type": "action",
+                "action_id": "productivity.compose_outlook_email.v1",
+                "display_name": "发送新闻总结邮件",
+                "params": {
+                    "email_content": {
+                        "__from__": "result_of.loop_summarize_nvidia.accumulator",
+                        "__agg__": "format_join",
+                        "format": "Nvidia新闻总结：{summary}",
+                    },
+                    "emailTo": "user@example.com",
+                },
+            },
+            {"id": "end", "type": "end"},
+        ],
+        "edges": [
+            {"from": "start", "to": "search_news_nvidia"},
+            {"from": "search_news_nvidia", "to": "loop_summarize_nvidia"},
+            {"from": "loop_summarize_nvidia", "to": "send_email"},
+            {"from": "send_email", "to": "end"},
+        ],
+    }
+
+    workflow_model = Workflow.model_validate(workflow)
+    workflow_dict = workflow_model.model_dump(by_alias=True)
+    errors = validate_completed_workflow(workflow_dict, ACTION_REGISTRY)
+
+    assert any(
+        err.code == "SCHEMA_MISMATCH"
+        and "loop_summarize_nvidia" in (err.message or "")
+        and "accumulator" in (err.message or "")
+        for err in errors
+    )
+
+    send_email = next(
+        node for node in workflow_dict.get("nodes", []) if node.get("id") == "send_email"
+    )
+    assert "email_content" not in (send_email.get("params") or {})

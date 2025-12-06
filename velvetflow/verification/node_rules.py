@@ -294,11 +294,14 @@ def _validate_nodes_recursive(
                     if "__from__" in obj:
                         schema_err = validate_param_binding(obj)
                         if schema_err:
+                            field_label = path_prefix or "params"
+                            if path_prefix and not path_prefix.startswith("params"):
+                                field_label = f"params.{path_prefix}"
                             errors.append(
                                 ValidationError(
                                     code="SCHEMA_MISMATCH",
                                     node_id=nid,
-                                    field=path_prefix or "params",
+                                    field=field_label,
                                     message=f"action 节点 '{nid}' 的参数绑定（{path_prefix or '<root>'}）无效：{schema_err}",
                                 )
                             )
@@ -343,11 +346,14 @@ def _validate_nodes_recursive(
                             )
                             if schema_err:
                                 suffix = f"[{src_idx}]" if len(sources) > 1 else ""
+                                field_label = path_prefix or "params"
+                                if path_prefix and not path_prefix.startswith("params"):
+                                    field_label = f"params.{path_prefix}"
                                 errors.append(
                                     ValidationError(
                                         code="SCHEMA_MISMATCH",
                                         node_id=nid,
-                                        field=path_prefix or "params",
+                                        field=field_label,
                                         message=(
                                             f"action 节点 '{nid}' 的参数绑定（{path_prefix or '<root>'}）引用无效"
                                             f"{suffix}：{schema_err}"
