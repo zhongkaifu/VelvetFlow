@@ -124,15 +124,12 @@ def _normalize_sub_graph_nodes(
     non_str_indices = [idx for idx, value in enumerate(raw) if not isinstance(value, str)]
     normalized = [value for value in raw if isinstance(value, str)]
     missing_nodes = [nid for nid in normalized if nid not in builder.nodes]
-    loop_nodes = [nid for nid in normalized if builder.nodes.get(nid, {}).get("type") == "loop"]
 
-    if non_str_indices or missing_nodes or loop_nodes:
+    if non_str_indices or missing_nodes:
         return [], {
             "message": "sub_graph_nodes 应为已创建节点的 id 字符串列表。",
             "invalid_indices": non_str_indices,
             "missing_nodes": missing_nodes,
-            "loop_nodes": loop_nodes,
-            "hint": "不允许将 loop 节点放入其他 loop 的 body_subgraph（禁止嵌套循环）",
         }
 
     return normalized, None
@@ -571,7 +568,8 @@ def plan_workflow_structure_with_llm(
         "3. 不允许为了模仿示例，而在与当前任务无关的情况下引入“健康/体温/新闻/Nvidia/员工/HR”等具体词汇。\n\n"
         "4. 循环节点的内部数据只能通过 loop.exports 暴露给外部，下游引用循环结果时必须使用 result_of.<loop_id>.items（或 result_of.<loop_id>.exports.items）/ result_of.<loop_id>.aggregates.*，禁止直接引用 body 子图的节点。\n"
         "5. loop.exports 应定义在 params.exports 下，请勿写在 body_subgraph 内。\n"
-        "6. 禁止嵌套循环：loop 节点不能放入其他 loop 的 body_subgraph，parent_node_id 也不能指向 loop 节点。\n\n"
+        "6. 允许嵌套循环，但需要通过 parent_node_id 或 sub_graph_nodes 明确将子循环纳入父循环的 body_subgraph；"
+        "   外部节点引用循环内部数据时仍需通过 loop.exports，而不是直接指向子图节点。\n\n"
         "【覆盖度要求】\n"
         "你必须确保工作流结构能够完全覆盖用户自然语言需求中的每个子任务，而不是只覆盖前半部分：\n"
         "例如，如果需求包含：触发 + 查询 + 筛选 + 总结 + 通知，你不能只实现触发 + 查询，\n"
@@ -742,12 +740,6 @@ def plan_workflow_structure_with_llm(
                     tool_result = {
                         "status": "error",
                         "message": "parent_node_id 需要是字符串或 null。",
-                    }
-                elif isinstance(parent_node_id, str) and builder.nodes.get(parent_node_id, {}).get("type") == "loop":
-                    tool_result = {
-                        "status": "error",
-                        "message": "不允许在 loop 里面再创建 loop（禁止嵌套循环）。",
-                        "parent_node_id": parent_node_id,
                     }
                 elif missing_fields or invalid_fields:
                     tool_result = {
@@ -922,16 +914,6 @@ def plan_workflow_structure_with_llm(
                     tool_result = {
                         "status": "error",
                         "message": "parent_node_id 需要是字符串或 null。",
-                    }
-                elif (
-                    expected_type == "loop"
-                    and isinstance(parent_node_id, str)
-                    and builder.nodes.get(parent_node_id, {}).get("type") == "loop"
-                ):
-                    tool_result = {
-                        "status": "error",
-                        "message": "不允许把 loop 放入其他 loop（禁止嵌套循环）。",
-                        "parent_node_id": parent_node_id,
                     }
                 elif sub_graph_error:
                     tool_result = {"status": "error", **sub_graph_error}

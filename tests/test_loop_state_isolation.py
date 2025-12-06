@@ -66,6 +66,77 @@ def test_loop_body_results_are_cleared_between_iterations():
     ]
 
 
+def test_nested_loop_results_do_not_leak_across_outer_iterations():
+    workflow_dict = {
+        "workflow_name": "nested_loop_isolation",
+        "nodes": [
+            {
+                "id": "outer_loop",
+                "type": "loop",
+                "params": {
+                    "loop_kind": "for_each",
+                    "source": [[1, 2], [3]],
+                    "item_alias": "group",
+                    "body_subgraph": {
+                        "nodes": [
+                            {
+                                "id": "inner_loop",
+                                "type": "loop",
+                                "params": {
+                                    "loop_kind": "for_each",
+                                    "source": {"__from__": "loop.group"},
+                                    "item_alias": "item",
+                                    "body_subgraph": {
+                                        "nodes": [
+                                            {
+                                                "id": "record_item",
+                                                "type": "action",
+                                                "action_id": "productivity.compose_outlook_email.v1",
+                                                "params": {"email_content": {"__from__": "loop.item"}},
+                                            }
+                                        ]
+                                    },
+                                    "exports": {
+                                        "items": {
+                                            "from_node": "record_item",
+                                            "fields": ["email_content"],
+                                        }
+                                    },
+                                },
+                            }
+                        ]
+                    },
+                    "exports": {
+                        "items": {
+                            "from_node": "inner_loop",
+                            "fields": ["items"],
+                        }
+                    },
+                },
+            }
+        ],
+    }
+
+    workflow = Workflow.model_validate(workflow_dict)
+    executor = DynamicActionExecutor(
+        workflow,
+        simulations={
+            "productivity.compose_outlook_email.v1": {
+                "result": {"email_content": "{{email_content}}"}
+            }
+        },
+    )
+
+    results = executor.run()
+
+    assert "record_item" not in results
+    assert "inner_loop" not in results
+    assert results["outer_loop"]["items"] == [
+        {"items": [{"email_content": "1"}, {"email_content": "2"}]},
+        {"items": [{"email_content": "3"}]},
+    ]
+
+
 def test_condition_branch_inside_loop_body_uses_true_target():
     workflow_dict = {
         "workflow_name": "loop_condition_branch",
