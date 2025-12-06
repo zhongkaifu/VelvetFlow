@@ -2,6 +2,7 @@
 # License: BSD 3-Clause License
 
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 # Provide a lightweight stub to satisfy optional OpenAI imports during tests.
@@ -67,9 +68,9 @@ def test_executor_advances_from_action_to_loop():
         }
     )
 
-    executor = DynamicActionExecutor(
-        workflow, simulations="velvetflow/simulation_data.json"
-    )
+    simulation_path = Path(__file__).resolve().parent.parent / "simulation_data.json"
+
+    executor = DynamicActionExecutor(workflow, simulations=str(simulation_path))
     results = executor.run()
 
     assert "loop_check_temperature" in results
