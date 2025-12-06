@@ -725,6 +725,10 @@ def _should_continue_crawling(
     if not api_token:
         return len(pages) >= 1, []
 
+    model = llm_provider
+    if model.startswith("openai/"):
+        model = model.split("/", 1)[1]
+
     client = OpenAI(api_key=api_token)
 
     page_summaries = []
@@ -759,7 +763,7 @@ def _should_continue_crawling(
     ).strip()
 
     response = client.chat.completions.create(
-        model=llm_provider,
+        model=model,
         messages=[{"role": "system", "content": "You are a crawl coordinator."}, {"role": "user", "content": prompt}],
         max_tokens=256,
     )
