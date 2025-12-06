@@ -27,6 +27,28 @@ class PydanticValidationError(Exception):
     def errors(self) -> List[Dict[str, Any]]:  # pragma: no cover - trivial
         return self._errors
 
+    def __str__(self) -> str:  # pragma: no cover - simple formatting
+        """Return a readable summary of validation issues for logging."""
+
+        parts: List[str] = []
+        for err in self._errors:
+            loc = err.get("loc") or ()
+            if isinstance(loc, (list, tuple)):
+                location = ".".join(str(part) for part in loc)
+            else:
+                location = str(loc)
+            message = err.get("msg") or "validation failed"
+            if location:
+                parts.append(f"{location}: {message}")
+            else:
+                parts.append(str(message))
+
+        if parts:
+            return "; ".join(parts)
+        return super().__str__()
+
+    __repr__ = __str__
+
 
 # Backwards-compatible stubs so imports in the rest of the code keep working.
 def ConfigDict(**_: Any) -> Dict[str, Any]:  # pragma: no cover - compatibility
