@@ -354,3 +354,89 @@ def test_loop_export_length_reference_allowed_for_plain_string():
     errors = validate_workflow_data(workflow, ACTION_REGISTRY)
 
     assert errors == []
+
+
+def test_loop_aggregates_count_reference_allowed_for_plain_string():
+    workflow = {
+        "workflow_name": "health_monitor",
+        "description": "",
+        "nodes": [
+            {"id": "start", "type": "start"},
+            {
+                "id": "fetch_temperatures",
+                "type": "action",
+                "action_id": "hr.get_today_temperatures.v1",
+                "params": {"date": "today"},
+            },
+            {
+                "id": "loop_employees",
+                "type": "loop",
+                "params": {
+                    "loop_kind": "for_each",
+                    "source": {"__from__": "result_of.fetch_temperatures.data"},
+                    "item_alias": "employee",
+                    "body_subgraph": {
+                        "nodes": [
+                            {
+                                "id": "record_health",
+                                "type": "action",
+                                "action_id": "hr.update_employee_health_profile.v1",
+                                "params": {
+                                    "employee_id": "employee.employee_id",
+                                    "last_temperature": "employee.temperature",
+                                    "last_check_date": "employee.date",
+                                    "status": "high_temperature",
+                                },
+                            }
+                        ],
+                        "entry": "record_health",
+                        "exit": "record_health",
+                    },
+                    "exports": {
+                        "items": {
+                            "from_node": "record_health",
+                            "fields": ["employee_id", "last_temperature", "status"],
+                            "mode": "collect",
+                        },
+                        "aggregates": [
+                            {
+                                "name": "record_total",
+                                "kind": "count",
+                                "from_node": "record_health",
+                                "source": "result_of.loop_employees.items",
+                                "expr": {"kind": "count"},
+                            },
+                            {
+                                "name": "max_temperature",
+                                "kind": "max",
+                                "from_node": "record_health",
+                                "source": "result_of.loop_employees.items",
+                                "expr": {"kind": "max", "field": "last_temperature"},
+                            },
+                        ],
+                    },
+                },
+            },
+            {
+                "id": "generate_warning_report",
+                "type": "action",
+                "action_id": "hr.record_health_event.v1",
+                "params": {
+                    "event_type": "健康预警报告",
+                    "date": {"__from__": "result_of.fetch_temperatures.date"},
+                    "abnormal_count": "result_of.loop_employees.aggregates.count",
+                },
+            },
+            {"id": "end", "type": "end"},
+        ],
+        "edges": [
+            {"from": "start", "to": "fetch_temperatures"},
+            {"from": "fetch_temperatures", "to": "loop_employees"},
+            {"from": "loop_employees", "to": "generate_warning_report"},
+            {"from": "generate_warning_report", "to": "end"},
+        ],
+    }
+
+    errors = validate_workflow_data(workflow, ACTION_REGISTRY)
+
+    assert errors == []

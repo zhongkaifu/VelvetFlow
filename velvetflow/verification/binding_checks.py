@@ -389,19 +389,27 @@ def _get_output_schema_at_path(
 
         effective_path = rest_path[1:] if rest_path and rest_path[0] == "exports" else rest_path
         normalized_path = _normalize_field_tokens(list(effective_path))
-        if normalized_path and normalized_path[-1] == "length":
-            array_schema = _walk_schema_with_tokens(loop_schema, normalized_path[:-1])
-            if isinstance(array_schema, Mapping) and array_schema.get("type") == "array":
-                return {"type": "integer"}
+        if normalized_path and normalized_path[-1] in {"length", "count"}:
+            container_schema = _walk_schema_with_tokens(loop_schema, normalized_path[:-1])
+            if isinstance(container_schema, Mapping):
+                container_type = container_schema.get("type")
+                if normalized_path[-1] == "length" and container_type == "array":
+                    return {"type": "integer"}
+                if normalized_path[-1] == "count" and container_type in {"array", "object", None}:
+                    return {"type": "integer"}
 
         return _walk_schema_with_tokens(loop_schema, normalized_path)
 
     schema_obj = _get_node_output_schema(node, actions_by_id) or {}
     normalized_path = _normalize_field_tokens(list(rest_path))
-    if normalized_path and normalized_path[-1] == "length":
-        array_schema = _walk_schema_with_tokens(schema_obj, normalized_path[:-1])
-        if isinstance(array_schema, Mapping) and array_schema.get("type") == "array":
-            return {"type": "integer"}
+    if normalized_path and normalized_path[-1] in {"length", "count"}:
+        container_schema = _walk_schema_with_tokens(schema_obj, normalized_path[:-1])
+        if isinstance(container_schema, Mapping):
+            container_type = container_schema.get("type")
+            if normalized_path[-1] == "length" and container_type == "array":
+                return {"type": "integer"}
+            if normalized_path[-1] == "count" and container_type in {"array", "object", None}:
+                return {"type": "integer"}
 
     return _walk_schema_with_tokens(schema_obj, normalized_path)
 
@@ -499,6 +507,9 @@ def _get_builtin_field_schema(schema: Mapping[str, Any], field: str) -> Optional
     typ = schema.get("type")
 
     if field == "length" and typ == "array":
+        return {"type": "integer"}
+
+    if field == "count" and typ in {"array", "object", None}:
         return {"type": "integer"}
 
     if field == "id" and typ == "object":
