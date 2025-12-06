@@ -79,6 +79,41 @@ def test_binding_context_resolves_length_field():
     assert params["abnormal_count"] == 3
 
 
+def test_binding_context_resolves_count_field():
+    workflow = Workflow.model_validate(
+        {
+            "nodes": [
+                {
+                    "id": "loop_check_temperature",
+                    "type": "action",
+                    "action_id": "hr.check_temperature",
+                    "params": {},
+                }
+            ],
+            "edges": [],
+        }
+    )
+    ctx = BindingContext(
+        workflow,
+        {"loop_check_temperature": {"aggregates": {"high": 2, "normal": 5}}},
+    )
+
+    assert ctx.get_value("result_of.loop_check_temperature.aggregates.count") == 2
+
+    node = Node(
+        id="generate_warning_report",
+        type="action",
+        action_id="hr.record_health_event.v1",
+        params={
+            "abnormal_count": "${result_of.loop_check_temperature.aggregates.count}",
+        },
+    )
+
+    params = eval_node_params(node, ctx)
+
+    assert params["abnormal_count"] == 2
+
+
 def test_eval_params_canonicalizes_unresolved_placeholders():
     workflow = Workflow.model_validate({"nodes": [{"id": "start", "type": "start"}], "edges": []})
     ctx = BindingContext(workflow, {"start": {"status": "ok"}})

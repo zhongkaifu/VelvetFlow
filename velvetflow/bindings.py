@@ -411,11 +411,19 @@ class BindingContext:
                 continue
 
             if typ == "array":
+                if name in {"length", "count"}:
+                    current = {"type": "integer"}
+                    idx += 1
+                    continue
                 current = current.get("items") or {}
                 # array 本身不消费字段名，继续在 items 上检查同一个字段
                 continue
 
             if typ == "object" or typ is None:
+                if name == "count":
+                    current = {"type": "integer"}
+                    idx += 1
+                    continue
                 props = current.get("properties") or {}
                 if name not in props:
                     return False
@@ -458,6 +466,13 @@ class BindingContext:
             field_path = parts[2:]
             if field_path and field_path[0] == "exports":
                 field_path = field_path[1:]
+            if (
+                field_path
+                and field_path[-1] == "count"
+                and self._schema_has_path(loop_schema, field_path[:-1])
+            ):
+                return
+
             if not self._schema_has_path(loop_schema, field_path):
                 raise ValueError(
                     f"__from__ 路径 '{src_path}' 引用了 loop '{node_id}' 输出中不存在的字段"
@@ -486,6 +501,13 @@ class BindingContext:
                 raise ValueError(
                     f"__from__ 路径 '{src_path}' 引用了 action '{action_id}' 输入中不存在的字段"
                 )
+            return
+
+        if (
+            field_path
+            and field_path[-1] == "count"
+            and self._schema_has_path(output_schema, field_path[:-1])
+        ):
             return
 
         if not self._schema_has_path(output_schema, field_path):
@@ -597,6 +619,16 @@ class BindingContext:
                     except Exception:
                         raise TypeError(
                             f"{_fmt_path()}: 值类型为 {type(cur).__name__}，不支持 length 访问"
+                        )
+                    _append_token(p)
+                    continue
+
+                if p == "count":
+                    try:
+                        cur = len(cur)
+                    except Exception:
+                        raise TypeError(
+                            f"{_fmt_path()}: 值类型为 {type(cur).__name__}，不支持 count 访问"
                         )
                     _append_token(p)
                     continue

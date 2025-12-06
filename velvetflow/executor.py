@@ -452,7 +452,7 @@ class DynamicActionExecutor:
             return obj
 
         def _apply_builtin_field(value: Any, name: str) -> Any:
-            if name == "length":
+            if name in {"length", "count"}:
                 try:
                     return len(value)
                 except Exception:
@@ -500,7 +500,7 @@ class DynamicActionExecutor:
         return current
 
     def _extract_export_values(self, source: Any, field: Optional[str]) -> List[Any]:
-        if field == "length":
+        if field in {"length", "count"}:
             value = self._get_field_value(source, field)
             return [value]
 
@@ -786,7 +786,7 @@ class DynamicActionExecutor:
             if val is None:
                 return []
 
-            if field == "length":
+            if field in {"length", "count"}:
                 extracted = self._get_field_value(val, field)
                 return [] if extracted is None else [extracted]
 
