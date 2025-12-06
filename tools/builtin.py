@@ -16,6 +16,7 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from html.parser import HTMLParser
 from pathlib import Path
+import uuid
 from typing import Any, Awaitable, Callable, Dict, List, Mapping, Optional, Tuple
 
 try:
@@ -1099,6 +1100,83 @@ def business_action(
     }
 
 
+def create_incident(title: str, description: str | None = None, severity: str | None = None) -> Dict[str, str]:
+    """Simulate creating an incident ticket and return a deterministic payload."""
+
+    incident_id = f"inc-{uuid.uuid4().hex[:8]}"
+    return {
+        "incident_id": incident_id,
+        "status": "created",
+        "title": title,
+        "description": description or "",
+        "severity": severity or "",
+    }
+
+
+def create_lead(name: str, email: str | None = None, source: str | None = None) -> Dict[str, str]:
+    """Record a lightweight CRM lead entry and echo back normalized fields."""
+
+    lead_id = f"lead-{uuid.uuid4().hex[:8]}"
+    return {
+        "lead_id": lead_id,
+        "status": "created",
+        "name": name,
+        "email": email or "",
+        "source": source or "",
+    }
+
+
+def log_interaction(lead_id: str, note: str) -> Dict[str, str]:
+    """Append an interaction note to a CRM lead timeline."""
+
+    interaction_id = f"note-{uuid.uuid4().hex[:8]}"
+    return {
+        "status": "logged",
+        "interaction_id": interaction_id,
+        "lead_id": lead_id,
+        "note": note,
+    }
+
+
+def get_today_temperatures(date: str) -> Dict[str, Any]:
+    """Return a mock temperature list for the provided date."""
+
+    sample = [
+        {"employee_id": "emp-1001", "temperature": 36.6},
+        {"employee_id": "emp-1002", "temperature": 37.2},
+    ]
+    return {"date": date, "data": sample}
+
+
+def record_health_event(event_type: str, date: str | None = None, abnormal_count: int | None = None) -> Dict[str, Any]:
+    """Store a simplified health event record."""
+
+    event_id = f"health-{uuid.uuid4().hex[:8]}"
+    return {
+        "status": "recorded",
+        "event_id": event_id,
+        "event_type": event_type,
+        "date": date or "",
+        "abnormal_count": abnormal_count if abnormal_count is not None else 0,
+    }
+
+
+def update_employee_health_profile(
+    employee_id: str,
+    last_check_date: str | None = None,
+    last_temperature: float | None = None,
+    status: str | None = None,
+) -> Dict[str, Any]:
+    """Upsert a minimal employee health profile record."""
+
+    return {
+        "employee_id": employee_id,
+        "last_temperature": last_temperature if last_temperature is not None else 0.0,
+        "status": status or "updated",
+        "last_check_date": last_check_date or "",
+    }
+
+
 def register_builtin_tools() -> None:
     """Register all built-in tools in the global registry."""
 
@@ -1320,6 +1398,106 @@ def register_builtin_tools() -> None:
         )
     )
 
+    register_tool(
+        Tool(
+            name="record_health_event",
+            description="Record an employee health event entry for auditing.",
+            function=record_health_event,
+            args_schema={
+                "type": "object",
+                "properties": {
+                    "event_type": {"type": "string"},
+                    "date": {"type": "string", "nullable": True},
+                    "abnormal_count": {"type": "integer", "nullable": True},
+                },
+                "required": ["event_type"],
+            },
+        )
+    )
+
+    register_tool(
+        Tool(
+            name="get_today_temperatures",
+            description="Retrieve temperature readings for a given date.",
+            function=get_today_temperatures,
+            args_schema={
+                "type": "object",
+                "properties": {
+                    "date": {"type": "string"},
+                },
+                "required": ["date"],
+            },
+        )
+    )
+
+    register_tool(
+        Tool(
+            name="update_employee_health_profile",
+            description="Update an employee health profile with latest vitals.",
+            function=update_employee_health_profile,
+            args_schema={
+                "type": "object",
+                "properties": {
+                    "employee_id": {"type": "string"},
+                    "last_check_date": {"type": "string", "nullable": True},
+                    "last_temperature": {"type": "number", "nullable": True},
+                    "status": {"type": "string", "nullable": True},
+                },
+                "required": ["employee_id"],
+            },
+        )
+    )
+
+    register_tool(
+        Tool(
+            name="create_incident",
+            description="Open an incident ticket in the ops system.",
+            function=create_incident,
+            args_schema={
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string"},
+                    "description": {"type": "string", "nullable": True},
+                    "severity": {"type": "string", "nullable": True},
+                },
+                "required": ["title"],
+            },
+        )
+    )
+
+    register_tool(
+        Tool(
+            name="create_lead",
+            description="Add a new lead into the CRM system.",
+            function=create_lead,
+            args_schema={
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "email": {"type": "string", "nullable": True},
+                    "source": {"type": "string", "nullable": True},
+                },
+                "required": ["name"],
+            },
+        )
+    )
+
+    register_tool(
+        Tool(
+            name="log_interaction",
+            description="Log an interaction note against a CRM lead.",
+            function=log_interaction,
+            args_schema={
+                "type": "object",
+                "properties": {
+                    "lead_id": {"type": "string"},
+                    "note": {"type": "string"},
+                },
+                "required": ["lead_id", "note"],
+            },
+        )
+    )
+
 
 __all__ = [
     "register_builtin_tools",
@@ -1335,4 +1513,10 @@ __all__ = [
     "compose_outlook_email",
     "scrape_web_page",
     "business_action",
+    "record_health_event",
+    "get_today_temperatures",
+    "update_employee_health_profile",
+    "create_incident",
+    "create_lead",
+    "log_interaction",
 ]
