@@ -1037,12 +1037,15 @@ def _validate_nodes_recursive(
                         body_nodes = (params.get("body_subgraph") or {}).get(
                             "nodes", []
                         )
-                        body_node_ids = {
-                            bn.get("id")
-                            for bn in body_nodes
-                            if isinstance(bn, Mapping)
-                            and isinstance(bn.get("id"), str)
-                        }
+                        extended_nodes_by_id = dict(nodes_by_id)
+                        body_node_ids = set()
+                        for bn in body_nodes:
+                            if (
+                                isinstance(bn, Mapping)
+                                and isinstance(bn.get("id"), str)
+                            ):
+                                body_node_ids.add(bn.get("id"))
+                                extended_nodes_by_id[bn.get("id")] = bn
                         for idx, agg in enumerate(aggregates):
                             if not isinstance(agg, Mapping):
                                 continue
@@ -1086,7 +1089,7 @@ def _validate_nodes_recursive(
                             elif isinstance(source, str):
                                 schema_err = _check_output_path_against_schema(
                                     source,
-                                    nodes_by_id,
+                                    extended_nodes_by_id,
                                     actions_by_id,
                                     loop_body_parents,
                                     context_node_id=nid,
