@@ -163,3 +163,73 @@ def test_contract_violation_ignored_when_filter_map_formats_array():
 
     assert not any(err.code == "CONTRACT_VIOLATION" for err in errors)
 
+
+def test_contract_violation_for_array_item_type_mismatch():
+    workflow = {
+        "workflow_name": "contract_array_item_mismatch",
+        "description": "",
+        "nodes": [
+            {"id": "start", "type": "start"},
+            {
+                "id": "search_news",
+                "type": "action",
+                "action_id": "common.search_news.v1",
+                "params": {"query": "AI"},
+            },
+            {
+                "id": "classify",
+                "type": "action",
+                "action_id": "common.classify_text.v1",
+                "params": {
+                    "text": "placeholder",
+                    "labels": {"__from__": "result_of.search_news.results"},
+                },
+            },
+            {"id": "end", "type": "end"},
+        ],
+        "edges": [
+            {"from": "start", "to": "search_news"},
+            {"from": "search_news", "to": "classify"},
+            {"from": "classify", "to": "end"},
+        ],
+    }
+
+    errors = validate_workflow_data(workflow, ACTION_REGISTRY)
+
+    assert any(err.code == "CONTRACT_VIOLATION" for err in errors)
+
+
+def test_contract_violation_uses_node_out_params_schema():
+    workflow = {
+        "workflow_name": "contract_out_params_mismatch",
+        "description": "",
+        "nodes": [
+            {"id": "start", "type": "start"},
+            {
+                "id": "producer",
+                "type": "action",
+                # Source output definitions live in out_params_schema and should be used for compatibility checks.
+                "out_params_schema": {"count": {"type": "string"}},
+            },
+            {
+                "id": "record_event",
+                "type": "action",
+                "action_id": "hr.record_health_event.v1",
+                "params": {
+                    "event_type": "alert",
+                    "abnormal_count": {"__from__": "result_of.producer.count"},
+                },
+            },
+            {"id": "end", "type": "end"},
+        ],
+        "edges": [
+            {"from": "start", "to": "producer"},
+            {"from": "producer", "to": "record_event"},
+            {"from": "record_event", "to": "end"},
+        ],
+    }
+
+    errors = validate_workflow_data(workflow, ACTION_REGISTRY)
+
+    assert any(err.code == "CONTRACT_VIOLATION" for err in errors)
+

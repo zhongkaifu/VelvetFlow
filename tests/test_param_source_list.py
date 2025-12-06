@@ -45,11 +45,25 @@ def test_param_binding_accepts_source_list():
     workflow = _base_workflow()
     workflow["nodes"][1]["params"]["text"] = {
         "__from__": ["result_of.search_news.results", "result_of.search_news.results"],
+        "__agg__": "format_join",
+        "format": "{title}",
+        "sep": ", ",
     }
 
     errors = validate_workflow_data(workflow, ACTION_REGISTRY)
 
     assert not errors
+
+
+def test_param_binding_source_list_requires_type_compatibility():
+    workflow = _base_workflow()
+    workflow["nodes"][1]["params"]["text"] = {
+        "__from__": ["result_of.search_news.results", "result_of.search_news.results"],
+    }
+
+    errors = validate_workflow_data(workflow, ACTION_REGISTRY)
+
+    assert any(err.code == "CONTRACT_VIOLATION" for err in errors)
 
 
 def test_param_binding_source_list_reports_missing_paths():
