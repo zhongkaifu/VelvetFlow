@@ -198,31 +198,55 @@ def _schemas_compatible(expected: Optional[Mapping[str, Any]], actual: Optional[
 
 def _apply_binding_aggregator(
     actual_schema: Optional[Mapping[str, Any]], binding: Mapping[str, Any]
-) -> Optional[Mapping[str, Any]]:
+) -> tuple[Optional[Mapping[str, Any]], Optional[Mapping[str, Any]]]:
+    """Return the transformed output schema and the expected input schema.
+
+    When an aggregator is present, downstream compatibility should be checked
+    against the aggregator output type, while upstream compatibility should
+    ensure the aggregator receives a value of the correct shape (e.g., count
+    expects an array input).
+    """
+
     if not actual_schema:
-        return actual_schema
+        return actual_schema, None
 
-    agg = binding.get("agg")
-    if not agg:
-        binding_obj = binding.get("binding") if isinstance(binding.get("binding"), Mapping) else {}
-        agg = binding_obj.get("__agg__") if isinstance(binding_obj, Mapping) else None
-
+    agg = _get_binding_agg(binding)
+    
     if not isinstance(agg, str):
-        return actual_schema
+        return actual_schema, None
 
     agg = agg or "identity"
+    input_schema: Optional[Mapping[str, Any]] = None
+    output_schema: Optional[Mapping[str, Any]] = actual_schema
+
     if agg in {"count", "count_if"}:
-        return {"type": "integer"}
-    if agg in {"join", "format_join", "filter_map"}:
-        return {"type": "string"}
-    if agg == "pipeline":
+        input_schema = {"type": "array"}
+        output_schema = {"type": "integer"}
+    elif agg in {"join", "format_join", "filter_map"}:
+        input_schema = {"type": "array"}
+        output_schema = {"type": "string"}
+    elif agg == "pipeline":
+        input_schema = {"type": "array"}
         binding_obj = binding.get("binding") if isinstance(binding.get("binding"), Mapping) else {}
         steps = binding_obj.get("steps") if isinstance(binding_obj, Mapping) else None
         if isinstance(steps, list) and any(
             isinstance(step, Mapping) and step.get("op") == "format_join" for step in steps
         ):
-            return {"type": "string"}
-    return actual_schema
+            output_schema = {"type": "string"}
+
+    return output_schema, input_schema
+
+
+def _get_binding_agg(binding: Mapping[str, Any]) -> Optional[str]:
+    agg = binding.get("agg") if isinstance(binding.get("agg"), str) else None
+    if agg:
+        return agg
+
+    binding_obj = binding.get("binding")
+    if isinstance(binding_obj, Mapping):
+        agg = binding_obj.get("__agg__")
+
+    return agg
 
 
 def _check_binding_contracts(
@@ -288,7 +312,23 @@ def _check_binding_contracts(
                 actual_schema = _get_output_schema_at_path(
                     normalized_src, nodes_by_id, actions_by_id, loop_body_parents
                 )
-                effective_schema = _apply_binding_aggregator(actual_schema, binding)
+                effective_schema, agg_input_schema = _apply_binding_aggregator(
+                    actual_schema, binding
+                )
+                agg_value = _get_binding_agg(binding)
+                if agg_input_schema and not _schemas_compatible(agg_input_schema, actual_schema):
+                    errors.append(
+                        ValidationError(
+                            code="CONTRACT_VIOLATION",
+                            node_id=node_id,
+                            field=field_path,
+                            message=(
+                                f"参数绑定使用 __agg__={agg_value or 'identity'} "
+                                f"需要类型为 {agg_input_schema.get('type')} 的输入，但来源 {normalized_src} 的类型为 {actual_schema.get('type') if actual_schema else '未知'}。"
+                            ),
+                        )
+                    )
+                    continue
                 if expected_schema and not actual_schema:
                     errors.append(
                         ValidationError(
