@@ -642,39 +642,161 @@ def _run_coroutine(factory: Callable[[], Awaitable[Any]]) -> Any:
             loop.close()
 
 
-def _scrape_single_url(
-    url: str,
+def _normalize_internal_url(candidate: str, base_url: str) -> str:
+    """Resolve and validate that the candidate URL stays within the base domain."""
+
+    if not candidate:
+        return ""
+
+    joined = urllib.parse.urljoin(base_url, candidate)
+    parsed_base = urllib.parse.urlparse(base_url)
+    parsed_candidate = urllib.parse.urlparse(joined)
+
+    if parsed_candidate.scheme not in {"http", "https"}:
+        return ""
+
+    base_host = parsed_base.netloc.lower().lstrip("www.")
+    candidate_host = parsed_candidate.netloc.lower().lstrip("www.")
+
+    if base_host != candidate_host:
+        return ""
+
+    return joined
+
+
+def _extract_internal_links(result: Any, base_url: str) -> List[str]:
+    """Best-effort extraction of in-domain links from a crawl result."""
+
+    raw_collections: List[Any] = []
+
+    for attr in ("links", "hyperlinks", "anchors"):
+        value = getattr(result, attr, None)
+        if value:
+            raw_collections.append(value)
+
+    candidates: List[str] = []
+
+    for collection in raw_collections:
+        if isinstance(collection, Mapping):
+            candidates.extend(str(item) for item in collection.values())
+        elif isinstance(collection, list):
+            for entry in collection:
+                if isinstance(entry, str):
+                    candidates.append(entry)
+                elif isinstance(entry, Mapping):
+                    href = entry.get("url") or entry.get("href") or ""
+                    if href:
+                        candidates.append(str(href))
+                elif hasattr(entry, "url"):
+                    href = getattr(entry, "url")
+                    if href:
+                        candidates.append(str(href))
+        elif isinstance(collection, str):
+            candidates.append(collection)
+
+    normalized: List[str] = []
+    seen: set[str] = set()
+
+    for candidate in candidates:
+        normalized_candidate = _normalize_internal_url(candidate, base_url)
+        if normalized_candidate and normalized_candidate not in seen:
+            normalized.append(normalized_candidate)
+            seen.add(normalized_candidate)
+
+    return normalized
+
+
+def _truncate_for_llm(text: str, limit: int = 1200) -> str:
+    if len(text) <= limit:
+        return text
+    return text[:limit] + "\n...[truncated]"
+
+
+def _should_continue_crawling(
     user_request: str,
-    *,
-    llm_instruction: Optional[str] = None,
-    llm_provider: str = "openai/gpt-4o-mini",
-    run_coroutine: Callable[[Callable[[], Awaitable[Any]]], Any] = _run_coroutine,
-) -> Dict[str, Any]:
-    """Download and analyze a single web page according to a request."""
+    pages: List[Dict[str, Any]],
+    remaining_links: List[str],
+    api_token: Optional[str],
+    llm_provider: str,
+    max_pages: int,
+) -> Tuple[bool, List[str]]:
+    """Use an LLM to decide whether deeper in-site crawling is needed."""
 
-    _require_crawl4ai()
+    if not api_token:
+        return len(pages) >= 1, []
 
-    instruction = llm_instruction or textwrap.dedent(
+    client = OpenAI(api_key=api_token)
+
+    page_summaries = []
+    for page in pages[-3:]:  # limit context size
+        content = str(page.get("extracted_content", ""))
+        page_summaries.append(
+            {
+                "url": page.get("url"),
+                "content": _truncate_for_llm(content),
+                "status": page.get("status"),
+            }
+        )
+
+    prompt = textwrap.dedent(
         f"""
-        You are a web analysis agent. Read the page content and analyze it for the user's request.
+        You are deciding if the current crawl satisfies the user's request or needs to go deeper.
         User request: {user_request}
 
-        Return JSON with fields:
-        - summary: a concise overview of the page relevant to the user request
-        - key_points: bullet points highlighting important facts or insights
-        - relevance: short explanation of how the content addresses the request
+        Pages already crawled (most recent first, trimmed content included):
+        {json.dumps(page_summaries, ensure_ascii=False)}
+
+        Remaining in-site links that can be crawled next (respect domain boundaries only):
+        {json.dumps(remaining_links, ensure_ascii=False)}
+
+        Respond with strict JSON using keys:
+        - satisfied (boolean): whether the existing pages already satisfy the request.
+        - reason (string): brief justification.
+        - next_links (array of strings): optional prioritized subset of remaining links to crawl next.
+
+        If the request is already satisfied or no useful links remain, set satisfied to true.
         """
     ).strip()
 
-    api_token = os.getenv("OPENAI_API_KEY")
-    use_llm = bool(api_token)
+    response = client.chat.completions.create(
+        model=llm_provider,
+        messages=[{"role": "system", "content": "You are a crawl coordinator."}, {"role": "user", "content": prompt}],
+        max_tokens=256,
+    )
+
+    content = (response.choices[0].message.content or "{}") if response.choices else "{}"
+
+    try:
+        data = json.loads(content)
+    except json.JSONDecodeError:
+        data = {}
+
+    satisfied = bool(data.get("satisfied")) or len(pages) >= max_pages or not remaining_links
+    next_links_raw = data.get("next_links") or []
+
+    prioritized: List[str] = []
+    for link in next_links_raw:
+        if isinstance(link, str) and link in remaining_links and link not in prioritized:
+            prioritized.append(link)
+
+    return satisfied, prioritized
+
+
+def _crawl_page_once(
+    url: str,
+    instruction: str,
+    api_token: Optional[str],
+    llm_provider: str,
+    run_coroutine: Callable[[Callable[[], Awaitable[Any]]], Any],
+) -> Dict[str, Any]:
+    """Crawl a single URL and return extracted content plus in-domain links."""
 
     async def _scrape() -> tuple[Any, List[Dict[str, Any]]]:
         browser_conf = BrowserConfig(headless=True, verbose=False)
         attempts: List[Dict[str, Any]] = []
 
         async with AsyncWebCrawler(config=browser_conf) as crawler:
-            if use_llm:
+            if api_token:
                 llm_conf = LLMConfig(provider=llm_provider, api_token=api_token)
                 llm_strategy = LLMExtractionStrategy(
                     llm_config=llm_conf,
@@ -684,9 +806,7 @@ def _scrape_single_url(
                     input_format="markdown",
                     verbose=False,
                 )
-                llm_run = CrawlerRunConfig(
-                    cache_mode=CacheMode.BYPASS, extraction_strategy=llm_strategy
-                )
+                llm_run = CrawlerRunConfig(cache_mode=CacheMode.BYPASS, extraction_strategy=llm_strategy)
                 llm_result = await crawler.arun(url=url, config=llm_run)
                 attempts.append(
                     {
@@ -711,22 +831,115 @@ def _scrape_single_url(
             )
             return fallback_result, attempts
 
-    result, attempts = run_coroutine(_scrape)
+    result, _attempts = run_coroutine(_scrape)
 
-    raw_content = result.extracted_content or ""
+    raw_content = getattr(result, "extracted_content", "") or ""
     if isinstance(raw_content, (dict, list)):
         extracted_content = json.dumps(raw_content, ensure_ascii=False)
     else:
         extracted_content = str(raw_content).strip()
 
     if not extracted_content and getattr(result, "markdown", None):
-        extracted_content = str(result.markdown).strip()
+        extracted_content = str(getattr(result, "markdown")).strip()
 
-    status = "ok" if result.success else "error"
+    links = _extract_internal_links(result, url)
+    status = "ok" if getattr(result, "success", False) else "error"
 
     return {
         "status": status,
         "extracted_content": extracted_content,
+        "links": links,
+    }
+
+
+# Preserve the default implementation so tests can detect when it has been patched.
+_DEFAULT_CRAWL_PAGE_ONCE = _crawl_page_once
+
+
+def _scrape_single_url(
+    url: str,
+    user_request: str,
+    *,
+    llm_instruction: Optional[str] = None,
+    llm_provider: str = "openai/gpt-4o-mini",
+    run_coroutine: Callable[[Callable[[], Awaitable[Any]]], Any] = _run_coroutine,
+) -> Dict[str, Any]:
+    """Download and analyze a single web page according to a request."""
+
+    if _CRAWL4AI_AVAILABLE or _crawl_page_once is not _DEFAULT_CRAWL_PAGE_ONCE:
+        pass
+    else:
+        _require_crawl4ai()
+
+    instruction = llm_instruction or textwrap.dedent(
+        f"""
+        You are a web analysis agent. Read the page content and analyze it for the user's request.
+        User request: {user_request}
+
+        Return JSON with fields:
+        - summary: a concise overview of the page relevant to the user request
+        - key_points: bullet points highlighting important facts or insights
+        - relevance: short explanation of how the content addresses the request
+        """
+    ).strip()
+
+    api_token = os.getenv("OPENAI_API_KEY")
+    max_pages = 6
+
+    visited: set[str] = set()
+    to_visit: List[str] = [url]
+    collected: List[Dict[str, Any]] = []
+    aggregated_contents: List[str] = []
+
+    while to_visit and len(collected) < max_pages:
+        current = to_visit.pop(0)
+        if current in visited:
+            continue
+
+        visited.add(current)
+        page_result = _crawl_page_once(
+            current,
+            instruction,
+            api_token,
+            llm_provider,
+            run_coroutine,
+        )
+        page_result["url"] = current
+        collected.append(page_result)
+
+        content = page_result.get("extracted_content")
+        if content:
+            aggregated_contents.append(str(content))
+
+        for link in page_result.get("links", []):
+            normalized_link = _normalize_internal_url(link, current)
+            if normalized_link and normalized_link not in visited and normalized_link not in to_visit:
+                to_visit.append(normalized_link)
+
+        satisfied, prioritized_links = _should_continue_crawling(
+            user_request,
+            collected,
+            to_visit,
+            api_token,
+            llm_provider,
+            max_pages,
+        )
+
+        if prioritized_links:
+            remaining = [link for link in to_visit if link not in prioritized_links]
+            to_visit = prioritized_links + remaining
+
+        if satisfied:
+            break
+
+    successes = [item.get("status") == "ok" for item in collected]
+    overall_status = "ok" if any(successes) else "error"
+
+    aggregated_content = "\n".join(aggregated_contents)
+
+    return {
+        "status": overall_status,
+        "extracted_content": aggregated_content,
     }
 
 
@@ -801,6 +1014,84 @@ def scrape_web_page(
     return {
         "status": overall_status,
         "extracted_content": aggregated_content,
+    }
+
+
+def business_action(
+    query: str,
+    *,
+    search_limit: int = 5,
+    llm_provider: str = "openai/gpt-4o-mini",
+) -> Dict[str, Any]:
+    """Search the web, crawl relevant pages, and summarize findings."""
+
+    if not query:
+        raise ValueError("query is required for business_action")
+
+    search_output = search_web(query, limit=search_limit)
+    search_results = search_output.get("results", []) if isinstance(search_output, Mapping) else []
+
+    if not search_results:
+        return {
+            "status": "not_found",
+            "summary": f"No search results found for query: {query}",
+            "results": [],
+        }
+
+    crawled: List[Dict[str, Any]] = []
+
+    for entry in search_results:
+        url = entry.get("url") if isinstance(entry, Mapping) else None
+        if not url:
+            continue
+
+        scrape_result = _scrape_single_url(url, query, llm_provider=llm_provider)
+
+        crawled.append(
+            {
+                "title": entry.get("title", "") if isinstance(entry, Mapping) else "",
+                "url": url,
+                "snippet": entry.get("snippet", "") if isinstance(entry, Mapping) else "",
+                "scrape": scrape_result,
+            }
+        )
+
+    if not crawled:
+        return {
+            "status": "not_found",
+            "summary": f"Search results lacked crawlable URLs for query: {query}",
+            "results": [],
+        }
+
+    analysis_inputs = []
+    successes: List[bool] = []
+
+    for item in crawled:
+        scrape = item.get("scrape") or {}
+        status = scrape.get("status")
+        successes.append(status == "ok")
+        analysis_inputs.append(
+            {
+                "url": item.get("url"),
+                "status": status,
+                "analysis": scrape.get("extracted_content"),
+            }
+        )
+
+    ok_count = sum(successes)
+    if ok_count == len(successes):
+        overall_status = "ok"
+    elif ok_count > 0:
+        overall_status = "partial"
+    else:
+        overall_status = "error"
+
+    summary = _aggregate_scrape_results(analysis_inputs, query)
+
+    return {
+        "status": overall_status,
+        "summary": summary,
+        "results": crawled,
     }
 
 
@@ -1006,6 +1297,25 @@ def register_builtin_tools() -> None:
         )
     )
 
+    register_tool(
+        Tool(
+            name="search_and_crawl_web_content",
+            description=(
+                "Search for a natural-language query, crawl in-domain pages with crawl4ai, let an LLM assess coverage, and return a multi-page summary."
+            ),
+            function=business_action,
+            args_schema={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"},
+                    "search_limit": {"type": "integer", "default": 5},
+                    "llm_provider": {"type": "string", "default": "openai/gpt-4o-mini"},
+                },
+                "required": ["query"],
+            },
+        )
+    )
+
 
 __all__ = [
     "register_builtin_tools",
@@ -1020,4 +1330,5 @@ __all__ = [
     "summarize",
     "compose_outlook_email",
     "scrape_web_page",
+    "business_action",
 ]

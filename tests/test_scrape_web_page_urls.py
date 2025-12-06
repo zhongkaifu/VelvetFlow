@@ -80,3 +80,41 @@ def test_scrape_web_page_validates_inputs():
     with pytest.raises(ValueError):
         builtin.scrape_web_page([""], "query")
 
+
+def test_scrape_single_url_stays_on_domain(monkeypatch):
+    visits = []
+
+    def fake_crawl(url, *_args, **_kwargs):
+        visits.append(url)
+        if url.endswith("/start"):
+            return {
+                "status": "ok",
+                "extracted_content": "root content",
+                "links": ["/internal", "https://other-site.test/offsite"],
+            }
+        return {
+            "status": "ok",
+            "extracted_content": "internal content",
+            "links": [],
+        }
+
+    def fake_decider(_req, pages, remaining_links, *_args, **_kwargs):
+        # stop after the internal page is crawled
+        should_stop = any(page.get("url", "").endswith("/internal") for page in pages)
+        # never follow offsite links because they are filtered out
+        assert all("other-site" not in link for link in remaining_links)
+        return should_stop, remaining_links
+
+    monkeypatch.setattr(builtin, "_crawl_page_once", fake_crawl)
+    monkeypatch.setattr(builtin, "_should_continue_crawling", fake_decider)
+
+    result = builtin._scrape_single_url(
+        "https://example.com/start",
+        "find info",
+        run_coroutine=lambda factory: factory(),
+    )
+
+    assert visits == ["https://example.com/start", "https://example.com/internal"]
+    assert result["status"] == "ok"
+    assert "internal content" in result["extracted_content"]
+
