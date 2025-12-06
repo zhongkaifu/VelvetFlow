@@ -208,8 +208,8 @@ def test_contract_violation_uses_node_out_params_schema():
             {
                 "id": "producer",
                 "type": "action",
-                # Source output definitions live in out_params and should be used for compatibility checks.
-                "out_params": {"count": {"type": "string"}},
+                # Source output definitions live in out_params_schema and should be used for compatibility checks.
+                "out_params_schema": {"count": {"type": "string"}},
             },
             {
                 "id": "record_event",

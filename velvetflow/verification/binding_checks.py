@@ -24,14 +24,20 @@ def _index_actions_by_id(action_registry: List[Dict[str, Any]]) -> Dict[str, Dic
     return {a["action_id"]: a for a in action_registry}
 
 
-def _schema_from_out_params(out_params: Mapping[str, Any] | None) -> Optional[Mapping[str, Any]]:
-    """Build a JSON schema from node-level ``out_params`` definitions."""
+def _schema_from_out_params_schema(
+    out_params_schema: Mapping[str, Any] | None,
+) -> Optional[Mapping[str, Any]]:
+    """Build a JSON schema from node-level ``out_params_schema`` definitions."""
 
-    if not isinstance(out_params, Mapping) or not out_params:
+    if not isinstance(out_params_schema, Mapping) or not out_params_schema:
         return None
 
+    # If the schema already looks complete, return it as-is.
+    if any(key in out_params_schema for key in ("type", "properties", "$schema")):
+        return out_params_schema
+
     properties: Dict[str, Any] = {}
-    for key, value in out_params.items():
+    for key, value in out_params_schema.items():
         if isinstance(value, Mapping):
             properties[key] = value
         else:
@@ -45,13 +51,9 @@ def _get_node_output_schema(
     node: Mapping[str, Any] | None, actions_by_id: Mapping[str, Mapping[str, Any]]
 ) -> Optional[Mapping[str, Any]]:
     if isinstance(node, Mapping):
-        node_schema = node.get("out_params_schema")
+        node_schema = _schema_from_out_params_schema(node.get("out_params_schema"))
         if isinstance(node_schema, Mapping):
             return node_schema
-
-        derived = _schema_from_out_params(node.get("out_params"))
-        if isinstance(derived, Mapping):
-            return derived
 
         action_id = node.get("action_id")
         if isinstance(action_id, str):
