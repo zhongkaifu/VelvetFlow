@@ -198,3 +198,38 @@ def test_contract_violation_for_array_item_type_mismatch():
 
     assert any(err.code == "CONTRACT_VIOLATION" for err in errors)
 
+
+def test_contract_violation_uses_node_out_params_schema():
+    workflow = {
+        "workflow_name": "contract_out_params_mismatch",
+        "description": "",
+        "nodes": [
+            {"id": "start", "type": "start"},
+            {
+                "id": "producer",
+                "type": "action",
+                # Source output definitions live in out_params and should be used for compatibility checks.
+                "out_params": {"count": {"type": "string"}},
+            },
+            {
+                "id": "record_event",
+                "type": "action",
+                "action_id": "hr.record_health_event.v1",
+                "params": {
+                    "event_type": "alert",
+                    "abnormal_count": {"__from__": "result_of.producer.count"},
+                },
+            },
+            {"id": "end", "type": "end"},
+        ],
+        "edges": [
+            {"from": "start", "to": "producer"},
+            {"from": "producer", "to": "record_event"},
+            {"from": "record_event", "to": "end"},
+        ],
+    }
+
+    errors = validate_workflow_data(workflow, ACTION_REGISTRY)
+
+    assert any(err.code == "CONTRACT_VIOLATION" for err in errors)
+
