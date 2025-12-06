@@ -9,6 +9,7 @@ VelvetFlow 是一个可复用的 LLM 驱动工作流规划与执行演示项目�
 ```
 VelvetFlow (repo root)
 ├── build_action_index.py        # 离线构建动作检索索引
+├── simulation_data.json         # 执行动作的模拟返回模板
 ├── velvetflow/
 │   ├── action_registry.py       # 从 tools/business_actions.json 读取动作，附加安全元数据
 │   ├── bindings.py              # 参数绑定 DSL 解析/校验
@@ -21,7 +22,6 @@ VelvetFlow (repo root)
 │   ├── verification/            # 规划/更新/执行共享的静态校验模块
 │   ├── search.py                # 在线检索：基于离线索引的混合排序
 │   ├── search_index.py          # 离线索引：关键词与向量索引的构建/持久化
-│   ├── simulation_data.json     # 执行动作的模拟返回模板
 │   └── visualization.py         # 将 workflow 渲染为 JPEG DAG
 ├── tools/
 │   ├── business_actions.json    # HR/OPS/CRM 等示例动作库
@@ -40,7 +40,7 @@ VelvetFlow (repo root)
   - 本地自动修复（缺字段默认值、移除 schema 未定义字段、匹配输出/输入的类型转换、填充 `loop.exports`）完成后，再由 `verification/validation.py` 做最终静态校验并按需多轮 LLM 修复。
 - **DSL 模型与校验**：`models.py` 定义 Node/Edge/Workflow，边由参数绑定与条件分支自动推导并在可视化/执行前归一化；校验涵盖节点类型、隐式连线合法性、loop 子图 Schema 等，并通过 `ValidationError` 统一描述错误。
 - **参数绑定 DSL**：`bindings.py` 支持 `__from__` 引用上游结果，`__agg__` 支持 `identity/count/count_if/format_join/filter_map/pipeline`，并校验引用路径是否存在于动作输出/输入或 loop exports。
-- **执行器**：`executor.py` 的 `DynamicActionExecutor` 会先校验 action_id 是否在注册表中，再执行拓扑排序确保连通；支持 condition 节点（如 list_not_empty/equals/contains/greater_than/between 等）与 loop 节点（body_subgraph + exports.items/aggregates 收集迭代与聚合结果），并结合 `simulation_data.json` 模拟动作返回。日志输出使用 `logging_utils.py`。
+- **执行器**：`executor.py` 的 `DynamicActionExecutor` 会先校验 action_id 是否在注册表中，再执行拓扑排序确保连通；支持 condition 节点（如 list_not_empty/equals/contains/greater_than/between 等）与 loop 节点（body_subgraph + exports.items/aggregates 收集迭代与聚合结果），并结合 repo 根目录的 `simulation_data.json` 模拟动作返回。日志输出使用 `logging_utils.py`。
 - **可视化**：`visualization.py` 提供 `render_workflow_dag`，支持 Unicode 字体回退，将 Workflow 渲染为 JPEG DAG。
 
 ## 业务价值与演进方向
@@ -75,7 +75,7 @@ VelvetFlow (repo root)
    ```bash
    python execute_workflow.py --workflow-json workflow_output.json
    ```
-   - 执行器会解析绑定 DSL、运行条件/循环节点，并使用 `velvetflow/simulation_data.json` 生成模拟结果。
+   - 执行器会解析绑定 DSL、运行条件/循环节点，并使用 `simulation_data.json` 生成模拟结果。
 6. **从 JSON 绘制工作流 DAG**
    ```bash
    python render_workflow_image.py --workflow-json workflow_output.json --output workflow_dag.jpg
@@ -153,7 +153,7 @@ LLM 相关节点说明：
 - **扩展动作库**：编辑 `tools/business_actions.json` 增加/调整动作，`action_registry.py` 会自动加载并附加安全字段。
 - **调优检索**：在 `build_workflow.py` 的 `build_default_search_service` 调整 `alpha` 或替换 `DEFAULT_EMBEDDING_MODEL`/`embed_text_openai` 以适配自定义向量模型。
 - **更换模型**：`velvetflow/config.py` 中的 `OPENAI_MODEL` 控制规划/补参阶段使用的 OpenAI Chat 模型。
-- **定制执行行为**：修改 `velvetflow/simulation_data.json` 模板以覆盖动作返回；如需调整条件/循环聚合规则，可在 `executor.py` 与`bindings.py` 中扩展。
+- **定制执行行为**：修改根目录的 `simulation_data.json` 模板以覆盖动作返回；如需调整条件/循环聚合规则，可在 `executor.py` 与`bindings.py` 中扩展。
 
 ## Workflow DSL 速查
 下面的 JSON 结构是 VelvetFlow 规划/执行都遵循的 DSL。理解这些字段有助于手写、调试或修复 LLM 产出的 workflow。

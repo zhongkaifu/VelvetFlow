@@ -40,7 +40,7 @@ def main():
         print(f"加载工作流 JSON 失败：{e}")
         return
 
-    simulation_path = os.path.join(os.path.dirname(__file__), "velvetflow", "simulation_data.json")
+    simulation_path = os.path.join(os.path.dirname(__file__), "simulation_data.json")
     simulation_data = load_simulation_data(simulation_path)
 
     with RunManager(workflow_name=workflow.workflow_name) as run_manager:

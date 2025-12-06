@@ -274,7 +274,7 @@ def _execute_business_tool(
         return {
             "status": "unavailable",
             "action_id": action.get("action_id"),
-            "message": f"业务工具 '{tool_fn_name}' 未注册，返回原始参数供参考。",
+            "message": f"Business tool '{tool_fn_name}' is not registered; returning the original arguments for reference.",
             "echo": args,
         }
 
@@ -313,7 +313,7 @@ def ask_ai(
     user_prompt = _prepare_ask_ai_prompt(
         prompt=prompt, question=question, context=context, expected_format=expected_format
     )
-    system_text = system_prompt or "你是一个善于调用业务工具解决问题的智能助手。"
+    system_text = system_prompt or "You are an intelligent assistant skilled at invoking business tools to solve problems."
 
     client = OpenAI()
     chat_model = model or OPENAI_MODEL
@@ -364,7 +364,7 @@ def ask_ai(
                 if not action_def:
                     tool_result = {
                         "status": "error",
-                        "message": f"未知的业务工具调用: {func_name}",
+                        "message": f"Unknown business tool invocation: {func_name}",
                         "echo": parsed_args,
                     }
                 else:
@@ -395,7 +395,7 @@ def ask_ai(
 
     return {
         "status": "error",
-        "results": {"message": "ask_ai 未能在限定轮次内给出答案"},
+        "results": {"message": "ask_ai could not produce an answer within the allowed rounds"},
     }
 
 

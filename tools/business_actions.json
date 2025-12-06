@@ -436,7 +436,7 @@
     "action_id": "common.search_and_crawl_web_content.v1",
     "name": "Search then crawl in-domain content with LLM guidance",
     "domain": "common",
-    "description": "围绕用户的自然语言查询自动完成三步：先用搜索引擎检索候选网址，仅保留同域链接进行 crawl4ai 抓取；再由 LLM 判断是否已满足需求、是否需要深入同站点；最终汇总跨页面内容返回。",
+    "description": "Automatically execute three steps around a user's natural-language query: search for candidate URLs, keep same-domain links for crawl4ai scraping, let the LLM decide if needs are met or deeper same-site crawling is required, and finally aggregate cross-page content for the response.",
     "tool_name": "search_and_crawl_web_content",
     "tags": [
       "web-search",
@@ -450,17 +450,17 @@
       "properties": {
         "query": {
           "type": "string",
-          "description": "用户的自然语言查询需求"
+          "description": "The user's natural-language query"
         },
         "search_limit": {
           "type": "integer",
           "default": 5,
-          "description": "搜索引擎返回结果数量上限"
+          "description": "Maximum number of results to return from the search engine"
         },
         "llm_provider": {
           "type": "string",
           "default": "openai/gpt-4o-mini",
-          "description": "用于判断是否继续抓取的 LLM provider"
+          "description": "LLM provider used to decide whether to continue crawling"
         }
       },
       "required": [
@@ -472,11 +472,11 @@
       "properties": {
         "status": {
           "type": "string",
-          "description": "整体抓取状态（ok/partial/error/not_found）"
+          "description": "Overall crawl status (ok/partial/error/not_found)"
         },
         "summary": {
           "type": "string",
-          "description": "对抓取结果的汇总说明"
+          "description": "Summary of the crawl results"
         },
         "results": {
           "type": "array",
@@ -495,7 +495,7 @@
               "scrape": {
                 "type": "object",
                 "additionalProperties": true,
-                "description": "crawl4ai 抓取返回的原始结果"
+                "description": "Raw result returned by crawl4ai scraping"
               }
             }
           }
