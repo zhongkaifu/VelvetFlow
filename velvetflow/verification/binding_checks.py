@@ -262,6 +262,24 @@ def _check_output_path_against_schema(
         schema = _get_node_output_schema(target, actions_by_id) or {}
         if not rest_path:
             return None
+
+        if rest_path[0] == "params":
+            arg_schema = None
+            if isinstance(target, Mapping) and isinstance(target.get("arg_schema"), Mapping):
+                arg_schema = target.get("arg_schema")
+            elif isinstance(target, Mapping) and isinstance(target.get("action_id"), str):
+                action_def = actions_by_id.get(target.get("action_id"))
+                if isinstance(action_def, Mapping) and isinstance(
+                    action_def.get("arg_schema"), Mapping
+                ):
+                    arg_schema = action_def.get("arg_schema")
+
+            # 引用输入参数，但没有声明 arg_schema：放行以保持与执行器一致的兼容性。
+            if not arg_schema:
+                return None
+
+            return _schema_path_error(arg_schema, list(rest_path[1:]))
+
         return _schema_path_error(schema, list(rest_path))
 
     if rest_path:
@@ -373,6 +391,21 @@ def _get_output_schema_at_path(
     rest_path = parts[2:]
     node = nodes_by_id.get(node_id)
     node_type = node.get("type") if node else None
+
+    if node_type == "action" and rest_path and rest_path[0] == "params":
+        arg_schema = None
+        if isinstance(node, Mapping) and isinstance(node.get("arg_schema"), Mapping):
+            arg_schema = node.get("arg_schema")
+        elif isinstance(node, Mapping) and isinstance(node.get("action_id"), str):
+            action_def = actions_by_id.get(node.get("action_id"))
+            if isinstance(action_def, Mapping) and isinstance(action_def.get("arg_schema"), Mapping):
+                arg_schema = action_def.get("arg_schema")
+
+        if not arg_schema:
+            return None
+
+        normalized_path = _normalize_field_tokens(list(rest_path[1:]))
+        return _walk_schema_with_tokens(arg_schema, normalized_path)
 
     if node_type == "loop":
         params = node.get("params") if isinstance(node, Mapping) else {}
