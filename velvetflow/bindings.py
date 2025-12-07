@@ -746,6 +746,89 @@ def eval_node_params(node: Node, ctx: BindingContext) -> Dict[str, Any]:
 
         return "".join(out)
 
+    def _render_each_templates(text: str) -> str:
+        each_pattern = re.compile(
+            r"\{\{\s*#each\s+([^{}]+?)\s*\}\}(.*?)\{\{\s*/each\s*\}\}",
+            re.S,
+        )
+        missing = object()
+
+        def _from_item(item: Any, path: str) -> Any:
+            trimmed = path
+            if trimmed.startswith("this."):
+                trimmed = trimmed[len("this.") :]
+            elif trimmed == "this":
+                trimmed = ""
+            elif trimmed.startswith("."):
+                trimmed = trimmed[1:]
+
+            if not trimmed:
+                return item
+
+            try:
+                tokens = parse_field_path(trimmed)
+            except Exception:
+                return missing
+
+            cur = item
+            for token in tokens:
+                if isinstance(cur, list):
+                    if not isinstance(token, int) or token >= len(cur) or token < 0:
+                        return missing
+                    cur = cur[token]
+                    continue
+
+                if isinstance(cur, dict):
+                    if token not in cur:
+                        return missing
+                    cur = cur[token]
+                    continue
+
+                return missing
+
+            return cur
+
+        def _replace(match: re.Match[str]) -> str:
+            raw_path = match.group(1) or ""
+            body = match.group(2) or ""
+            normalized_path = normalize_reference_path(raw_path)
+            qualified_path = ctx._qualify_context_path(normalized_path)
+            try:
+                iterable = ctx.get_value(qualified_path)
+            except Exception as exc:  # pragma: no cover - log-only path
+                log_warn(
+                    f"[param-resolver] #each 路径 {raw_path} 解析失败: {exc}，保留原样"
+                )
+                return match.group(0)
+
+            if not isinstance(iterable, list):
+                log_warn(
+                    f"[param-resolver] #each 路径 {raw_path} 对应值类型 {type(iterable).__name__}，保留原样"
+                )
+                return match.group(0)
+
+            rendered_blocks: List[str] = []
+            for item in iterable:
+                def _render_this_placeholders(text: str) -> str:
+                    def _replace_this(m: re.Match[str]) -> str:
+                        raw = m.group(1) or m.group(2) or m.group(3) or ""
+                        normalized = normalize_reference_path(raw)
+                        if normalized.startswith("this") or normalized.startswith("."):
+                            value = _from_item(item, normalized)
+                            if value is missing:
+                                return m.group(0)
+                            return "" if value is None else str(value)
+                        return m.group(0)
+
+                    return template_pattern.sub(_replace_this, text)
+
+                rendered_body = _render_each_templates(body)
+                rendered_blocks.append(_render_this_placeholders(rendered_body))
+
+            return "".join(rendered_blocks)
+
+        return each_pattern.sub(_replace, text)
+
     def _resolve(value: Any, path: str = "") -> Any:
         if isinstance(value, dict):
             if "__from__" in value:
@@ -763,7 +846,8 @@ def eval_node_params(node: Node, ctx: BindingContext) -> Dict[str, Any]:
         if isinstance(value, str):
             normalized_templates = canonicalize_template_placeholders(value)
             rendered_inline = _render_json_bindings(normalized_templates)
-            str_val = rendered_inline.strip()
+            rendered_with_each = _render_each_templates(rendered_inline)
+            str_val = rendered_with_each.strip()
             # 允许 text 等字段以字符串形式携带绑定表达式（常见于外部序列化后传入）
             if str_val.startswith("{") and str_val.endswith("}") and "__from__" in str_val:
                 try:
@@ -781,7 +865,7 @@ def eval_node_params(node: Node, ctx: BindingContext) -> Dict[str, Any]:
                     except Exception as e:
                         log_warn(f"[param-resolver] 字符串绑定 {value} 解析失败: {e}，使用原值")
 
-            normalized_v = normalize_reference_path(rendered_inline)
+            normalized_v = normalize_reference_path(rendered_with_each)
             qualified_v = ctx._qualify_context_path(normalized_v)
             head = qualified_v.split(".", 1)[0]
             # 仅当整个字符串就是绑定路径时才解析；包含插值占位符的混合字符串将保留原样
@@ -798,7 +882,7 @@ def eval_node_params(node: Node, ctx: BindingContext) -> Dict[str, Any]:
                         f"[param-resolver] 路径字符串 {value} 解析失败: {e}，使用原值"
                     )
 
-            resolved_with_templates = rendered_inline
+            resolved_with_templates = rendered_with_each
             replaced = False
 
             def _replace(match: re.Match[str]) -> str:
