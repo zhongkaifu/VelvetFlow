@@ -7,6 +7,7 @@ import ast
 import copy
 import json
 import re
+from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional
 
 from velvetflow.action_registry import get_action_by_id
@@ -64,6 +65,27 @@ class BindingContext:
             loop_ctx=copy.deepcopy(snapshot.get("loop_ctx", {})),
             loop_id=snapshot.get("loop_id"),
         )
+
+    @staticmethod
+    def save_snapshot_to_file(snapshot: Mapping[str, Any], file_path: str | Path) -> None:
+        """Persist a binding context snapshot to disk as JSON."""
+
+        with open(file_path, "w", encoding="utf-8") as fp:
+            json.dump(snapshot, fp, ensure_ascii=False, indent=2)
+
+    @classmethod
+    def load_snapshot_from_file(
+        cls,
+        workflow: Workflow,
+        file_path: str | Path,
+        *,
+        extra_nodes: Optional[Mapping[str, Node]] = None,
+    ) -> "BindingContext":
+        """Load a binding context snapshot from disk and restore the context."""
+
+        with open(file_path, "r", encoding="utf-8") as fp:
+            payload = json.load(fp)
+        return cls.from_snapshot(workflow, payload, extra_nodes=extra_nodes)
 
     def _format_field_path(self, parts: List[Any]) -> str:
         path_str = ""

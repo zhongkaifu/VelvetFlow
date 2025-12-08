@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import copy
+import json
+from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Mapping
 
@@ -85,6 +87,20 @@ class ExecutionCheckpoint:
             pending_ids=list(payload.get("pending_ids", [])),
         )
 
+    def save_to_file(self, file_path: str | Path) -> None:
+        """Persist the checkpoint to a JSON file."""
+
+        with open(file_path, "w", encoding="utf-8") as fp:
+            json.dump(self.to_dict(), fp, ensure_ascii=False, indent=2)
+
+    @classmethod
+    def load_from_file(cls, file_path: str | Path) -> "ExecutionCheckpoint":
+        """Load a checkpoint from a JSON file."""
+
+        with open(file_path, "r", encoding="utf-8") as fp:
+            payload = json.load(fp)
+        return cls.from_dict(payload)
+
 
 @dataclass
 class WorkflowSuspension:
@@ -95,4 +111,38 @@ class WorkflowSuspension:
     request_id: str
     tool_name: str
     reason: str = "async_tool_pending"
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "checkpoint": self.checkpoint.to_dict(),
+            "node_id": self.node_id,
+            "request_id": self.request_id,
+            "tool_name": self.tool_name,
+            "reason": self.reason,
+        }
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, Any]) -> "WorkflowSuspension":
+        checkpoint_payload = payload.get("checkpoint", {})
+        return cls(
+            checkpoint=ExecutionCheckpoint.from_dict(checkpoint_payload),
+            node_id=str(payload.get("node_id", "")),
+            request_id=str(payload.get("request_id", "")),
+            tool_name=str(payload.get("tool_name", "")),
+            reason=str(payload.get("reason", "async_tool_pending")),
+        )
+
+    def save_to_file(self, file_path: str | Path) -> None:
+        """Persist the suspension (including checkpoint) to a JSON file."""
+
+        with open(file_path, "w", encoding="utf-8") as fp:
+            json.dump(self.to_dict(), fp, ensure_ascii=False, indent=2)
+
+    @classmethod
+    def load_from_file(cls, file_path: str | Path) -> "WorkflowSuspension":
+        """Load a workflow suspension from a JSON file."""
+
+        with open(file_path, "r", encoding="utf-8") as fp:
+            payload = json.load(fp)
+        return cls.from_dict(payload)
 
