@@ -230,6 +230,32 @@ class ConditionEvaluationMixin:
 
             return [self._get_field_value(val, field)] if field else [val]
 
+        if kind == "greater_than":
+            field = params.get("field") if isinstance(params.get("field"), str) else None
+            threshold = params.get("threshold")
+            if threshold is None:
+                log_warn("[condition:greater_than] 未提供 threshold，返回 False")
+                condition = {"check": ">", "reason": "missing_threshold"}
+                _log_condition_debug(field, data, condition, params)
+                return _return(False, data, [])
+
+            values = _extract_values(data, field)
+
+            def _is_gt(v: Any) -> bool:
+                if v is None:
+                    return False
+                try:
+                    return v > threshold
+                except Exception as exc:
+                    raise TypeError(
+                        f"[condition:greater_than] 值 {v!r} 无法与阈值 {threshold!r} 比较"
+                    ) from exc
+
+            result = any(_is_gt(v) for v in values)
+            condition = {"check": ">", "threshold": threshold, "values": values}
+            _log_condition_debug(field, data, condition, params)
+            return _return(result, data, values)
+
         if kind == "any_greater_than":
             field = params.get("field")
             threshold = params.get("threshold")
