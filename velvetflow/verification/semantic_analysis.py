@@ -150,19 +150,45 @@ def _check_edges_and_branches(
                 )
 
     for node_id, node in nodes_by_id.items():
-        if node.get("type") != "condition":
-            continue
-        for branch_field in ("true_to_node", "false_to_node"):
-            target = node.get(branch_field)
-            if isinstance(target, str) and target not in nodes_by_id:
-                errors.append(
-                    ValidationError(
-                        code="UNDEFINED_REFERENCE",
-                        node_id=node_id,
-                        field=branch_field,
-                        message=f"condition 节点引用了不存在的分支节点 '{target}'。",
+        ntype = node.get("type")
+        if ntype == "condition":
+            for branch_field in ("true_to_node", "false_to_node"):
+                target = node.get(branch_field)
+                if isinstance(target, str) and target not in nodes_by_id:
+                    errors.append(
+                        ValidationError(
+                            code="UNDEFINED_REFERENCE",
+                            node_id=node_id,
+                            field=branch_field,
+                            message=f"condition 节点引用了不存在的分支节点 '{target}'。",
+                        )
                     )
-                )
+        if ntype == "switch":
+            cases = node.get("cases") if isinstance(node.get("cases"), list) else []
+            for idx, case in enumerate(cases):
+                if not isinstance(case, Mapping):
+                    continue
+                target = case.get("to_node")
+                if isinstance(target, str) and target not in nodes_by_id:
+                    errors.append(
+                        ValidationError(
+                            code="UNDEFINED_REFERENCE",
+                            node_id=node_id,
+                            field=f"cases[{idx}].to_node",
+                            message=f"switch 节点引用了不存在的分支节点 '{target}'。",
+                        )
+                    )
+            if "default_to_node" in node:
+                default_target = node.get("default_to_node")
+                if isinstance(default_target, str) and default_target not in nodes_by_id:
+                    errors.append(
+                        ValidationError(
+                            code="UNDEFINED_REFERENCE",
+                            node_id=node_id,
+                            field="default_to_node",
+                            message=f"switch 节点引用了不存在的默认分支节点 '{default_target}'。",
+                        )
+                    )
 
 
 def _schema_types(schema: Mapping[str, Any]) -> set[str]:

@@ -270,6 +270,29 @@ class DynamicActionExecutor:
 
         node_lookup = nodes_data if isinstance(nodes_data, Mapping) else self.nodes
         node_def = node_lookup.get(nid, {}) if isinstance(node_lookup.get(nid, {}), Mapping) else {}
+
+        if node_def.get("type") == "switch":
+            cases = node_def.get("cases") if isinstance(node_def.get("cases"), list) else []
+            for case in cases:
+                if not isinstance(case, Mapping):
+                    continue
+                raw_match = case.get("match") if "match" in case else case.get("value")
+                match_values = raw_match if isinstance(raw_match, list) else [raw_match]
+                if cond_value in match_values:
+                    target = case.get("to_node")
+                    if target in {None, "null"}:
+                        return []
+                    if isinstance(target, str):
+                        return [target]
+                    return []
+            if "default_to_node" in node_def:
+                default_target = node_def.get("default_to_node")
+                if default_target in {None, "null"}:
+                    return []
+                if isinstance(default_target, str):
+                    return [default_target]
+                return []
+
         if node_def.get("type") == "condition" and isinstance(cond_value, bool):
             branch_key = "true_to_node" if cond_value else "false_to_node"
             if branch_key in node_def:
@@ -1196,6 +1219,59 @@ class DynamicActionExecutor:
 
         log_warn(f"[condition] 未知 kind={kind}，默认 False")
         return _return(False, data)
+
+    def _eval_switch(
+        self, node: Mapping[str, Any], ctx: BindingContext, *, include_debug: bool = False
+    ) -> tuple[Optional[str], Dict[str, Any]]:
+        params = node.get("params") if isinstance(node.get("params"), Mapping) else {}
+        source = params.get("source")
+        field = params.get("field") if isinstance(params.get("field"), str) else None
+
+        try:
+            raw_value = self._resolve_condition_source(source, ctx)
+        except Exception as exc:  # noqa: BLE001
+            log_warn(f"[switch] 无法解析 source {source!r}: {exc}")
+            raw_value = None
+
+        resolved_value = self._get_field_value(raw_value, field) if field else raw_value
+
+        matched_case: Any = None
+        matched_to: Optional[str] = None
+        cases = node.get("cases") if isinstance(node.get("cases"), list) else []
+        for case in cases:
+            if not isinstance(case, Mapping):
+                continue
+            raw_match = case.get("match") if "match" in case else case.get("value")
+            match_values = raw_match if isinstance(raw_match, list) else [raw_match]
+            for candidate in match_values:
+                if resolved_value == candidate:
+                    matched_case = candidate
+                    target = case.get("to_node")
+                    if isinstance(target, str):
+                        matched_to = target
+                    elif target in {None, "null"}:
+                        matched_to = None
+                    break
+            if matched_case is not None:
+                break
+
+        if matched_case is None and "default_to_node" in node:
+            default_target = node.get("default_to_node")
+            if isinstance(default_target, str):
+                matched_to = default_target
+            elif default_target in {None, "null"}:
+                matched_to = None
+
+        payload: Dict[str, Any] = {
+            "switch_value": resolved_value,
+            "matched_case": matched_case,
+            "next_node": matched_to,
+        }
+        if include_debug:
+            payload["cases"] = cases
+
+        return matched_to, payload
+
     def _execute_loop_node(self, node: Dict[str, Any], binding_ctx: BindingContext) -> Dict[str, Any]:
         params = node.get("params") or {}
         loop_kind = params.get("loop_kind", "for_each")
@@ -1556,6 +1632,38 @@ class DynamicActionExecutor:
                             "node_id": nid,
                             "type": ntype,
                             "condition_result": cond_value,
+                            "next_nodes": next_ids,
+                        },
+                        node_id=nid,
+                    )
+                    continue
+
+                if ntype == "switch":
+                    matched_to, switch_payload = self._eval_switch(
+                        node, binding_ctx, include_debug=True
+                    )
+                    results[nid] = switch_payload
+                    self._record_node_metrics(switch_payload)
+                    next_ids = []
+                    if matched_to is not None:
+                        next_ids = [matched_to]
+                    else:
+                        next_ids = self._next_nodes(
+                            self._derive_edges(workflow),
+                            nid,
+                            cond_value=switch_payload.get("matched_case"),
+                            nodes_data=nodes_data,
+                        )
+                    for nxt in next_ids:
+                        if nxt not in visited:
+                            reachable.add(nxt)
+                    log_event(
+                        "node_end",
+                        {
+                            "node_id": nid,
+                            "type": ntype,
+                            "switch_value": switch_payload.get("switch_value"),
+                            "matched_case": switch_payload.get("matched_case"),
                             "next_nodes": next_ids,
                         },
                         node_id=nid,

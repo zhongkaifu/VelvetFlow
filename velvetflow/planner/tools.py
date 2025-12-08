@@ -158,6 +158,58 @@ PLANNER_TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "add_switch_node",
+            "description": "在工作流中新增一个 switch 节点，用于按匹配值多路分支跳转。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string", "description": "节点唯一 ID"},
+                    "display_name": {"type": "string"},
+                    "params": {
+                        "type": "object",
+                        "description": "switch 的输入来源定义，支持 source/field。",
+                        "properties": {
+                            "source": {
+                                "description": "可使用 result_of 路径或绑定对象。",
+                                "anyOf": [
+                                    {"type": "string"},
+                                    {"type": "object", "additionalProperties": True},
+                                ],
+                            },
+                            "field": {"type": "string", "description": "可选的子字段访问路径。"},
+                        },
+                        "additionalProperties": False,
+                    },
+                    "cases": {
+                        "type": "array",
+                        "description": "分支数组，每个元素包含 match 与跳转 to_node。",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "match": {},
+                                "value": {},
+                                "to_node": {"type": ["string", "null"], "description": "匹配时跳转的节点 id 或 null。"},
+                            },
+                            "required": ["to_node"],
+                            "additionalProperties": True,
+                        },
+                    },
+                    "default_to_node": {
+                        "type": ["string", "null"],
+                        "description": "无匹配时的默认跳转节点 id，或 null 表示结束。",
+                    },
+                    "parent_node_id": {
+                        "type": ["string", "null"],
+                        "description": "父节点 ID（如循环子图宿主节点），无父节点则为 null。",
+                    },
+                },
+                "required": ["id", "cases"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "update_action_node",
             "description": (
                 "更新已创建的 action 节点字段，支持直接覆盖 display_name/params/out_params_schema/action_id，"
@@ -246,6 +298,53 @@ PLANNER_TOOLS = [
                         "type": ["string", "null"],
                         "description": "条件为假时跳转的目标节点 id，或 null 表示该分支结束。",
                     },
+                    "parent_node_id": {
+                        "type": ["string", "null"],
+                        "description": "可选的父节点 ID，提供时会覆盖现有的 parent_node_id。",
+                    },
+                },
+                "required": ["id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "update_switch_node",
+            "description": "更新已创建的 switch 节点字段，可覆盖 display_name/params/cases/default_to_node。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string", "description": "要更新的 switch 节点 id"},
+                    "display_name": {"type": "string"},
+                    "params": {
+                        "type": "object",
+                        "description": "switch 的输入来源定义，支持 source/field。",
+                        "properties": {
+                            "source": {
+                                "anyOf": [
+                                    {"type": "string"},
+                                    {"type": "object", "additionalProperties": True},
+                                ]
+                            },
+                            "field": {"type": "string"},
+                        },
+                        "additionalProperties": False,
+                    },
+                    "cases": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "match": {},
+                                "value": {},
+                                "to_node": {"type": ["string", "null"]},
+                            },
+                            "required": ["to_node"],
+                            "additionalProperties": True,
+                        },
+                    },
+                    "default_to_node": {"type": ["string", "null"]},
                     "parent_node_id": {
                         "type": ["string", "null"],
                         "description": "可选的父节点 ID，提供时会覆盖现有的 parent_node_id。",

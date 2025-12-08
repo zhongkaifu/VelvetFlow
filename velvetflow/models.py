@@ -165,6 +165,8 @@ def infer_edges_from_bindings(nodes: Iterable[Any]) -> List[Dict[str, Any]]:
     node dictionaries.
     """
 
+    node_list = list(nodes)
+
     def _extract_node_id(node: Any) -> Optional[str]:
         if isinstance(node, Node):
             return node.id
@@ -206,12 +208,12 @@ def infer_edges_from_bindings(nodes: Iterable[Any]) -> List[Dict[str, Any]]:
             for match in re.findall(r"result_of\.([A-Za-z0-9_-]+)", value):
                 yield match
 
-    node_ids = {_extract_node_id(n) for n in nodes}
+    node_ids = {_extract_node_id(n) for n in node_list}
     node_ids.discard(None)
     seen_pairs: Set[tuple[str | None, str | None]] = set()
     edges: List[Dict[str, Any]] = []
 
-    for node in nodes:
+    for node in node_list:
         nid = _extract_node_id(node)
         if not nid:
             continue
@@ -255,6 +257,23 @@ def infer_edges_from_bindings(nodes: Iterable[Any]) -> List[Dict[str, Any]]:
                 ("true", node.get("true_to_node")),
                 ("false", node.get("false_to_node")),
             ]
+        elif isinstance(node, Node) and getattr(node, "type", None) == "switch":
+            branches = [
+                (str(case.get("match")), case.get("to_node"))
+                for case in getattr(node, "cases", [])
+                if isinstance(case, Mapping)
+            ]
+            if getattr(node, "default_to_node", None) is not None:
+                branches.append(("default", getattr(node, "default_to_node", None)))
+        elif isinstance(node, Mapping) and node.get("type") == "switch":
+            cases = node.get("cases") if isinstance(node.get("cases"), list) else []
+            branches = [
+                (str(case.get("match")), case.get("to_node"))
+                for case in cases
+                if isinstance(case, Mapping)
+            ]
+            if "default_to_node" in node:
+                branches.append(("default", node.get("default_to_node")))
 
         for cond_label, target in branches:
             if not isinstance(target, str):
@@ -301,7 +320,7 @@ class Node:
         if not isinstance(node_type, str):
             errors.append({"loc": ("type",), "msg": "节点类型必须是字符串"})
         else:
-            allowed = {"start", "end", "action", "condition", "loop", "parallel"}
+            allowed = {"start", "end", "action", "condition", "switch", "loop", "parallel"}
             if node_type not in allowed:
                 errors.append({
                     "loc": ("type",),
@@ -364,6 +383,35 @@ class Node:
                 false_to_node=false_to_node if isinstance(false_to_node, str) else None,
             )
 
+        if node_type == "switch":
+            cases = data.get("cases") if isinstance(data.get("cases"), list) else []
+            default_to_node = data.get("default_to_node")
+            if default_to_node is not None and not isinstance(default_to_node, str):
+                errors.append({"loc": ("default_to_node",), "msg": "default_to_node 必须是字符串"})
+
+            validated_cases: List[Dict[str, Any]] = []
+            if cases:
+                for idx, case in enumerate(cases):
+                    if not isinstance(case, Mapping):
+                        errors.append({"loc": ("cases", idx), "msg": "case 必须是对象"})
+                        continue
+                    to_node = case.get("to_node")
+                    if to_node is not None and not isinstance(to_node, str):
+                        errors.append({"loc": ("cases", idx, "to_node"), "msg": "to_node 必须是字符串"})
+                        continue
+                    validated_cases.append(dict(case))
+
+            if errors:
+                raise PydanticValidationError(errors)
+
+            return SwitchNode(
+                id=node_id,
+                display_name=data.get("display_name"),
+                params=dict(params),
+                cases=validated_cases,
+                default_to_node=default_to_node if isinstance(default_to_node, str) else None,
+            )
+
         if errors:
             raise PydanticValidationError(errors)
 
@@ -412,6 +460,20 @@ class ConditionNode(Node):
             "true_to_node": self.true_to_node,
             "false_to_node": self.false_to_node,
         })
+        return data
+
+
+@dataclass
+class SwitchNode(Node):
+    """Multi-branch switch node, similar to Python's match-case."""
+
+    type: Literal["switch"] = "switch"
+    cases: List[Dict[str, Any]] = field(default_factory=list)
+    default_to_node: Optional[str] = None
+
+    def model_dump(self, *, by_alias: bool = False) -> Dict[str, Any]:
+        data = super().model_dump(by_alias=by_alias)
+        data.update({"cases": self.cases, "default_to_node": self.default_to_node})
         return data
 
 
@@ -575,6 +637,9 @@ class Workflow:
 
 __all__ = [
     "Node",
+    "ActionNode",
+    "ConditionNode",
+    "SwitchNode",
     "Edge",
     "ParamBinding",
     "PydanticValidationError",

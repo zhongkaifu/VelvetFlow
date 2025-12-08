@@ -7,7 +7,7 @@ import math
 import os
 import json
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple, Mapping
 
 from PIL import Image, ImageDraw, ImageFont
 
@@ -21,6 +21,7 @@ NODE_COLORS: Dict[str, RGB] = {
     "end": (156, 39, 176),
     "action": (33, 150, 243),
     "condition": (255, 152, 0),
+    "switch": (121, 85, 72),
     "loop": (96, 125, 139),
     "parallel": (0, 150, 136),
 }
@@ -383,21 +384,44 @@ def _resolve_display_edges(workflow: Workflow) -> List[Edge]:
     node_ids = {n.id for n in workflow.nodes}
 
     for node in workflow.nodes:
-        if node.type != "condition":
-            continue
-        branch_pairs = [
-            ("true", node.true_to_node),
-            ("false", node.false_to_node),
-        ]
+        if node.type == "condition":
+            branch_pairs = [
+                ("true", node.true_to_node),
+                ("false", node.false_to_node),
+            ]
 
-        for branch_label, target in branch_pairs:
-            if not isinstance(target, str) or target not in node_ids:
-                continue
-            key = (node.id, target, branch_label)
-            if key in existing:
-                continue
-            existing.add(key)
-            resolved.append(Edge(from_node=node.id, to_node=target, condition=branch_label))
+            for branch_label, target in branch_pairs:
+                if not isinstance(target, str) or target not in node_ids:
+                    continue
+                key = (node.id, target, branch_label)
+                if key in existing:
+                    continue
+                existing.add(key)
+                resolved.append(
+                    Edge(from_node=node.id, to_node=target, condition=branch_label)
+                )
+        if getattr(node, "type", None) == "switch":
+            cases = getattr(node, "cases", []) if isinstance(getattr(node, "cases", []), list) else []
+            for case in cases:
+                if not isinstance(case, Mapping):
+                    continue
+                target = case.get("to_node")
+                if not isinstance(target, str) or target not in node_ids:
+                    continue
+                label = str(case.get("match")) if "match" in case else str(case.get("value"))
+                key = (node.id, target, label)
+                if key in existing:
+                    continue
+                existing.add(key)
+                resolved.append(Edge(from_node=node.id, to_node=target, condition=label))
+            default_to = getattr(node, "default_to_node", None)
+            if isinstance(default_to, str) and default_to in node_ids:
+                key = (node.id, default_to, "default")
+                if key not in existing:
+                    existing.add(key)
+                    resolved.append(
+                        Edge(from_node=node.id, to_node=default_to, condition="default")
+                    )
 
     return resolved
 

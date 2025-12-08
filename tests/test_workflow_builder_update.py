@@ -167,3 +167,26 @@ def test_non_loop_parent_normalizes_to_null():
     assert task_node.get("parent_node_id") is None
 
 
+def test_builder_adds_switch_nodes_and_infers_edges():
+    builder = WorkflowBuilder()
+    builder.add_node(
+        node_id="decide",
+        node_type="switch",
+        display_name="Decide next",
+        params={"source": "result_of.fetch", "field": "status"},
+        cases=[{"match": "ok", "to_node": "next"}, {"match": ["fail", "error"], "to_node": None}],
+        default_to_node="fallback",
+    )
+
+    workflow = builder.to_workflow()
+    switch_node = _find(workflow["nodes"], "decide")
+
+    assert switch_node["default_to_node"] == "fallback"
+    assert switch_node["cases"][0]["match"] == "ok"
+
+    edge_conditions = {(e.get("from"), e.get("to"), e.get("condition")) for e in workflow.get("edges", [])}
+
+    assert ("decide", "next", "ok") in edge_conditions
+    assert any(cond == "default" for _, _, cond in edge_conditions)
+
+

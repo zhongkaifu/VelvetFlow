@@ -89,6 +89,8 @@ class WorkflowBuilder:
         out_params_schema: Optional[Dict[str, Any]] = None,
         true_to_node: Optional[str] = None,
         false_to_node: Optional[str] = None,
+        cases: Optional[list[Dict[str, Any]]] = None,
+        default_to_node: Optional[str] = None,
         parent_node_id: Optional[str] = None,
     ):
         if node_id in self.nodes:
@@ -111,6 +113,16 @@ class WorkflowBuilder:
                     "params": params or {},
                     "true_to_node": true_to_node,
                     "false_to_node": false_to_node,
+                    "parent_node_id": parent_node_id,
+                }
+            )
+        elif node_type == "switch":
+            node.update(
+                {
+                    "display_name": display_name,
+                    "params": params or {},
+                    "cases": cases or [],
+                    "default_to_node": default_to_node,
                     "parent_node_id": parent_node_id,
                 }
             )
