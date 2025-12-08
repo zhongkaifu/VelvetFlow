@@ -19,6 +19,11 @@ from velvetflow.logging_utils import (
 )
 from velvetflow.models import Node, Workflow
 
+from .async_runtime import (
+    ExecutionCheckpoint,
+    GLOBAL_ASYNC_RESULT_STORE,
+    WorkflowSuspension,
+)
 from .actions import ActionExecutionMixin
 from .conditions import ConditionEvaluationMixin
 from .graph import GraphTraversalMixin
@@ -93,12 +98,30 @@ class DynamicActionExecutor(
                 "workflow 中存在未注册或缺失的 action_id，请在构建阶段修复: " + details
             )
 
+    def _build_checkpoint(
+        self,
+        workflow_dict: Dict[str, Any],
+        binding_ctx: BindingContext,
+        visited: Set[str],
+        reachable: Set[str],
+        sorted_nodes: List[Node],
+    ) -> ExecutionCheckpoint:
+        pending_ids = [n.id for n in sorted_nodes if n.id not in visited]
+        return ExecutionCheckpoint(
+            workflow_dict=workflow_dict,
+            binding_snapshot=binding_ctx.snapshot(),
+            visited=list(visited),
+            reachable=list(reachable),
+            pending_ids=pending_ids,
+        )
+
     def _execute_graph(
         self,
         workflow_dict: Dict[str, Any],
         binding_ctx: BindingContext,
         start_nodes: Optional[List[str]] = None,
-    ) -> Dict[str, Any]:
+        checkpoint: ExecutionCheckpoint | None = None,
+    ) -> Union[Dict[str, Any], WorkflowSuspension]:
         workflow = Workflow.model_validate(workflow_dict)
         nodes_data = {n["id"]: n for n in workflow.model_dump(by_alias=True)["nodes"]}
         sorted_nodes = self._topological_sort(workflow)
@@ -109,31 +132,41 @@ class DynamicActionExecutor(
         log_kv("描述", workflow_dict.get("description", ""))
         log_kv("模拟用户角色", self.user_role)
 
-        if start_nodes is None:
-            start_nodes = self._find_start_nodes(nodes_data, edges)
+        if checkpoint:
+            visited: Set[str] = set(checkpoint.visited)
+            reachable: Set[str] = set(checkpoint.reachable)
+            pending: List[Node] = [
+                self.node_models[nid]
+                for nid in checkpoint.pending_ids
+                if nid in self.node_models
+            ]
+        else:
+            if start_nodes is None:
+                start_nodes = self._find_start_nodes(nodes_data, edges)
 
-        indegree = {nid: 0 for nid in nodes_data}
-        for e in edges:
-            if not isinstance(e, Mapping):
-                continue
-            frm = e.get("from")
-            to = e.get("to")
-            if frm in indegree and to in indegree:
-                indegree[to] += 1
+            indegree = {nid: 0 for nid in nodes_data}
+            for e in edges:
+                if not isinstance(e, Mapping):
+                    continue
+                frm = e.get("from")
+                to = e.get("to")
+                if frm in indegree and to in indegree:
+                    indegree[to] += 1
 
-        zero_indegree = [nid for nid, deg in indegree.items() if deg == 0]
-        start_nodes = list(dict.fromkeys(start_nodes)) if start_nodes else []
-        if not start_nodes:
-            start_nodes = zero_indegree
-        if not start_nodes and sorted_nodes:
-            log_warn("未找到 start 节点，将从任意一个节点开始（仅 demo）。")
-            start_nodes = [sorted_nodes[0].id]
+            zero_indegree = [nid for nid, deg in indegree.items() if deg == 0]
+            start_nodes = list(dict.fromkeys(start_nodes)) if start_nodes else []
+            if not start_nodes:
+                start_nodes = zero_indegree
+            if not start_nodes and sorted_nodes:
+                log_warn("未找到 start 节点，将从任意一个节点开始（仅 demo）。")
+                start_nodes = [sorted_nodes[0].id]
 
-        visited: Set[str] = set()
-        reachable: Set[str] = set(start_nodes)
+            visited = set()
+            reachable = set(start_nodes)
+            pending = list(sorted_nodes)
+
         results = binding_ctx.results
 
-        pending: List[Node] = list(sorted_nodes)
         while pending:
             progress = False
             remaining: List[Node] = []
@@ -192,9 +225,10 @@ class DynamicActionExecutor(
                                 f"-> 执行业务动作: {action['name']} (domain={action['domain']})"
                             )
                             log_debug(f"-> 描述: {action['description']}")
+                            tool_name = action.get("tool_name")
                             if self._should_simulate(action_id):
                                 result = self._simulate_action(action_id, resolved_params)
-                            elif tool_name := action.get("tool_name"):
+                            elif tool_name:
                                 result = self._invoke_tool(tool_name, resolved_params, action_id)
                             else:
                                 log_warn(
@@ -210,12 +244,35 @@ class DynamicActionExecutor(
                     payload["params"] = resolved_params
                     results[nid] = payload
                     self._record_node_metrics(payload)
-                    next_ids = self._next_nodes(
-                        self._derive_edges(workflow), nid, nodes_data=nodes_data
-                    )
+                    next_ids = self._next_nodes(edges, nid, nodes_data=nodes_data)
                     for nxt in next_ids:
                         if nxt not in visited:
                             reachable.add(nxt)
+                    if isinstance(payload, Mapping) and payload.get("status") == "async_pending":
+                        checkpoint = self._build_checkpoint(
+                            workflow_dict,
+                            binding_ctx,
+                            visited,
+                            reachable,
+                            sorted_nodes,
+                        )
+                        suspension = WorkflowSuspension(
+                            checkpoint=checkpoint,
+                            node_id=nid,
+                            request_id=str(payload.get("request_id", "")),
+                            tool_name=tool_name or action_id or "",
+                        )
+                        log_event(
+                            "workflow_suspended",
+                            {
+                                "node_id": nid,
+                                "request_id": suspension.request_id,
+                                "tool_name": suspension.tool_name,
+                            },
+                            node_id=nid,
+                            action_id=action_id,
+                        )
+                        return suspension
                     log_event(
                         "node_end",
                         {
@@ -361,7 +418,6 @@ class DynamicActionExecutor(
                 break
 
         return results
-
     def run_workflow(self, trace_context: TraceContext | None = None):
         binding_ctx = BindingContext(self.workflow, {})
         if self.run_manager:
@@ -384,12 +440,14 @@ class DynamicActionExecutor(
                     )
                     results = self._execute_graph(self.workflow_dict, binding_ctx)
                     if self.run_manager:
-                        self.run_manager.metrics.extra["result_nodes"] = list(results.keys())
+                        self.run_manager.metrics.extra["result_nodes"] = list(
+                            binding_ctx.results.keys()
+                        )
                     log_event(
                         "executor_finished",
                         {
                             "workflow_name": self.workflow.workflow_name,
-                            "result_nodes": list(results.keys()),
+                            "result_nodes": list(binding_ctx.results.keys()),
                         },
                         context=span_ctx,
                     )
@@ -397,8 +455,57 @@ class DynamicActionExecutor(
 
         results = self._execute_graph(self.workflow_dict, binding_ctx)
         if self.run_manager:
-            self.run_manager.metrics.extra["result_nodes"] = list(results.keys())
+            self.run_manager.metrics.extra["result_nodes"] = list(
+                binding_ctx.results.keys()
+            )
         return results
+
+    def resume_from_suspension(
+        self,
+        suspension: WorkflowSuspension,
+        tool_result: Any | None = None,
+        trace_context: TraceContext | None = None,
+    ) -> Union[Dict[str, Any], WorkflowSuspension]:
+        """Resume workflow execution once an async tool finishes."""
+
+        checkpoint = suspension.checkpoint
+        binding_ctx = BindingContext.from_snapshot(
+            self.workflow, checkpoint.binding_snapshot
+        )
+        previous_payload = binding_ctx.results.get(suspension.node_id, {})
+
+        if tool_result is None:
+            tool_result = GLOBAL_ASYNC_RESULT_STORE.pop_result(
+                suspension.request_id
+            )
+            if tool_result is None:
+                raise ValueError(
+                    f"未找到异步请求 {suspension.request_id} 的结果，无法恢复执行"
+                )
+
+        payload: Dict[str, Any] = (
+            tool_result.copy() if isinstance(tool_result, dict) else {"value": tool_result}
+        )
+        if isinstance(previous_payload, Mapping) and "params" in previous_payload:
+            payload.setdefault("params", previous_payload.get("params"))
+        payload.setdefault("request_id", suspension.request_id)
+        original_status = payload.get("status")
+        payload["status"] = "async_resolved"
+        if original_status and original_status != payload["status"]:
+            payload.setdefault("tool_status", original_status)
+
+        binding_ctx.results[suspension.node_id] = payload
+
+        ctx = trace_context or self.trace_context
+        if ctx:
+            with use_trace_context(ctx):
+                return self._execute_graph(
+                    checkpoint.workflow_dict, binding_ctx, checkpoint=checkpoint
+                )
+
+        return self._execute_graph(
+            checkpoint.workflow_dict, binding_ctx, checkpoint=checkpoint
+        )
 
     def run(self, trace_context: TraceContext | None = None):
         return self.run_workflow(trace_context=trace_context)

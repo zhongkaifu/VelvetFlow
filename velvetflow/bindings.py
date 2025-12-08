@@ -4,6 +4,7 @@
 """Parameter binding resolution for workflow execution."""
 
 import ast
+import copy
 import json
 import re
 from typing import Any, Dict, List, Mapping, Optional
@@ -36,6 +37,33 @@ class BindingContext:
         self._nodes = {n.id: n for n in workflow.nodes}
         if extra_nodes:
             self._nodes.update(extra_nodes)
+
+    def snapshot(self) -> Dict[str, Any]:
+        """Return a serializable snapshot of the binding context."""
+
+        return {
+            "results": copy.deepcopy(self.results),
+            "loop_ctx": copy.deepcopy(self.loop_ctx),
+            "loop_id": self.loop_id,
+        }
+
+    @classmethod
+    def from_snapshot(
+        cls,
+        workflow: Workflow,
+        snapshot: Mapping[str, Any],
+        *,
+        extra_nodes: Optional[Mapping[str, Node]] = None,
+    ) -> "BindingContext":
+        """Restore a binding context from a serialized snapshot."""
+
+        return cls(
+            workflow,
+            copy.deepcopy(snapshot.get("results", {})),
+            extra_nodes=extra_nodes,
+            loop_ctx=copy.deepcopy(snapshot.get("loop_ctx", {})),
+            loop_id=snapshot.get("loop_id"),
+        )
 
     def _format_field_path(self, parts: List[Any]) -> str:
         path_str = ""
