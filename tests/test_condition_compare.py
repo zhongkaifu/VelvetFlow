@@ -82,3 +82,53 @@ def test_condition_compare_supports_custom_operator():
 
     assert "f_branch" in results
     assert "t_branch" not in results
+
+
+def test_condition_greater_than_executes_true_branch():
+    workflow = _build_workflow(
+        {
+            "kind": "greater_than",
+            "source": {"temperature": 39},
+            "field": "temperature",
+            "threshold": 38,
+        },
+        true_node_id="add_to_warning_list",
+        false_node_id="log_normal",
+    )
+
+    executor = DynamicActionExecutor(
+        workflow,
+        simulations={
+            "productivity.compose_outlook_email.v1": {"result": {"status": "simulated"}}
+        },
+    )
+
+    results = executor.run()
+
+    assert "add_to_warning_list" in results
+    assert "log_normal" not in results
+
+
+def test_condition_greater_than_executes_false_branch_when_below_threshold():
+    workflow = _build_workflow(
+        {
+            "kind": "greater_than",
+            "source": {"temperature": 36.5},
+            "field": "temperature",
+            "threshold": 38,
+        },
+        true_node_id="add_to_warning_list",
+        false_node_id="log_normal",
+    )
+
+    executor = DynamicActionExecutor(
+        workflow,
+        simulations={
+            "productivity.compose_outlook_email.v1": {"result": {"status": "simulated"}}
+        },
+    )
+
+    results = executor.run()
+
+    assert "add_to_warning_list" not in results
+    assert "log_normal" in results
