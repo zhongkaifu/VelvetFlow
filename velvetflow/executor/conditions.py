@@ -182,6 +182,13 @@ class ConditionEvaluationMixin:
             _log_condition_debug(field_path, target_data, condition, params)
             return _return(result, target_data)
 
+        if kind in {"equals", "eq", "=="}:
+            expected = params.get("value")
+            condition = {"check": "value == expected", "expected": expected}
+            result = target_data == expected
+            _log_condition_debug(field_path, target_data, condition, params)
+            return _return(result, target_data)
+
         if kind == "is_empty":
             condition = {"check": "value is None or len(value) == 0"}
             if data is None:
@@ -523,7 +530,7 @@ class ConditionEvaluationMixin:
         for case in cases:
             if not isinstance(case, Mapping):
                 continue
-            match_val = case.get("value")
+            match_val = case.get("match") if "match" in case else case.get("value")
             match_values: List[Any] = match_val if isinstance(match_val, list) else [match_val]
             match_field = case.get("field") if isinstance(case.get("field"), str) else None
             if match_field:
@@ -534,7 +541,7 @@ class ConditionEvaluationMixin:
                     continue
 
             if resolved_value in match_values:
-                matched_case = case
+                matched_case = match_val
                 to_node = case.get("to_node")
                 matched_to = to_node if isinstance(to_node, str) else None
                 break
