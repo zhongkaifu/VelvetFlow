@@ -592,17 +592,50 @@ class Workflow:
     def validate_loop_body_subgraphs(self) -> "Workflow":
         """Validate nested loop body subgraphs at build time."""
 
-        for node in self.nodes:
+        errors: List[Dict[str, Any]] = []
+
+        for idx, node in enumerate(self.nodes):
             if node.type != "loop":
                 continue
 
             params = node.params if isinstance(node.params, Mapping) else {}
             body_graph = params.get("body_subgraph") if isinstance(params, Mapping) else None
+
+            if body_graph is None:
+                errors.append(
+                    {
+                        "loc": ("nodes", idx, "params", "body_subgraph"),
+                        "msg": "loop 节点必须提供 body_subgraph",
+                    }
+                )
+                continue
+
             if not isinstance(body_graph, Mapping):
+                errors.append(
+                    {
+                        "loc": ("nodes", idx, "params", "body_subgraph"),
+                        "msg": "body_subgraph 必须是对象",
+                    }
+                )
                 continue
 
             body_nodes = body_graph.get("nodes")
             if not isinstance(body_nodes, list):
+                errors.append(
+                    {
+                        "loc": ("nodes", idx, "params", "body_subgraph", "nodes"),
+                        "msg": "body_subgraph.nodes 必须是数组",
+                    }
+                )
+                continue
+
+            if not body_nodes:
+                errors.append(
+                    {
+                        "loc": ("nodes", idx, "params", "body_subgraph", "nodes"),
+                        "msg": "loop 节点的 body_subgraph.nodes 不能为空",
+                    }
+                )
                 continue
 
             try:
@@ -614,16 +647,19 @@ class Workflow:
                 )
             except PydanticValidationError as exc:
                 # 标注 body_subgraph 中的具体字段，方便上层修复逻辑消费
-                errors: List[Dict[str, Any]] = []
+                nested_errors: List[Dict[str, Any]] = []
                 for err in exc.errors():
                     loc = ("body_subgraph", *err.get("loc", ()))
-                    errors.append({"loc": loc, "msg": err.get("msg")})
+                    nested_errors.append({"loc": loc, "msg": err.get("msg")})
 
-                raise PydanticValidationError(errors) from exc
+                raise PydanticValidationError(nested_errors) from exc
             except Exception as exc:  # noqa: BLE001
                 raise ValueError(
                     f"loop 节点 '{node.id}' 的 body_subgraph 校验失败: {exc}"
                 ) from exc
+
+        if errors:
+            raise PydanticValidationError(errors)
 
         return self
 

@@ -23,6 +23,61 @@ ACTION_REGISTRY = json.loads(
 )
 
 
+def test_loop_requires_body_subgraph():
+    """Missing body_subgraph should be surfaced during workflow validation."""
+
+    workflow = {
+        "workflow_name": "missing_body_subgraph",
+        "nodes": [
+            {
+                "id": "fetch_items",
+                "type": "action",
+                "action_id": "common.search_news.v1",
+                "params": {"query": "AI"},
+            },
+            {
+                "id": "loop_over_items",
+                "type": "loop",
+                "params": {
+                    "loop_kind": "for_each",
+                    "source": "result_of.fetch_items.results",
+                    "item_alias": "item",
+                },
+            },
+        ],
+        "edges": [{"from": "fetch_items", "to": "loop_over_items"}],
+    }
+
+    errors = validate_workflow_data(workflow, ACTION_REGISTRY)
+
+    assert errors, "Expected validation errors for missing body_subgraph"
+    assert any(
+        err.code == "INVALID_LOOP_BODY" and err.field == "body_subgraph" for err in errors
+    )
+
+
+def test_model_validation_rejects_missing_body_subgraph():
+    """Workflow.model_validate should fail fast when loop body is absent."""
+
+    workflow = {
+        "workflow_name": "missing_body_subgraph_model",
+        "nodes": [
+            {
+                "id": "loop_warning_summary",
+                "type": "loop",
+                "params": {
+                    "loop_kind": "for_each",
+                    "source": "result_of.loop_check_temperature.exports.items",
+                    "item_alias": "warning_employee",
+                },
+            }
+        ],
+    }
+
+    with pytest.raises(PydanticValidationError):
+        Workflow.model_validate(workflow)
+
+
 def test_loop_body_exports_must_target_existing_nodes():
     """Exports referencing missing body nodes should surface a clear error."""
 

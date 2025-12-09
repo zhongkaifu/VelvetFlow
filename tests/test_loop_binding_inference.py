@@ -25,6 +25,10 @@ def _build_loop_ctx(exports, results):
                         "source": [],
                         "item_alias": "item",
                         "exports": exports,
+                        "body_subgraph": {
+                            "nodes": [{"id": "noop", "type": "action"}],
+                            "edges": [],
+                        },
                     },
                 }
             ],

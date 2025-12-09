@@ -92,6 +92,27 @@ VelvetFlow (repo root)
    ```
    - 将自然语言需求与现有 workflow 作为输入，调用 LLM 自动更新节点、参数与边；若校验失败会将错误列表反馈给 LLM 自动修复（最多 3 轮），最终写入通过校验的结果到 `--output` 指定的文件。
 
+## 异步工具调用、挂起与恢复
+- **触发异步**：在 action/loop 子图节点的 `params` 中加入 `"__invoke_mode": "async"`（或布尔 `"__async__": true`）即可请求异步调用。业务工具若直接返回 `AsyncToolHandle` 会被识别为异步；否则执行器会自动将同步输出包装为异步请求句柄。异步调用会写入 `GLOBAL_ASYNC_RESULT_STORE`，并返回 `{"status": "async_pending", ...}`。
+- **挂起前的快照**：遇到异步节点时，执行器会生成 `WorkflowSuspension`，其中包含：当前节点 `request_id`/`node_id`、完整 `workflow_dict`、以及 `BindingContext` 的快照（含节点结果、循环索引、loop 导出等）。该对象可调用 `save_to_file(path)` 将快照持久化到 JSON 文件。
+- **恢复机制**：外部服务完成后，可将工具结果写入 JSON 文件，通过 `WorkflowSuspension.load_from_file()` 加载挂起文件，再调用 `DynamicActionExecutor.resume_from_suspension(suspension, tool_result=...)` 继续执行。若使用 CLI，可直接指定 `--resume-from` 与 `--tool-result-file`，执行器会自动恢复上下文并推动后续节点。
+- **演示示例**：仓库提供了完整的 CLI 演示数据：
+  ```bash
+  # 首次运行：异步节点挂起，并将 suspension 写入 examples/async_suspend_resume/suspension.json
+  python execute_workflow.py \
+    --workflow-json examples/async_suspend_resume/workflow_async_health.json \
+    --suspension-file examples/async_suspend_resume/suspension.json
+
+  # 外部工具完成后，将结果写入示例文件（可直接复用仓库内的 tool_result_completed.json）并恢复执行
+  python execute_workflow.py \
+    --workflow-json examples/async_suspend_resume/workflow_async_health.json \
+    --resume-from examples/async_suspend_resume/suspension.json \
+    --tool-result-file examples/async_suspend_resume/tool_result_completed.json
+  ```
+  - `workflow_async_health.json` 展示了带 `__invoke_mode: "async"` 的节点及其下游引用。
+  - `tool_result_completed.json` 模拟异步工具的完成回调，恢复后可查看下游节点如何消费该结果。
+  - 如需自定义模拟输出，可通过 `--simulation-file` 指向自定义的模拟数据。
+
 ## 工作流构建流程（含 LLM 标注）
 下面将端到端流程拆解为可复用的流水线，体现近期新增的“防御式校验 + 自动修复”改动：
 

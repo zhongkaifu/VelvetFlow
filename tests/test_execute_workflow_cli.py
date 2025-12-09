@@ -1,0 +1,204 @@
+import json
+import sys
+from pathlib import Path
+
+from execute_workflow import main as run_cli
+from tools import Tool
+from tools.registry import register_tool
+from velvetflow.executor.async_runtime import (
+    AsyncToolHandle,
+    GLOBAL_ASYNC_RESULT_STORE,
+    WorkflowSuspension,
+)
+
+
+def setup_function(_func):
+    GLOBAL_ASYNC_RESULT_STORE._pending.clear()  # type: ignore[attr-defined]
+    GLOBAL_ASYNC_RESULT_STORE._results.clear()  # type: ignore[attr-defined]
+
+
+def _async_cli_stub(payload: str):
+    return AsyncToolHandle(
+        request_id="cli-req-001", tool_name="async_stub_tool", params={"payload": payload}
+    )
+
+
+# Ensure the async stub tool is available for CLI-driven tests.
+register_tool(
+    Tool(
+        name="async_stub_tool",
+        description="Async stub tool returning a handle for CLI resume tests.",
+        function=_async_cli_stub,
+    )
+)
+
+
+def _write_workflow(tmp_path: Path) -> Path:
+    workflow = {
+        "workflow_name": "cli_async_workflow",
+        "nodes": [
+            {
+                "id": "record_health_async",
+                "type": "action",
+                "action_id": "hr.record_health_event.v1",
+                "params": {
+                    "__invoke_mode": "async",
+                    "event_type": "from_cli",
+                },
+            }
+        ],
+        "edges": [],
+    }
+    path = tmp_path / "workflow.json"
+    path.write_text(json.dumps(workflow, ensure_ascii=False, indent=2), encoding="utf-8")
+    return path
+
+
+def _write_async_chain_workflow(tmp_path: Path) -> Path:
+    workflow = {
+        "workflow_name": "cli_async_chain_workflow",
+        "nodes": [
+            {
+                "id": "enqueue_async",
+                "type": "action",
+                "action_id": "demo.async_stub.v1",
+                "params": {"payload": "from_cli_async", "__invoke_mode": "async"},
+            },
+            {
+                "id": "record_followup",
+                "type": "action",
+                "action_id": "hr.record_health_event.v1",
+                "params": {
+                    "event_type": "result_of.enqueue_async.value",
+                    "abnormal_count": 1,
+                },
+            },
+        ],
+        "edges": [{"from": "enqueue_async", "to": "record_followup"}],
+    }
+    path = tmp_path / "async_chain.json"
+    path.write_text(json.dumps(workflow, ensure_ascii=False, indent=2), encoding="utf-8")
+    return path
+
+
+def test_executor_persists_suspension_file(tmp_path, monkeypatch):
+    workflow_path = _write_workflow(tmp_path)
+    suspension_path = tmp_path / "suspension.json"
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "execute_workflow.py",
+            "--workflow-json",
+            str(workflow_path),
+            "--suspension-file",
+            str(suspension_path),
+        ],
+    )
+
+    result = run_cli()
+
+    assert isinstance(result, WorkflowSuspension)
+    assert suspension_path.exists()
+    persisted = WorkflowSuspension.load_from_file(suspension_path)
+    assert persisted.node_id == "record_health_async"
+    assert persisted.request_id == result.request_id
+
+
+def test_executor_resumes_from_saved_suspension(tmp_path, monkeypatch):
+    workflow_path = _write_workflow(tmp_path)
+    suspension_path = tmp_path / "suspension.json"
+
+    # First run to create a suspension file
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "execute_workflow.py",
+            "--workflow-json",
+            str(workflow_path),
+            "--suspension-file",
+            str(suspension_path),
+        ],
+    )
+    _ = run_cli()
+
+    tool_result_file = tmp_path / "tool_result.json"
+    tool_result_file.write_text(
+        json.dumps({"status": "completed", "note": "from file"}),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "execute_workflow.py",
+            "--workflow-json",
+            str(workflow_path),
+            "--resume-from",
+            str(suspension_path),
+            "--tool-result-file",
+            str(tool_result_file),
+        ],
+    )
+
+    resumed = run_cli()
+
+    assert isinstance(resumed, dict)
+    payload = resumed["record_health_async"]
+    assert payload["status"] == "async_resolved"
+    assert payload.get("tool_status") == "completed"
+
+
+def test_executor_uses_tool_result_file_and_runs_downstream_nodes(tmp_path, monkeypatch):
+    workflow_path = _write_async_chain_workflow(tmp_path)
+    suspension_path = tmp_path / "chain_suspension.json"
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "execute_workflow.py",
+            "--workflow-json",
+            str(workflow_path),
+            "--suspension-file",
+            str(suspension_path),
+        ],
+    )
+
+    suspension = run_cli()
+
+    assert isinstance(suspension, WorkflowSuspension)
+    assert suspension_path.exists()
+
+    tool_result_file = tmp_path / "async_result.json"
+    tool_result_file.write_text(
+        json.dumps({"status": "completed", "value": "cli-async-finished"}),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "execute_workflow.py",
+            "--workflow-json",
+            str(workflow_path),
+            "--resume-from",
+            str(suspension_path),
+            "--tool-result-file",
+            str(tool_result_file),
+        ],
+    )
+
+    resumed = run_cli()
+
+    assert isinstance(resumed, dict)
+    async_payload = resumed["enqueue_async"]
+    assert async_payload["status"] == "async_resolved"
+    assert async_payload.get("tool_status") == "completed"
+
+    followup = resumed["record_followup"]
+    assert followup["event_type"] == "cli-async-finished"

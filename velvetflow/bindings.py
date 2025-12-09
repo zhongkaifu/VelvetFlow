@@ -4,8 +4,10 @@
 """Parameter binding resolution for workflow execution."""
 
 import ast
+import copy
 import json
 import re
+from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional
 
 from velvetflow.action_registry import get_action_by_id
@@ -36,6 +38,54 @@ class BindingContext:
         self._nodes = {n.id: n for n in workflow.nodes}
         if extra_nodes:
             self._nodes.update(extra_nodes)
+
+    def snapshot(self) -> Dict[str, Any]:
+        """Return a serializable snapshot of the binding context."""
+
+        return {
+            "results": copy.deepcopy(self.results),
+            "loop_ctx": copy.deepcopy(self.loop_ctx),
+            "loop_id": self.loop_id,
+        }
+
+    @classmethod
+    def from_snapshot(
+        cls,
+        workflow: Workflow,
+        snapshot: Mapping[str, Any],
+        *,
+        extra_nodes: Optional[Mapping[str, Node]] = None,
+    ) -> "BindingContext":
+        """Restore a binding context from a serialized snapshot."""
+
+        return cls(
+            workflow,
+            copy.deepcopy(snapshot.get("results", {})),
+            extra_nodes=extra_nodes,
+            loop_ctx=copy.deepcopy(snapshot.get("loop_ctx", {})),
+            loop_id=snapshot.get("loop_id"),
+        )
+
+    @staticmethod
+    def save_snapshot_to_file(snapshot: Mapping[str, Any], file_path: str | Path) -> None:
+        """Persist a binding context snapshot to disk as JSON."""
+
+        with open(file_path, "w", encoding="utf-8") as fp:
+            json.dump(snapshot, fp, ensure_ascii=False, indent=2)
+
+    @classmethod
+    def load_snapshot_from_file(
+        cls,
+        workflow: Workflow,
+        file_path: str | Path,
+        *,
+        extra_nodes: Optional[Mapping[str, Node]] = None,
+    ) -> "BindingContext":
+        """Load a binding context snapshot from disk and restore the context."""
+
+        with open(file_path, "r", encoding="utf-8") as fp:
+            payload = json.load(fp)
+        return cls.from_snapshot(workflow, payload, extra_nodes=extra_nodes)
 
     def _format_field_path(self, parts: List[Any]) -> str:
         path_str = ""
