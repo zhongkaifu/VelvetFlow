@@ -248,11 +248,27 @@ def _safe_repair_invalid_loop_body(workflow_raw: Mapping[str, Any]) -> Workflow:
             continue
 
         params = node.get("params") if isinstance(node.get("params"), dict) else {}
+        node["params"] = params
+
         body = params.get("body_subgraph") if isinstance(params, Mapping) else None
         if not isinstance(body, dict):
-            continue
+            body = {}
 
         body_nodes = body.get("nodes") if isinstance(body.get("nodes"), list) else []
+
+        if not body_nodes:
+            start_id = f"{node.get('id')}_body_entry"
+            end_id = f"{node.get('id')}_body_exit"
+            body_nodes = [
+                {"id": start_id, "type": "start"},
+                {"id": end_id, "type": "end"},
+            ]
+            edges = body.get("edges") if isinstance(body.get("edges"), list) else []
+            edges.append({"from": start_id, "to": end_id})
+            body["entry"] = body.get("entry") or start_id
+            body["exit"] = body.get("exit") or end_id
+            body["edges"] = edges
+
         body_ids = {bn.get("id") for bn in body_nodes if isinstance(bn, Mapping)}
 
         def _append_missing(node_id: str):
