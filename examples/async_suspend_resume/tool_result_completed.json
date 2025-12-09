@@ -1,0 +1,7 @@
+{
+  "status": "completed",
+  "event_id": "health-demo-001",
+  "event_type": "async_temp_anomaly",
+  "abnormal_count": 1,
+  "note": "模拟异步工具完成后的回调"
+}

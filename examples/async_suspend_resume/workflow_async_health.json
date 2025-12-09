@@ -1,0 +1,29 @@
+{
+  "workflow_name": "async_health_followup",
+  "description": "异步记录健康事件，挂起后带入工具结果继续创建事件单",
+  "nodes": [
+    {
+      "id": "record_event_async",
+      "type": "action",
+      "action_id": "hr.record_health_event.v1",
+      "params": {
+        "event_type": "async_temp_anomaly",
+        "abnormal_count": 1,
+        "__invoke_mode": "async"
+      }
+    },
+    {
+      "id": "create_incident",
+      "type": "action",
+      "action_id": "ops.create_incident.v1",
+      "params": {
+        "title": {"__from__": "result_of.record_event_async.event_id"},
+        "description": {"__from__": "result_of.record_event_async.event_type"},
+        "severity": "low"
+      }
+    }
+  ],
+  "edges": [
+    {"from": "record_event_async", "to": "create_incident"}
+  ]
+}
