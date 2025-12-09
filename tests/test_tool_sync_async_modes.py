@@ -70,3 +70,42 @@ def test_tool_can_be_forced_into_async_mode():
     payload = results["record_health_async"]
     assert payload["status"] == "async_resolved"
     assert payload.get("event_type") == "headache"
+
+
+def test_simulation_respects_async_mode_and_suspends():
+    workflow = Workflow.model_validate(
+        {
+            "workflow_name": "async_simulated_call",
+            "nodes": [
+                {
+                    "id": "simulated_async",
+                    "type": "action",
+                    "action_id": "hr.record_health_event.v1",
+                    "params": {
+                        "__invoke_mode": "async",
+                        "event_type": "cough",
+                    },
+                }
+            ],
+            "edges": [],
+        }
+    )
+
+    simulations = {
+        "hr.record_health_event.v1": {
+            "result": {"status": "simulated", "note": "from simulation"}
+        }
+    }
+
+    executor = DynamicActionExecutor(workflow, simulations=simulations)
+    suspension = executor.run()
+
+    assert isinstance(suspension, WorkflowSuspension)
+    assert suspension.node_id == "simulated_async"
+
+    resumed = executor.resume_from_suspension(suspension)
+
+    assert isinstance(resumed, dict)
+    payload = resumed["simulated_async"]
+    assert payload["status"] == "async_resolved"
+    assert payload.get("tool_status") == "simulated"

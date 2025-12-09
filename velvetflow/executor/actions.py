@@ -21,24 +21,49 @@ class ActionExecutionMixin:
 
         payload = self.simulation_data.get(action_id)
         if not isinstance(payload, dict):
-            return {
+            payload = {
                 "status": "simulated",
                 "action_id": action_id,
                 "params_used": resolved_params,
             }
+        else:
+            defaults = payload.get("defaults") if isinstance(payload.get("defaults"), dict) else {}
+            params_for_render = {**defaults, **resolved_params}
 
-        defaults = payload.get("defaults") if isinstance(payload.get("defaults"), dict) else {}
-        params_for_render = {**defaults, **resolved_params}
+            template = payload.get("result")
+            if template is None:
+                payload = {
+                    "status": "simulated",
+                    "action_id": action_id,
+                    "params_used": resolved_params,
+                }
+            else:
+                payload = copy.deepcopy(self._render_template(template, params_for_render))
 
-        template = payload.get("result")
-        if template is None:
-            return {
-                "status": "simulated",
-                "action_id": action_id,
-                "params_used": resolved_params,
-            }
+        invoke_mode = str(resolved_params.get("__invoke_mode", "")).lower()
+        force_async = bool(resolved_params.get("__async__", False)) or invoke_mode == "async"
 
-        return copy.deepcopy(self._render_template(template, params_for_render))
+        if not force_async:
+            return payload
+
+        call_params = {k: v for k, v in resolved_params.items() if not k.startswith("__")}
+        request_id = f"simulated-{action_id}-{uuid.uuid4().hex}"
+        handle = AsyncToolHandle(
+            request_id=request_id,
+            tool_name=action_id,
+            params=call_params,
+            metadata={"simulated": True},
+        )
+        GLOBAL_ASYNC_RESULT_STORE.register(handle)
+        GLOBAL_ASYNC_RESULT_STORE.complete(request_id, payload)
+
+        return {
+            "status": "async_pending",
+            "request_id": request_id,
+            "tool_name": action_id,
+            "params": call_params,
+            "metadata": {"simulated": True},
+        }
 
     def _should_simulate(self, action_id: str) -> bool:
         """Check if the current action_id has an explicit simulation entry."""
