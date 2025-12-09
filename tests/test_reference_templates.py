@@ -14,6 +14,8 @@ from velvetflow.bindings import BindingContext, eval_node_params
 from velvetflow.models import Node, Workflow, infer_edges_from_bindings
 from velvetflow.verification.validation import _schema_path_error
 
+MIN_LOOP_BODY = {"nodes": [{"id": "noop", "type": "action"}], "edges": []}
+
 ACTION_REGISTRY = json.loads(
     (Path(__file__).parent.parent / "tools" / "business_actions.json").read_text(
         encoding="utf-8"
@@ -385,7 +387,16 @@ def test_template_wildcard_without_result_of_prefix():
 
 def test_reference_allows_builtin_function_invocation():
     workflow = Workflow.model_validate(
-        {"nodes": [{"id": "loop_nvidia_news", "type": "loop"}], "edges": []}
+        {
+            "nodes": [
+                {
+                    "id": "loop_nvidia_news",
+                    "type": "loop",
+                    "params": {"body_subgraph": MIN_LOOP_BODY},
+                }
+            ],
+            "edges": [],
+        }
     )
     ctx = BindingContext(
         workflow,
@@ -566,8 +577,16 @@ def test_eval_params_renders_interpolated_templates():
     workflow = Workflow.model_validate(
         {
             "nodes": [
-                {"id": "loop_nvidia_news", "type": "loop"},
-                {"id": "loop_google_news", "type": "loop"},
+                {
+                    "id": "loop_nvidia_news",
+                    "type": "loop",
+                    "params": {"body_subgraph": MIN_LOOP_BODY},
+                },
+                {
+                    "id": "loop_google_news",
+                    "type": "loop",
+                    "params": {"body_subgraph": MIN_LOOP_BODY},
+                },
                 {"id": "combine", "type": "action"},
             ],
             "edges": [],
@@ -616,7 +635,7 @@ def test_loop_context_allows_fully_qualified_paths():
                 {
                     "id": "loop_check_each_employee",
                     "type": "loop",
-                    "params": {"item_alias": "current_item"},
+                    "params": {"item_alias": "current_item", "body_subgraph": MIN_LOOP_BODY},
                 }
             ],
             "edges": [],
