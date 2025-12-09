@@ -42,6 +42,14 @@ def precheck_loop_body_graphs(workflow_raw: Mapping[str, Any] | Any) -> List[Val
         params = node.get("params") if isinstance(node.get("params"), Mapping) else {}
         body = params.get("body_subgraph") if isinstance(params, Mapping) else None
         if not isinstance(body, Mapping):
+            errors.append(
+                ValidationError(
+                    code="INVALID_LOOP_BODY",
+                    node_id=loop_id,
+                    field="body_subgraph",
+                    message=f"loop 节点 '{loop_id}' 必须提供 body_subgraph。",
+                )
+            )
             continue
 
         body_nodes = [bn for bn in body.get("nodes", []) or [] if isinstance(bn, Mapping)]
