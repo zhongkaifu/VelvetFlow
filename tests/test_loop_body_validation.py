@@ -56,6 +56,28 @@ def test_loop_requires_body_subgraph():
     )
 
 
+def test_model_validation_rejects_missing_body_subgraph():
+    """Workflow.model_validate should fail fast when loop body is absent."""
+
+    workflow = {
+        "workflow_name": "missing_body_subgraph_model",
+        "nodes": [
+            {
+                "id": "loop_warning_summary",
+                "type": "loop",
+                "params": {
+                    "loop_kind": "for_each",
+                    "source": "result_of.loop_check_temperature.exports.items",
+                    "item_alias": "warning_employee",
+                },
+            }
+        ],
+    }
+
+    with pytest.raises(PydanticValidationError):
+        Workflow.model_validate(workflow)
+
+
 def test_loop_body_exports_must_target_existing_nodes():
     """Exports referencing missing body nodes should surface a clear error."""
 
