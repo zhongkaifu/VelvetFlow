@@ -14,59 +14,16 @@ const tabs = document.querySelectorAll(".tab");
 const tabContents = document.querySelectorAll(".tab-content");
 
 let currentTab = "json";
-let currentWorkflow = createDemoWorkflow();
+let currentWorkflow = createEmptyWorkflow();
 let renderedNodes = [];
 let lastPositions = {};
 
-function createDemoWorkflow() {
+function createEmptyWorkflow() {
   return {
-    workflow_name: "employee_onboarding",
-    description: "示例: 入职账号与设备申请",
-    nodes: [
-      { id: "start", type: "start", display_name: "入口" },
-      {
-        id: "collect_req",
-        type: "action",
-        display_name: "收集需求",
-        action_id: "hr.collect_onboarding_requirements",
-      },
-      {
-        id: "create_account",
-        type: "action",
-        display_name: "账号申请",
-        action_id: "it.provision_account",
-      },
-      {
-        id: "assign_device",
-        type: "action",
-        display_name: "设备分配",
-        action_id: "it.assign_device",
-      },
-      {
-        id: "approval",
-        type: "condition",
-        display_name: "主管审批",
-        params: { condition: { kind: "equals", left: "manager", right: "approved" } },
-        true_to_node: "enable_access",
-        false_to_node: "end",
-      },
-      {
-        id: "enable_access",
-        type: "action",
-        display_name: "开通权限",
-        action_id: "it.enable_access",
-      },
-      { id: "end", type: "end", display_name: "完成" },
-    ],
-    edges: [
-      { from_node: "start", to_node: "collect_req" },
-      { from_node: "collect_req", to_node: "create_account" },
-      { from_node: "create_account", to_node: "assign_device" },
-      { from_node: "assign_device", to_node: "approval" },
-      { from_node: "approval", to_node: "enable_access", condition: "true" },
-      { from_node: "approval", to_node: "end", condition: "false" },
-      { from_node: "enable_access", to_node: "end" },
-    ],
+    workflow_name: "",
+    description: "",
+    nodes: [],
+    edges: [],
   };
 }
 
@@ -332,10 +289,15 @@ async function requestPlan(requirement) {
   buildLog.innerHTML = "";
   appendLog(`收到需求：${requirement}`);
   try {
+    const existingWorkflow =
+      currentWorkflow && Array.isArray(currentWorkflow.nodes) && currentWorkflow.nodes.length > 0
+        ? currentWorkflow
+        : null;
+
     const response = await fetch("/api/plan", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ requirement, existing_workflow: currentWorkflow }),
+      body: JSON.stringify({ requirement, existing_workflow: existingWorkflow }),
     });
 
     if (!response.ok) {
@@ -418,10 +380,10 @@ function applyWorkflowFromEditor() {
 }
 
 function resetWorkflow() {
-  currentWorkflow = createDemoWorkflow();
+  currentWorkflow = createEmptyWorkflow();
   updateEditor();
   render(currentTab);
-  appendLog("已恢复示例 workflow");
+  appendLog("已重置为空 workflow");
 }
 
 function handleTabClick(event) {
@@ -497,5 +459,5 @@ editHelpBtn.addEventListener("click", showEditHelp);
 
 updateEditor();
 render();
-appendLog("加载示例 workflow，可直接发送需求或修改 JSON。");
+appendLog("当前 workflow 为空，请输入需求开始规划或自行编辑 JSON。");
 addChatMessage("你好，我是 VelvetFlow Agent，请描述你的业务需求。", "agent");
