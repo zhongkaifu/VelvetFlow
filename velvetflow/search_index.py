@@ -24,6 +24,8 @@ class ActionIndex:
 
     actions: List[Dict[str, Any]]
     embeddings: Dict[str, List[float]]
+    feature_embeddings: Dict[str, Dict[str, List[float]]] = field(default_factory=dict)
+    feature_keywords: Dict[str, Dict[str, List[str]]] = field(default_factory=dict)
     vocab: List[str] = field(default_factory=list)
     embedding_model: str = DEFAULT_OFFLINE_EMBEDDING_MODEL
     created_ts: float = field(default_factory=lambda: time.time())
@@ -39,6 +41,8 @@ class ActionIndex:
         return {
             "actions": self.actions,
             "embeddings": self.embeddings,
+            "feature_embeddings": self.feature_embeddings,
+            "feature_keywords": self.feature_keywords,
             "vocab": self.vocab,
             "embedding_model": self.embedding_model,
             "created_ts": self.created_ts,
@@ -57,6 +61,8 @@ class ActionIndex:
         return cls(
             actions=data.get("actions", []),
             embeddings=data.get("embeddings", {}),
+            feature_embeddings=data.get("feature_embeddings", {}),
+            feature_keywords=data.get("feature_keywords", {}),
             vocab=data.get("vocab", []),
             embedding_model=data.get(
                 "embedding_model", DEFAULT_OFFLINE_EMBEDDING_MODEL
@@ -82,6 +88,43 @@ def build_vocab_from_actions(actions: Iterable[Dict[str, Any]]) -> List[str]:
     return sorted(vocab)
 
 
+def _schema_keywords(schema: Optional[Dict[str, Any]]) -> List[str]:
+    if not isinstance(schema, dict):
+        return []
+
+    props = schema.get("properties")
+    if isinstance(props, dict):
+        return list(props.keys())
+    return []
+
+
+def _stringify_schema(schema: Optional[Dict[str, Any]]) -> str:
+    keywords = _schema_keywords(schema)
+    return " ".join(keywords)
+
+
+def _split_namespace(action_id: str) -> str:
+    if not action_id:
+        return ""
+    parts = action_id.split(".")
+    if len(parts) <= 1:
+        return action_id
+    return ".".join(parts[:-1])
+
+
+def _extract_feature_texts(action: Dict[str, Any]) -> Dict[str, str]:
+    tags = action.get("tags", []) or []
+    return {
+        "namespace": _split_namespace(action.get("action_id", "")),
+        "category": action.get("category") or action.get("domain", ""),
+        "tags": " ".join(tags),
+        "description": action.get("description", ""),
+        "name": action.get("name", ""),
+        "inputs": _stringify_schema(action.get("arg_schema")),
+        "outputs": _stringify_schema(action.get("output_schema")),
+    }
+
+
 def build_action_index(
     actions: List[Dict[str, Any]],
     *,
@@ -93,6 +136,8 @@ def build_action_index(
 
     vocab_list = list(vocab) if vocab is not None else build_vocab_from_actions(actions)
     embeddings: Dict[str, List[float]] = {}
+    feature_embeddings: Dict[str, Dict[str, List[float]]] = {}
+    feature_keywords: Dict[str, Dict[str, List[str]]] = {}
     for action in actions:
         text = (
             (action.get("name", "") or "")
@@ -105,9 +150,23 @@ def build_action_index(
         )
         embeddings[action["action_id"]] = embed_fn(text)
 
+        features = _extract_feature_texts(action)
+        feature_embeddings[action["action_id"]] = {
+            fname: embed_fn(ftext)
+            for fname, ftext in features.items()
+            if ftext
+        }
+        feature_keywords[action["action_id"]] = {
+            fname: ftext.lower().split()
+            for fname, ftext in features.items()
+            if ftext
+        }
+
     return ActionIndex(
         actions=actions,
         embeddings=embeddings,
+        feature_embeddings=feature_embeddings,
+        feature_keywords=feature_keywords,
         vocab=vocab_list,
         embedding_model=embedding_model,
     )

@@ -1,0 +1,83 @@
+[
+  {
+    "action_id": "crm.create_lead.v1",
+    "name": "Create CRM lead",
+    "domain": "crm",
+    "description": "Add a new lead into the CRM with contact details and source attribution so sales can follow up.",
+    "tags": [
+      "crm",
+      "lead",
+      "capture",
+      "sales",
+      "prospect"
+    ],
+    "arg_schema": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "email": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ]
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "lead_id": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        }
+      }
+    },
+    "enabled": true,
+    "tool_name": "create_lead"
+  },
+  {
+    "action_id": "crm.log_interaction.v1",
+    "name": "Log CRM interaction note",
+    "domain": "crm",
+    "description": "Attach a chronological interaction note to a CRM lead or contact to preserve engagement history.",
+    "tags": [
+      "crm",
+      "interaction",
+      "note",
+      "timeline",
+      "engagement"
+    ],
+    "arg_schema": {
+      "type": "object",
+      "properties": {
+        "lead_id": {
+          "type": "string"
+        },
+        "note": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "lead_id",
+        "note"
+      ]
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "type": "string"
+        }
+      }
+    },
+    "enabled": true,
+    "tool_name": "log_interaction"
+  }
+]

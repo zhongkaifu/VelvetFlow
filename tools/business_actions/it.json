@@ -1,0 +1,138 @@
+[
+  {
+    "action_id": "it.get_service_status.v1",
+    "name": "Get service status",
+    "domain": "it",
+    "description": "Return status snapshot for a named internal service.",
+    "tags": [
+      "it",
+      "status",
+      "uptime",
+      "incident"
+    ],
+    "arg_schema": {
+      "type": "object",
+      "properties": {
+        "service_name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "service_name"
+      ]
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "service": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "active_incidents": {
+          "type": "array"
+        }
+      },
+      "required": [
+        "service",
+        "status"
+      ]
+    },
+    "tool_name": "it.get_service_status",
+    "enabled": true
+  },
+  {
+    "action_id": "it.open_it_ticket.v1",
+    "name": "Open IT ticket",
+    "domain": "it",
+    "description": "Open an internal IT support ticket with severity and description.",
+    "tags": [
+      "it",
+      "ticket",
+      "incident",
+      "support"
+    ],
+    "arg_schema": {
+      "type": "object",
+      "properties": {
+        "title": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "severity": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "title",
+        "description"
+      ]
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "ticket_id": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "ticket_id",
+        "status"
+      ]
+    },
+    "tool_name": "it.open_it_ticket",
+    "enabled": true
+  },
+  {
+    "action_id": "it.provision_test_environment.v1",
+    "name": "Provision test environment",
+    "domain": "it",
+    "description": "Provision a sandbox environment for QA or integration testing.",
+    "tags": [
+      "it",
+      "environment",
+      "sandbox",
+      "devops"
+    ],
+    "arg_schema": {
+      "type": "object",
+      "properties": {
+        "owner": {
+          "type": "string"
+        },
+        "purpose": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "owner"
+      ]
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "environment_id": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "environment_id",
+        "status"
+      ]
+    },
+    "tool_name": "it.provision_test_environment",
+    "enabled": true
+  }
+]

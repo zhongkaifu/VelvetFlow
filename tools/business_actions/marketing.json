@@ -1,0 +1,134 @@
+[
+  {
+    "action_id": "marketing.fetch_campaign_performance.v1",
+    "name": "Fetch campaign performance",
+    "domain": "marketing",
+    "description": "Retrieve impressions, clicks, conversions, and cost for a campaign.",
+    "tags": [
+      "marketing",
+      "analytics",
+      "performance",
+      "report"
+    ],
+    "arg_schema": {
+      "type": "object",
+      "properties": {
+        "campaign": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "campaign"
+      ]
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "metrics": {
+          "type": "object"
+        },
+        "attribution_model": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "metrics"
+      ]
+    },
+    "tool_name": "marketing.fetch_campaign_performance",
+    "enabled": true
+  },
+  {
+    "action_id": "marketing.plan_campaign_calendar.v1",
+    "name": "Plan campaign calendar",
+    "domain": "marketing",
+    "description": "Draft a campaign calendar across marketing channels.",
+    "tags": [
+      "marketing",
+      "campaign",
+      "calendar",
+      "channels"
+    ],
+    "arg_schema": {
+      "type": "object",
+      "properties": {
+        "campaign_name": {
+          "type": "string"
+        },
+        "channels": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "campaign_name"
+      ]
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "campaign": {
+          "type": "string"
+        },
+        "schedule": {
+          "type": "array"
+        }
+      },
+      "required": [
+        "campaign",
+        "schedule"
+      ]
+    },
+    "tool_name": "marketing.plan_campaign_calendar",
+    "enabled": true
+  },
+  {
+    "action_id": "marketing.propose_ab_test.v1",
+    "name": "Propose A/B test",
+    "domain": "marketing",
+    "description": "Generate an A/B test plan with sample sizes for variants.",
+    "tags": [
+      "marketing",
+      "ab-test",
+      "experimentation",
+      "plan"
+    ],
+    "arg_schema": {
+      "type": "object",
+      "properties": {
+        "goal": {
+          "type": "string"
+        },
+        "variants": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 2
+        }
+      },
+      "required": [
+        "goal",
+        "variants"
+      ]
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "plan": {
+          "type": "array"
+        },
+        "goal": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "plan"
+      ]
+    },
+    "tool_name": "marketing.propose_ab_test",
+    "enabled": true
+  }
+]

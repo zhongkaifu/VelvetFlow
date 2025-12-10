@@ -20,5 +20,143 @@
       "last_temperature": "{{last_temperature}}",
       "status": "{{status}}"
     }
+  },
+  "sales.list_sales_pipeline.v1": {
+    "result": {
+      "as_of": "2024-04-15",
+      "region": "{{region|default('global')}}",
+      "stage_breakdown": [
+        {"stage": "prospecting", "count": 18, "expected_value": 92000},
+        {"stage": "qualification", "count": 9, "expected_value": 136000}
+      ],
+      "top_deals": [
+        {"deal_id": "DL-1042", "account": "Acme Manufacturing", "value": 75000}
+      ]
+    }
+  },
+  "sales.create_sales_deal.v1": {
+    "result": {
+      "deal_id": "DL-1234",
+      "account": "{{account}}",
+      "contact": "{{contact}}",
+      "value": "{{value}}",
+      "source": "{{source|default('inbound')}}",
+      "status": "created"
+    }
+  },
+  "sales.get_quote_summary.v1": {
+    "result": {
+      "deal_id": "{{deal_id}}",
+      "base_value": 48000,
+      "discount": "{{discount|default(0.0)}}",
+      "final_value": 48000,
+      "currency": "USD"
+    }
+  },
+  "it.open_it_ticket.v1": {
+    "result": {
+      "ticket_id": "IT-2042",
+      "title": "{{title}}",
+      "description": "{{description}}",
+      "severity": "{{severity|default('medium')}}",
+      "component": "core-platform",
+      "status": "open"
+    }
+  },
+  "it.get_service_status.v1": {
+    "result": {
+      "service": "{{service_name}}",
+      "status": "operational",
+      "uptime_30d": 99.87,
+      "active_incidents": []
+    }
+  },
+  "it.provision_test_environment.v1": {
+    "result": {
+      "environment_id": "sandbox-1001",
+      "owner": "{{owner}}",
+      "purpose": "{{purpose|default('integration-testing')}}",
+      "status": "provisioned",
+      "url": "https://sandbox-1001.example.internal"
+    }
+  },
+  "finance.submit_expense_report.v1": {
+    "result": {
+      "report_id": "ER-3377",
+      "employee_id": "{{employee_id}}",
+      "amount": "{{amount}}",
+      "category": "{{category}}",
+      "description": "{{description}}",
+      "currency": "USD",
+      "status": "submitted",
+      "next_approver": "manager"
+    }
+  },
+  "finance.get_budget_variance.v1": {
+    "result": {
+      "department": "{{department}}",
+      "month": "{{month|default('2024-04')}}",
+      "budget": 120000,
+      "actual": 114500,
+      "variance": -5500,
+      "variance_pct": -4.58
+    }
+  },
+  "finance.forecast_cash_flow.v1": {
+    "result": {
+      "as_of": "2024-04-01",
+      "projection": [
+        {"month": "2024-04", "inflows": 320000, "outflows": 250000, "net": 70000},
+        {"month": "2024-05", "inflows": 325000, "outflows": 254000, "net": 71000}
+      ]
+    }
+  },
+  "marketing.plan_campaign_calendar.v1": {
+    "result": {
+      "campaign": "{{campaign_name}}",
+      "schedule": [
+        {"channel": "email", "launch_date": "2024-04-20", "kpi": "CTR"},
+        {"channel": "social", "launch_date": "2024-04-23", "kpi": "CPL"}
+      ]
+    }
+  },
+  "marketing.fetch_campaign_performance.v1": {
+    "result": {
+      "campaign": "{{campaign}}",
+      "metrics": {
+        "impressions": 180000,
+        "clicks": 12400,
+        "conversions": 860,
+        "cost": 12500
+      },
+      "attribution_model": "last-touch"
+    }
+  },
+  "marketing.propose_ab_test.v1": {
+    "result": {
+      "goal": "{{goal}}",
+      "plan": [
+        {"variant": "{{variants[0]}}", "sample_size": 1200, "primary_metric": "{{goal}}"},
+        {"variant": "{{variants[1]}}", "sample_size": 1300, "primary_metric": "{{goal}}"}
+      ]
+    }
+  },
+  "hr.schedule_candidate_interview.v1": {
+    "result": {
+      "candidate": "{{candidate_name}}",
+      "role": "{{role}}",
+      "panel": "{{panel}}",
+      "scheduled_for": "{{date_slot}}",
+      "status": "confirmed"
+    }
+  },
+  "hr.get_headcount_snapshot.v1": {
+    "result": {
+      "department": "{{department|default('all')}}",
+      "as_of": "2024-04-15",
+      "headcount": 128,
+      "open_roles": 6,
+      "attrition_12m_pct": 7.4
+    }
   }
 }

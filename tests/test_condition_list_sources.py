@@ -1,7 +1,6 @@
 # Author: Zhongkai Fu (fuzhongkai@gmail.com)
 # License: BSD 3-Clause License
 
-import json
 import sys
 import types
 from pathlib import Path
@@ -23,17 +22,14 @@ sys.modules.setdefault(
 )
 sys.modules["crawl4ai.extraction_strategy"].LLMExtractionStrategy = None
 
+from velvetflow.action_registry import BUSINESS_ACTIONS
 from velvetflow.bindings import BindingContext
 from velvetflow.executor import DynamicActionExecutor
 from velvetflow.models import Workflow
 from velvetflow.verification.validation import validate_completed_workflow
 
 
-ACTION_REGISTRY = json.loads(
-    (Path(__file__).parent.parent / "tools" / "business_actions.json").read_text(
-        encoding="utf-8"
-    )
-)
+ACTION_REGISTRY = BUSINESS_ACTIONS
 
 
 def _build_workflow_with_list_source():
