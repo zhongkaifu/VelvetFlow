@@ -361,7 +361,9 @@ def _validate_nodes_recursive(
                                     )
                                 )
 
-                        if obj.get("__agg__") == "pipeline":
+                        agg_spec = obj.get("__agg__")
+                        agg_op = agg_spec.get("op") if isinstance(agg_spec, Mapping) else agg_spec
+                        if agg_op == "pipeline":
                             steps = obj.get("steps", [])
                             if isinstance(steps, list):
                                 for idx, step in enumerate(steps):

@@ -10,6 +10,12 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional
 
+from velvetflow.aggregation import (
+    MiniExprValidationError,
+    _is_instance_of_type,
+    eval_mini_expr,
+    validate_mini_expr,
+)
 from velvetflow.action_registry import get_action_by_id
 from velvetflow.loop_dsl import build_loop_output_schema
 from velvetflow.logging_utils import log_warn
@@ -267,55 +273,105 @@ class BindingContext:
             resolved_path = inferred_path
 
         data = self._get_from_context(resolved_path)
-        agg = binding.get("__agg__", "identity")
-        if agg not in ALLOWED_PARAM_AGGREGATORS:
+        agg_spec = binding.get("__agg__", "identity")
+        agg_op = agg_spec.get("op") if isinstance(agg_spec, Mapping) else agg_spec
+        if agg_op not in ALLOWED_PARAM_AGGREGATORS:
             raise ValueError(
-                f"__agg__ 取值非法（{agg}），允许值：{', '.join(ALLOWED_PARAM_AGGREGATORS)}"
+                f"__agg__ 取值非法（{agg_op}），允许值：{', '.join(ALLOWED_PARAM_AGGREGATORS)}"
             )
 
-        if agg == "identity":
-            return data
+        input_type = agg_spec.get("input_type") if isinstance(agg_spec, Mapping) else None
+        output_type = agg_spec.get("output_type") if isinstance(agg_spec, Mapping) else None
+        on_empty = agg_spec.get("on_empty") if isinstance(agg_spec, Mapping) else None
+        condition_ast = agg_spec.get("condition") if isinstance(agg_spec, Mapping) else None
+        if condition_ast is not None:
+            try:
+                validate_mini_expr(condition_ast)
+            except MiniExprValidationError as exc:
+                raise ValueError(f"__agg__.condition 非法: {exc}") from exc
 
-        if agg == "count":
+        def _apply_on_empty(result: Any) -> Any:
+            is_empty = result is None
+            if not is_empty:
+                try:
+                    is_empty = len(result) == 0  # type: ignore[arg-type]
+                except Exception:
+                    is_empty = False
+
+            if not is_empty:
+                return result
+
+            if isinstance(on_empty, Mapping) and "default" in on_empty:
+                return on_empty.get("default")
+            if on_empty == "error" or (
+                isinstance(on_empty, Mapping) and on_empty.get("mode") == "error"
+            ):
+                raise ValueError("聚合结果为空且 on_empty=error")
+            return result
+
+        def _finalize(result: Any) -> Any:
+            result = _apply_on_empty(result)
+            if not _is_instance_of_type(result, output_type):
+                raise ValueError(
+                    f"__agg__={agg_op} 输出类型不符，期望 {output_type}, 收到 {type(result).__name__}"
+                )
+            return result
+
+        if not _is_instance_of_type(data, input_type):
+            raise ValueError(
+                f"__agg__={agg_op} 期望输入类型 {input_type or '任意'}，收到 {type(data).__name__}"
+            )
+
+        if agg_op == "identity":
+            return _finalize(data)
+
+        if agg_op == "count":
             if isinstance(data, list):
-                return len(data)
+                return _finalize(len(data))
             if isinstance(data, Mapping):
-                return len(data)
-            return 0 if data is None else 1
+                return _finalize(len(data))
+            return _finalize(0 if data is None else 1)
 
-        if agg == "count_if":
+        if agg_op == "count_if":
             if not isinstance(data, list):
                 return 0
             field = binding.get("field") or binding.get("filter_field")
             op = binding.get("op") or binding.get("filter_op") or "=="
             target = binding.get("value") or binding.get("filter_value")
             count = 0
-            for item in data:
-                # Support both list-of-dicts and list-of-scalars
-                if isinstance(item, dict):
-                    v = item.get(field)
-                else:
-                    v = item
 
+            def _match(item: Any) -> bool:
+                if condition_ast is not None:
+                    return bool(
+                        eval_mini_expr(
+                            condition_ast,
+                            {"item": item, "value": item, "field": field},
+                        )
+                    )
+                v = item.get(field) if isinstance(item, Mapping) else item
                 try:
                     if op == ">" and v is not None and v > target:
-                        count += 1
-                    elif op == ">=" and v is not None and v >= target:
-                        count += 1
-                    elif op == "<" and v is not None and v < target:
-                        count += 1
-                    elif op == "<=" and v is not None and v <= target:
-                        count += 1
-                    elif op == "==" and v == target:
-                        count += 1
-                    elif op == "!=" and v != target:
-                        count += 1
+                        return True
+                    if op == ">=" and v is not None and v >= target:
+                        return True
+                    if op == "<" and v is not None and v < target:
+                        return True
+                    if op == "<=" and v is not None and v <= target:
+                        return True
+                    if op == "==" and v == target:
+                        return True
+                    if op == "!=" and v != target:
+                        return True
                 except TypeError:
-                    # If comparison fails (e.g., string vs number), skip the item
-                    continue
-            return count
+                    return False
+                return False
 
-        if agg == "join":
+            for item in data:
+                if _match(item):
+                    count += 1
+            return _finalize(count)
+
+        if agg_op == "join":
             sep = binding.get("separator")
             if sep is None:
                 sep = binding.get("sep", "")
@@ -323,11 +379,11 @@ class BindingContext:
                 sep = str(sep)
 
             if isinstance(data, list):
-                return sep.join("" if v is None else str(v) for v in data)
+                return _finalize(sep.join("" if v is None else str(v) for v in data))
 
-            return "" if data is None else str(data)
+            return _finalize("" if data is None else str(data))
 
-        if agg == "format_join":
+        if agg_op == "format_join":
             field = binding.get("field")
             fmt = binding.get("format") or (f"{{{field}}}" if field else None)
             sep = binding.get("sep", "\n")
@@ -338,9 +394,9 @@ class BindingContext:
             rendered: List[str] = []
             for item in data:
                 rendered.append(_render(item, fmt, field))
-            return sep.join(rendered)
+            return _finalize(sep.join(rendered))
 
-        if agg == "filter_map":
+        if agg_op == "filter_map":
             filter_field = binding.get("filter_field")
             filter_op = binding.get("filter_op", "==")
             filter_value = binding.get("filter_value")
@@ -349,7 +405,7 @@ class BindingContext:
             sep = binding.get("sep", "\n")
 
             if not isinstance(data, list):
-                return _render(data, fmt)
+                return _finalize(_render(data, fmt))
 
             lines: List[str] = []
             for item in data:
@@ -357,7 +413,14 @@ class BindingContext:
                     continue
                 v = item.get(filter_field)
                 passed = False
-                if filter_op == ">" and v is not None and v > filter_value:
+                if condition_ast is not None:
+                    passed = bool(
+                        eval_mini_expr(
+                            condition_ast,
+                            {"item": item, "value": v, "field": filter_field},
+                        )
+                    )
+                elif filter_op == ">" and v is not None and v > filter_value:
                     passed = True
                 elif filter_op == ">=" and v is not None and v >= filter_value:
                     passed = True
@@ -374,9 +437,9 @@ class BindingContext:
                 if passed:
                     lines.append(_render(item, fmt, map_field))
 
-            return sep.join(lines)
+            return _finalize(sep.join(lines))
 
-        if agg == "pipeline":
+        if agg_op == "pipeline":
             steps = binding.get("steps") or []
             current = data
 
@@ -396,13 +459,27 @@ class BindingContext:
                         or "=="
                     )
                     cmp_val = step.get("value") or step.get("filter_value")
+                    cond_ast = step.get("condition")
+                    if cond_ast is not None:
+                        try:
+                            validate_mini_expr(cond_ast)
+                        except MiniExprValidationError:
+                            cond_ast = None
+
                     filtered = []
                     for item in current:
                         if not isinstance(item, dict):
                             continue
                         v = item.get(field)
                         passed = False
-                        if cmp_op == ">" and v is not None and v > cmp_val:
+                        if cond_ast is not None:
+                            passed = bool(
+                                eval_mini_expr(
+                                    cond_ast,
+                                    {"item": item, "value": v, "field": field},
+                                )
+                            )
+                        elif cmp_op == ">" and v is not None and v > cmp_val:
                             passed = True
                         elif cmp_op == ">=" and v is not None and v >= cmp_val:
                             passed = True
@@ -426,15 +503,15 @@ class BindingContext:
                     sep = step.get("sep", "\n")
 
                     if not isinstance(current, list):
-                        return _render(current, fmt, field)
+                        return _finalize(_render(current, fmt, field))
                     lines: List[str] = []
                     for v in current:
                         lines.append(_render(v, fmt, field))
-                    return sep.join(lines)
+                    return _finalize(sep.join(lines))
 
-            return current
+            return _finalize(current)
 
-        return binding
+        return _finalize(data)
 
     def _schema_has_path(self, schema: Mapping[str, Any], fields: List[Any]) -> bool:
         if not isinstance(schema, Mapping):
