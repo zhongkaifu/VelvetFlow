@@ -529,25 +529,39 @@ def _align_binding_and_param_types(
     suggestion listing candidates.
     """
 
-    def _binding_output_schema(
+    def _binding_io_schemas(
         source_schema: Optional[Mapping[str, Any]], binding: Mapping[str, Any]
-    ) -> Optional[Mapping[str, Any]]:
+    ) -> tuple[Optional[Mapping[str, Any]], Optional[Mapping[str, Any]]]:
         if not isinstance(binding, Mapping):
-            return source_schema
+            return source_schema, None
 
         agg = binding.get("__agg__")
+        agg_input: Optional[Mapping[str, Any]] = None
+        agg_output: Optional[Mapping[str, Any]] = source_schema
+
+        if isinstance(agg, Mapping):
+            if isinstance(agg.get("input_type"), str):
+                agg_input = {"type": agg["input_type"]}
+            if isinstance(agg.get("output_type"), str):
+                agg_output = {"type": agg["output_type"]}
+            agg = agg.get("op")
+
         if agg in {"count", "count_if"}:
-            return {"type": "integer"}
+            agg_input = agg_input or {"type": "array"}
+            agg_output = agg_output or {"type": "integer"}
         if agg in {"join", "format_join", "filter_map"}:
-            return {"type": "string"}
+            agg_input = agg_input or {"type": "array"}
+            agg_output = agg_output or {"type": "string"}
         if agg == "pipeline":
+            agg_input = agg_input or {"type": "array"}
             steps = binding.get("steps")
             if isinstance(steps, list) and any(
                 isinstance(step, Mapping) and step.get("op") == "format_join"
                 for step in steps
             ):
-                return {"type": "string"}
-        return source_schema
+                agg_output = agg_output or {"type": "string"}
+
+        return agg_output, agg_input
 
     wf_dict = workflow.model_dump(by_alias=True)
     actions_by_id = _index_actions_by_id(action_registry)
@@ -586,7 +600,21 @@ def _align_binding_and_param_types(
                 actions_by_id,
                 loop_body_parents=loop_body_parents,
             )
-            effective_schema = _binding_output_schema(source_schema, binding)
+            effective_schema, agg_input_schema = _binding_io_schemas(source_schema, binding)
+
+            if agg_input_schema and not _schemas_compatible(agg_input_schema, source_schema):
+                errors.append(
+                    ValidationError(
+                        code="SCHEMA_MISMATCH",
+                        node_id=node_id,
+                        field=expected_path,
+                        message=(
+                            f"参数 {path} 使用 __agg__ 需要类型为 {agg_input_schema.get('type')} 的输入，"
+                            f"但来源 {from_path} 的类型为 {', '.join(sorted(_schema_types(source_schema))) or '未知'}"
+                        ),
+                    )
+                )
+                continue
 
             if _schemas_compatible(binding_schema, effective_schema):
                 continue
