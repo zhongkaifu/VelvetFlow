@@ -8,8 +8,10 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
-from typing import Any, Dict, Iterable, List, Mapping, MutableMapping, Optional, Tuple
+import re
+from typing import Any, Dict, Iterable, List, Mapping, MutableMapping, Optional, Sequence, Tuple
 
+from velvetflow.loop_dsl import iter_workflow_and_loop_body_nodes
 from velvetflow.planner.structure import _ensure_loop_items_fields, _fallback_loop_exports
 from velvetflow.logging_utils import log_event, log_info, log_warn
 from velvetflow.models import ValidationError, Workflow
@@ -314,6 +316,96 @@ def normalize_binding_paths(workflow: Mapping[str, Any]) -> Tuple[Mapping[str, A
 
     patched = _walk(patched)
     return patched, {"applied": changed, "reason": None if changed else "未发现需要规范化的绑定"}
+
+
+def fix_missing_loop_exports_items(
+    workflow: Mapping[str, Any],
+    errors: Sequence[ValidationError],
+) -> Tuple[Mapping[str, Any], Dict[str, Any]]:
+    """Insert missing ``exports.items`` segments for loop references.
+
+    When validators emit ``SCHEMA_MISMATCH`` for references like
+    ``result_of.loop.exports.field`` (missing the required ``items`` segment),
+    this helper rewrites all matching references to
+    ``result_of.loop.exports.items.field`` if the loop definition exposes
+    ``exports.items``.
+    """
+
+    patched = copy.deepcopy(workflow)
+    replacements: List[Dict[str, str]] = []
+
+    nodes_by_id = {
+        node.get("id"): node
+        for node in iter_workflow_and_loop_body_nodes(patched)
+        if isinstance(node.get("id"), str)
+    }
+
+    def _format_path(parts: List[Any]) -> str:
+        path = ""
+        for token in parts:
+            if isinstance(token, int):
+                path += f"[{token}]"
+            else:
+                path += ("." if path else "") + str(token)
+        return path
+
+    for err in errors:
+        if err.code != "SCHEMA_MISMATCH" or not err.message:
+            continue
+
+        for match in re.findall(r"'(result_of[^']+)'", err.message):
+            normalized = normalize_reference_path(match)
+            try:
+                tokens = parse_field_path(normalized)
+            except Exception:
+                continue
+
+            if (
+                len(tokens) < 4
+                or tokens[0] != "result_of"
+                or tokens[2] != "exports"
+                or tokens[3] in {"items", "aggregates"}
+            ):
+                continue
+
+            loop_id = tokens[1]
+            loop_node = nodes_by_id.get(loop_id)
+            if not loop_node or loop_node.get("type") != "loop":
+                continue
+
+            params = loop_node.get("params") if isinstance(loop_node.get("params"), Mapping) else {}
+            exports = params.get("exports") if isinstance(params, Mapping) else None
+            if not isinstance(exports, Mapping):
+                continue
+
+            items_spec = exports.get("items")
+            if not isinstance(items_spec, Mapping):
+                continue
+
+            fields = items_spec.get("fields") if isinstance(items_spec, Mapping) else None
+            parsed_fields: List[List[Any]] = []
+            if isinstance(fields, list):
+                for field in fields:
+                    if not isinstance(field, str):
+                        continue
+                    try:
+                        parsed_fields.append(parse_field_path(field))
+                    except Exception:
+                        parsed_fields.append([field])
+
+            rest_tokens = tokens[3:]
+            if parsed_fields and not any(
+                rest_tokens[: len(field_tokens)] == field_tokens
+                for field_tokens in parsed_fields
+            ):
+                continue
+
+            corrected_parts = [*tokens[:3], "items", *tokens[3:]]
+            corrected = _format_path(corrected_parts)
+            replacements.append({"from": normalized, "to": corrected})
+            patched, _ = replace_reference_paths(patched, old=normalized, new=corrected)
+
+    return patched, {"applied": bool(replacements), "replacements": replacements}
 
 
 def replace_reference_paths(
@@ -778,6 +870,7 @@ __all__ = [
     "fill_action_required_params",
     "_apply_local_repairs_for_unknown_params",
     "normalize_binding_paths",
+    "fix_missing_loop_exports_items",
     "replace_reference_paths",
     "drop_invalid_references",
     "fix_loop_body_references",

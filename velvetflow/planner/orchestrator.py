@@ -46,6 +46,7 @@ from velvetflow.planner.repair import (
 )
 from velvetflow.planner.repair_tools import (
     fill_loop_exports_defaults,
+    fix_missing_loop_exports_items,
     normalize_binding_paths,
     _apply_local_repairs_for_unknown_params,
 )
@@ -1144,6 +1145,18 @@ def _validate_and_repair_workflow(
                     action_registry=action_registry,
                 )
             )
+
+        fixed_workflow, fix_summary = fix_missing_loop_exports_items(
+            current_workflow.model_dump(by_alias=True), errors
+        )
+        if fix_summary.get("applied"):
+            log_info(
+                "[AutoRepair] 检测到 loop.exports 引用缺少 items 段，已自动补全。",
+                f"replacements={fix_summary.get('replacements')}",
+            )
+            current_workflow = Workflow.model_validate(fixed_workflow)
+            last_good_workflow = current_workflow
+            continue
 
         current_errors_by_key = {_error_key(e): e for e in errors}
         if pending_attempts:
