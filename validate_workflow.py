@@ -17,6 +17,7 @@ import sys
 from pathlib import Path
 from typing import Any, Iterable, List, Mapping
 
+from velvetflow.action_registry import load_actions_from_path, validate_actions
 from velvetflow.models import PydanticValidationError, ValidationError, Workflow
 from velvetflow.workflow_parser import WorkflowParseResult, parse_workflow_source
 from velvetflow.verification import precheck_loop_body_graphs, validate_completed_workflow
@@ -76,13 +77,8 @@ def _convert_pydantic_errors(
 
 
 def _load_action_registry(path: Path) -> List[dict[str, Any]]:
-    if not path.exists():
-        raise FileNotFoundError(f"Action registry 文件不存在: {path}")
-
-    registry_raw = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(registry_raw, list):
-        raise ValueError("Action registry 应该是 JSON 数组。")
-    return registry_raw
+    actions = load_actions_from_path(path)
+    return validate_actions(actions)
 
 
 def _format_errors(errors: Iterable[ValidationError]) -> str:
@@ -185,10 +181,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--action-registry",
         type=Path,
-        default=Path(__file__).resolve().parent
-        / "tools"
-        / "business_actions.json",
-        help="Path to action registry JSON file (defaults to built-in registry).",
+        default=Path(__file__).resolve().parent / "tools" / "business_actions",
+        help="Path to action registry directory or JSON file (defaults to built-in registry).",
     )
     parser.add_argument(
         "--print-normalized",

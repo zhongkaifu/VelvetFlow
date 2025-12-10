@@ -1,0 +1,135 @@
+[
+  {
+    "action_id": "sales.create_sales_deal.v1",
+    "name": "Create sales deal",
+    "domain": "sales",
+    "description": "Create a sales deal record with account, contact, and value.",
+    "tags": [
+      "sales",
+      "crm",
+      "deal",
+      "create"
+    ],
+    "arg_schema": {
+      "type": "object",
+      "properties": {
+        "account": {
+          "type": "string"
+        },
+        "contact": {
+          "type": "string"
+        },
+        "value": {
+          "type": "number"
+        },
+        "source": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "account",
+        "contact",
+        "value"
+      ]
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "deal_id": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "deal_id",
+        "status"
+      ]
+    },
+    "tool_name": "sales.create_sales_deal",
+    "enabled": true
+  },
+  {
+    "action_id": "sales.get_quote_summary.v1",
+    "name": "Get quote summary",
+    "domain": "sales",
+    "description": "Generate a quote summary for a deal with optional discount.",
+    "tags": [
+      "sales",
+      "quote",
+      "pricing",
+      "discount"
+    ],
+    "arg_schema": {
+      "type": "object",
+      "properties": {
+        "deal_id": {
+          "type": "string"
+        },
+        "discount": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "deal_id"
+      ]
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "final_value": {
+          "type": "number"
+        },
+        "currency": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "final_value",
+        "currency"
+      ]
+    },
+    "tool_name": "sales.get_quote_summary",
+    "enabled": true
+  },
+  {
+    "action_id": "sales.list_sales_pipeline.v1",
+    "name": "List sales pipeline by stage",
+    "domain": "sales",
+    "description": "Return the current pipeline by stage with optional regional filtering.",
+    "tags": [
+      "sales",
+      "pipeline",
+      "report",
+      "region"
+    ],
+    "arg_schema": {
+      "type": "object",
+      "properties": {
+        "region": {
+          "type": "string"
+        }
+      }
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "as_of": {
+          "type": "string"
+        },
+        "region": {
+          "type": "string"
+        },
+        "stage_breakdown": {
+          "type": "array"
+        },
+        "top_deals": {
+          "type": "array"
+        }
+      }
+    },
+    "tool_name": "sales.list_sales_pipeline",
+    "enabled": true
+  }
+]

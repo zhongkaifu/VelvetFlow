@@ -4,7 +4,7 @@
 """Action registry definitions for VelvetFlow."""
 import json
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 
 def _with_security_defaults(action: Dict[str, Any]) -> Dict[str, Any]:
@@ -15,17 +15,39 @@ def _with_security_defaults(action: Dict[str, Any]) -> Dict[str, Any]:
     return action
 
 
-_ACTIONS_DATA_PATH = Path(__file__).resolve().parents[1] / "tools" / "business_actions.json"
+_ACTIONS_DATA_DIR = Path(__file__).resolve().parents[1] / "tools" / "business_actions"
+_LEGACY_ACTIONS_FILE = _ACTIONS_DATA_DIR.with_suffix(".json")
 
 
-def _load_business_actions() -> List[Dict[str, Any]]:
-    with _ACTIONS_DATA_PATH.open("r", encoding="utf-8") as f:
-        data = json.load(f)
+def _iter_action_files(path: Path) -> Iterable[Path]:
+    if path.is_dir():
+        yield from sorted(path.glob("*.json"))
+        return
 
-    if not isinstance(data, list):
-        raise ValueError("business_actions.json must contain a list of actions")
+    if path.is_file():
+        yield path
+        return
 
-    return data
+    if path == _ACTIONS_DATA_DIR and _LEGACY_ACTIONS_FILE.exists():
+        yield _LEGACY_ACTIONS_FILE
+        return
+
+    raise FileNotFoundError(f"Action registry path not found: {path}")
+
+
+def load_actions_from_path(path: Path = _ACTIONS_DATA_DIR) -> List[Dict[str, Any]]:
+    actions: List[Dict[str, Any]] = []
+
+    for file_path in _iter_action_files(path):
+        with file_path.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        if not isinstance(data, list):
+            raise ValueError(f"Action registry file {file_path} must contain a list of actions")
+
+        actions.extend(data)
+
+    return actions
 
 
 def _normalized_params_schema(action: Dict[str, Any]) -> Any:
@@ -95,7 +117,7 @@ def validate_actions(raw_actions: List[Any]) -> List[Dict[str, Any]]:
     return validated
 
 
-BUSINESS_ACTIONS: List[Dict[str, Any]] = validate_actions(_load_business_actions())
+BUSINESS_ACTIONS: List[Dict[str, Any]] = validate_actions(load_actions_from_path())
 
 
 def get_action_by_id(action_id: str) -> Optional[Dict[str, Any]]:

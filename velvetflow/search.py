@@ -2,6 +2,7 @@
 # License: BSD 3-Clause License
 
 """Search and embedding utilities for VelvetFlow."""
+from __future__ import annotations
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -87,6 +88,73 @@ class FakeElasticsearch:
         hits = hits[:size]
 
         return {"hits": {"hits": hits}}
+
+
+class FeatureRanker:
+    """Combine per-feature keyword and embedding signals for ranking."""
+
+    def __init__(
+        self,
+        feature_keywords: Dict[str, Dict[str, List[str]]],
+        feature_embeddings: Dict[str, Dict[str, List[float]]],
+        *,
+        feature_weights: Optional[Dict[str, float]] = None,
+        keyword_weight: float = 0.45,
+        embedding_weight: float = 0.55,
+    ) -> None:
+        self.feature_keywords = feature_keywords
+        self.feature_embeddings = feature_embeddings
+        self.feature_weights = feature_weights or {
+            "namespace": 0.8,
+            "category": 1.0,
+            "tags": 1.1,
+            "description": 1.0,
+            "name": 1.2,
+            "inputs": 0.9,
+            "outputs": 0.9,
+        }
+        self.keyword_weight = keyword_weight
+        self.embedding_weight = embedding_weight
+
+    @staticmethod
+    def _cosine(a: np.ndarray, b: np.ndarray) -> float:
+        if a.shape[0] == 0 or b.shape[0] == 0:
+            return 0.0
+        denom = (np.linalg.norm(a) * np.linalg.norm(b))
+        if denom <= 1e-12:
+            return 0.0
+        return float(np.dot(a, b) / denom)
+
+    def _keyword_score(self, action_id: str, query_tokens: List[str]) -> float:
+        features = self.feature_keywords.get(action_id, {})
+        if not features or not query_tokens:
+            return 0.0
+        q_tokens = set(query_tokens)
+        score = 0.0
+        for fname, tokens in features.items():
+            weight = self.feature_weights.get(fname, 1.0)
+            overlap = len(q_tokens.intersection(tokens))
+            score += weight * overlap
+        return score
+
+    def _embedding_score(self, action_id: str, query_emb: List[float]) -> float:
+        if not query_emb:
+            return 0.0
+        features = self.feature_embeddings.get(action_id, {})
+        if not features:
+            return 0.0
+        q = np.array(query_emb, dtype=np.float32)
+        score = 0.0
+        for fname, emb in features.items():
+            weight = self.feature_weights.get(fname, 1.0)
+            feature_vec = np.array(emb, dtype=np.float32)
+            score += weight * self._cosine(q, feature_vec)
+        return score
+
+    def score(self, action_id: str, query_tokens: List[str], query_emb: List[float]) -> float:
+        kw = self._keyword_score(action_id, query_tokens)
+        emb = self._embedding_score(action_id, query_emb)
+        return self.keyword_weight * kw + self.embedding_weight * emb
 
 
 class FaissVectorIndex:
@@ -184,12 +252,20 @@ def _select_query_embed_fn(index: ActionIndex):
 
 class HybridActionSearchService:
     def __init__(
-        self, es: FakeElasticsearch, vector_index: FaissVectorIndex, embed_fn, alpha: float = 0.6
+        self,
+        es: FakeElasticsearch,
+        vector_index: FaissVectorIndex,
+        embed_fn,
+        alpha: float = 0.6,
+        feature_ranker: Optional[FeatureRanker] = None,
+        feature_weight: float = 0.4,
     ):
         self.es = es
         self.vector_index = vector_index
         self.embed_fn = embed_fn
         self.alpha = alpha
+        self.feature_ranker = feature_ranker
+        self.feature_weight = feature_weight
 
     def search(self, query: str, top_k: int = 5,
                tenant_id: str = None,
@@ -197,6 +273,7 @@ class HybridActionSearchService:
         start = time.perf_counter()
         with child_span("action_search") as span_ctx:
             q_emb = self.embed_fn(query)
+            query_tokens = query.lower().split()
 
             must_clauses = [
                 {
@@ -235,6 +312,8 @@ class HybridActionSearchService:
             vec_scores: Dict[str, float] = {aid: score for aid, score in vec_results}
 
             all_ids = set(bm25_scores.keys()) | set(vec_scores.keys())
+            if self.feature_ranker:
+                all_ids |= set(self.feature_ranker.feature_embeddings.keys())
             if not all_ids:
                 return []
 
@@ -250,11 +329,19 @@ class HybridActionSearchService:
             bm25_norm = normalize(bm25_scores)
             vec_norm = normalize(vec_scores)
 
+            feature_scores: Dict[str, float] = {}
+            if self.feature_ranker:
+                for aid in all_ids:
+                    feature_scores[aid] = self.feature_ranker.score(aid, query_tokens, q_emb)
+            feature_norm = normalize(feature_scores)
+
             hybrid: List[Tuple[str, float]] = []
             for aid in all_ids:
                 b = bm25_norm.get(aid, 0.0)
                 v = vec_norm.get(aid, 0.0)
-                score = self.alpha * b + (1.0 - self.alpha) * v
+                f = feature_norm.get(aid, 0.0)
+                base = self.alpha * b + (1.0 - self.alpha) * v
+                score = (1.0 - self.feature_weight) * base + self.feature_weight * f
                 hybrid.append((aid, score))
 
             hybrid.sort(key=lambda x: x[1], reverse=True)
@@ -304,11 +391,17 @@ def build_search_service_from_index(
     for action_id, emb in index.embeddings.items():
         vec_client.upsert(action_id, emb)
 
+    feature_ranker = FeatureRanker(
+        feature_keywords=index.feature_keywords,
+        feature_embeddings=index.feature_embeddings,
+    )
+
     return HybridActionSearchService(
         es=fake_es,
         vector_index=vec_client,
         embed_fn=embed_fn,
         alpha=alpha,
+        feature_ranker=feature_ranker,
     )
 
 

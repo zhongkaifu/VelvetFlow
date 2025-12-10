@@ -1,0 +1,251 @@
+[
+  {
+    "action_id": "hr.get_headcount_snapshot.v1",
+    "name": "Get headcount snapshot",
+    "domain": "hr",
+    "description": "Return headcount, openings, and attrition by department.",
+    "tags": [
+      "hr",
+      "headcount",
+      "workforce",
+      "report"
+    ],
+    "arg_schema": {
+      "type": "object",
+      "properties": {
+        "department": {
+          "type": "string"
+        }
+      }
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "department": {
+          "type": "string"
+        },
+        "headcount": {
+          "type": "integer"
+        },
+        "open_roles": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "department",
+        "headcount"
+      ]
+    },
+    "tool_name": "hr.get_headcount_snapshot",
+    "enabled": true
+  },
+  {
+    "action_id": "hr.get_today_temperatures.v1",
+    "name": "Retrieve daily employee temperature readings",
+    "domain": "hr",
+    "description": "Return the temperature log for the requested date so HR can screen for anomalies or trigger follow-up actions.",
+    "tags": [
+      "hr",
+      "health-monitoring",
+      "temperature",
+      "reporting",
+      "fetch"
+    ],
+    "arg_schema": {
+      "type": "object",
+      "properties": {
+        "date": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "date"
+      ]
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "date": {
+          "type": "string"
+        },
+        "data": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "employee_id": {
+                "type": "string"
+              },
+              "temperature": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "employee_id",
+              "temperature"
+            ]
+          }
+        }
+      },
+      "required": [
+        "date",
+        "data"
+      ]
+    },
+    "enabled": true,
+    "tool_name": "get_today_temperatures"
+  },
+  {
+    "action_id": "hr.record_health_event.v1",
+    "name": "Record employee health event",
+    "domain": "hr",
+    "description": "Store a structured employee health event (type/date/abnormal_count) into the HR health stream for downstream monitoring and auditing.",
+    "tags": [
+      "hr",
+      "health-monitoring",
+      "event-log",
+      "temperature-tracking"
+    ],
+    "arg_schema": {
+      "type": "object",
+      "properties": {
+        "event_type": {
+          "type": "string"
+        },
+        "date": {
+          "type": "string"
+        },
+        "abnormal_count": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "event_type"
+      ]
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "type": "string"
+        },
+        "event_id": {
+          "type": "string"
+        }
+      }
+    },
+    "enabled": true,
+    "tool_name": "record_health_event"
+  },
+  {
+    "action_id": "hr.schedule_candidate_interview.v1",
+    "name": "Schedule candidate interview",
+    "domain": "hr",
+    "description": "Schedule an interview for a candidate with panel availability.",
+    "tags": [
+      "hr",
+      "recruiting",
+      "interview",
+      "schedule"
+    ],
+    "arg_schema": {
+      "type": "object",
+      "properties": {
+        "candidate_name": {
+          "type": "string"
+        },
+        "role": {
+          "type": "string"
+        },
+        "panel": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "date_slot": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "candidate_name",
+        "role",
+        "panel",
+        "date_slot"
+      ]
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "candidate": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "scheduled_for": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "candidate",
+        "status"
+      ]
+    },
+    "tool_name": "hr.schedule_candidate_interview",
+    "enabled": true
+  },
+  {
+    "action_id": "hr.update_employee_health_profile.v1",
+    "name": "Update employee health profile with latest vitals",
+    "domain": "hr",
+    "description": "Upsert an employee's health profile using the latest temperature reading, status, and check date to keep wellness records current.",
+    "tags": [
+      "hr",
+      "health-profile",
+      "temperature",
+      "status",
+      "upsert"
+    ],
+    "arg_schema": {
+      "type": "object",
+      "properties": {
+        "employee_id": {
+          "type": "string"
+        },
+        "last_check_date": {
+          "type": "string"
+        },
+        "last_temperature": {
+          "type": "number"
+        },
+        "status": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "employee_id"
+      ]
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "employee_id": {
+          "type": "string"
+        },
+        "last_temperature": {
+          "type": "number"
+        },
+        "status": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "employee_id",
+        "last_temperature"
+      ]
+    },
+    "enabled": true,
+    "tool_name": "update_employee_health_profile"
+  }
+]

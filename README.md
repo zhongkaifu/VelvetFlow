@@ -11,7 +11,7 @@ VelvetFlow (repo root)
 ├── build_action_index.py        # 离线构建动作检索索引
 ├── simulation_data.json         # 执行动作的模拟返回模板
 ├── velvetflow/
-│   ├── action_registry.py       # 从 tools/business_actions.json 读取动作，附加安全元数据
+│   ├── action_registry.py       # 从 tools/business_actions/ 读取动作，附加安全元数据
 │   ├── bindings.py              # 参数绑定 DSL 解析/校验
 │   ├── config.py                # 默认 OpenAI 模型配置
 │   ├── executor.py              # 动态执行器，支持条件/循环/聚合导出
@@ -24,7 +24,7 @@ VelvetFlow (repo root)
 │   ├── search_index.py          # 离线索引：关键词与向量索引的构建/持久化
 │   └── visualization.py         # 将 workflow 渲染为 JPEG DAG
 ├── tools/
-│   ├── business_actions.json    # HR/OPS/CRM 等示例动作库
+│   ├── business_actions/        # HR/OPS/CRM 等示例动作库（按命名空间拆分）
 │   └── ...
 ├── build_workflow.py                  # 端到端生成 + 可视化示例入口
 ├── execute_workflow.py                 # 从已保存 JSON 执行 workflow
@@ -32,7 +32,7 @@ VelvetFlow (repo root)
 ```
 
 ## 核心能力
-- **业务动作注册表**：`action_registry.py` 从 `tools/business_actions.json` 载入动作，自动补齐 `requires_approval` / `allowed_roles` 安全字段，并提供 `get_action_by_id` 查询。
+- **业务动作注册表**：`action_registry.py` 从 `tools/business_actions/` 载入动作，自动补齐 `requires_approval` / `allowed_roles` 安全字段，并提供 `get_action_by_id` 查询。
 - **离线索引 + 在线混合检索**：`search_index.py` 使用 OpenAI `text-embedding-3-large` 将业务动作构建为关键词与 embedding 索引，可由 `./build_action_index.py` 独立运行生成；`search.py` 读取索引并使用 `FakeElasticsearch`（关键词计分）与基于 Faiss 的向量检索（余弦相似度）混合排序，在线检索阶段仅对 query 进行 OpenAI embedding 再与索引中已有的动作 embedding 做匹配，`HybridActionSearchService` 提供工作流规划阶段的工具召回。
 - **工作流规划 Orchestrator**：`planner/orchestrator.py` 实现两阶段 `plan_workflow_with_two_pass`，在结构规划 + 补参后还会自动做动作合法性守卫、字段类型比对、缺省导出填充，再进入 LLM 修复循环：
   - 结构规划通过覆盖度检查、自动补齐条件分支跳转/修补循环 exports、审批节点检查等提升连通性与完备性，同时提前验证 loop body 的节点引用是否存在。
@@ -60,7 +60,7 @@ VelvetFlow (repo root)
    export OPENAI_API_KEY="<your_api_key>"
    ```
 3. **离线构建工具集索引（可选）**
-   - 若需根据最新的 `tools/business_actions.json` 重建关键词与向量索引，可运行：
+   - 若需根据最新的 `tools/business_actions/` 重建关键词与向量索引，可运行：
      ```bash
      python build_action_index.py --output tools/action_index.json --model text-embedding-3-large
      ```
@@ -83,7 +83,7 @@ VelvetFlow (repo root)
    - 读取已有的 workflow JSON，将 DAG 渲染成 JPEG。对于 action 节点，会额外显示调用的工具名称和输入参数。
 7. **校验任意 workflow JSON（可选）**
    ```bash
-   python validate_workflow.py path/to/workflow.json --action-registry tools/business_actions.json --print-normalized
+   python validate_workflow.py path/to/workflow.json --action-registry tools/business_actions --print-normalized
    ```
    - 复用规划阶段的静态规则与 Pydantic 校验，输出详细错误；`--print-normalized` 可打印归一化后的 DSL。
 8. **在现有 workflow 上迭代需求（可选）**
@@ -171,7 +171,7 @@ LLM 相关节点说明：
 - **执行阶段**：`executor.DynamicActionExecutor` 在遇到 loop 节点时会展开 `iter` 集合，依次执行 `body_subgraph`，将每轮输出写入 `loop_context`。子图可以引用 `loop.item`/`loop.index`，并在循环结束后依据 `exports.items/aggregates` 聚合到上层节点上下文。【F:velvetflow/executor.py†L187-L281】【F:velvetflow/bindings.py†L206-L341】
 
 ## 自定义与扩展
-- **扩展动作库**：编辑 `tools/business_actions.json` 增加/调整动作，`action_registry.py` 会自动加载并附加安全字段。
+- **扩展动作库**：在 `tools/business_actions/` 下增加/调整动作文件，`action_registry.py` 会自动加载并附加安全字段。
 - **调优检索**：在 `build_workflow.py` 的 `build_default_search_service` 调整 `alpha` 或替换 `DEFAULT_EMBEDDING_MODEL`/`embed_text_openai` 以适配自定义向量模型。
 - **更换模型**：`velvetflow/config.py` 中的 `OPENAI_MODEL` 控制规划/补参阶段使用的 OpenAI Chat 模型。
 - **定制执行行为**：修改根目录的 `simulation_data.json` 模板以覆盖动作返回；如需调整条件/循环聚合规则，可在 `executor.py` 与`bindings.py` 中扩展。
@@ -196,7 +196,7 @@ LLM 相关节点说明：
 {
   "id": "唯一字符串",
   "type": "start|end|action|condition|loop|parallel",
-  "action_id": "仅 action 节点需要，对应 tools/business_actions.json 中的 id",
+  "action_id": "仅 action 节点需要，对应 tools/business_actions/ 中的 id",
   "display_name": "可选: 用于可视化/日志的友好名称",
   "params": { /* 取决于节点类型的参数，下文详述 */ }
 }

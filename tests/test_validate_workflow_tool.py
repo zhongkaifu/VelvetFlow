@@ -1,7 +1,6 @@
 # Author: Zhongkai Fu (fuzhongkai@gmail.com)
 # License: BSD 3-Clause License
 
-import json
 import sys
 from pathlib import Path
 
@@ -10,15 +9,12 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from validate_workflow import validate_workflow_data
+from velvetflow.action_registry import BUSINESS_ACTIONS
 from velvetflow.models import ValidationError, Workflow
 from velvetflow.planner.repair_tools import _apply_local_repairs_for_unknown_params
 from velvetflow.verification.validation import validate_completed_workflow
 
-ACTION_REGISTRY = json.loads(
-    (Path(__file__).parent.parent / "tools" / "business_actions.json").read_text(
-        encoding="utf-8"
-    )
-)
+ACTION_REGISTRY = BUSINESS_ACTIONS
 
 
 def _basic_workflow(params: dict) -> dict:

@@ -1,0 +1,45 @@
+[
+  {
+    "action_id": "ops.create_incident.v1",
+    "name": "Open ops incident ticket",
+    "domain": "ops",
+    "description": "Create a new incident record in the operations incident system with title, description, and severity for triage.",
+    "tags": [
+      "ops",
+      "incident",
+      "ticket",
+      "oncall",
+      "severity"
+    ],
+    "arg_schema": {
+      "type": "object",
+      "properties": {
+        "title": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "severity": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "title"
+      ]
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "incident_id": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        }
+      }
+    },
+    "enabled": true,
+    "tool_name": "create_incident"
+  }
+]

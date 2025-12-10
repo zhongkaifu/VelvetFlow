@@ -1,0 +1,142 @@
+[
+  {
+    "action_id": "finance.forecast_cash_flow.v1",
+    "name": "Forecast cash flow",
+    "domain": "finance",
+    "description": "Generate a forward-looking cash flow projection.",
+    "tags": [
+      "finance",
+      "cashflow",
+      "forecast",
+      "planning"
+    ],
+    "arg_schema": {
+      "type": "object",
+      "properties": {
+        "months_ahead": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 3
+        }
+      }
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "projection": {
+          "type": "array"
+        },
+        "as_of": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "projection"
+      ]
+    },
+    "tool_name": "finance.forecast_cash_flow",
+    "enabled": true
+  },
+  {
+    "action_id": "finance.get_budget_variance.v1",
+    "name": "Get budget variance",
+    "domain": "finance",
+    "description": "Return budget versus actual spend for a department and month.",
+    "tags": [
+      "finance",
+      "budget",
+      "variance",
+      "report"
+    ],
+    "arg_schema": {
+      "type": "object",
+      "properties": {
+        "department": {
+          "type": "string"
+        },
+        "month": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "department"
+      ]
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "budget": {
+          "type": "number"
+        },
+        "actual": {
+          "type": "number"
+        },
+        "variance": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "budget",
+        "actual",
+        "variance"
+      ]
+    },
+    "tool_name": "finance.get_budget_variance",
+    "enabled": true
+  },
+  {
+    "action_id": "finance.submit_expense_report.v1",
+    "name": "Submit expense report",
+    "domain": "finance",
+    "description": "Submit an employee expense report for approval routing.",
+    "tags": [
+      "finance",
+      "expense",
+      "reimbursement",
+      "approval"
+    ],
+    "arg_schema": {
+      "type": "object",
+      "properties": {
+        "employee_id": {
+          "type": "string"
+        },
+        "amount": {
+          "type": "number"
+        },
+        "category": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "employee_id",
+        "amount",
+        "category",
+        "description"
+      ]
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "report_id": {
+          "type": "string"
+        },
+        "next_approver": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "report_id",
+        "status"
+      ]
+    },
+    "tool_name": "finance.submit_expense_report",
+    "enabled": true
+  }
+]

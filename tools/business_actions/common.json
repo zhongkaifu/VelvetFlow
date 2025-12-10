@@ -1,0 +1,677 @@
+[
+  {
+    "action_id": "common.ask_ai.v1",
+    "name": "AskAI LLM orchestrator",
+    "domain": "common",
+    "description": "LLM fallback that reasons over upstream tool context, optionally calls provided business tools, and returns structured JSON answers when no direct tool fits.",
+    "tool_name": "ask_ai",
+    "tags": [
+      "fallback",
+      "llm",
+      "reasoning",
+      "tool-orchestration",
+      "context"
+    ],
+    "arg_schema": {
+      "type": "object",
+      "properties": {
+        "system_prompt": {
+          "type": "string",
+          "description": "Role or instruction prompt describing the assistant persona for this node."
+        },
+        "prompt": {
+          "type": "string",
+          "description": "The full user prompt with contextual details for the current node."
+        },
+        "question": {
+          "type": "string",
+          "description": "Optional short-form question when a full prompt is not supplied."
+        },
+        "context": {
+          "type": "object",
+          "description": "Collected context from upstream nodes, including tools, inputs, and outputs.",
+          "additionalProperties": true
+        },
+        "expected_format": {
+          "type": "string",
+          "description": "Optional guidance for the JSON result schema."
+        },
+        "tool": {
+          "type": "array",
+          "description": "Subset of business tools available for this node (e.g., recent search_business_actions results).",
+          "items": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "model": {
+          "type": "string",
+          "description": "Override model name for chat completion."
+        },
+        "max_tokens": {
+          "type": "integer",
+          "default": 256,
+          "description": "Maximum tokens to generate per response."
+        },
+        "max_rounds": {
+          "type": "integer",
+          "default": 3,
+          "description": "Maximum chat-tool rounds before returning an error."
+        }
+      },
+      "oneOf": [
+        {
+          "required": [
+            "prompt"
+          ]
+        },
+        {
+          "required": [
+            "question"
+          ]
+        }
+      ]
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "type": "string",
+          "description": "Execution status returned by AskAI, such as ok or error."
+        },
+        "results": {
+          "type": "object",
+          "description": "Structured JSON answer synthesized by the LLM (or tool call results).",
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "status",
+        "results"
+      ]
+    },
+    "enabled": true
+  },
+  {
+    "action_id": "common.classify_text.v1",
+    "name": "Classify text with LLM labels",
+    "domain": "common",
+    "description": "Assign one or more labels to input text using the configured LLM model for routing, triage, or content tagging.",
+    "tool_name": "classify_text",
+    "tags": [
+      "classification",
+      "llm",
+      "labels",
+      "text-analysis"
+    ],
+    "arg_schema": {
+      "type": "object",
+      "properties": {
+        "text": {
+          "type": "string",
+          "description": "The content to classify"
+        },
+        "labels": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Candidate labels"
+        },
+        "instruction": {
+          "type": "string",
+          "description": "Optional guidance to steer the classification"
+        },
+        "allow_multiple": {
+          "type": "boolean",
+          "default": false
+        },
+        "model": {
+          "type": "string"
+        },
+        "max_tokens": {
+          "type": "integer",
+          "default": 128
+        }
+      },
+      "required": [
+        "text",
+        "labels"
+      ]
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "labels": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "reason": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
+        "finish_reason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "labels"
+      ]
+    },
+    "enabled": true
+  },
+  {
+    "action_id": "common.join_list.v1",
+    "name": "Join list of strings",
+    "domain": "common",
+    "description": "Concatenate a list of strings using a separator to produce a single formatted string for prompts or output.",
+    "tool_name": "join_list",
+    "tags": [
+      "string",
+      "list",
+      "join",
+      "formatting"
+    ],
+    "arg_schema": {
+      "type": "object",
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "separator": {
+          "type": "string",
+          "default": ","
+        }
+      },
+      "required": [
+        "items"
+      ]
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "result": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "result"
+      ]
+    },
+    "enabled": true
+  },
+  {
+    "action_id": "common.list_files.v1",
+    "name": "List directory entries with metadata",
+    "domain": "common",
+    "description": "Enumerate files and folders under a directory (optionally including hidden items) with path and type metadata for workflow navigation.",
+    "tool_name": "list_files",
+    "tags": [
+      "filesystem",
+      "discovery",
+      "listing",
+      "metadata"
+    ],
+    "arg_schema": {
+      "type": "object",
+      "properties": {
+        "directory": {
+          "type": "string",
+          "default": "."
+        },
+        "include_hidden": {
+          "type": "boolean",
+          "default": false
+        },
+        "max_entries": {
+          "type": "integer",
+          "default": 200
+        }
+      }
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "entries": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              },
+              "is_dir": {
+                "type": "boolean"
+              },
+              "size": {
+                "type": "integer"
+              },
+              "modified": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "name",
+              "path",
+              "is_dir"
+            ]
+          }
+        }
+      },
+      "required": [
+        "entries"
+      ]
+    },
+    "enabled": true
+  },
+  {
+    "action_id": "common.read_file.v1",
+    "name": "Read text file with safety limits",
+    "domain": "common",
+    "description": "Load a UTF-8 text file (respecting size and encoding limits) so downstream nodes can parse or summarize its contents.",
+    "tool_name": "read_file",
+    "tags": [
+      "filesystem",
+      "read",
+      "content",
+      "safety"
+    ],
+    "arg_schema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "max_bytes": {
+          "type": "integer",
+          "default": 65536
+        },
+        "encoding": {
+          "type": "string",
+          "default": "utf-8"
+        }
+      },
+      "required": [
+        "path"
+      ]
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "size": {
+          "type": "integer"
+        },
+        "content": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "content"
+      ]
+    },
+    "enabled": true
+  },
+  {
+    "action_id": "common.scrape_web_page.v1",
+    "name": "Scrape and analyze web pages in-domain",
+    "domain": "common",
+    "description": "Use crawl4ai to download web pages, stay within the source domain, and apply LLM analysis against a user request to decide if further same-site pages should be crawled.",
+    "tool_name": "scrape_web_page",
+    "tags": [
+      "web",
+      "scrape",
+      "analysis",
+      "in-domain",
+      "llm-guided"
+    ],
+    "arg_schema": {
+      "type": "object",
+      "properties": {
+        "urls": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "user_request": {
+          "type": "string"
+        },
+        "llm_instruction": {
+          "type": "string"
+        },
+        "llm_provider": {
+          "type": "string",
+          "default": "openai/gpt-4o-mini"
+        }
+      },
+      "required": [
+        "urls",
+        "user_request"
+      ]
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "type": "string"
+        },
+        "extracted_content": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "status",
+        "extracted_content"
+      ]
+    },
+    "enabled": true
+  },
+  {
+    "action_id": "common.search_and_crawl_web_content.v1",
+    "name": "Search then crawl in-domain content with LLM guidance",
+    "domain": "common",
+    "description": "Automatically execute three steps around a user's natural-language query: search for candidate URLs, keep same-domain links for crawl4ai scraping, let the LLM decide if needs are met or deeper same-site crawling is required, and finally aggregate cross-page content for the response.",
+    "tool_name": "search_and_crawl_web_content",
+    "tags": [
+      "web-search",
+      "in-domain-crawl",
+      "llm-evaluation",
+      "multi-page",
+      "summarization"
+    ],
+    "arg_schema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "description": "The user's natural-language query"
+        },
+        "search_limit": {
+          "type": "integer",
+          "default": 5,
+          "description": "Maximum number of results to return from the search engine"
+        },
+        "llm_provider": {
+          "type": "string",
+          "default": "openai/gpt-4o-mini",
+          "description": "LLM provider used to decide whether to continue crawling"
+        }
+      },
+      "required": [
+        "query"
+      ]
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "type": "string",
+          "description": "Overall crawl status (ok/partial/error/not_found)"
+        },
+        "summary": {
+          "type": "string",
+          "description": "Summary of the crawl results"
+        },
+        "results": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "title": {
+                "type": "string"
+              },
+              "url": {
+                "type": "string"
+              },
+              "snippet": {
+                "type": "string"
+              },
+              "scrape": {
+                "type": "object",
+                "additionalProperties": true,
+                "description": "Raw result returned by crawl4ai scraping"
+              }
+            }
+          }
+        }
+      },
+      "required": [
+        "status",
+        "summary",
+        "results"
+      ]
+    },
+    "enabled": true
+  },
+  {
+    "action_id": "common.search_news.v1",
+    "name": "Search recent news",
+    "domain": "common",
+    "description": "Query a news search endpoint for recent headlines and snippets to support news monitoring and summarization workflows.",
+    "tool_name": "search_news",
+    "tags": [
+      "search",
+      "news",
+      "headlines",
+      "information",
+      "serp"
+    ],
+    "arg_schema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string"
+        },
+        "limit": {
+          "type": "integer",
+          "default": 5
+        },
+        "timeout": {
+          "type": "integer",
+          "default": 8
+        }
+      },
+      "required": [
+        "query"
+      ]
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "results": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "title": {
+                "type": "string"
+              },
+              "url": {
+                "type": "string"
+              },
+              "snippet": {
+                "type": "string",
+                "description": "Short summary of the news result"
+              }
+            },
+            "required": [
+              "title",
+              "url",
+              "snippet"
+            ]
+          }
+        }
+      },
+      "required": [
+        "results"
+      ]
+    },
+    "enabled": true
+  },
+  {
+    "action_id": "common.search_web.v1",
+    "name": "Search the web (SERP lookup)",
+    "domain": "common",
+    "description": "Run a web search (Bing SERP) for a query and return top result titles, URLs, and snippets for downstream retrieval or reasoning.",
+    "tool_name": "search_web",
+    "tags": [
+      "search",
+      "web",
+      "serp",
+      "bing",
+      "information"
+    ],
+    "arg_schema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string"
+        },
+        "limit": {
+          "type": "integer",
+          "default": 5
+        },
+        "timeout": {
+          "type": "integer",
+          "default": 8
+        }
+      },
+      "required": [
+        "query"
+      ]
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "results": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "title": {
+                "type": "string"
+              },
+              "url": {
+                "type": "string"
+              },
+              "snippet": {
+                "type": "string",
+                "description": "Short description of the result"
+              }
+            },
+            "required": [
+              "title",
+              "url",
+              "snippet"
+            ]
+          }
+        }
+      },
+      "required": [
+        "results"
+      ]
+    },
+    "enabled": true
+  },
+  {
+    "action_id": "common.split_list.v1",
+    "name": "Split string into list",
+    "domain": "common",
+    "description": "Split an input string by a separator into a list of values for downstream iteration or validation.",
+    "tool_name": "split_list",
+    "tags": [
+      "string",
+      "list",
+      "split",
+      "parsing"
+    ],
+    "arg_schema": {
+      "type": "object",
+      "properties": {
+        "text": {
+          "type": "string"
+        },
+        "separator": {
+          "type": "string",
+          "default": ","
+        }
+      },
+      "required": [
+        "text"
+      ]
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "items"
+      ]
+    },
+    "enabled": true
+  },
+  {
+    "action_id": "common.summarize.v1",
+    "name": "Summarize text with LLM",
+    "domain": "common",
+    "description": "Generate a concise summary of the provided text using the LLM, optionally constrained by sentence count.",
+    "tool_name": "summarize",
+    "tags": [
+      "text",
+      "summarize",
+      "nlp",
+      "abstraction",
+      "llm"
+    ],
+    "arg_schema": {
+      "type": "object",
+      "properties": {
+        "text": {
+          "type": "string"
+        },
+        "max_sentences": {
+          "type": "integer",
+          "default": 3
+        }
+      },
+      "required": [
+        "text"
+      ]
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "summary": {
+          "type": "string"
+        },
+        "sentence_count": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "summary"
+      ]
+    },
+    "enabled": true
+  }
+]

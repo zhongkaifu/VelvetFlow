@@ -1,0 +1,47 @@
+[
+  {
+    "action_id": "productivity.compose_outlook_email.v1",
+    "name": "Compose Outlook email draft locally",
+    "domain": "productivity",
+    "description": "Open the local Outlook client, create a draft, and paste provided content into the body so the user can review and send.",
+    "tags": [
+      "outlook",
+      "email",
+      "drafting",
+      "productivity",
+      "client-automation"
+    ],
+    "arg_schema": {
+      "type": "object",
+      "properties": {
+        "email_content": {
+          "type": "string",
+          "description": "The full email body to insert into a newly created Outlook draft."
+        },
+        "emailTo": {
+          "type": "string",
+          "description": "The recipient email address to populate in the Outlook draft."
+        }
+      },
+      "required": [
+        "email_content"
+      ]
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "status"
+      ]
+    },
+    "tool_name": "compose_outlook_email",
+    "enabled": true
+  }
+]
