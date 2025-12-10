@@ -231,25 +231,74 @@ class _GoogleParser(HTMLParser):
 
 
 def search_web(query: str, limit: int = 5, timeout: int = 8) -> Dict[str, List[Dict[str, str]]]:
-    """Perform a Google HTML search and return top results with snippets."""
+    """Perform a Google HTML search and return top results with snippets.
+
+    The function prefers a Selenium-backed fetch (to better mirror user browser
+    behavior and bypass bot detection) when selenium and a chromedriver are
+    available. It falls back to a lightweight HTTP request otherwise, keeping
+    the output format consistent either way.
+    """
 
     def _clean_text(value: str) -> str:
         text_no_tags = re.sub(r"<[^>]+>", " ", value)
         text_unescaped = html.unescape(text_no_tags)
         return re.sub(r"\s+", " ", text_unescaped).strip()
 
+    def _fetch_html() -> str:
+        encoded_q = urllib.parse.quote_plus(query)
+        url = f"https://www.google.com/search?q={encoded_q}&num={max(limit, 1)}&hl=en"
+
+        try:
+            from selenium import webdriver
+            from selenium.webdriver.chrome.service import Service
+        except Exception:  # pragma: no cover - selenium not installed
+            webdriver = None  # type: ignore
+            Service = None  # type: ignore
+
+        if webdriver and Service:
+            chromedriver_path = os.getenv("GOOGLE_CHROMEDRIVER_PATH") or os.getenv(
+                "CHROMEDRIVER_PATH"
+            )
+            service = Service(chromedriver_path) if chromedriver_path else Service()
+            options = webdriver.ChromeOptions()
+            options.add_argument("--headless=new")
+            options.add_argument("--window-size=1920,1080")
+            options.add_argument("--disable-gpu")
+            options.add_argument("--no-sandbox")
+            options.add_argument("--disable-dev-shm-usage")
+            options.add_argument(
+                "--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            )
+
+            driver = None
+            try:
+                driver = webdriver.Chrome(service=service, options=options)
+                driver.set_page_load_timeout(timeout)
+                driver.get(url)
+                return driver.page_source
+            except Exception:
+                # If Selenium fails (e.g., chromedriver missing), fall back to HTTP.
+                pass
+            finally:
+                if driver:
+                    try:
+                        driver.quit()
+                    except Exception:
+                        pass
+
+        req = urllib.request.Request(
+            url,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; VelvetFlow/1.0)"},
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.read().decode("utf-8", errors="ignore")
+
     if not query:
         raise ValueError("query is required for web search")
 
-    encoded_q = urllib.parse.quote_plus(query)
-    url = f"https://www.google.com/search?q={encoded_q}&num={max(limit, 1)}&hl=en"
-    req = urllib.request.Request(
-        url,
-        headers={"User-Agent": "Mozilla/5.0 (compatible; VelvetFlow/1.0)"},
-    )
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            raw_html = resp.read().decode("utf-8", errors="ignore")
+        raw_html = _fetch_html()
     except Exception as exc:  # pragma: no cover - network-dependent
         raise RuntimeError(f"web search failed: {exc}") from exc
 
