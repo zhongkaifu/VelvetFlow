@@ -53,7 +53,7 @@ VelvetFlow (repo root)
    ```bash
    python -m venv .venv
    source .venv/bin/activate
-   pip install --upgrade openai numpy pillow pydantic
+   pip install -r requirements.txt
    ```
 2. **设置凭证**
    ```bash

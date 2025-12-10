@@ -169,8 +169,16 @@ app.mount("/", StaticFiles(directory=Path(__file__).parent, html=True), name="st
 if __name__ == "__main__":
     import asyncio
 
-    from hypercorn.asyncio import serve
-    from hypercorn.config import Config
+    try:
+        from hypercorn.asyncio import serve
+        from hypercorn.config import Config
+    except ModuleNotFoundError as exc:  # noqa: PERF203 - clearer guidance for users
+        missing = "hypercorn"
+        message = (
+            f"缺少依赖 {missing}，请先运行 `pip install -r requirements.txt` 再启动: {exc}"
+        )
+        print(message)
+        raise SystemExit(1)
 
     config = Config()
     config.bind = ["0.0.0.0:8000"]
