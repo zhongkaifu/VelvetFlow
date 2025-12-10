@@ -68,8 +68,14 @@ def test_search_web_uses_googlesearch(monkeypatch: pytest.MonkeyPatch) -> None:
             self.link = link
             self.description = description
 
-    def fake_search(query: str, num_results: int = 5, lang: str = "en") -> list[object]:
-        calls.append((query, num_results, lang))
+    def fake_search(
+        query: str,
+        num_results: int = 5,
+        lang: str = "en",
+        advanced: bool = False,
+        sleep_interval: int = 0,
+    ) -> list[object]:
+        calls.append((query, num_results, lang, advanced, sleep_interval))
         return [
             DummyResult("Title A", "https://example.com/a", "Snippet A"),
             {
@@ -84,7 +90,7 @@ def test_search_web_uses_googlesearch(monkeypatch: pytest.MonkeyPatch) -> None:
 
     results = search_web("widgets", limit=2)
 
-    assert calls == [("widgets", 2, "en")]
+    assert calls == [("widgets", 2, "en", True, 1)]
     assert results == {
         "results": [
             {
@@ -94,6 +100,60 @@ def test_search_web_uses_googlesearch(monkeypatch: pytest.MonkeyPatch) -> None:
             },
             {
                 "title": "Title B",
+                "url": "https://example.com/b",
+                "snippet": "Snippet B",
+            },
+        ]
+    }
+
+
+def test_search_web_falls_back_to_html(monkeypatch: pytest.MonkeyPatch) -> None:
+    _install_dummy_module("googlesearch", {"search": lambda *_, **__: []})
+
+    class DummyResponse:
+        def __init__(self, payload: str) -> None:
+            self._payload = payload
+
+        def read(self) -> bytes:
+            return self._payload.encode("utf-8")
+
+        def __enter__(self) -> "DummyResponse":
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            return None
+
+    sample_html = """
+        <div class="g">
+            <a href="/url?q=https://example.com/a&sa=U">
+                <h3>Example A</h3>
+                <div class="VwiC3b">Snippet A</div>
+            </a>
+        </div>
+        <div class="g">
+            <a href="/url?q=https://example.com/b&sa=U">
+                <h3>Example B</h3>
+                <div class="VwiC3b">Snippet B</div>
+            </a>
+        </div>
+    """
+
+    def fake_urlopen(_req, timeout: int = 8):
+        return DummyResponse(sample_html)
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    results = search_web("fallback", limit=2)
+
+    assert results == {
+        "results": [
+            {
+                "title": "Example A",
+                "url": "https://example.com/a",
+                "snippet": "Snippet A",
+            },
+            {
+                "title": "Example B",
                 "url": "https://example.com/b",
                 "snippet": "Snippet B",
             },

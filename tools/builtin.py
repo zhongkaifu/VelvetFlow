@@ -177,45 +177,96 @@ def search_web(query: str, limit: int = 5, timeout: int = 8) -> Dict[str, List[D
             "googlesearch-python is required for web search; install it with 'pip install googlesearch-python'."
         ) from exc
 
-    try:
-        raw_results = google_search(query, num_results=max(limit, 1), lang="en")
-    except Exception as exc:  # pragma: no cover - network-dependent
-        raise RuntimeError(f"web search failed: {exc}") from exc
-
-    results: List[Dict[str, str]] = []
-
-    for entry in raw_results:
-        title_value = ""
-        url_value = ""
-        snippet_value = ""
-
-        if isinstance(entry, Mapping):
-            title_value = entry.get("title") or entry.get("name") or ""
-            url_value = entry.get("url") or entry.get("link") or entry.get("href") or ""
-            snippet_value = entry.get("description") or entry.get("snippet") or entry.get("summary") or ""
-        elif hasattr(entry, "__dict__"):
-            title_value = getattr(entry, "title", "") or getattr(entry, "name", "")
-            url_value = getattr(entry, "url", "") or getattr(entry, "link", "") or getattr(entry, "href", "")
-            snippet_value = getattr(entry, "description", "") or getattr(entry, "snippet", "")
-        elif isinstance(entry, str):
-            url_value = entry
-            title_value = entry
-
-        title_value = _clean_text(str(title_value))
-        url_value = _resolve_search_url(str(url_value))
-        snippet_value = _clean_text(str(snippet_value)) or title_value
-
-        if title_value and url_value:
-            results.append(
-                {
-                    "title": title_value,
-                    "url": url_value,
-                    "snippet": snippet_value,
-                }
+    def _search_via_package() -> List[Dict[str, str]]:
+        try:
+            raw_results = google_search(
+                query,
+                num_results=max(limit, 1),
+                lang="en",
+                advanced=True,
+                sleep_interval=1,
             )
+        except Exception as exc:  # pragma: no cover - network-dependent
+            raise RuntimeError(f"web search failed: {exc}") from exc
 
-        if len(results) >= limit:
-            break
+        results: List[Dict[str, str]] = []
+
+        for entry in raw_results:
+            title_value = ""
+            url_value = ""
+            snippet_value = ""
+
+            if isinstance(entry, Mapping):
+                title_value = entry.get("title") or entry.get("name") or ""
+                url_value = entry.get("url") or entry.get("link") or entry.get("href") or ""
+                snippet_value = entry.get("description") or entry.get("snippet") or entry.get("summary") or ""
+            elif hasattr(entry, "__dict__"):
+                title_value = getattr(entry, "title", "") or getattr(entry, "name", "")
+                url_value = getattr(entry, "url", "") or getattr(entry, "link", "") or getattr(entry, "href", "")
+                snippet_value = getattr(entry, "description", "") or getattr(entry, "snippet", "")
+            elif isinstance(entry, str):
+                url_value = entry
+                title_value = entry
+
+            title_value = _clean_text(str(title_value))
+            url_value = _resolve_search_url(str(url_value))
+            snippet_value = _clean_text(str(snippet_value)) or title_value
+
+            if title_value and url_value:
+                results.append(
+                    {
+                        "title": title_value,
+                        "url": url_value,
+                        "snippet": snippet_value,
+                    }
+                )
+
+            if len(results) >= limit:
+                break
+
+        return results
+
+    def _search_via_html() -> List[Dict[str, str]]:
+        encoded_q = urllib.parse.quote_plus(query)
+        url = f"https://www.google.com/search?q={encoded_q}&hl=en"
+        req = urllib.request.Request(
+            url,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; VelvetFlow/1.0)"},
+        )
+
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                raw_html = resp.read().decode("utf-8", errors="ignore")
+        except Exception as exc:  # pragma: no cover - network-dependent
+            raise RuntimeError(f"web search failed: {exc}") from exc
+
+        pattern = re.compile(
+            r"<a href=\"(?P<href>/url\?q=[^\"]+)\"[^>]*>\s*<h3[^>]*>(?P<title>.*?)</h3>[\s\S]*?(?P<snippet><div class=\"[^\"]*\">.*?</div>)",
+            re.IGNORECASE,
+        )
+
+        results: List[Dict[str, str]] = []
+        for match in pattern.finditer(raw_html):
+            title_value = _clean_text(match.group("title"))
+            url_value = _resolve_search_url(match.group("href"))
+            snippet_value = _clean_text(match.group("snippet")) or title_value
+
+            if title_value and url_value:
+                results.append(
+                    {
+                        "title": title_value,
+                        "url": url_value,
+                        "snippet": snippet_value,
+                    }
+                )
+            if len(results) >= limit:
+                break
+
+        return results
+
+    results = _search_via_package()
+    if not results:
+        results = _search_via_html()
 
     return {"results": results}
 
