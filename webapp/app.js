@@ -271,7 +271,11 @@ async function requestPlan(requirement) {
 
     if (!response.ok) {
       const detail = await response.json().catch(() => ({}));
-      throw new Error(detail.detail || detail.message || response.statusText);
+      const hint =
+        [404, 405, 501].includes(response.status)
+          ? "后端 API 未启动或未通过 uvicorn 暴露，请运行 `uvicorn webapp.server:app --reload --port 8000` 后再试。"
+          : "";
+      throw new Error(detail.detail || detail.message || hint || response.statusText);
     }
 
     const payload = await response.json();
@@ -300,7 +304,11 @@ async function requestRun() {
 
     if (!response.ok) {
       const detail = await response.json().catch(() => ({}));
-      throw new Error(detail.detail || detail.message || response.statusText);
+      const hint =
+        [404, 405, 501].includes(response.status)
+          ? "后端 API 未启动或未通过 uvicorn 暴露，请运行 `uvicorn webapp.server:app --reload --port 8000` 后再试。"
+          : "";
+      throw new Error(detail.detail || detail.message || hint || response.statusText);
     }
 
     const payload = await response.json();
