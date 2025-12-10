@@ -92,13 +92,15 @@ VelvetFlow (repo root)
    ```
    - 将自然语言需求与现有 workflow 作为输入，调用 LLM 自动更新节点、参数与边；若校验失败会将错误列表反馈给 LLM 自动修复（最多 3 轮），最终写入通过校验的结果到 `--output` 指定的文件。
 
-### Web 可视化界面（无需后端即可体验）
-- `webapp/` 目录提供了基于 Canvas 的前端页面，包含 VelvetFlow Agent 对话框、DAG/流程图双 Tab 视图、可编辑的 workflow JSON 与一键 Run 模拟执行按钮。
-- 在仓库根目录运行静态服务即可体验：
+### Web 可视化界面（带 Planner/Executor 的实时交互）
+- `webapp/` 目录提供了基于 Canvas 的前端页面，包含 VelvetFlow Agent 对话框、DAG/流程图双 Tab 视图、可编辑的 workflow JSON 与 Run 执行按钮。
+- 通过 FastAPI 服务直接调用仓库内置的 planner 与 executor：
   ```bash
-  python -m http.server 8000 --directory webapp
+  export OPENAI_API_KEY="<your_api_key>"
+  pip install -r requirements.txt
+  uvicorn webapp.server:app --reload --port 8000
   ```
-  然后访问 <http://localhost:8000> 即可。通过输入自然语言可触发示例 DAG 构建、查看日志并手动编辑节点/连线。
+  然后访问 <http://localhost:8000> 即可。对话框会把自然语言发送到 `/api/plan`，由 planner 自动构建/修复 workflow 并返回拓扑，Run 按钮会调用 `/api/run` 触发执行并输出运行日志/结果。
 
 ## 异步工具调用、挂起与恢复
 - **触发异步**：在 action/loop 子图节点的 `params` 中加入 `"__invoke_mode": "async"`（或布尔 `"__async__": true`）即可请求异步调用。业务工具若直接返回 `AsyncToolHandle` 会被识别为异步；否则执行器会自动将同步输出包装为异步请求句柄。异步调用会写入 `GLOBAL_ASYNC_RESULT_STORE`，并返回 `{"status": "async_pending", ...}`。

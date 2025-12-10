@@ -14,30 +14,73 @@ const tabs = document.querySelectorAll(".tab");
 
 let currentTab = "dag";
 let currentWorkflow = createDemoWorkflow();
-let buildStep = 0;
 
 function createDemoWorkflow() {
   return {
-    name: "Employee onboarding",
+    workflow_name: "employee_onboarding",
+    description: "示例: 入职账号与设备申请",
     nodes: [
-      { id: "entry", label: "入口", type: "entry" },
-      { id: "collect_req", label: "收集需求", type: "action" },
-      { id: "create_account", label: "账号申请", type: "action" },
-      { id: "assign_device", label: "设备分配", type: "action" },
-      { id: "approval", label: "主管审批", type: "condition", trueTo: "enable_access", falseTo: "exit" },
-      { id: "enable_access", label: "开通权限", type: "action" },
-      { id: "exit", label: "完成", type: "exit" }
+      { id: "start", type: "start", display_name: "入口" },
+      {
+        id: "collect_req",
+        type: "action",
+        display_name: "收集需求",
+        action_id: "hr.collect_onboarding_requirements",
+      },
+      {
+        id: "create_account",
+        type: "action",
+        display_name: "账号申请",
+        action_id: "it.provision_account",
+      },
+      {
+        id: "assign_device",
+        type: "action",
+        display_name: "设备分配",
+        action_id: "it.assign_device",
+      },
+      {
+        id: "approval",
+        type: "condition",
+        display_name: "主管审批",
+        params: { condition: { kind: "equals", left: "manager", right: "approved" } },
+        true_to_node: "enable_access",
+        false_to_node: "end",
+      },
+      {
+        id: "enable_access",
+        type: "action",
+        display_name: "开通权限",
+        action_id: "it.enable_access",
+      },
+      { id: "end", type: "end", display_name: "完成" },
     ],
     edges: [
-      ["entry", "collect_req"],
-      ["collect_req", "create_account"],
-      ["create_account", "assign_device"],
-      ["assign_device", "approval"],
-      ["approval", "enable_access"],
-      ["approval", "exit"],
-      ["enable_access", "exit"]
-    ]
+      { from_node: "start", to_node: "collect_req" },
+      { from_node: "collect_req", to_node: "create_account" },
+      { from_node: "create_account", to_node: "assign_device" },
+      { from_node: "assign_device", to_node: "approval" },
+      { from_node: "approval", to_node: "enable_access", condition: "true" },
+      { from_node: "approval", to_node: "end", condition: "false" },
+      { from_node: "enable_access", to_node: "end" },
+    ],
   };
+}
+
+function normalizeEdge(edge) {
+  if (Array.isArray(edge) && edge.length >= 2) {
+    return { from_node: edge[0], to_node: edge[1], condition: edge[2] };
+  }
+  return {
+    from_node: edge.from_node || edge.from,
+    to_node: edge.to_node || edge.to,
+    condition: edge.condition,
+  };
+}
+
+function normalizeWorkflow(workflow) {
+  const edges = Array.isArray(workflow.edges) ? workflow.edges.map(normalizeEdge) : [];
+  return { ...workflow, edges };
 }
 
 function addChatMessage(text, role = "agent") {
@@ -57,10 +100,27 @@ function appendLog(text) {
   buildLog.scrollTop = buildLog.scrollHeight;
 }
 
+function renderLogs(logs = []) {
+  logs.forEach((line) => appendLog(line));
+}
+
+function setStatus(label, variant = "info") {
+  const colors = {
+    info: { bg: "rgba(59, 130, 246, 0.15)", color: "#60a5fa" },
+    success: { bg: "rgba(52, 211, 153, 0.15)", color: "var(--success)" },
+    warning: { bg: "rgba(251, 191, 36, 0.15)", color: "var(--warning)" },
+    danger: { bg: "rgba(248, 113, 113, 0.15)", color: "var(--danger)" },
+  };
+  const theme = colors[variant] || colors.info;
+  statusIndicator.textContent = label;
+  statusIndicator.style.background = theme.bg;
+  statusIndicator.style.color = theme.color;
+}
+
 function layoutNodes(workflow) {
   const { nodes } = workflow;
   const positions = {};
-  const columns = Math.ceil(Math.sqrt(nodes.length));
+  const columns = Math.max(3, Math.ceil(Math.sqrt(nodes.length)));
   const spacingX = workflowCanvas.width / (columns + 1);
   const spacingY = workflowCanvas.height / (Math.ceil(nodes.length / columns) + 1);
 
@@ -69,7 +129,7 @@ function layoutNodes(workflow) {
     const row = Math.floor(index / columns);
     positions[node.id] = {
       x: spacingX * (col + 1),
-      y: spacingY * (row + 1)
+      y: spacingY * (row + 1),
     };
   });
   return positions;
@@ -77,13 +137,15 @@ function layoutNodes(workflow) {
 
 function drawNode(node, pos, mode) {
   const radius = 16;
-  const width = 170;
-  const height = 56;
+  const width = 190;
+  const height = 64;
   const typeColors = {
-    entry: "#22d3ee",
-    exit: "#34d399",
+    start: "#22d3ee",
+    end: "#34d399",
     condition: "#fbbf24",
-    action: "#c084fc"
+    loop: "#a5b4fc",
+    switch: "#7dd3fc",
+    action: "#c084fc",
   };
   const fill = typeColors[node.type] || "#94a3b8";
   ctx.save();
@@ -97,15 +159,16 @@ function drawNode(node, pos, mode) {
   ctx.fillStyle = fill;
   ctx.font = "12px Inter";
   ctx.textAlign = "center";
-  ctx.fillText(node.type.toUpperCase(), pos.x, pos.y - 14);
+  ctx.fillText(node.type.toUpperCase(), pos.x, pos.y - 16);
 
   ctx.fillStyle = "#e5e7eb";
-  ctx.font = mode === "visual" ? "16px Inter" : "15px Inter";
-  ctx.fillText(node.label, pos.x, pos.y + 8);
+  ctx.font = mode === "visual" ? "17px Inter" : "15px Inter";
+  const label = node.display_name || node.action_id || node.id;
+  ctx.fillText(label, pos.x, pos.y + 8);
   ctx.restore();
 }
 
-function drawArrow(from, to) {
+function drawArrow(from, to, label) {
   const dx = to.x - from.x;
   const dy = to.y - from.y;
   const angle = Math.atan2(dy, dx);
@@ -132,20 +195,36 @@ function drawArrow(from, to) {
   ctx.lineTo(-arrowSize, -arrowSize / 1.6);
   ctx.closePath();
   ctx.fill();
+
+  if (label) {
+    ctx.rotate(-angle);
+    ctx.fillStyle = "#94a3b8";
+    ctx.font = "12px Inter";
+    ctx.textAlign = "center";
+    ctx.fillText(String(label), 0, -6);
+  }
   ctx.restore();
 }
 
 function render(mode = currentTab) {
   ctx.clearRect(0, 0, workflowCanvas.width, workflowCanvas.height);
+  if (!currentWorkflow.nodes) return;
   const positions = layoutNodes(currentWorkflow);
 
-  currentWorkflow.edges.forEach(([fromId, toId]) => {
-    drawArrow(positions[fromId], positions[toId]);
+  const edges = (currentWorkflow.edges || []).map(normalizeEdge);
+  edges.forEach((edge) => {
+    const from = positions[edge.from_node];
+    const to = positions[edge.to_node];
+    if (from && to) {
+      drawArrow(from, to, edge.condition);
+    }
   });
 
   currentWorkflow.nodes.forEach((node) => {
     const pos = positions[node.id];
-    drawNode(node, pos, mode);
+    if (pos) {
+      drawNode(node, pos, mode);
+    }
   });
 
   if (mode === "visual") {
@@ -179,81 +258,61 @@ function updateEditor() {
   workflowEditor.value = JSON.stringify(currentWorkflow, null, 2);
 }
 
-function simulateBuild(requirement) {
-  statusIndicator.textContent = "规划中";
-  statusIndicator.style.background = "rgba(251, 191, 36, 0.2)";
-  statusIndicator.style.color = "var(--warning)";
+async function requestPlan(requirement) {
+  setStatus("规划中", "warning");
   buildLog.innerHTML = "";
   appendLog(`收到需求：${requirement}`);
+  try {
+    const response = await fetch("/api/plan", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ requirement, existing_workflow: currentWorkflow }),
+    });
 
-  const steps = [
-    "解析需求并抽取业务动作",
-    "从动作库检索匹配步骤",
-    "构建骨架并自动补充参数",
-    "运行静态校验与自修复",
-    "生成可视化 DAG"
-  ];
+    if (!response.ok) {
+      const detail = await response.json().catch(() => ({}));
+      throw new Error(detail.detail || detail.message || response.statusText);
+    }
 
-  steps.forEach((step, index) => {
-    setTimeout(() => {
-      appendLog(step);
-      if (index === steps.length - 1) {
-        statusIndicator.textContent = "构建完成";
-        statusIndicator.style.background = "rgba(52, 211, 153, 0.15)";
-        statusIndicator.style.color = "var(--success)";
-      }
-    }, 650 * (index + 1));
-  });
+    const payload = await response.json();
+    renderLogs(payload.logs);
+    currentWorkflow = normalizeWorkflow(payload.workflow);
+    updateEditor();
+    render(currentTab);
+    setStatus("构建完成", "success");
+    addChatMessage("已完成 DAG 规划与校验，可在画布上查看并继续修改。", "agent");
+  } catch (error) {
+    setStatus("构建失败", "danger");
+    appendLog(`规划失败: ${error.message}`);
+    addChatMessage(`规划失败：${error.message}，请检查 OPENAI_API_KEY 是否已配置。`, "agent");
+  }
 }
 
-function generateWorkflow(requirement) {
-  const normalized = requirement.toLowerCase();
-  const needsApproval = /审批|approve|review/.test(normalized);
-  const needsNotification = /通知|notify|邮件/.test(normalized);
-  const needsLoop = /批量|循环|列表/.test(normalized);
+async function requestRun() {
+  setStatus("运行中", "warning");
+  appendLog("开始执行当前 workflow ...");
+  try {
+    const response = await fetch("/api/run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ workflow: currentWorkflow }),
+    });
 
-  const nodes = [
-    { id: "entry", label: "入口", type: "entry" },
-    { id: "intent", label: "需求解析", type: "action" },
-    { id: "search_tools", label: "动作检索", type: "action" }
-  ];
-  const edges = [
-    ["entry", "intent"],
-    ["intent", "search_tools"]
-  ];
+    if (!response.ok) {
+      const detail = await response.json().catch(() => ({}));
+      throw new Error(detail.detail || detail.message || response.statusText);
+    }
 
-  let tail = "search_tools";
-
-  if (needsLoop) {
-    nodes.push({ id: "loop", label: "批量处理", type: "condition", trueTo: "fanout", falseTo: "compose" });
-    nodes.push({ id: "fanout", label: "分发子任务", type: "action" });
-    edges.push([tail, "loop"]);
-    edges.push(["loop", "fanout"]);
-    edges.push(["loop", "compose"]);
-    tail = "fanout";
+    const payload = await response.json();
+    renderLogs(payload.logs);
+    setStatus(payload.status === "completed" ? "运行完成" : "挂起等待回调", "success");
+    appendLog(`运行结果: ${payload.status}`);
+    addChatMessage(`执行状态：${payload.status}。结果：${JSON.stringify(payload.result, null, 2)}`, "agent");
+  } catch (error) {
+    setStatus("运行失败", "danger");
+    appendLog(`运行失败: ${error.message}`);
+    addChatMessage(`执行失败：${error.message}`, "agent");
   }
-
-  nodes.push({ id: "compose", label: "组合节点", type: "action" });
-  edges.push([tail, "compose"]);
-  tail = "compose";
-
-  if (needsApproval) {
-    nodes.push({ id: "approval", label: "审批节点", type: "condition", trueTo: "notify", falseTo: "exit" });
-    edges.push([tail, "approval"]);
-    edges.push(["approval", "exit"]);
-    tail = "approval";
-  }
-
-  if (needsNotification) {
-    nodes.push({ id: "notify", label: "结果通知", type: "action" });
-    edges.push([tail, "notify"]);
-    tail = "notify";
-  }
-
-  nodes.push({ id: "exit", label: "完成", type: "exit" });
-  edges.push([tail, "exit"]);
-
-  return { name: `Workflow for: ${requirement}`, nodes, edges };
 }
 
 function handleChatSubmit(event) {
@@ -263,31 +322,16 @@ function handleChatSubmit(event) {
 
   addChatMessage(text, "user");
   userInput.value = "";
-  simulateBuild(text);
-
-  setTimeout(() => {
-    const workflow = generateWorkflow(text);
-    currentWorkflow = workflow;
-    updateEditor();
-    render(currentTab);
-    addChatMessage("已完成 DAG 规划，您可以在左侧查看可视化结果并继续编辑。", "agent");
-  }, 2000);
-}
-
-function handleRunWorkflow() {
-  buildStep += 1;
-  const label = `运行 #${buildStep}: 已按拓扑顺序执行 ${currentWorkflow.nodes.length} 个节点`;
-  appendLog(label);
-  addChatMessage(`执行完成，输出已写入模拟存储。节点总数：${currentWorkflow.nodes.length}`, "agent");
+  requestPlan(text);
 }
 
 function applyWorkflowFromEditor() {
   try {
     const parsed = JSON.parse(workflowEditor.value);
-    if (!parsed.nodes || !parsed.edges) {
-      throw new Error("workflow 需要包含 nodes 与 edges 数组");
+    if (!parsed.nodes) {
+      throw new Error("workflow 需要包含 nodes 数组");
     }
-    currentWorkflow = parsed;
+    currentWorkflow = normalizeWorkflow(parsed);
     render(currentTab);
     appendLog("已应用手动修改并刷新画布");
     addChatMessage("收到您的修改，Canvas 已同步更新。", "agent");
@@ -315,13 +359,13 @@ function handleTabClick(event) {
 
 function showEditHelp() {
   addChatMessage(
-    "您可以在左侧 JSON 文本框中编辑节点或边，例如增加节点 {id: 'notify', label: '通知', type: 'action'} 并在 edges 中添加连接，点击“应用修改”即可刷新。",
-    "agent"
+    "您可以在左侧 JSON 文本框中编辑节点或边，例如增加节点 {id: 'notify', type: 'action', display_name: '通知'} 并添加 {from_node: 'enable_access', to_node: 'notify'}，点击“应用修改”刷新。",
+    "agent",
   );
 }
 
 chatForm.addEventListener("submit", handleChatSubmit);
-runWorkflowBtn.addEventListener("click", handleRunWorkflow);
+runWorkflowBtn.addEventListener("click", requestRun);
 applyWorkflowBtn.addEventListener("click", applyWorkflowFromEditor);
 resetWorkflowBtn.addEventListener("click", resetWorkflow);
 
