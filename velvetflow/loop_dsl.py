@@ -38,10 +38,23 @@ def build_loop_output_schema(loop_params: Mapping[str, Any]) -> Optional[Dict[st
     if isinstance(aggregates_spec, list):
         agg_props = {}
         for agg in aggregates_spec:
-            if isinstance(agg, Mapping):
-                name = agg.get("name")
-                if isinstance(name, str):
-                    agg_props[name] = {}
+            if not isinstance(agg, Mapping):
+                continue
+
+            name = agg.get("name")
+            kind = (agg.get("kind") or "").lower() if isinstance(agg.get("kind"), str) else ""
+
+            if not isinstance(name, str):
+                continue
+
+            agg_schema: Dict[str, Any] = {}
+            if kind in {"count", "count_if"}:
+                agg_schema["type"] = "integer"
+            elif kind in {"sum", "avg", "max", "min"}:
+                agg_schema["type"] = "number"
+
+            agg_props[name] = agg_schema
+
         properties["aggregates"] = {"type": "object", "properties": agg_props}
 
     return {"type": "object", "properties": properties} if properties else None

@@ -270,7 +270,11 @@ def _get_binding_agg(binding: Mapping[str, Any]) -> Optional[str]:
 
     binding_obj = binding.get("binding")
     if isinstance(binding_obj, Mapping):
-        agg = binding_obj.get("__agg__")
+        agg_obj = binding_obj.get("__agg__")
+        if isinstance(agg_obj, Mapping):
+            agg = agg_obj.get("op")
+        else:
+            agg = agg_obj
 
     return agg
 

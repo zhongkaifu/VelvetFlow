@@ -7,6 +7,7 @@ import json
 import re
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence
 
+from velvetflow.aggregation import MiniExprValidationError, validate_mini_expr
 from velvetflow.loop_dsl import build_loop_output_schema
 from velvetflow.models import ALLOWED_PARAM_AGGREGATORS, ValidationError
 from velvetflow.reference_utils import (
@@ -168,15 +169,29 @@ def validate_param_binding(binding: Any) -> Optional[str]:
         return "__from__ 必须是字符串或字符串数组"
 
     allowed_aggs = set(ALLOWED_PARAM_AGGREGATORS)
-    agg = binding.get("__agg__", "identity")
+    agg_spec = binding.get("__agg__", "identity")
+    agg = agg_spec.get("op") if isinstance(agg_spec, Mapping) else agg_spec
     if agg not in allowed_aggs:
         return (
             f"__agg__ 不支持值 {agg}，可选值：{', '.join(ALLOWED_PARAM_AGGREGATORS)}"
         )
 
+    if isinstance(agg_spec, Mapping):
+        condition_ast = agg_spec.get("condition")
+        if condition_ast is not None:
+            try:
+                validate_mini_expr(condition_ast)
+            except MiniExprValidationError as exc:
+                return f"__agg__.condition 无效：{exc}"
+        for type_field in ("input_type", "output_type"):
+            if type_field in agg_spec and not isinstance(agg_spec.get(type_field), str):
+                return f"{type_field} 必须是字符串"
+
     if agg == "count_if":
-        if "field" not in binding or "op" not in binding or "value" not in binding:
-            return "count_if 需要提供 field/op/value"
+        if not (
+            isinstance(agg_spec, Mapping) and agg_spec.get("condition") is not None
+        ) and ("field" not in binding or "op" not in binding or "value" not in binding):
+            return "count_if 需要提供 field/op/value 或通过 __agg__.condition 指定表达式"
 
     if agg == "pipeline":
         steps = binding.get("steps")
@@ -433,6 +448,36 @@ def _get_output_schema_at_path(
                 return {"type": "integer"}
 
     return _walk_schema_with_tokens(schema_obj, normalized_path)
+
+
+def _project_schema_through_agg(
+    schema: Optional[Mapping[str, Any]], agg_spec: Any
+) -> Optional[Mapping[str, Any]]:
+    """Approximate the output schema after applying an aggregation op."""
+
+    if agg_spec is None:
+        return schema
+
+    agg_op = agg_spec.get("op") if isinstance(agg_spec, Mapping) else agg_spec
+    output_type = agg_spec.get("output_type") if isinstance(agg_spec, Mapping) else None
+
+    if output_type:
+        return {"type": output_type}
+
+    if agg_op in {"count", "count_if"}:
+        return {"type": "integer"}
+
+    if agg_op in {"join", "format_join", "filter_map"}:
+        return {"type": "string"}
+
+    if agg_op == "pipeline":
+        steps = agg_spec.get("steps") if isinstance(agg_spec, Mapping) else None
+        if isinstance(steps, list):
+            for step in steps:
+                if isinstance(step, Mapping) and step.get("op") == "format_join":
+                    return {"type": "string"}
+
+    return schema
 
 
 def _get_field_schema_from_item(
