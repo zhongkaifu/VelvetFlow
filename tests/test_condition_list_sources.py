@@ -15,6 +15,7 @@ crawl4ai.BrowserConfig = None
 crawl4ai.CacheMode = None
 crawl4ai.CrawlerRunConfig = None
 crawl4ai.LLMConfig = None
+crawl4ai.WebCrawler = None
 sys.modules.setdefault("crawl4ai", crawl4ai)
 sys.modules.setdefault(
     "crawl4ai.extraction_strategy",

@@ -5,7 +5,6 @@ from __future__ import annotations
 
 """A small set of real, ready-to-use business tools."""
 
-import asyncio
 import html
 import json
 import os
@@ -17,10 +16,10 @@ import xml.etree.ElementTree as ET
 from html.parser import HTMLParser
 from pathlib import Path
 import uuid
-from typing import Any, Awaitable, Callable, Dict, List, Mapping, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 try:
-    from crawl4ai import AsyncWebCrawler, BrowserConfig, CacheMode, CrawlerRunConfig, LLMConfig
+    from crawl4ai import BrowserConfig, CacheMode, CrawlerRunConfig, LLMConfig, WebCrawler
     from crawl4ai.extraction_strategy import LLMExtractionStrategy
     _CRAWL4AI_AVAILABLE = True
 except ModuleNotFoundError:  # pragma: no cover - exercised in environments without crawl4ai
@@ -40,7 +39,7 @@ except ModuleNotFoundError:  # pragma: no cover - exercised in environments with
     class _MissingCacheMode:
         BYPASS = "bypass"
 
-    AsyncWebCrawler = BrowserConfig = CrawlerRunConfig = LLMConfig = _MissingCrawlerDependency()
+    AsyncWebCrawler = BrowserConfig = CrawlerRunConfig = LLMConfig = WebCrawler = _MissingCrawlerDependency()
     CacheMode = _MissingCacheMode()
     LLMExtractionStrategy = _MissingCrawlerDependency()
 
@@ -637,19 +636,6 @@ def compose_outlook_email(email_content: str, emailTo: Optional[str] = None) -> 
     }
 
 
-def _run_coroutine(factory: Callable[[], Awaitable[Any]]) -> Any:
-    """Safely execute an async coroutine factory from sync code."""
-
-    try:
-        return asyncio.run(factory())
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        try:
-            return loop.run_until_complete(factory())
-        finally:
-            loop.close()
-
-
 def _normalize_internal_url(candidate: str, base_url: str) -> str:
     """Resolve and validate that the candidate URL stays within the base domain."""
 
@@ -799,51 +785,53 @@ def _crawl_page_once(
     instruction: str,
     api_token: Optional[str],
     llm_provider: str,
-    run_coroutine: Callable[[Callable[[], Awaitable[Any]]], Any],
 ) -> Dict[str, Any]:
     """Crawl a single URL and return extracted content plus in-domain links."""
 
-    async def _scrape() -> tuple[Any, List[Dict[str, Any]]]:
-        browser_conf = BrowserConfig(headless=True, verbose=False)
-        attempts: List[Dict[str, Any]] = []
+    browser_conf = BrowserConfig(headless=True, verbose=False)
+    attempts: List[Dict[str, Any]] = []
 
-        async with AsyncWebCrawler(config=browser_conf) as crawler:
-            if api_token:
-                llm_conf = LLMConfig(provider=llm_provider, api_token=api_token)
-                llm_strategy = LLMExtractionStrategy(
-                    llm_config=llm_conf,
-                    schema=None,
-                    extraction_type="text",
-                    instruction=instruction,
-                    input_format="markdown",
-                    verbose=False,
-                )
-                llm_run = CrawlerRunConfig(cache_mode=CacheMode.BYPASS, extraction_strategy=llm_strategy)
-                llm_result = await crawler.arun(url=url, config=llm_run)
-                attempts.append(
-                    {
-                        "method": "llm_extraction",
-                        "success": llm_result.success,
-                        "status_code": llm_result.status_code,
-                        "error": llm_result.error_message,
-                    }
-                )
-                if llm_result.success:
-                    return llm_result, attempts
+    with WebCrawler(config=browser_conf) as crawler:
+        result = None
 
+        if api_token:
+            llm_conf = LLMConfig(provider=llm_provider, api_token=api_token)
+            llm_strategy = LLMExtractionStrategy(
+                llm_config=llm_conf,
+                schema=None,
+                extraction_type="text",
+                instruction=instruction,
+                input_format="markdown",
+                verbose=False,
+            )
+            llm_run = CrawlerRunConfig(cache_mode=CacheMode.BYPASS, extraction_strategy=llm_strategy)
+            llm_result = crawler.run(url=url, config=llm_run)
+            attempts.append(
+                {
+                    "method": "llm_extraction",
+                    "success": getattr(llm_result, "success", False),
+                    "status_code": getattr(llm_result, "status_code", None),
+                    "error": getattr(llm_result, "error_message", None),
+                }
+            )
+            if getattr(llm_result, "success", False):
+                result = llm_result
+
+        if result is None or not getattr(result, "success", False):
             fallback_run = CrawlerRunConfig(cache_mode=CacheMode.BYPASS)
-            fallback_result = await crawler.arun(url=url, config=fallback_run)
+            fallback_result = crawler.run(url=url, config=fallback_run)
             attempts.append(
                 {
                     "method": "raw_scrape",
-                    "success": fallback_result.success,
-                    "status_code": fallback_result.status_code,
-                    "error": fallback_result.error_message,
+                    "success": getattr(fallback_result, "success", False),
+                    "status_code": getattr(fallback_result, "status_code", None),
+                    "error": getattr(fallback_result, "error_message", None),
                 }
             )
-            return fallback_result, attempts
+            result = fallback_result
 
-    result, _attempts = run_coroutine(_scrape)
+    # result is guaranteed to be set after the crawler context
+    assert result is not None
 
     raw_content = getattr(result, "extracted_content", "") or ""
     if isinstance(raw_content, (dict, list)):
@@ -874,7 +862,6 @@ def _scrape_single_url(
     *,
     llm_instruction: Optional[str] = None,
     llm_provider: str = "openai/gpt-4o-mini",
-    run_coroutine: Callable[[Callable[[], Awaitable[Any]]], Any] = _run_coroutine,
 ) -> Dict[str, Any]:
     """Download and analyze a single web page according to a request."""
 
@@ -909,13 +896,7 @@ def _scrape_single_url(
             continue
 
         visited.add(current)
-        page_result = _crawl_page_once(
-            current,
-            instruction,
-            api_token,
-            llm_provider,
-            run_coroutine,
-        )
+        page_result = _crawl_page_once(current, instruction, api_token, llm_provider)
         page_result["url"] = current
         collected.append(page_result)
 

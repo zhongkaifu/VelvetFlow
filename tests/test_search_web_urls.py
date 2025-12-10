@@ -22,6 +22,7 @@ _install_dummy_module(
         "CacheMode": object,
         "CrawlerRunConfig": object,
         "LLMConfig": object,
+        "WebCrawler": object,
     },
 )
 _install_dummy_module("crawl4ai.extraction_strategy", {"LLMExtractionStrategy": object})
