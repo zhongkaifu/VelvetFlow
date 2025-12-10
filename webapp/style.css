@@ -26,9 +26,10 @@ body {
 }
 
 .app {
-  max-width: 1280px;
-  margin: 0 auto;
-  padding: 32px 24px 48px;
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  padding: 32px clamp(18px, 4vw, 36px) 48px;
 }
 
 .app__header {
@@ -80,11 +81,14 @@ h1 {
   grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
   gap: 16px;
   margin-top: 16px;
+  min-height: calc(100vh - 200px);
+  align-items: stretch;
 }
 
 .canvas-panel,
 .chat-panel {
   min-width: 0;
+  height: 100%;
 }
 
 .canvas-panel,
@@ -141,6 +145,7 @@ h1 {
 
 canvas {
   width: 100%;
+  display: block;
   border-radius: 12px;
   background: radial-gradient(circle at 20% 20%, rgba(255, 255, 255, 0.04), transparent 40%),
     #0b1221;

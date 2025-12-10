@@ -16,6 +16,8 @@ const visualTabContent = document.querySelector('[data-view="visual"]');
 const jsonTabContent = document.querySelector('[data-view="json"]');
 const canvasPanel = document.querySelector(".canvas-panel");
 
+const NODE_WIDTH = 280;
+
 let currentTab = "json";
 let currentWorkflow = createEmptyWorkflow();
 let lastRunResults = {};
@@ -150,6 +152,38 @@ function wrapText(text, maxWidth, font = "15px Inter") {
   return lines.length ? lines : [text];
 }
 
+function estimateNodeHeight(node) {
+  const { inputs, outputs, toolLabel, runtimeInputs, runtimeOutputs } = describeNode(node);
+  const contentLines = [];
+  if (toolLabel) contentLines.push(`工具: ${toolLabel}`);
+  contentLines.push(`入参: ${inputs.length ? inputs.join(", ") : "-"}`);
+  contentLines.push(`出参: ${outputs.length ? outputs.join(", ") : "-"}`);
+
+  if (runtimeInputs !== undefined) {
+    contentLines.push(`运行入参: ${summarizeValue(runtimeInputs)}`);
+  }
+  if (runtimeOutputs !== undefined && Object.keys(runtimeOutputs).length > 0) {
+    contentLines.push(`运行结果: ${summarizeValue(runtimeOutputs)}`);
+  }
+
+  const wrappedLines = contentLines.flatMap((line) => wrapText(line, NODE_WIDTH - 28, "15px Inter"));
+  const baseHeight = 90;
+  const dynamicHeight = wrappedLines.length * 18;
+  return baseHeight + dynamicHeight;
+}
+
+function estimateWorkflowHeight(workflow) {
+  const nodes = workflow && Array.isArray(workflow.nodes) ? workflow.nodes : [];
+  if (!nodes.length) return 480;
+
+  const columns = Math.max(2, Math.ceil(Math.sqrt(nodes.length)));
+  const rows = Math.ceil(nodes.length / columns);
+  const tallest = Math.max(...nodes.map(estimateNodeHeight), 120);
+  const verticalSpacing = 70;
+  const padding = 140;
+  return rows * (tallest + verticalSpacing) + padding;
+}
+
 function measureHiddenHeight(element) {
   if (!element) return 0;
   if (!element.classList.contains("tab-content--hidden")) {
@@ -172,11 +206,13 @@ function measureHiddenHeight(element) {
 function resizeCanvas() {
   const dpr = window.devicePixelRatio || 1;
   const panelWidth = canvasPanel ? canvasPanel.getBoundingClientRect().width : workflowCanvas.clientWidth;
-  const targetWidth = Math.max(360, panelWidth - 32);
+  const targetWidth = Math.max(480, panelWidth - 16);
 
   const jsonHeight = measureHiddenHeight(jsonTabContent);
   const visualHeight = measureHiddenHeight(visualTabContent);
-  const targetHeight = Math.max(420, jsonHeight, visualHeight);
+  const contentHeight = estimateWorkflowHeight(currentWorkflow);
+  const viewportBase = Math.max(420, window.innerHeight - 260);
+  const targetHeight = Math.max(contentHeight, jsonHeight, visualHeight, viewportBase);
 
   workflowCanvas.style.width = "100%";
   workflowCanvas.style.height = `${Math.round(targetHeight)}px`;
@@ -215,7 +251,7 @@ function syncPositions(workflow) {
 
 function drawNode(node, pos, mode) {
   const radius = 16;
-  const width = 260;
+  const width = NODE_WIDTH;
   const { inputs, outputs, toolLabel, runtimeInputs, runtimeOutputs } = describeNode(node);
   const contentLines = [];
   if (toolLabel) contentLines.push(`工具: ${toolLabel}`);
