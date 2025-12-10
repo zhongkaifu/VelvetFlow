@@ -68,6 +68,14 @@ class RunResponse(BaseModel):
     logs: List[str]
 
 
+class ActionInfo(BaseModel):
+    action_id: str
+    name: Optional[str] = None
+    description: Optional[str] = None
+    params_schema: Optional[Dict[str, Any]] = None
+    output_schema: Optional[Dict[str, Any]] = None
+
+
 _search_service: HybridActionSearchService | None = None
 
 
@@ -163,6 +171,20 @@ def run_workflow(req: RunRequest) -> RunResponse:
     payload: Dict[str, Any] = jsonable_encoder(result)
     status = "suspended" if isinstance(result, WorkflowSuspension) else "completed"
     return RunResponse(status=status, result=payload, logs=logs)
+
+
+@app.get("/api/actions", response_model=List[ActionInfo])
+def list_actions() -> List[ActionInfo]:
+    return [
+        ActionInfo(
+            action_id=action.get("action_id", ""),
+            name=action.get("name"),
+            description=action.get("description"),
+            params_schema=action.get("params_schema") or action.get("arg_schema"),
+            output_schema=action.get("output_schema") or action.get("out_params_schema"),
+        )
+        for action in BUSINESS_ACTIONS
+    ]
 
 
 app.mount("/", StaticFiles(directory=Path(__file__).parent, html=True), name="static")

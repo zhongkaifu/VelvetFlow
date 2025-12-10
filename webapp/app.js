@@ -16,7 +16,7 @@ const visualTabContent = document.querySelector('[data-view="visual"]');
 const jsonTabContent = document.querySelector('[data-view="json"]');
 const canvasPanel = document.querySelector(".canvas-panel");
 
-const NODE_WIDTH = 280;
+const NODE_WIDTH = 320;
 
 let currentTab = "json";
 let currentWorkflow = createEmptyWorkflow();
@@ -24,11 +24,26 @@ let lastRunResults = {};
 let renderedNodes = [];
 let lastPositions = {};
 let nodePositions = {};
+let actionCatalog = {};
 
 let isDragging = false;
 let dragNodeId = null;
 let dragOffset = { x: 0, y: 0 };
 let dragBox = null;
+
+async function loadActionCatalog() {
+  try {
+    const resp = await fetch("/api/actions");
+    if (!resp.ok) throw new Error(`加载业务工具失败: ${resp.status}`);
+    const data = await resp.json();
+    actionCatalog = (data || []).reduce((acc, action) => {
+      if (action && action.action_id) acc[action.action_id] = action;
+      return acc;
+    }, {});
+  } catch (error) {
+    appendLog(`业务工具清单加载失败：${error.message}`);
+  }
+}
 
 function createEmptyWorkflow() {
   return {
@@ -129,6 +144,269 @@ function summarizeValue(value, limit = 160) {
   } catch (error) {
     return String(value);
   }
+}
+
+function paramsSchemaFor(actionId) {
+  const action = actionCatalog[actionId];
+  return (action && (action.params_schema || action.arg_schema)) || {};
+}
+
+function outputSchemaFor(actionId, node) {
+  if (node && node.out_params_schema) return node.out_params_schema;
+  const action = actionCatalog[actionId];
+  return (action && (action.output_schema || action.out_params_schema)) || {};
+}
+
+function extractParamDefs(schema) {
+  const properties = schema && typeof schema === "object" ? schema.properties || {} : {};
+  const required = Array.isArray(schema && schema.required) ? schema.required : [];
+  return Object.entries(properties).map(([name, def]) => ({
+    name,
+    type: def && def.type ? def.type : "",
+    description: def && def.description ? def.description : "",
+    required: required.includes(name),
+  }));
+}
+
+function extractOutputDefs(schema) {
+  const properties = schema && typeof schema === "object" ? schema.properties || {} : {};
+  const required = Array.isArray(schema && schema.required) ? schema.required : [];
+  return Object.entries(properties).map(([name, def]) => ({
+    name,
+    type: def && def.type ? def.type : "",
+    description: def && def.description ? def.description : "",
+    required: required.includes(name),
+  }));
+}
+
+function stringifyBinding(value) {
+  if (value && typeof value === "object" && value.__from__) return String(value.__from__);
+  if (value === null || value === undefined) return "";
+  if (typeof value === "string") return value;
+  try {
+    return JSON.stringify(value);
+  } catch (error) {
+    return String(value);
+  }
+}
+
+function parseBinding(text) {
+  const trimmed = text.trim();
+  if (!trimmed) return undefined;
+  if (trimmed.startsWith("result_of.")) {
+    return { __from__: trimmed };
+  }
+  try {
+    return JSON.parse(trimmed);
+  } catch (error) {
+    return trimmed;
+  }
+}
+
+function collectReferenceOptions(currentNodeId) {
+  const options = [];
+  (currentWorkflow.nodes || []).forEach((node) => {
+    if (!node || node.id === currentNodeId) return;
+    const outputs = extractOutputDefs(outputSchemaFor(node.action_id, node));
+    outputs.forEach((field) => {
+      options.push(`result_of.${node.id}.${field.name}`);
+    });
+  });
+  return options;
+}
+
+function collectRefsFromValue(value, refs) {
+  if (!value) return;
+  if (Array.isArray(value)) {
+    value.forEach((item) => collectRefsFromValue(item, refs));
+    return;
+  }
+  if (typeof value === "object") {
+    if (value.__from__ && typeof value.__from__ === "string" && value.__from__.startsWith("result_of.")) {
+      const parts = value.__from__.split(".");
+      if (parts.length >= 2) refs.add(parts[1]);
+    }
+    Object.values(value).forEach((v) => collectRefsFromValue(v, refs));
+    return;
+  }
+  if (typeof value === "string" && value.startsWith("result_of.")) {
+    const parts = value.split(".");
+    if (parts.length >= 2) refs.add(parts[1]);
+  }
+}
+
+function rebuildEdgesFromBindings(workflow) {
+  const edges = new Set((workflow.edges || []).map((e) => `${e.from_node || e.from}->${e.to_node || e.to}`));
+  const newEdges = [];
+  (workflow.nodes || []).forEach((node) => {
+    if (!node || !node.params) return;
+    const refs = new Set();
+    Object.values(node.params).forEach((value) => collectRefsFromValue(value, refs));
+    refs.forEach((fromId) => {
+      const key = `${fromId}->${node.id}`;
+      if (!edges.has(key)) {
+        newEdges.push({ from_node: fromId, to_node: node.id });
+      }
+    });
+  });
+  workflow.edges = normalizeWorkflow({ edges: [...(workflow.edges || []), ...newEdges] }).edges;
+}
+
+function openNodeDialog(node) {
+  if (!node) return;
+  if (node.type !== "action") {
+    addChatMessage("当前仅支持编辑 action 节点的入参/出参。", "agent");
+    return;
+  }
+
+  if (!Object.keys(actionCatalog).length) {
+    loadActionCatalog();
+  }
+
+  let draftParams = { ...(node.params || {}) };
+
+  const overlay = document.createElement("div");
+  overlay.className = "modal-overlay";
+
+  const dialog = document.createElement("div");
+  dialog.className = "modal";
+
+  const title = document.createElement("div");
+  title.className = "modal__title";
+  title.textContent = `编辑节点：${node.display_name || node.action_id || node.id}`;
+  dialog.appendChild(title);
+
+  const actionRow = document.createElement("div");
+  actionRow.className = "modal__row";
+  const actionLabel = document.createElement("label");
+  actionLabel.textContent = "业务工具 (action_id)";
+  const actionSelect = document.createElement("select");
+  actionSelect.className = "modal__select";
+  const actions = Object.values(actionCatalog).length
+    ? Object.values(actionCatalog)
+    : [{ action_id: node.action_id, name: node.display_name }];
+  actions.forEach((action) => {
+    const option = document.createElement("option");
+    option.value = action.action_id;
+    option.textContent = `${action.action_id}${action.name ? ` · ${action.name}` : ""}`;
+    actionSelect.appendChild(option);
+  });
+  actionSelect.value = node.action_id || actionSelect.value;
+  actionRow.appendChild(actionLabel);
+  actionRow.appendChild(actionSelect);
+  dialog.appendChild(actionRow);
+
+  const inputsHeader = document.createElement("div");
+  inputsHeader.className = "modal__subtitle";
+  inputsHeader.textContent = "输入参数 (引用 result_of.* 或常量)";
+  dialog.appendChild(inputsHeader);
+
+  const inputsContainer = document.createElement("div");
+  inputsContainer.className = "modal__grid";
+  dialog.appendChild(inputsContainer);
+
+  const outputsHeader = document.createElement("div");
+  outputsHeader.className = "modal__subtitle";
+  outputsHeader.textContent = "输出参数";
+  dialog.appendChild(outputsHeader);
+
+  const outputsContainer = document.createElement("div");
+  outputsContainer.className = "modal__list";
+  dialog.appendChild(outputsContainer);
+
+  function refreshIO(actionId) {
+    inputsContainer.innerHTML = "";
+    outputsContainer.innerHTML = "";
+
+    const paramDefs = extractParamDefs(paramsSchemaFor(actionId));
+    const refOptions = collectReferenceOptions(node.id);
+    paramDefs.forEach((param) => {
+      const row = document.createElement("label");
+      row.className = "modal__field";
+      row.innerHTML = `<div class="modal__field-label">${param.name}${param.required ? " *" : ""}<span class="modal__hint">${
+        param.description || param.type || ""
+      }</span></div>`;
+      const input = document.createElement("input");
+      input.type = "text";
+      input.className = "modal__input";
+      input.value = stringifyBinding(draftParams ? draftParams[param.name] : undefined);
+      input.dataset.paramName = param.name;
+      const datalistId = `refs-${node.id}-${param.name}`;
+      if (refOptions.length) {
+        input.setAttribute("list", datalistId);
+        const datalist = document.createElement("datalist");
+        datalist.id = datalistId;
+        refOptions.forEach((opt) => {
+          const option = document.createElement("option");
+          option.value = opt;
+          datalist.appendChild(option);
+        });
+        row.appendChild(datalist);
+      }
+      row.appendChild(input);
+      inputsContainer.appendChild(row);
+    });
+
+    const outputDefs = extractOutputDefs(outputSchemaFor(actionId, node));
+    outputDefs.forEach((out) => {
+      const item = document.createElement("div");
+      item.className = "modal__output";
+      item.innerHTML = `<div class="modal__output-name">${out.name}${out.required ? " *" : ""}</div><div class="modal__hint">${
+        out.description || out.type || ""
+      }</div>`;
+      outputsContainer.appendChild(item);
+    });
+  }
+
+  const actionsRow = document.createElement("div");
+  actionsRow.className = "modal__actions";
+  const cancelBtn = document.createElement("button");
+  cancelBtn.type = "button";
+  cancelBtn.className = "button button--ghost";
+  cancelBtn.textContent = "取消";
+  const saveBtn = document.createElement("button");
+  saveBtn.type = "button";
+  saveBtn.className = "button button--primary";
+  saveBtn.textContent = "保存并刷新";
+  actionsRow.appendChild(cancelBtn);
+  actionsRow.appendChild(saveBtn);
+  dialog.appendChild(actionsRow);
+
+  overlay.appendChild(dialog);
+  document.body.appendChild(overlay);
+
+  const close = () => overlay.remove();
+  cancelBtn.addEventListener("click", close);
+  overlay.addEventListener("click", (evt) => {
+    if (evt.target === overlay) close();
+  });
+
+  actionSelect.addEventListener("change", () => {
+    draftParams = {};
+    refreshIO(actionSelect.value);
+  });
+
+  saveBtn.addEventListener("click", () => {
+    const updatedParams = {};
+    const fields = inputsContainer.querySelectorAll("input[data-param-name]");
+    fields.forEach((input) => {
+      const name = input.dataset.paramName;
+      const value = parseBinding(input.value);
+      if (value !== undefined) {
+        updatedParams[name] = value;
+      }
+    });
+
+    const newNode = { ...node, action_id: actionSelect.value, params: updatedParams };
+    currentWorkflow.nodes = currentWorkflow.nodes.map((n) => (n.id === node.id ? newNode : n));
+    rebuildEdgesFromBindings(currentWorkflow);
+    updateEditor();
+    render(currentTab);
+    appendLog(`节点 ${node.id} 已更新并重新绘制`);
+    close();
+  });
+
+  refreshIO(actionSelect.value);
 }
 
 function wrapText(text, maxWidth, font = "15px Inter") {
@@ -567,17 +845,7 @@ function handleCanvasDoubleClick(event) {
   const target = currentWorkflow.nodes.find((n) => n.id === hit.id);
   if (!target) return;
 
-  const edited = prompt("编辑节点 JSON", JSON.stringify(target, null, 2));
-  if (!edited) return;
-  try {
-    const parsed = JSON.parse(edited);
-    currentWorkflow.nodes = currentWorkflow.nodes.map((n) => (n.id === target.id ? parsed : n));
-    updateEditor();
-    render(currentTab);
-    appendLog(`节点 ${target.id} 已更新`);
-  } catch (error) {
-    appendLog(`节点更新失败：${error.message}`);
-  }
+  openNodeDialog(target);
 }
 
 function handleCanvasMouseDown(event) {
@@ -636,6 +904,7 @@ const editorResizeObserver = new ResizeObserver(() => render(currentTab));
 editorResizeObserver.observe(workflowEditor);
 window.addEventListener("resize", () => render(currentTab));
 
+loadActionCatalog();
 updateEditor();
 render();
 appendLog("当前 workflow 为空，请输入需求开始规划或自行编辑 JSON。");
