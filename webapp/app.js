@@ -12,6 +12,9 @@ const resetWorkflowBtn = document.getElementById("resetWorkflow");
 const editHelpBtn = document.getElementById("editHelp");
 const tabs = document.querySelectorAll(".tab");
 const tabContents = document.querySelectorAll(".tab-content");
+const visualTabContent = document.querySelector('[data-view="visual"]');
+const jsonTabContent = document.querySelector('[data-view="json"]');
+const canvasPanel = document.querySelector(".canvas-panel");
 
 let currentTab = "json";
 let currentWorkflow = createEmptyWorkflow();
@@ -121,7 +124,7 @@ function summarizeValue(value, limit = 160) {
   }
 }
 
-function wrapText(text, maxWidth, font = "13px Inter") {
+function wrapText(text, maxWidth, font = "15px Inter") {
   if (!text) return [];
   ctx.save();
   ctx.font = font;
@@ -140,6 +143,41 @@ function wrapText(text, maxWidth, font = "13px Inter") {
   if (line) lines.push(line);
   ctx.restore();
   return lines.length ? lines : [text];
+}
+
+function measureHiddenHeight(element) {
+  if (!element) return 0;
+  if (!element.classList.contains("tab-content--hidden")) {
+    return element.getBoundingClientRect().height;
+  }
+
+  const prevDisplay = element.style.display;
+  const prevVisibility = element.style.visibility;
+  const prevPosition = element.style.position;
+  element.style.display = "flex";
+  element.style.visibility = "hidden";
+  element.style.position = "absolute";
+  const height = element.getBoundingClientRect().height;
+  element.style.display = prevDisplay;
+  element.style.visibility = prevVisibility;
+  element.style.position = prevPosition;
+  return height;
+}
+
+function resizeCanvas() {
+  const dpr = window.devicePixelRatio || 1;
+  const panelWidth = canvasPanel ? canvasPanel.getBoundingClientRect().width : workflowCanvas.clientWidth;
+  const targetWidth = Math.max(360, panelWidth - 32);
+
+  const jsonHeight = measureHiddenHeight(jsonTabContent);
+  const visualHeight = measureHiddenHeight(visualTabContent);
+  const targetHeight = Math.max(420, jsonHeight, visualHeight);
+
+  workflowCanvas.style.width = "100%";
+  workflowCanvas.style.height = `${Math.round(targetHeight)}px`;
+  workflowCanvas.width = Math.floor(targetWidth * dpr);
+  workflowCanvas.height = Math.floor(targetHeight * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 }
 
 function layoutNodes(workflow) {
@@ -172,7 +210,7 @@ function syncPositions(workflow) {
 
 function drawNode(node, pos, mode) {
   const radius = 16;
-  const width = 240;
+  const width = 260;
   const { inputs, outputs, toolLabel, runtimeInputs, runtimeOutputs } = describeNode(node);
   const contentLines = [];
   if (toolLabel) contentLines.push(`工具: ${toolLabel}`);
@@ -186,9 +224,9 @@ function drawNode(node, pos, mode) {
     contentLines.push(`运行结果: ${summarizeValue(runtimeOutputs)}`);
   }
 
-  const wrappedLines = contentLines.flatMap((line) => wrapText(line, width - 28));
-  const baseHeight = 72;
-  const dynamicHeight = wrappedLines.length * 16;
+  const wrappedLines = contentLines.flatMap((line) => wrapText(line, width - 28, "15px Inter"));
+  const baseHeight = 90;
+  const dynamicHeight = wrappedLines.length * 18;
   const height = baseHeight + dynamicHeight;
 
   const typeColors = {
@@ -209,22 +247,22 @@ function drawNode(node, pos, mode) {
   ctx.stroke();
 
   ctx.fillStyle = fill;
-  ctx.font = "12px Inter";
+  ctx.font = "14px Inter";
   ctx.textAlign = "center";
-  ctx.fillText(node.type.toUpperCase(), pos.x, pos.y - height / 2 + 18);
+  ctx.fillText(node.type.toUpperCase(), pos.x, pos.y - height / 2 + 20);
 
   ctx.fillStyle = "#e5e7eb";
-  ctx.font = mode === "visual" ? "16px Inter" : "15px Inter";
+  ctx.font = mode === "visual" ? "18px Inter" : "17px Inter";
   const label = node.display_name || node.action_id || node.id;
-  ctx.fillText(label, pos.x, pos.y - height / 2 + 40);
+  ctx.fillText(label, pos.x, pos.y - height / 2 + 46);
 
   ctx.textAlign = "left";
-  ctx.font = "13px Inter";
-  let offsetY = pos.y - height / 2 + 60;
+  ctx.font = "15px Inter";
+  let offsetY = pos.y - height / 2 + 72;
   wrappedLines.forEach((line) => {
     ctx.fillStyle = "#cbd5e1";
-    ctx.fillText(line, pos.x - width / 2 + 12, offsetY);
-    offsetY += 16;
+    ctx.fillText(line, pos.x - width / 2 + 14, offsetY);
+    offsetY += 18;
   });
   ctx.restore();
 
@@ -276,6 +314,7 @@ function drawArrow(from, to, label) {
 }
 
 function render(mode = currentTab) {
+  resizeCanvas();
   ctx.clearRect(0, 0, workflowCanvas.width, workflowCanvas.height);
   renderedNodes = [];
   if (!currentWorkflow.nodes) return;
@@ -470,7 +509,7 @@ function findNodeByPoint(point) {
   );
 }
 
-function handleCanvasClick(event) {
+function handleCanvasDoubleClick(event) {
   if (currentTab !== "visual" || isDragging) return;
   const point = canvasPointFromEvent(event);
   const hit = findNodeByPoint(point);
@@ -536,12 +575,16 @@ applyWorkflowBtn.addEventListener("click", applyWorkflowFromEditor);
 resetWorkflowBtn.addEventListener("click", resetWorkflow);
 
 tabs.forEach((tab) => tab.addEventListener("click", handleTabClick));
-workflowCanvas.addEventListener("click", handleCanvasClick);
+workflowCanvas.addEventListener("dblclick", handleCanvasDoubleClick);
 workflowCanvas.addEventListener("mousedown", handleCanvasMouseDown);
 workflowCanvas.addEventListener("mousemove", handleCanvasMouseMove);
 workflowCanvas.addEventListener("mouseup", stopDragging);
 workflowCanvas.addEventListener("mouseleave", stopDragging);
 editHelpBtn.addEventListener("click", showEditHelp);
+
+const editorResizeObserver = new ResizeObserver(() => render(currentTab));
+editorResizeObserver.observe(workflowEditor);
+window.addEventListener("resize", () => render(currentTab));
 
 updateEditor();
 render();
