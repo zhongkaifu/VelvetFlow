@@ -37,11 +37,16 @@ try:
         import asyncio
 
         class WebCrawler:  # type: ignore[misc]
-            """Synchronous shim built on crawl4ai.AsyncWebCrawler."""
+            """Synchronous shim built on crawl4ai.AsyncWebCrawler.
+
+            A dedicated event loop is kept alive for the lifetime of the crawler
+            so Playwright connections do not get tied to short-lived loops.
+            """
 
             def __init__(self, config: Any) -> None:
                 self._config = config
                 self._crawler: Any | None = None
+                self._loop: asyncio.AbstractEventLoop | None = None
 
             def __enter__(self) -> "WebCrawler":
                 async def _start() -> Any:
@@ -49,26 +54,33 @@ try:
                     await crawler.__aenter__()
                     return crawler
 
-                self._crawler = asyncio.run(_start())
+                # Keep a dedicated loop alive for the crawler lifecycle to avoid
+                # Playwright connections being associated with a closed loop.
+                self._loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(self._loop)
+                self._crawler = self._loop.run_until_complete(_start())
                 return self
 
             def run(self, *args: Any, **kwargs: Any) -> Any:
-                if self._crawler is None:  # pragma: no cover - defensive guard
+                if self._crawler is None or self._loop is None:  # pragma: no cover - defensive guard
                     raise RuntimeError("Crawler not initialized")
 
                 async def _run() -> Any:
                     return await self._crawler.arun(*args, **kwargs)
 
-                return asyncio.run(_run())
+                return self._loop.run_until_complete(_run())
 
             def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
-                if self._crawler is None:  # pragma: no cover - defensive guard
+                if self._crawler is None or self._loop is None:  # pragma: no cover - defensive guard
                     return
 
                 async def _stop() -> None:
                     await self._crawler.__aexit__(exc_type, exc, tb)
 
-                asyncio.run(_stop())
+                try:
+                    self._loop.run_until_complete(_stop())
+                finally:
+                    self._loop.close()
 
     AsyncWebCrawler = _AsyncWebCrawler
 except ModuleNotFoundError:  # pragma: no cover - exercised in environments without crawl4ai
