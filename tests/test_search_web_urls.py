@@ -28,7 +28,7 @@ _install_dummy_module(
 _install_dummy_module("crawl4ai.extraction_strategy", {"LLMExtractionStrategy": object})
 _install_dummy_module("openai", {"OpenAI": object})
 
-from tools.builtin import _normalize_web_url, _resolve_search_url
+from tools.builtin import _normalize_web_url, _resolve_search_url, search_web
 
 
 @pytest.mark.parametrize(
@@ -57,3 +57,45 @@ def test_resolve_search_url_adds_scheme_when_missing() -> None:
 def test_resolve_search_url_handles_google_redirect() -> None:
     raw_redirect = "/url?q=https://example.com/path%3Fa%3D1&sa=U&ved=2ahUKEwj"
     assert _resolve_search_url(raw_redirect) == "https://example.com/path?a=1"
+
+
+def test_search_web_uses_googlesearch(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[str, int, str]] = []
+
+    class DummyResult:
+        def __init__(self, title: str, link: str, description: str) -> None:
+            self.title = title
+            self.link = link
+            self.description = description
+
+    def fake_search(query: str, num_results: int = 5, lang: str = "en") -> list[object]:
+        calls.append((query, num_results, lang))
+        return [
+            DummyResult("Title A", "https://example.com/a", "Snippet A"),
+            {
+                "title": "Title B",
+                "link": "/url?q=https://example.com/b&sa=U",
+                "description": "Snippet B",
+            },
+            "https://example.com/c",
+        ]
+
+    _install_dummy_module("googlesearch", {"search": fake_search})
+
+    results = search_web("widgets", limit=2)
+
+    assert calls == [("widgets", 2, "en")]
+    assert results == {
+        "results": [
+            {
+                "title": "Title A",
+                "url": "https://example.com/a",
+                "snippet": "Snippet A",
+            },
+            {
+                "title": "Title B",
+                "url": "https://example.com/b",
+                "snippet": "Snippet B",
+            },
+        ]
+    }

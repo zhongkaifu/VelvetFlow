@@ -13,7 +13,6 @@ import textwrap
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
-from html.parser import HTMLParser
 from pathlib import Path
 import uuid
 from typing import Any, Dict, List, Mapping, Optional, Tuple
@@ -155,88 +154,12 @@ def _resolve_search_url(raw_url: str) -> str:
     return _normalize_web_url(raw_url)
 
 
-class _GoogleParser(HTMLParser):
-    """Minimal parser to extract organic search results from Google HTML."""
-
-    def __init__(self, limit: int) -> None:
-        super().__init__()
-        self.limit = limit
-        self.results: List[Dict[str, str]] = []
-        self._in_result = False
-        self._result_depth = 0
-        self._capturing_title = False
-        self._capturing_snippet = False
-        self._current_href: str | None = None
-        self._title_parts: List[str] = []
-        self._snippet_parts: List[str] = []
-
-    def handle_starttag(self, tag: str, attrs: List[Tuple[str, str | None]]) -> None:  # pragma: no cover - HTML parsing
-        attrs_dict = {k: v or "" for k, v in attrs}
-        classes = attrs_dict.get("class", "")
-
-        if tag == "div":
-            if not self._in_result and "tF2Cxc" in classes:
-                self._in_result = True
-                self._result_depth = 1
-                self._current_href = None
-                self._title_parts = []
-                self._snippet_parts = []
-            elif self._in_result:
-                self._result_depth += 1
-
-        if not self._in_result:
-            return
-
-        if tag == "a" and not self._current_href:
-            href = attrs_dict.get("href")
-            if href:
-                self._current_href = href
-
-        if tag == "h3":
-            self._capturing_title = True
-            self._title_parts = []
-
-        snippet_classes = {"VwiC3b", "aCOpRe", "yXK7lf"}
-        if tag in {"div", "span"} and snippet_classes.intersection(classes.split()):
-            if not self._capturing_snippet:
-                self._snippet_parts = []
-            self._capturing_snippet = True
-
-    def handle_data(self, data: str) -> None:  # pragma: no cover - HTML parsing
-        if self._capturing_title:
-            self._title_parts.append(data.strip())
-        if self._capturing_snippet:
-            self._snippet_parts.append(data.strip())
-
-    def handle_endtag(self, tag: str) -> None:  # pragma: no cover - HTML parsing
-        if self._capturing_title and tag == "h3":
-            self._capturing_title = False
-
-        if self._capturing_snippet and tag in {"div", "span"}:
-            self._capturing_snippet = False
-
-        if self._in_result and tag == "div":
-            self._result_depth -= 1
-            if self._result_depth == 0:
-                title = " ".join(self._title_parts).strip()
-                snippet = " ".join(self._snippet_parts).strip()
-                if title and self._current_href:
-                    self.results.append({"title": title, "url": self._current_href, "snippet": snippet})
-                self._in_result = False
-                self._current_href = None
-                self._title_parts = []
-                self._snippet_parts = []
-                if len(self.results) >= self.limit:
-                    raise StopIteration
-
-
 def search_web(query: str, limit: int = 5, timeout: int = 8) -> Dict[str, List[Dict[str, str]]]:
-    """Perform a Google HTML search and return top results with snippets.
+    """Perform a Google search via the googlesearch-python package.
 
-    The function prefers a Selenium-backed fetch (to better mirror user browser
-    behavior and bypass bot detection) when selenium and a chromedriver are
-    available. It falls back to a lightweight HTTP request otherwise, keeping
-    the output format consistent either way.
+    The helper normalizes common result shapes from the package (objects,
+    dictionaries, or raw URLs) into a consistent list of dictionaries containing
+    title, url, and snippet fields.
     """
 
     def _clean_text(value: str) -> str:
@@ -244,75 +167,43 @@ def search_web(query: str, limit: int = 5, timeout: int = 8) -> Dict[str, List[D
         text_unescaped = html.unescape(text_no_tags)
         return re.sub(r"\s+", " ", text_unescaped).strip()
 
-    def _fetch_html() -> str:
-        encoded_q = urllib.parse.quote_plus(query)
-        url = f"https://www.google.com/search?q={encoded_q}&num={max(limit, 1)}&hl=en"
-
-        try:
-            from selenium import webdriver
-            from selenium.webdriver.chrome.service import Service
-        except Exception:  # pragma: no cover - selenium not installed
-            webdriver = None  # type: ignore
-            Service = None  # type: ignore
-
-        if webdriver and Service:
-            chromedriver_path = os.getenv("GOOGLE_CHROMEDRIVER_PATH") or os.getenv(
-                "CHROMEDRIVER_PATH"
-            )
-            service = Service(chromedriver_path) if chromedriver_path else Service()
-            options = webdriver.ChromeOptions()
-            options.add_argument("--headless=new")
-            options.add_argument("--window-size=1920,1080")
-            options.add_argument("--disable-gpu")
-            options.add_argument("--no-sandbox")
-            options.add_argument("--disable-dev-shm-usage")
-            options.add_argument(
-                "--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-            )
-
-            driver = None
-            try:
-                driver = webdriver.Chrome(service=service, options=options)
-                driver.set_page_load_timeout(timeout)
-                driver.get(url)
-                return driver.page_source
-            except Exception:
-                # If Selenium fails (e.g., chromedriver missing), fall back to HTTP.
-                pass
-            finally:
-                if driver:
-                    try:
-                        driver.quit()
-                    except Exception:
-                        pass
-
-        req = urllib.request.Request(
-            url,
-            headers={"User-Agent": "Mozilla/5.0 (compatible; VelvetFlow/1.0)"},
-        )
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return resp.read().decode("utf-8", errors="ignore")
-
     if not query:
         raise ValueError("query is required for web search")
 
     try:
-        raw_html = _fetch_html()
+        from googlesearch import search as google_search
+    except ImportError as exc:  # pragma: no cover - optional dependency
+        raise ImportError(
+            "googlesearch-python is required for web search; install it with 'pip install googlesearch-python'."
+        ) from exc
+
+    try:
+        raw_results = google_search(query, num_results=max(limit, 1), lang="en")
     except Exception as exc:  # pragma: no cover - network-dependent
         raise RuntimeError(f"web search failed: {exc}") from exc
 
-    parser = _GoogleParser(limit)
-    try:
-        parser.feed(raw_html)
-    except StopIteration:  # pragma: no cover - parser stops early when limit reached
-        pass
-
     results: List[Dict[str, str]] = []
-    for entry in parser.results:
-        title_value = _clean_text(entry.get("title", ""))
-        url_value = _resolve_search_url(entry.get("url", ""))
-        snippet_value = _clean_text(entry.get("snippet", "")) or title_value
+
+    for entry in raw_results:
+        title_value = ""
+        url_value = ""
+        snippet_value = ""
+
+        if isinstance(entry, Mapping):
+            title_value = entry.get("title") or entry.get("name") or ""
+            url_value = entry.get("url") or entry.get("link") or entry.get("href") or ""
+            snippet_value = entry.get("description") or entry.get("snippet") or entry.get("summary") or ""
+        elif hasattr(entry, "__dict__"):
+            title_value = getattr(entry, "title", "") or getattr(entry, "name", "")
+            url_value = getattr(entry, "url", "") or getattr(entry, "link", "") or getattr(entry, "href", "")
+            snippet_value = getattr(entry, "description", "") or getattr(entry, "snippet", "")
+        elif isinstance(entry, str):
+            url_value = entry
+            title_value = entry
+
+        title_value = _clean_text(str(title_value))
+        url_value = _resolve_search_url(str(url_value))
+        snippet_value = _clean_text(str(snippet_value)) or title_value
 
         if title_value and url_value:
             results.append(
