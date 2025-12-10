@@ -237,28 +237,36 @@ def _apply_binding_aggregator(
         return actual_schema, None
 
     agg = _get_binding_agg(binding)
-    
-    if not isinstance(agg, str):
-        return actual_schema, None
 
-    agg = agg or "identity"
     input_schema: Optional[Mapping[str, Any]] = None
     output_schema: Optional[Mapping[str, Any]] = actual_schema
 
+    agg_obj = binding.get("binding") if isinstance(binding.get("binding"), Mapping) else None
+    if isinstance(agg_obj, Mapping):
+        if isinstance(agg_obj.get("input_type"), str):
+            input_schema = {"type": agg_obj["input_type"]}
+        if isinstance(agg_obj.get("output_type"), str):
+            output_schema = {"type": agg_obj["output_type"]}
+
+    if not isinstance(agg, str):
+        return output_schema, input_schema
+
+    agg = agg or "identity"
+
     if agg in {"count", "count_if"}:
-        input_schema = {"type": "array"}
-        output_schema = {"type": "integer"}
+        input_schema = input_schema or {"type": "array"}
+        output_schema = output_schema or {"type": "integer"}
     elif agg in {"join", "format_join", "filter_map"}:
-        input_schema = {"type": "array"}
-        output_schema = {"type": "string"}
+        input_schema = input_schema or {"type": "array"}
+        output_schema = output_schema or {"type": "string"}
     elif agg == "pipeline":
-        input_schema = {"type": "array"}
+        input_schema = input_schema or {"type": "array"}
         binding_obj = binding.get("binding") if isinstance(binding.get("binding"), Mapping) else {}
         steps = binding_obj.get("steps") if isinstance(binding_obj, Mapping) else None
         if isinstance(steps, list) and any(
             isinstance(step, Mapping) and step.get("op") == "format_join" for step in steps
         ):
-            output_schema = {"type": "string"}
+            output_schema = output_schema or {"type": "string"}
 
     return output_schema, input_schema
 
