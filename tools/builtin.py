@@ -1184,6 +1184,34 @@ def update_employee_health_profile(
     }
 
 
+def async_stub_tool(payload: str) -> "AsyncToolHandle":
+    """Return an async handle to simulate delayed execution for demo actions."""
+
+    from velvetflow.executor.async_runtime import AsyncToolHandle
+
+    request_id = f"demo-async-{uuid.uuid4().hex}"
+    return AsyncToolHandle(
+        request_id=request_id,
+        tool_name="async_stub_tool",
+        params={"payload": payload},
+        metadata={"demo": True},
+    )
+
+
+def persist_async_stub(payload: str) -> "AsyncToolHandle":
+    """Return an async handle that marks payloads for persistence testing."""
+
+    from velvetflow.executor.async_runtime import AsyncToolHandle
+
+    request_id = f"demo-persist-{uuid.uuid4().hex}"
+    return AsyncToolHandle(
+        request_id=request_id,
+        tool_name="persist_async_stub",
+        params={"payload": payload},
+        metadata={"demo": True, "persist": True},
+    )
+
+
 def register_builtin_tools() -> None:
     """Register all built-in tools in the global registry."""
 
@@ -1505,6 +1533,32 @@ def register_builtin_tools() -> None:
         )
     )
 
+    register_tool(
+        Tool(
+            name="async_stub_tool",
+            description="Dispatch an async stub request for demo workflows.",
+            function=async_stub_tool,
+            args_schema={
+                "type": "object",
+                "properties": {"payload": {"type": "string"}},
+                "required": ["payload"],
+            },
+        )
+    )
+
+    register_tool(
+        Tool(
+            name="persist_async_stub",
+            description="Create an async stub used to test persistence/recovery flows.",
+            function=persist_async_stub,
+            args_schema={
+                "type": "object",
+                "properties": {"payload": {"type": "string"}},
+                "required": ["payload"],
+            },
+        )
+    )
+
     # Namespace-specific business tool packs
     register_sales_tools()
     register_marketing_tools()
@@ -1530,6 +1584,8 @@ __all__ = [
     "record_health_event",
     "get_today_temperatures",
     "update_employee_health_profile",
+    "async_stub_tool",
+    "persist_async_stub",
     "create_incident",
     "create_lead",
     "log_interaction",
