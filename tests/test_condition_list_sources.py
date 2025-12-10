@@ -43,12 +43,36 @@ def _build_workflow_with_list_source():
                 "type": "action",
                 "action_id": "productivity.compose_outlook_email.v1",
                 "params": {"email_content": "nvidia news"},
+                "out_params_schema": {
+                    "type": "object",
+                    "properties": {
+                        "summary": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                        },
+                        "status": {"type": "string"},
+                        "message": {"type": "string"},
+                    },
+                    "required": ["summary", "status"],
+                },
             },
             {
                 "id": "summarize_google_news",
                 "type": "action",
                 "action_id": "productivity.compose_outlook_email.v1",
                 "params": {"email_content": "google news"},
+                "out_params_schema": {
+                    "type": "object",
+                    "properties": {
+                        "summary": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                        },
+                        "status": {"type": "string"},
+                        "message": {"type": "string"},
+                    },
+                    "required": ["summary", "status"],
+                },
             },
             {
                 "id": "check_all_summarized",
@@ -68,6 +92,18 @@ def _build_workflow_with_list_source():
                 "type": "action",
                 "action_id": "productivity.compose_outlook_email.v1",
                 "params": {"email_content": "send summaries"},
+                "out_params_schema": {
+                    "type": "object",
+                    "properties": {
+                        "summary": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                        },
+                        "status": {"type": "string"},
+                        "message": {"type": "string"},
+                    },
+                    "required": ["summary", "status"],
+                },
             },
         ],
         "edges": [
@@ -93,7 +129,7 @@ def test_executor_resolves_multiple_condition_sources():
         workflow,
         simulations={
             "productivity.compose_outlook_email.v1": {
-                "result": {"summary": "summary content", "status": "simulated"}
+                "result": {"summary": ["summary content"], "status": "simulated"}
             }
         },
     )
@@ -102,8 +138,8 @@ def test_executor_resolves_multiple_condition_sources():
 
     assert results["check_all_summarized"]["condition_result"] is True
     assert results["check_all_summarized"].get("resolved_value") == [
-        "summary content",
-        "summary content",
+        ["summary content"],
+        ["summary content"],
     ]
     assert "notify_summary" in results
 
@@ -120,6 +156,14 @@ def test_condition_source_allows_plain_node_id():
                     "type": "action",
                     "action_id": "productivity.compose_outlook_email.v1",
                     "params": {"email_content": "nvidia news"},
+                    "out_params_schema": {
+                        "type": "object",
+                        "properties": {
+                            "status": {"type": "string"},
+                            "message": {"type": "string"},
+                        },
+                        "required": ["status"],
+                    },
                 },
                 {
                     "id": "cond_after_summarize_nvidia",
@@ -143,7 +187,7 @@ def test_condition_source_allows_plain_node_id():
         workflow,
         simulations={
             "productivity.compose_outlook_email.v1": {
-                "result": {"summary": "hello", "status": "simulated"}
+                "result": {"summary": ["hello"], "status": "simulated"}
             }
         },
     )
@@ -151,6 +195,60 @@ def test_condition_source_allows_plain_node_id():
     results = executor.run()
 
     assert results["cond_after_summarize_nvidia"].get("condition_result") is True
+
+
+def test_condition_missing_schema_reports_error():
+    workflow = {
+        "workflow_name": "invalid_condition_source",
+        "description": "",
+        "nodes": [
+            {"id": "start", "type": "start"},
+            {
+                "id": "scrape_page",
+                "type": "action",
+                "action_id": "common.scrape_web_page.v1",
+                "display_name": "爬取财经新闻网页内容",
+                "params": {
+                    "urls": ["https://example.com/news"],
+                    "user_request": "提取股票涨跌数据",
+                    "llm_instruction": "分析网页内容，提取涨幅最大和跌幅最大的10只股票及其相关数据。",
+                    "llm_provider": "openai/gpt-4o-mini",
+                },
+                "out_params_schema": {
+                    "type": "object",
+                    "properties": {
+                        "status": {"type": "string"},
+                        "extracted_content": {"type": "string"},
+                    },
+                    "required": ["status", "extracted_content"],
+                },
+            },
+            {
+                "id": "condition_filter",
+                "type": "condition",
+                "display_name": "筛选涨跌幅最大股票",
+                "params": {
+                    "kind": "list_not_empty",
+                    "source": "result_of.scrape_page.results",
+                },
+                "true_to_node": None,
+                "false_to_node": None,
+            },
+        ],
+        "edges": [
+            {"from": "start", "to": "scrape_page"},
+            {"from": "scrape_page", "to": "condition_filter"},
+        ],
+    }
+
+    errors = validate_completed_workflow(workflow, action_registry=ACTION_REGISTRY)
+
+    assert any(
+        e.code == "SCHEMA_MISMATCH"
+        and e.node_id == "condition_filter"
+        and "result_of.scrape_page.results" in e.message
+        for e in errors
+    )
 
 
 def test_list_not_empty_handles_field_over_list_items():

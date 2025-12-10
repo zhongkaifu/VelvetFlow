@@ -483,3 +483,73 @@ def test_condition_numeric_validation_rejects_non_numeric_field():
     errors = validate_completed_workflow(workflow, action_registry=ACTION_REGISTRY)
 
     assert any(err.code == "SCHEMA_MISMATCH" and err.field == "field" for err in errors)
+
+
+def test_condition_allows_action_param_reference_when_arg_schema_exists():
+    workflow = {
+        "workflow_name": "condition_reference_action_params",
+        "description": "",
+        "nodes": [
+            {"id": "start", "type": "start"},
+            {
+                "id": "log_event",
+                "type": "action",
+                "action_id": "hr.record_health_event.v1",
+                "params": {"event_type": "login"},
+            },
+            {
+                "id": "check_event_type",
+                "type": "condition",
+                "params": {
+                    "kind": "equals",
+                    "source": "result_of.log_event.params.event_type",
+                    "value": "login",
+                },
+                "true_to_node": None,
+                "false_to_node": None,
+            },
+        ],
+        "edges": [
+            {"from": "start", "to": "log_event"},
+            {"from": "log_event", "to": "check_event_type"},
+        ],
+    }
+
+    errors = validate_completed_workflow(workflow, action_registry=ACTION_REGISTRY)
+
+    assert errors == []
+
+
+def test_condition_rejects_unknown_action_param_field():
+    workflow = {
+        "workflow_name": "condition_reference_action_params_invalid",
+        "description": "",
+        "nodes": [
+            {"id": "start", "type": "start"},
+            {
+                "id": "log_event",
+                "type": "action",
+                "action_id": "hr.record_health_event.v1",
+                "params": {"event_type": "login"},
+            },
+            {
+                "id": "check_event_type",
+                "type": "condition",
+                "params": {
+                    "kind": "equals",
+                    "source": "result_of.log_event.params.nonexistent",
+                    "value": "login",
+                },
+                "true_to_node": None,
+                "false_to_node": None,
+            },
+        ],
+        "edges": [
+            {"from": "start", "to": "log_event"},
+            {"from": "log_event", "to": "check_event_type"},
+        ],
+    }
+
+    errors = validate_completed_workflow(workflow, action_registry=ACTION_REGISTRY)
+
+    assert any(err.code == "SCHEMA_MISMATCH" and err.field == "source" for err in errors)

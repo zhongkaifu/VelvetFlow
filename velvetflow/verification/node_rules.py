@@ -674,6 +674,17 @@ def _validate_nodes_recursive(
                                 ),
                             )
                         )
+                    elif not field_path and target_schema is None:
+                        errors.append(
+                            ValidationError(
+                                code="SCHEMA_MISMATCH",
+                                node_id=nid,
+                                field="source",
+                                message=(
+                                    f"condition 节点 '{nid}' 的引用 '{normalized_source}' 无法在 schema 中找到或缺少类型信息。"
+                                ),
+                            )
+                        )
 
                 if kind == "list_not_empty":
                     for normalized_source, target_schema in target_schemas:
