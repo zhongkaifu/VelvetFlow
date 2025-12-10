@@ -125,7 +125,7 @@ def plan_workflow(req: PlanRequest) -> PlanResponse:
                     search_service=search_service,
                     action_registry=BUSINESS_ACTIONS,
                     # Align with the CLI demo defaults to reduce discrepancies.
-                    max_repair_rounds=30,
+                    max_repair_rounds=3,
                 )
             else:
                 workflow = plan_workflow_with_two_pass(
@@ -134,7 +134,7 @@ def plan_workflow(req: PlanRequest) -> PlanResponse:
                     action_registry=BUSINESS_ACTIONS,
                     # Mirror build_workflow.py defaults for consistent planning results.
                     max_rounds=100,
-                    max_repair_rounds=30,
+                    max_repair_rounds=3,
                 )
     except Exception as exc:  # noqa: BLE001 - keep API message concise
         raise HTTPException(
