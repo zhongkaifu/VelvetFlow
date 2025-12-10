@@ -5,6 +5,7 @@ from typing import List, Dict, Any, Iterable
 
 from velvetflow.models import ValidationError
 
+from velvetflow.loop_dsl import build_loop_output_schema
 from velvetflow.type_system import (
     TypeEnvironment,
     TypeRef,
@@ -149,6 +150,21 @@ def validate_workflow_types(workflow, action_registry) -> None:
 
     # (1) 记录所有 node.output 类型
     for node in workflow.nodes:
+        # loop 节点没有 action，需要根据 exports 推导虚拟输出 schema
+        if getattr(node, "type", None) == "loop":
+            loop_schema = build_loop_output_schema(getattr(node, "params", {}))
+            if loop_schema:
+                loop_type = TypeRef(
+                    json_schema=loop_schema, source=f"loop:{node.id}:output"
+                )
+                env.set(f"{node.id}.output", loop_type)
+                env.set(f"result_of.{node.id}", loop_type)
+            continue
+
+        # 非 action 节点没有 action_id，直接跳过类型推导
+        if not node.action_id:
+            continue
+
         action_def = action_registry.get(node.action_id)
         if not action_def:
             errors.append(
@@ -157,9 +173,13 @@ def validate_workflow_types(workflow, action_registry) -> None:
             continue
         output_type = build_node_output_type(action_def)
         env.set(f"{node.id}.output", output_type)
+        env.set(f"result_of.{node.id}", output_type)
 
     # (2) 检查所有参数绑定
     for node in workflow.nodes:
+        if not node.action_id:
+            continue
+
         action_def = action_registry.get(node.action_id)
         if not action_def:
             continue
