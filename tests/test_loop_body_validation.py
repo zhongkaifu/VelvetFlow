@@ -425,6 +425,44 @@ def test_precheck_is_available_for_planner_users():
     assert errors == []
 
 
+def test_loop_body_requires_action_node_for_planning():
+    """Precheck should surface loop bodies that lack actionable steps."""
+
+    workflow = {
+        "workflow_name": "news_summary",
+        "nodes": [
+            {
+                "id": "loop_summarize",
+                "type": "loop",
+                "params": {
+                    "loop_kind": "for_each",
+                    "source": "result_of.search_news.results",
+                    "item_alias": "news_item",
+                    "body_subgraph": {
+                        "nodes": [
+                            {"id": "start", "type": "start"},
+                            {
+                                "id": "guard_branch",
+                                "type": "condition",
+                                "params": {"kind": "list_not_empty", "source": "loop.item"},
+                            },
+                            {"id": "exit", "type": "end"},
+                        ],
+                        "entry": "guard_branch",
+                        "exit": "exit",
+                    },
+                },
+            }
+        ],
+    }
+
+    errors = precheck_loop_body_graphs(workflow)
+
+    assert any(
+        err.code == "INVALID_LOOP_BODY" and err.field == "body_subgraph.nodes" for err in errors
+    )
+
+
 def test_loop_body_pydantic_errors_are_preserved():
     """Pydantic 校验错误需要原样向上传递，避免被包装成 ValueError。"""
 

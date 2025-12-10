@@ -59,6 +59,42 @@ def build_loop_output_schema(loop_params: Mapping[str, Any]) -> Optional[Dict[st
     return {"type": "object", "properties": properties} if properties else None
 
 
+def loop_body_has_action(body_graph: Mapping[str, Any]) -> bool:
+    """Return True if the loop body (including nested loops) contains an action node."""
+
+    def _walk(nodes: Iterable[Any]) -> bool:
+        for node in nodes or []:
+            if not isinstance(node, Mapping):
+                continue
+
+            if node.get("type") == "action":
+                return True
+
+            if node.get("type") == "loop":
+                params = node.get("params") or {}
+                nested_body = params.get("body_subgraph")
+                nested_nodes = (
+                    nested_body.get("nodes")
+                    if isinstance(nested_body, Mapping)
+                    else nested_body
+                    if isinstance(nested_body, list)
+                    else []
+                )
+                if _walk(nested_nodes):
+                    return True
+
+        return False
+
+    if isinstance(body_graph, Mapping):
+        body_nodes = body_graph.get("nodes")
+    elif isinstance(body_graph, list):
+        body_nodes = body_graph
+    else:
+        body_nodes = []
+
+    return _walk(body_nodes or [])
+
+
 def index_loop_body_nodes(workflow: Mapping[str, Any]) -> Dict[str, str]:
     """Build a mapping of loop body node id -> parent loop id."""
 
@@ -131,6 +167,7 @@ def iter_workflow_and_loop_body_nodes(workflow: Mapping[str, Any]) -> Iterable[M
 
 __all__ = [
     "build_loop_output_schema",
+    "loop_body_has_action",
     "index_loop_body_nodes",
     "iter_workflow_and_loop_body_nodes",
 ]

@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Mapping, Optional
 
 from velvetflow.models import ValidationError
 from velvetflow.reference_utils import normalize_reference_path, parse_field_path
+from velvetflow.loop_dsl import loop_body_has_action
 
 from .binding_checks import (
     _check_array_item_field,
@@ -778,6 +779,7 @@ def _validate_nodes_recursive(
         if ntype == "loop":
             body_graph = params.get("body_subgraph") if isinstance(params, Mapping) else None
             body_exports = body_graph.get("exports") if isinstance(body_graph, Mapping) else None
+            body_nodes = body_graph.get("nodes") if isinstance(body_graph, Mapping) else None
             if "exports" in params and not isinstance(body_graph, Mapping):
                 errors.append(
                     ValidationError(
@@ -794,6 +796,19 @@ def _validate_nodes_recursive(
                         node_id=nid,
                         field="body_subgraph.exports",
                         message="loop.exports 应定义在 params.exports，请从 body_subgraph 中移除。",
+                    )
+                )
+
+            if isinstance(body_nodes, list) and body_nodes and not loop_body_has_action(body_graph):
+                errors.append(
+                    ValidationError(
+                        code="INVALID_LOOP_BODY",
+                        node_id=nid,
+                        field="body_subgraph.nodes",
+                        message=(
+                            "loop 节点的 body_subgraph 至少需要一个 action 节点，"
+                            "请使用规划/修复工具补充可执行步骤。"
+                        ),
                     )
                 )
 
