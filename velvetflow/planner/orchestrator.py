@@ -19,7 +19,10 @@ workflow 结构和参数的两阶段推理，然后在必要时向 LLM 提供错
 返回值统一为 `Workflow` 对象，调用方无需关心 LLM 返回的原始 JSON 格式。
 """
 
+import json
 from typing import Any, Dict, Iterable, List, Mapping, Optional
+
+from openai import OpenAI
 
 from velvetflow.config import OPENAI_MODEL
 from velvetflow.logging_utils import (
@@ -57,11 +60,12 @@ from velvetflow.verification import (
     run_lightweight_static_rules,
     validate_completed_workflow,
 )
-from velvetflow.verification.type_validation import (
-    WorkflowTypeValidationError,
-    convert_type_errors,
-    validate_workflow_types,
+from velvetflow.verification.llm_repair import (
+    LLMRepairConfig,
+    LLMClientProtocol,
+    repair_workflow_types_with_local_and_llm,
 )
+from velvetflow.verification.type_validation import convert_type_errors
 from velvetflow.verification.validation import (
     _get_array_item_schema_from_output,
     _get_field_schema_from_item,
@@ -77,6 +81,28 @@ def _index_actions_by_id(
     """Build a quick lookup table for action metadata keyed by `action_id`."""
 
     return {a["action_id"]: a for a in action_registry}
+
+
+class _JsonModeLLMClient(LLMClientProtocol):
+    """Minimal LLM client wrapper that enforces JSON outputs for type修复."""
+
+    def __init__(self, *, model: str = OPENAI_MODEL):
+        self._client = OpenAI()
+        self._model = model
+
+    def complete_json(self, system_prompt: str, user_prompt: str) -> Dict[str, Any]:
+        response = self._client.chat.completions.create(
+            model=self._model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            response_format={"type": "json_object"},
+        )
+        log_llm_usage(response)
+        message = response.choices[0].message
+        content = message.content or "{}"
+        return json.loads(content)
 
 
 def _find_unregistered_action_nodes(
@@ -733,66 +759,6 @@ def _apply_local_repairs_for_missing_params(
         return None
 
 
-def _apply_local_repairs_for_schema_mismatch(
-    current_workflow: Workflow,
-    validation_errors: List[ValidationError],
-    action_registry: List[Dict[str, Any]],
-) -> Optional[Workflow]:
-    """Coerce obvious类型不匹配的 action 参数，减少进入 LLM 的次数。"""
-
-    actions_by_id = _index_actions_by_id(action_registry)
-    workflow_dict = current_workflow.model_dump(by_alias=True)
-    nodes: List[Dict[str, Any]] = [
-        n for n in workflow_dict.get("nodes", []) if isinstance(n, Mapping)
-    ]
-    nodes_by_id: Dict[str, Dict[str, Any]] = {n.get("id"): n for n in nodes}
-
-    changed = False
-
-    for err in validation_errors:
-        if err.code != "SCHEMA_MISMATCH" or not err.node_id or not err.field:
-            continue
-
-        node = nodes_by_id.get(err.node_id)
-        if not node or node.get("type") != "action":
-            continue
-
-        action_id = node.get("action_id")
-        action_def = actions_by_id.get(action_id)
-        if not action_def:
-            continue
-
-        properties = (
-            action_def.get("arg_schema", {}).get("properties")
-            if isinstance(action_def, Mapping)
-            else None
-        )
-        if not isinstance(properties, Mapping):
-            continue
-
-        field_schema = properties.get(err.field)
-        if not isinstance(field_schema, Mapping):
-            continue
-
-        params = node.get("params")
-        if not isinstance(params, dict) or err.field not in params:
-            continue
-
-        coerced = _coerce_value_to_schema_type(params[err.field], field_schema)
-        if coerced is not None and coerced != params[err.field]:
-            params[err.field] = coerced
-            changed = True
-
-    if not changed:
-        return None
-
-    try:
-        return Workflow.model_validate(workflow_dict)
-    except Exception as exc:  # noqa: BLE001
-        log_warn(f"[AutoRepair] schema 类型矫正失败：{exc}")
-        return None
-
-
 def _ensure_actions_registered_or_repair(
     workflow: Workflow,
     action_registry: List[Dict[str, Any]],
@@ -861,16 +827,6 @@ def _ensure_actions_registered_or_repair(
     return _attach_out_params_schema(final_workflow, actions_by_id)
 
 
-def _run_type_validation(
-    workflow: Workflow, actions_by_id: Mapping[str, Dict[str, Any]]
-) -> List[ValidationError]:
-    try:
-        validate_workflow_types(workflow, actions_by_id)
-        return []
-    except WorkflowTypeValidationError as exc:
-        return convert_type_errors(exc.errors)
-
-
 def _validate_and_repair_workflow(
     current_workflow: Workflow,
     *,
@@ -888,6 +844,8 @@ def _validate_and_repair_workflow(
 
     last_good_workflow = last_good_workflow or current_workflow
     actions_by_id = _index_actions_by_id(action_registry)
+    type_repair_llm = _JsonModeLLMClient(model=OPENAI_MODEL)
+    type_repair_config = LLMRepairConfig(max_rounds=max_repair_rounds)
 
     for repair_round in range(max_repair_rounds + 1):
         log_section(f"校验 + 自修复轮次 {repair_round}")
@@ -943,8 +901,6 @@ def _validate_and_repair_workflow(
                 )
             )
 
-        errors.extend(_run_type_validation(current_workflow, actions_by_id))
-
         current_errors_by_key = {_error_key(e): e for e in errors}
         if pending_attempts:
             for key, attempt in list(pending_attempts.items()):
@@ -957,17 +913,48 @@ def _validate_and_repair_workflow(
                 pending_attempts.pop(key, None)
 
         if not errors:
-            log_success("校验通过，无需进一步修复")
-            last_good_workflow = current_workflow
-            log_event(
-                f"{trace_event_prefix}_completed",
-                {
-                    "status": "success",
-                    "repair_rounds": repair_round,
-                    "has_errors": False,
-                },
+            type_repair_result = repair_workflow_types_with_local_and_llm(
+                workflow=current_workflow,
+                action_registry=actions_by_id,
+                llm_client=type_repair_llm,
+                config=type_repair_config,
             )
-            return current_workflow
+
+            if type_repair_result.local_repair and type_repair_result.local_repair.applied:
+                log_info(
+                    "[AutoRepair] 已根据类型错误应用局部修复：",
+                    type_repair_result.local_repair.applied,
+                )
+
+            if type_repair_result.success:
+                repaired_workflow = type_repair_result.workflow
+                current_workflow = (
+                    repaired_workflow
+                    if isinstance(repaired_workflow, Workflow)
+                    else Workflow.model_validate(repaired_workflow)
+                )
+                last_good_workflow = current_workflow
+                log_success("校验通过，无需进一步修复（包含类型安全验证）")
+                log_event(
+                    f"{trace_event_prefix}_completed",
+                    {
+                        "status": "success",
+                        "repair_rounds": repair_round,
+                        "has_errors": False,
+                    },
+                )
+                return current_workflow
+
+            remaining_errors = []
+            if type_repair_result.local_repair:
+                remaining_errors.extend(type_repair_result.local_repair.remaining_errors)
+            if not remaining_errors and type_repair_result.last_error:
+                remaining_errors.append(type_repair_result.last_error)
+            if not remaining_errors:
+                remaining_errors = ["类型修复失败但未返回具体错误"]
+            errors = convert_type_errors(remaining_errors)
+
+        current_errors_by_key = {_error_key(e): e for e in errors}
 
         code_counts: Dict[str, int] = {}
         for e in errors:
@@ -998,12 +985,6 @@ def _validate_and_repair_workflow(
                 validation_errors=errors,
                 action_registry=action_registry,
             )
-        if locally_repaired is None:
-            locally_repaired = _apply_local_repairs_for_schema_mismatch(
-                current_workflow=current_workflow,
-                validation_errors=errors,
-                action_registry=action_registry,
-            )
         if locally_repaired is not None:
             log_info("[AutoRepair] 检测到可预测的字段缺失/多余/类型不匹配问题，已在本地修正并重新校验。")
             current_workflow = locally_repaired
@@ -1013,26 +994,15 @@ def _validate_and_repair_workflow(
                 current_workflow.model_dump(by_alias=True),
                 action_registry=action_registry,
             )
-
-            errors.extend(_run_type_validation(current_workflow, actions_by_id))
-
             if not errors:
-                log_success("本地修正后校验通过，无需调用 LLM 继续修复。")
-                log_event(
-                    f"{trace_event_prefix}_completed",
-                    {
-                        "status": "success_after_local_repair",
-                        "repair_rounds": repair_round,
-                        "has_errors": False,
-                    },
-                )
-                return current_workflow
+                log_success("本地修正后校验通过，将继续进行类型安全验证。")
+                continue
 
-                log_warn("本地修正后仍有错误，将继续进入 LLM 修复流程：")
-                for e in errors:
-                    log_error(
-                        f"[code={e.code}] node={e.node_id} field={e.field} message={e.message}"
-                    )
+            log_warn("本地修正后仍有错误，将继续进入 LLM 修复流程：")
+            for e in errors:
+                log_error(
+                    f"[code={e.code}] node={e.node_id} field={e.field} message={e.message}"
+                )
 
         if repair_round == max_repair_rounds:
             log_warn("已到最大修复轮次，仍有错误，返回最后一个合法结构版本")
