@@ -70,8 +70,13 @@ function appendLog(text) {
   buildLog.scrollTop = buildLog.scrollHeight;
 }
 
-function renderLogs(logs = []) {
-  logs.forEach((line) => appendLog(line));
+function renderLogs(logs = [], echoToChat = false) {
+  logs.forEach((line) => {
+    appendLog(line);
+    if (echoToChat) {
+      addChatMessage(`流程更新：${line}`, "agent");
+    }
+  });
 }
 
 function setStatus(label, variant = "info") {
@@ -370,11 +375,19 @@ async function requestPlan(requirement) {
   setStatus("规划中", "warning");
   buildLog.innerHTML = "";
   appendLog(`收到需求：${requirement}`);
+  addChatMessage(`已收到需求：“${requirement}”，开始规划/校验/修复。`, "agent");
   try {
     const existingWorkflow =
       currentWorkflow && Array.isArray(currentWorkflow.nodes) && currentWorkflow.nodes.length > 0
         ? currentWorkflow
         : null;
+
+    if (existingWorkflow) {
+      addChatMessage("将基于当前流程进行更新与自修复，保持节点和连线同步。", "agent");
+    } else {
+      addChatMessage("将从零开始构建全新 workflow，并进行自动校验与修复。", "agent");
+    }
+    addChatMessage("正在调用 VelvetFlow Planner，请稍候，处理中间状态……", "agent");
 
     const response = await fetch("/api/plan", {
       method: "POST",
@@ -392,7 +405,7 @@ async function requestPlan(requirement) {
     }
 
     const payload = await response.json();
-    renderLogs(payload.logs);
+    renderLogs(payload.logs, true);
     lastRunResults = {};
     nodePositions = {};
     currentWorkflow = normalizeWorkflow(payload.workflow);
@@ -409,6 +422,7 @@ async function requestPlan(requirement) {
 
 async function requestRun() {
   setStatus("运行中", "warning");
+  addChatMessage("开始执行 workflow，实时同步运行日志。", "agent");
   appendLog("开始执行当前 workflow ...");
   try {
     const response = await fetch("/api/run", {
@@ -427,7 +441,7 @@ async function requestRun() {
     }
 
     const payload = await response.json();
-    renderLogs(payload.logs);
+    renderLogs(payload.logs, true);
     setStatus(payload.status === "completed" ? "运行完成" : "挂起等待回调", "success");
     lastRunResults = payload.result || {};
     render(currentTab);
