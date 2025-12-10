@@ -317,6 +317,106 @@ def test_condition_validation_rejects_scalar_aggregate_for_list_check():
     )
 
 
+def test_condition_validation_rejects_stringified_pipeline_for_list_not_empty():
+    workflow = {
+        "workflow_name": "reject_stringified_list_cond",
+        "description": "",
+        "nodes": [
+            {"id": "start", "type": "start"},
+            {
+                "id": "get_temperatures",
+                "type": "action",
+                "action_id": "hr.get_today_temperatures.v1",
+                "params": {"date": "2025-12-02"},
+            },
+            {
+                "id": "loop_check_temperature",
+                "type": "loop",
+                "params": {
+                    "loop_kind": "for_each",
+                    "item_alias": "employee",
+                    "source": "result_of.get_temperatures.data",
+                    "body_subgraph": {
+                        "entry": "cond_temp_above_38",
+                        "exit": "add_to_warning_list",
+                        "nodes": [
+                            {
+                                "id": "cond_temp_above_38",
+                                "type": "condition",
+                                "display_name": "体温是否超过38度",
+                                "params": {
+                                    "source": "employee",
+                                    "field": "temperature",
+                                    "threshold": 38,
+                                    "kind": "greater_than",
+                                },
+                                "true_to_node": "add_to_warning_list",
+                                "false_to_node": None,
+                                "parent_node_id": "loop_check_temperature",
+                            },
+                            {
+                                "id": "add_to_warning_list",
+                                "type": "action",
+                                "action_id": "hr.update_employee_health_profile.v1",
+                                "display_name": "将体温异常员工ID加入健康预警列表",
+                                "params": {
+                                    "employee_id": "{{employee.employee_id}}",
+                                    "last_temperature": "{{employee.temperature}}",
+                                    "status": "high_temperature",
+                                },
+                                "parent_node_id": "loop_check_temperature",
+                            },
+                        ],
+                    },
+                },
+            },
+            {
+                "id": "check_warning_list_not_empty",
+                "type": "condition",
+                "params": {
+                    "source": {
+                        "__from__": "result_of.loop_check_temperature.iterations",
+                        "__agg__": {
+                            "op": "filter_map",
+                            "format": "{temperature}",
+                            "condition": {"op": "exists", "arg": {"var": "item.temperature"}},
+                        },
+                    },
+                    "kind": "list_not_empty",
+                },
+                "true_to_node": "generate_warning_report",
+                "false_to_node": "generate_normal_report",
+            },
+            {
+                "id": "generate_warning_report",
+                "type": "action",
+                "action_id": "common.send_email.v1",
+                "params": {"subject": "warning"},
+            },
+            {
+                "id": "generate_normal_report",
+                "type": "action",
+                "action_id": "common.send_email.v1",
+                "params": {"subject": "normal"},
+            },
+        ],
+        "edges": [
+            {"from": "start", "to": "get_temperatures"},
+            {"from": "get_temperatures", "to": "loop_check_temperature"},
+            {"from": "loop_check_temperature", "to": "check_warning_list_not_empty"},
+            {"from": "check_warning_list_not_empty", "to": "generate_warning_report"},
+            {"from": "check_warning_list_not_empty", "to": "generate_normal_report"},
+        ],
+    }
+
+    errors = validate_completed_workflow(workflow, action_registry=ACTION_REGISTRY)
+
+    assert any(
+        err.code == "SCHEMA_MISMATCH" and err.field in {"source", "field"}
+        for err in errors
+    )
+
+
 def test_executor_uses_field_value_for_not_empty():
     workflow = Workflow.model_validate(_workflow_with_extracted_content_field())
     executor = DynamicActionExecutor(

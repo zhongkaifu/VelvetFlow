@@ -450,6 +450,36 @@ def _get_output_schema_at_path(
     return _walk_schema_with_tokens(schema_obj, normalized_path)
 
 
+def _project_schema_through_agg(
+    schema: Optional[Mapping[str, Any]], agg_spec: Any
+) -> Optional[Mapping[str, Any]]:
+    """Approximate the output schema after applying an aggregation op."""
+
+    if agg_spec is None:
+        return schema
+
+    agg_op = agg_spec.get("op") if isinstance(agg_spec, Mapping) else agg_spec
+    output_type = agg_spec.get("output_type") if isinstance(agg_spec, Mapping) else None
+
+    if output_type:
+        return {"type": output_type}
+
+    if agg_op in {"count", "count_if"}:
+        return {"type": "integer"}
+
+    if agg_op in {"join", "format_join", "filter_map"}:
+        return {"type": "string"}
+
+    if agg_op == "pipeline":
+        steps = agg_spec.get("steps") if isinstance(agg_spec, Mapping) else None
+        if isinstance(steps, list):
+            for step in steps:
+                if isinstance(step, Mapping) and step.get("op") == "format_join":
+                    return {"type": "string"}
+
+    return schema
+
+
 def _get_field_schema_from_item(
     item_schema: Optional[Mapping[str, Any]], field: str
 ) -> Optional[Mapping[str, Any]]:

@@ -19,6 +19,7 @@ from .binding_checks import (
     _iter_empty_param_fields,
     _iter_template_references,
     _maybe_decode_binding_string,
+    _project_schema_through_agg,
     _schema_path_error,
     _suggest_numeric_subfield,
     _walk_schema_with_tokens,
@@ -554,7 +555,7 @@ def _validate_nodes_recursive(
                         )
 
                 source_ref = params.get("source")
-                source_paths: List[str] = []
+                source_bindings: List[tuple[str, Any]] = []
                 if isinstance(source_ref, Mapping):
                     source_err = validate_param_binding(source_ref)
                     if source_err:
@@ -569,9 +570,11 @@ def _validate_nodes_recursive(
                             )
                         )
                     elif isinstance(source_ref.get("__from__"), str):
-                        source_paths.append(source_ref["__from__"])
+                        source_bindings.append(
+                            (source_ref["__from__"], source_ref.get("__agg__"))
+                        )
                 elif isinstance(source_ref, str):
-                    source_paths.append(source_ref)
+                    source_bindings.append((source_ref, None))
                 elif isinstance(source_ref, list):
                     for idx, item in enumerate(source_ref):
                         if isinstance(item, Mapping):
@@ -589,9 +592,11 @@ def _validate_nodes_recursive(
                                 )
                                 continue
                             if isinstance(item.get("__from__"), str):
-                                source_paths.append(item["__from__"])
+                                source_bindings.append(
+                                    (item["__from__"], item.get("__agg__"))
+                                )
                         elif isinstance(item, str):
-                            source_paths.append(item)
+                            source_bindings.append((item, None))
                         elif isinstance(item, (int, float, bool)):
                             continue
                         elif item is not None:
@@ -620,49 +625,43 @@ def _validate_nodes_recursive(
                         )
                     )
 
-                for source_path in source_paths:
+                for source_path, _agg_spec in source_bindings:
                     if _is_self_reference_path(source_path, nid):
                         _flag_self_reference("source", source_path)
 
                 field_path = params.get("field") if isinstance(params.get("field"), str) else None
                 target_schemas: List[tuple[str, Mapping[str, Any] | None]] = []
-                for source_path in source_paths:
+                for source_path, agg_spec in source_bindings:
                     normalized_source = normalize_reference_path(source_path)
-                    if kind == "list_not_empty" and field_path:
-                        target_schema = _resolve_condition_schema(
-                            normalized_source,
-                            None,
-                            nodes_by_id,
-                            actions_by_id,
-                            loop_body_parents,
-                            alias_schemas,
+                    base_schema = _resolve_condition_schema(
+                        normalized_source,
+                        None,
+                        nodes_by_id,
+                        actions_by_id,
+                        loop_body_parents,
+                        alias_schemas,
+                    )
+                    projected_schema = _project_schema_through_agg(base_schema, agg_spec)
+                    target_schema = projected_schema
+                    if field_path:
+                        target_schema = (
+                            _walk_schema_with_tokens(projected_schema, [field_path])
+                            if projected_schema
+                            else None
                         )
-                        if target_schema:
-                            nested_schema = _walk_schema_with_tokens(
-                                target_schema, [field_path]
-                            )
-                            if nested_schema is None:
-                                errors.append(
-                                    ValidationError(
-                                        code="SCHEMA_MISMATCH",
-                                        node_id=nid,
-                                        field="field",
-                                        message=(
-                                            ""
-                                            f"condition 节点 '{nid}' 的引用 "
-                                            f"'{normalized_source}.{field_path}' 无法在 schema 中找到或缺少类型信息。"
-                                        ),
-                                    )
+                        if projected_schema and target_schema is None:
+                            errors.append(
+                                ValidationError(
+                                    code="SCHEMA_MISMATCH",
+                                    node_id=nid,
+                                    field="field",
+                                    message=(
+                                        ""
+                                        f"condition 节点 '{nid}' 的引用 "
+                                        f"'{normalized_source}.{field_path}' 无法在 schema 中找到或缺少类型信息。"
+                                    ),
                                 )
-                    else:
-                        target_schema = _resolve_condition_schema(
-                            normalized_source,
-                            field_path,
-                            nodes_by_id,
-                            actions_by_id,
-                            loop_body_parents,
-                            alias_schemas,
-                        )
+                            )
                     target_schemas.append((normalized_source, target_schema))
                     if field_path and target_schema is None:
                         errors.append(
