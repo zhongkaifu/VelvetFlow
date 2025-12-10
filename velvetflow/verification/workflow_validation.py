@@ -6,7 +6,7 @@ from collections import deque
 from typing import Any, Dict, List, Mapping, Optional
 
 from velvetflow.models import ValidationError, Workflow, infer_edges_from_bindings
-from velvetflow.loop_dsl import index_loop_body_nodes
+from velvetflow.loop_dsl import index_loop_body_nodes, loop_body_has_action
 
 from .binding_checks import (
     _check_output_path_against_schema,
@@ -60,6 +60,20 @@ def precheck_loop_body_graphs(workflow_raw: Mapping[str, Any] | Any) -> List[Val
                     node_id=loop_id,
                     field="body_subgraph.nodes",
                     message=f"loop 节点 '{loop_id}' 的 body_subgraph.nodes 不能为空。",
+                )
+            )
+            continue
+
+        if not loop_body_has_action(body):
+            errors.append(
+                ValidationError(
+                    code="INVALID_LOOP_BODY",
+                    node_id=loop_id,
+                    field="body_subgraph.nodes",
+                    message=(
+                        "loop 节点的 body_subgraph 至少需要一个 action 节点，"
+                        "请使用规划/修复工具为循环体补充可执行步骤。"
+                    ),
                 )
             )
 

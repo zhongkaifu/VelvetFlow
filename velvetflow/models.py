@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 import re
 from typing import Any, Dict, Iterable, List, Literal, Mapping, Optional, Set
 
+from velvetflow.loop_dsl import loop_body_has_action
 from velvetflow.reference_utils import normalize_reference_path
 
 
@@ -634,6 +635,15 @@ class Workflow:
                     {
                         "loc": ("nodes", idx, "params", "body_subgraph", "nodes"),
                         "msg": "loop 节点的 body_subgraph.nodes 不能为空",
+                    }
+                )
+                continue
+
+            if not loop_body_has_action(body_graph):
+                errors.append(
+                    {
+                        "loc": ("nodes", idx, "params", "body_subgraph", "nodes"),
+                        "msg": "loop 子图必须包含至少一个 action 节点以承载执行逻辑",
                     }
                 )
                 continue
