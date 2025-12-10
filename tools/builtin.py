@@ -57,7 +57,6 @@ try:
                 # Keep a dedicated loop alive for the crawler lifecycle to avoid
                 # Playwright connections being associated with a closed loop.
                 self._loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(self._loop)
                 self._crawler = self._loop.run_until_complete(_start())
                 return self
 
