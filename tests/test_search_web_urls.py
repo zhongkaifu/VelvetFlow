@@ -52,3 +52,8 @@ def test_resolve_search_url_unwraps_and_normalizes_redirect() -> None:
 
 def test_resolve_search_url_adds_scheme_when_missing() -> None:
     assert _resolve_search_url("example.com/path") == "https://example.com/path"
+
+
+def test_resolve_search_url_handles_google_redirect() -> None:
+    raw_redirect = "/url?q=https://example.com/path%3Fa%3D1&sa=U&ved=2ahUKEwj"
+    assert _resolve_search_url(raw_redirect) == "https://example.com/path?a=1"

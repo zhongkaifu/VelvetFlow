@@ -146,16 +146,24 @@ def _resolve_search_url(raw_url: str) -> str:
         uddg = urllib.parse.parse_qs(parsed.query).get("uddg", [])
         if uddg:
             return _normalize_web_url(urllib.parse.unquote(uddg[0]))
+    if raw_url.startswith("/url") or "google.com/url" in raw_url:
+        parsed = urllib.parse.urlparse(raw_url)
+        query_params = urllib.parse.parse_qs(parsed.query)
+        target = query_params.get("q") or query_params.get("url")
+        if target:
+            return _normalize_web_url(target[0])
     return _normalize_web_url(raw_url)
 
 
-class _DuckDuckGoParser(HTMLParser):
-    """Minimal parser to extract search results from DuckDuckGo HTML."""
+class _GoogleParser(HTMLParser):
+    """Minimal parser to extract organic search results from Google HTML."""
 
     def __init__(self, limit: int) -> None:
         super().__init__()
         self.limit = limit
         self.results: List[Dict[str, str]] = []
+        self._in_result = False
+        self._result_depth = 0
         self._capturing_title = False
         self._capturing_snippet = False
         self._current_href: str | None = None
@@ -163,14 +171,36 @@ class _DuckDuckGoParser(HTMLParser):
         self._snippet_parts: List[str] = []
 
     def handle_starttag(self, tag: str, attrs: List[Tuple[str, str | None]]) -> None:  # pragma: no cover - HTML parsing
-        attrs_dict = {k: v for k, v in attrs}
-        if tag == "a" and "result__a" in (attrs_dict.get("class") or ""):
+        attrs_dict = {k: v or "" for k, v in attrs}
+        classes = attrs_dict.get("class", "")
+
+        if tag == "div":
+            if not self._in_result and "tF2Cxc" in classes:
+                self._in_result = True
+                self._result_depth = 1
+                self._current_href = None
+                self._title_parts = []
+                self._snippet_parts = []
+            elif self._in_result:
+                self._result_depth += 1
+
+        if not self._in_result:
+            return
+
+        if tag == "a" and not self._current_href:
+            href = attrs_dict.get("href")
+            if href:
+                self._current_href = href
+
+        if tag == "h3":
             self._capturing_title = True
-            self._current_href = attrs_dict.get("href")
             self._title_parts = []
-        if tag in {"p", "div", "span"} and "result__snippet" in (attrs_dict.get("class") or ""):
+
+        snippet_classes = {"VwiC3b", "aCOpRe", "yXK7lf"}
+        if tag in {"div", "span"} and snippet_classes.intersection(classes.split()):
+            if not self._capturing_snippet:
+                self._snippet_parts = []
             self._capturing_snippet = True
-            self._snippet_parts = []
 
     def handle_data(self, data: str) -> None:  # pragma: no cover - HTML parsing
         if self._capturing_title:
@@ -179,28 +209,29 @@ class _DuckDuckGoParser(HTMLParser):
             self._snippet_parts.append(data.strip())
 
     def handle_endtag(self, tag: str) -> None:  # pragma: no cover - HTML parsing
-        if self._capturing_title and tag == "a":
-            title = " ".join(self._title_parts).strip()
-            if title and self._current_href:
-                self.results.append({"title": title, "url": self._current_href})
+        if self._capturing_title and tag == "h3":
             self._capturing_title = False
-            self._title_parts = []
-            self._current_href = None
-            if len(self.results) >= self.limit:
-                raise StopIteration
-        if self._capturing_snippet and tag in {"p", "div", "span"}:
-            snippet = " ".join(self._snippet_parts).strip()
-            if snippet and self.results:
-                if "snippet" not in self.results[-1]:
-                    self.results[-1]["snippet"] = snippet
+
+        if self._capturing_snippet and tag in {"div", "span"}:
             self._capturing_snippet = False
-            self._snippet_parts = []
-            if len(self.results) >= self.limit:
-                raise StopIteration
+
+        if self._in_result and tag == "div":
+            self._result_depth -= 1
+            if self._result_depth == 0:
+                title = " ".join(self._title_parts).strip()
+                snippet = " ".join(self._snippet_parts).strip()
+                if title and self._current_href:
+                    self.results.append({"title": title, "url": self._current_href, "snippet": snippet})
+                self._in_result = False
+                self._current_href = None
+                self._title_parts = []
+                self._snippet_parts = []
+                if len(self.results) >= self.limit:
+                    raise StopIteration
 
 
 def search_web(query: str, limit: int = 5, timeout: int = 8) -> Dict[str, List[Dict[str, str]]]:
-    """Perform a DuckDuckGo HTML search and return top results with snippets."""
+    """Perform a Google HTML search and return top results with snippets."""
 
     def _clean_text(value: str) -> str:
         text_no_tags = re.sub(r"<[^>]+>", " ", value)
@@ -211,7 +242,7 @@ def search_web(query: str, limit: int = 5, timeout: int = 8) -> Dict[str, List[D
         raise ValueError("query is required for web search")
 
     encoded_q = urllib.parse.quote_plus(query)
-    url = f"https://duckduckgo.com/html/?q={encoded_q}&kl=us-en"
+    url = f"https://www.google.com/search?q={encoded_q}&num={max(limit, 1)}&hl=en"
     req = urllib.request.Request(
         url,
         headers={"User-Agent": "Mozilla/5.0 (compatible; VelvetFlow/1.0)"},
@@ -222,7 +253,7 @@ def search_web(query: str, limit: int = 5, timeout: int = 8) -> Dict[str, List[D
     except Exception as exc:  # pragma: no cover - network-dependent
         raise RuntimeError(f"web search failed: {exc}") from exc
 
-    parser = _DuckDuckGoParser(limit)
+    parser = _GoogleParser(limit)
     try:
         parser.feed(raw_html)
     except StopIteration:  # pragma: no cover - parser stops early when limit reached
@@ -1231,7 +1262,7 @@ def register_builtin_tools() -> None:
     register_tool(
         Tool(
             name="search_web",
-            description="Perform a Bing search and return titles, URLs, and snippets.",
+            description="Perform a Google search and return titles, URLs, and snippets.",
             function=search_web,
             args_schema={
                 "type": "object",
