@@ -3,6 +3,7 @@
 
 from velvetflow.models import ValidationError
 from velvetflow.planner.repair_tools import (
+    align_loop_body_alias_references,
     fill_loop_exports_defaults,
     fix_missing_loop_exports_items,
     normalize_binding_paths,
@@ -133,4 +134,101 @@ def test_fix_missing_loop_exports_items_inserts_segment():
     assert (
         condition["params"]["source"]
         == "result_of.loop_employees.exports.items.employee_id"
+    )
+
+
+def test_align_loop_body_alias_references_rewrites_stale_alias():
+    workflow = {
+        "nodes": [
+            {
+                "id": "loop_check_temperature",
+                "type": "loop",
+                "params": {
+                    "loop_kind": "for_each",
+                    "source": "result_of.get_temperatures.items",
+                    "item_alias": "warning_item",
+                    "body_subgraph": {
+                        "nodes": [
+                            {
+                                "id": "add_to_warning_list",
+                                "type": "action",
+                                "action_id": "hr.update_employee_health_profile.v1",
+                                "params": {
+                                    "employee_id": {
+                                        "__from__": "employee_temp.employee_id"
+                                    },
+                                    "last_temperature": {
+                                        "__from__": "employee_temp.temperature"
+                                    },
+                                },
+                            }
+                        ],
+                        "entry": "add_to_warning_list",
+                        "exit": "add_to_warning_list",
+                    },
+                    "exports": {
+                        "items": {
+                            "from_node": "add_to_warning_list",
+                            "fields": ["employee_id", "last_temperature"],
+                        }
+                    },
+                },
+            },
+            {
+                "id": "get_temperatures",
+                "type": "action",
+                "action_id": "hr.get_today_temperatures.v1",
+                "params": {},
+            },
+        ],
+        "edges": [],
+    }
+
+    action_registry = [
+        {
+            "action_id": "hr.get_today_temperatures.v1",
+            "arg_schema": {},
+            "output_schema": {
+                "type": "object",
+                "properties": {
+                    "items": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "employee_id": {"type": "string"},
+                                "temperature": {"type": "number"},
+                            },
+                        },
+                    }
+                },
+            },
+        },
+        {
+            "action_id": "hr.update_employee_health_profile.v1",
+            "arg_schema": {
+                "type": "object",
+                "properties": {
+                    "employee_id": {"type": "string"},
+                    "last_temperature": {"type": "number"},
+                },
+            },
+            "output_schema": {},
+        },
+    ]
+
+    patched, summary = align_loop_body_alias_references(
+        workflow, action_registry=action_registry
+    )
+
+    assert summary["applied"] is True
+    loop_node = next(n for n in patched["nodes"] if n.get("id") == "loop_check_temperature")
+    add_action = loop_node["params"]["body_subgraph"]["nodes"][0]
+    assert (
+        add_action["params"]["employee_id"]["__from__"]
+        == "warning_item.employee_id"
+    )
+    assert (
+        add_action["params"]["last_temperature"]["__from__"]
+        == "warning_item.temperature"
     )

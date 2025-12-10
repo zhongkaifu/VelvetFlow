@@ -45,6 +45,7 @@ from velvetflow.planner.repair import (
     _repair_with_llm_and_fallback,
 )
 from velvetflow.planner.repair_tools import (
+    align_loop_body_alias_references,
     fill_loop_exports_defaults,
     fix_missing_loop_exports_items,
     normalize_binding_paths,
@@ -1113,6 +1114,18 @@ def _validate_and_repair_workflow(
                 f"summary={loop_export_summary}",
             )
             current_workflow = Workflow.model_validate(loop_exports_workflow)
+            last_good_workflow = current_workflow
+
+        aligned_alias_workflow, alias_summary = align_loop_body_alias_references(
+            current_workflow.model_dump(by_alias=True),
+            action_registry=action_registry,
+        )
+        if alias_summary.get("applied"):
+            log_info(
+                "[AutoRepair] loop.body_subgraph 引用了失效的 alias，已自动对齐到当前 item_alias。",
+                f"summary={alias_summary}",
+            )
+            current_workflow = Workflow.model_validate(aligned_alias_workflow)
             last_good_workflow = current_workflow
 
         normalized_workflow, normalize_summary = normalize_binding_paths(

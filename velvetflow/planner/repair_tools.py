@@ -12,6 +12,7 @@ import re
 from typing import Any, Dict, Iterable, List, Mapping, MutableMapping, Optional, Sequence, Tuple
 
 from velvetflow.loop_dsl import iter_workflow_and_loop_body_nodes
+from velvetflow.verification.binding_checks import _get_array_item_schema_from_output
 from velvetflow.planner.structure import _ensure_loop_items_fields, _fallback_loop_exports
 from velvetflow.logging_utils import log_event, log_info, log_warn
 from velvetflow.models import ValidationError, Workflow
@@ -52,6 +53,39 @@ def _schema_default_value(field_schema: Mapping[str, Any]) -> Any:
         return enum_values[0]
 
     return None
+
+
+def _format_tokens(tokens: Sequence[Any]) -> str:
+    path = ""
+    for token in tokens:
+        if isinstance(token, int):
+            path += f"[{token}]"
+        else:
+            path += ("." if path else "") + str(token)
+    return path
+
+
+def _schema_supports_tokens(schema: Mapping[str, Any] | None, tokens: Sequence[Any]) -> bool:
+    current: Mapping[str, Any] | None = schema
+    for token in tokens:
+        if not isinstance(current, Mapping):
+            return False
+
+        if isinstance(token, int):
+            items_schema = current.get("items")
+            if not isinstance(items_schema, Mapping):
+                return False
+            current = items_schema
+            continue
+
+        properties = current.get("properties")
+        if not isinstance(properties, Mapping):
+            return False
+        if token not in properties:
+            return False
+        current = properties.get(token)
+
+    return True
 
 
 def _coerce_value_to_schema_type(value: Any, field_schema: Mapping[str, Any]) -> Optional[Any]:
@@ -316,6 +350,114 @@ def normalize_binding_paths(workflow: Mapping[str, Any]) -> Tuple[Mapping[str, A
 
     patched = _walk(patched)
     return patched, {"applied": changed, "reason": None if changed else "未发现需要规范化的绑定"}
+
+
+def align_loop_body_alias_references(
+    workflow: Mapping[str, Any], *, action_registry: Iterable[Mapping[str, Any]]
+) -> Tuple[Mapping[str, Any], Dict[str, Any]]:
+    """Rewrite loop body references that accidentally use a stale alias name.
+
+    If a loop body node references an unknown object (e.g. ``employee_temp``)
+    but the referenced fields match the current ``item_alias`` schema, the
+    reference is rewritten to use the active alias.
+    """
+
+    patched = copy.deepcopy(workflow)
+    nodes = patched.get("nodes") if isinstance(patched.get("nodes"), list) else []
+
+    actions_by_id = _index_actions_by_id(action_registry)
+    nodes_by_id = {
+        n.get("id"): n
+        for n in iter_workflow_and_loop_body_nodes(patched)
+        if isinstance(n, Mapping)
+    }
+
+    replacements: List[Dict[str, str]] = []
+    changed = False
+
+    for node in nodes:
+        if not isinstance(node, MutableMapping) or node.get("type") != "loop":
+            continue
+
+        params = node.get("params") if isinstance(node.get("params"), MutableMapping) else {}
+        item_alias = params.get("item_alias") if isinstance(params, Mapping) else None
+        if not isinstance(item_alias, str) or not item_alias:
+            continue
+
+        source = params.get("source")
+        source_path = source.get("__from__") if isinstance(source, Mapping) else source
+        if not isinstance(source_path, str):
+            continue
+
+        item_schema = _get_array_item_schema_from_output(
+            source_path, nodes_by_id, actions_by_id, skip_path_check=True
+        )
+
+        body = params.get("body_subgraph") if isinstance(params, Mapping) else {}
+        body_nodes = body.get("nodes") if isinstance(body, Mapping) else []
+
+        for body_node in body_nodes or []:
+            if not isinstance(body_node, MutableMapping):
+                continue
+
+            params_obj = body_node.get("params") if isinstance(body_node.get("params"), MutableMapping) else None
+            if not isinstance(params_obj, MutableMapping):
+                continue
+
+            def _walk(obj: Any) -> Any:
+                nonlocal changed
+                if isinstance(obj, Mapping):
+                    new_obj = obj if isinstance(obj, MutableMapping) else dict(obj)
+                    if "__from__" in obj and isinstance(obj.get("__from__"), str):
+                        new_from = _walk(obj.get("__from__"))
+                        if new_from != obj.get("__from__"):
+                            new_obj["__from__"] = new_from
+                    else:
+                        for key, value in obj.items():
+                            new_obj[key] = _walk(value)
+                    return new_obj
+
+                if isinstance(obj, list):
+                    return [_walk(item) for item in obj]
+
+                if isinstance(obj, str):
+                    normalized = normalize_reference_path(obj)
+                    if item_alias in {normalized, obj}:
+                        return obj
+                    if "." not in normalized and "[" not in normalized:
+                        return obj
+                    try:
+                        tokens = parse_field_path(normalized)
+                    except Exception:
+                        return obj
+
+                    if (
+                        not tokens
+                        or tokens[0] in {item_alias, "result_of", "params", "vars", "context"}
+                        or len(tokens) < 2
+                    ):
+                        return obj
+
+                    candidate_tokens = [item_alias, *tokens[1:]]
+                    if not _schema_supports_tokens(item_schema, candidate_tokens[1:]):
+                        return obj
+
+                    new_path = _format_tokens(candidate_tokens)
+                    replacements.append({"from": normalized, "to": new_path})
+                    changed = True
+                    return new_path
+
+                return obj
+
+            new_params = _walk(params_obj)
+            if new_params is not params_obj:
+                body_node["params"] = new_params
+
+    return patched, {
+        "applied": changed,
+        "replacements": replacements,
+        "reason": None if changed else "未发现需对齐到 item_alias 的引用",
+    }
 
 
 def fix_missing_loop_exports_items(
@@ -874,6 +1016,7 @@ __all__ = [
     "replace_reference_paths",
     "drop_invalid_references",
     "fix_loop_body_references",
+    "align_loop_body_alias_references",
     "update_node_field",
     "REPAIR_TOOLS",
 ]
