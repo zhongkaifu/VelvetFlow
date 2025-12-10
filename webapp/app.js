@@ -11,9 +11,12 @@ const applyWorkflowBtn = document.getElementById("applyWorkflow");
 const resetWorkflowBtn = document.getElementById("resetWorkflow");
 const editHelpBtn = document.getElementById("editHelp");
 const tabs = document.querySelectorAll(".tab");
+const tabContents = document.querySelectorAll(".tab-content");
 
-let currentTab = "dag";
+let currentTab = "json";
 let currentWorkflow = createDemoWorkflow();
+let renderedNodes = [];
+let lastPositions = {};
 
 function createDemoWorkflow() {
   return {
@@ -117,6 +120,45 @@ function setStatus(label, variant = "info") {
   statusIndicator.style.color = theme.color;
 }
 
+function collectParamKeys(value) {
+  if (!value) return [];
+  if (Array.isArray(value)) return value.map(String);
+  if (typeof value === "object") return Object.keys(value);
+  return [String(value)];
+}
+
+function describeNode(node) {
+  const inputs = collectParamKeys(node.inputs || node.input_params || node.params || node.args);
+  const outputs = collectParamKeys(node.outputs || node.output_params || node.output);
+  const toolLabel = node.type === "action" ? node.action_id || node.display_name || node.id : null;
+  return {
+    inputs,
+    outputs,
+    toolLabel,
+  };
+}
+
+function wrapText(text, maxWidth, font = "13px Inter") {
+  if (!text) return [];
+  ctx.save();
+  ctx.font = font;
+  const words = String(text).split("");
+  const lines = [];
+  let line = "";
+  words.forEach((ch) => {
+    const candidate = line + ch;
+    if (ctx.measureText(candidate).width <= maxWidth) {
+      line = candidate;
+    } else {
+      if (line) lines.push(line);
+      line = ch;
+    }
+  });
+  if (line) lines.push(line);
+  ctx.restore();
+  return lines.length ? lines : [text];
+}
+
 function layoutNodes(workflow) {
   const { nodes } = workflow;
   const positions = {};
@@ -137,8 +179,18 @@ function layoutNodes(workflow) {
 
 function drawNode(node, pos, mode) {
   const radius = 16;
-  const width = 190;
-  const height = 64;
+  const width = 240;
+  const { inputs, outputs, toolLabel } = describeNode(node);
+  const contentLines = [];
+  if (toolLabel) contentLines.push(`工具: ${toolLabel}`);
+  contentLines.push(`入参: ${inputs.length ? inputs.join(", ") : "-"}`);
+  contentLines.push(`出参: ${outputs.length ? outputs.join(", ") : "-"}`);
+
+  const wrappedLines = contentLines.flatMap((line) => wrapText(line, width - 28));
+  const baseHeight = 72;
+  const dynamicHeight = wrappedLines.length * 16;
+  const height = baseHeight + dynamicHeight;
+
   const typeColors = {
     start: "#22d3ee",
     end: "#34d399",
@@ -151,7 +203,7 @@ function drawNode(node, pos, mode) {
   ctx.save();
   ctx.fillStyle = "rgba(255,255,255,0.04)";
   ctx.strokeStyle = "rgba(255,255,255,0.12)";
-  ctx.lineWidth = 1;
+  ctx.lineWidth = 1.2;
   roundedRect(pos.x - width / 2, pos.y - height / 2, width, height, radius);
   ctx.fill();
   ctx.stroke();
@@ -159,13 +211,30 @@ function drawNode(node, pos, mode) {
   ctx.fillStyle = fill;
   ctx.font = "12px Inter";
   ctx.textAlign = "center";
-  ctx.fillText(node.type.toUpperCase(), pos.x, pos.y - 16);
+  ctx.fillText(node.type.toUpperCase(), pos.x, pos.y - height / 2 + 18);
 
   ctx.fillStyle = "#e5e7eb";
-  ctx.font = mode === "visual" ? "17px Inter" : "15px Inter";
+  ctx.font = mode === "visual" ? "16px Inter" : "15px Inter";
   const label = node.display_name || node.action_id || node.id;
-  ctx.fillText(label, pos.x, pos.y + 8);
+  ctx.fillText(label, pos.x, pos.y - height / 2 + 40);
+
+  ctx.textAlign = "left";
+  ctx.font = "13px Inter";
+  let offsetY = pos.y - height / 2 + 60;
+  wrappedLines.forEach((line) => {
+    ctx.fillStyle = "#cbd5e1";
+    ctx.fillText(line, pos.x - width / 2 + 12, offsetY);
+    offsetY += 16;
+  });
   ctx.restore();
+
+  return {
+    id: node.id,
+    x: pos.x - width / 2,
+    y: pos.y - height / 2,
+    width,
+    height,
+  };
 }
 
 function drawArrow(from, to, label) {
@@ -208,28 +277,28 @@ function drawArrow(from, to, label) {
 
 function render(mode = currentTab) {
   ctx.clearRect(0, 0, workflowCanvas.width, workflowCanvas.height);
+  renderedNodes = [];
   if (!currentWorkflow.nodes) return;
-  const positions = layoutNodes(currentWorkflow);
+  lastPositions = layoutNodes(currentWorkflow);
 
   const edges = (currentWorkflow.edges || []).map(normalizeEdge);
   edges.forEach((edge) => {
-    const from = positions[edge.from_node];
-    const to = positions[edge.to_node];
+    const from = lastPositions[edge.from_node];
+    const to = lastPositions[edge.to_node];
     if (from && to) {
       drawArrow(from, to, edge.condition);
     }
   });
 
   currentWorkflow.nodes.forEach((node) => {
-    const pos = positions[node.id];
+    const pos = lastPositions[node.id];
     if (pos) {
-      drawNode(node, pos, mode);
+      const box = drawNode(node, pos, mode);
+      if (box) renderedNodes.push(box);
     }
   });
 
-  if (mode === "visual") {
-    drawWatermark();
-  }
+  drawWatermark();
 }
 
 function drawWatermark() {
@@ -362,7 +431,52 @@ function handleTabClick(event) {
     t.classList.toggle("tab--active", t === tab);
     t.setAttribute("aria-selected", t === tab);
   });
+  tabContents.forEach((content) => {
+    const isActive = content.dataset.view === currentTab;
+    content.classList.toggle("tab-content--hidden", !isActive);
+  });
   render(currentTab);
+}
+
+function canvasPointFromEvent(event) {
+  const rect = workflowCanvas.getBoundingClientRect();
+  const scaleX = workflowCanvas.width / rect.width;
+  const scaleY = workflowCanvas.height / rect.height;
+  return {
+    x: (event.clientX - rect.left) * scaleX,
+    y: (event.clientY - rect.top) * scaleY,
+  };
+}
+
+function findNodeByPoint(point) {
+  return renderedNodes.find(
+    (node) =>
+      point.x >= node.x &&
+      point.x <= node.x + node.width &&
+      point.y >= node.y &&
+      point.y <= node.y + node.height,
+  );
+}
+
+function handleCanvasClick(event) {
+  if (currentTab !== "visual") return;
+  const point = canvasPointFromEvent(event);
+  const hit = findNodeByPoint(point);
+  if (!hit) return;
+  const target = currentWorkflow.nodes.find((n) => n.id === hit.id);
+  if (!target) return;
+
+  const edited = prompt("编辑节点 JSON", JSON.stringify(target, null, 2));
+  if (!edited) return;
+  try {
+    const parsed = JSON.parse(edited);
+    currentWorkflow.nodes = currentWorkflow.nodes.map((n) => (n.id === target.id ? parsed : n));
+    updateEditor();
+    render(currentTab);
+    appendLog(`节点 ${target.id} 已更新`);
+  } catch (error) {
+    appendLog(`节点更新失败：${error.message}`);
+  }
 }
 
 function showEditHelp() {
@@ -378,6 +492,7 @@ applyWorkflowBtn.addEventListener("click", applyWorkflowFromEditor);
 resetWorkflowBtn.addEventListener("click", resetWorkflow);
 
 tabs.forEach((tab) => tab.addEventListener("click", handleTabClick));
+workflowCanvas.addEventListener("click", handleCanvasClick);
 editHelpBtn.addEventListener("click", showEditHelp);
 
 updateEditor();

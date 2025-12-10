@@ -23,20 +23,25 @@
     <main class="layout">
       <section class="canvas-panel">
         <div class="tab-bar" role="tablist">
-          <button class="tab tab--active" data-tab="dag" role="tab" aria-selected="true">Workflow DAG</button>
+          <button class="tab tab--active" data-tab="json" role="tab" aria-selected="true">Workflow JSON</button>
           <button class="tab" data-tab="visual" role="tab" aria-selected="false">流程图视图</button>
         </div>
-        <canvas id="workflowCanvas" width="1080" height="620" aria-label="workflow canvas"></canvas>
-        <div class="editor">
-          <div class="editor__header">
-            <h3>Workflow JSON</h3>
-            <div class="editor__actions">
-              <button id="resetWorkflow" class="button button--ghost">重置</button>
-              <button id="applyWorkflow" class="button">应用修改</button>
+        <div class="tab-content" data-view="json">
+          <div class="editor">
+            <div class="editor__header">
+              <h3>Workflow JSON</h3>
+              <div class="editor__actions">
+                <button id="resetWorkflow" class="button button--ghost">重置</button>
+                <button id="applyWorkflow" class="button">应用修改</button>
+              </div>
             </div>
+            <p class="muted">您可以直接编辑 DAG，VelvetFlow 会重新渲染画布。</p>
+            <textarea id="workflowEditor" spellcheck="false" aria-label="workflow json"></textarea>
           </div>
-          <p class="muted">您可以直接编辑 DAG，VelvetFlow 会重新渲染画布。</p>
-          <textarea id="workflowEditor" spellcheck="false" aria-label="workflow json"></textarea>
+        </div>
+        <div class="tab-content tab-content--hidden" data-view="visual">
+          <canvas id="workflowCanvas" width="1080" height="620" aria-label="workflow canvas"></canvas>
+          <p class="muted tab-hint">提示：点击节点可快速编辑 JSON 字段；动作节点会展示对应的业务工具。</p>
         </div>
       </section>
 
