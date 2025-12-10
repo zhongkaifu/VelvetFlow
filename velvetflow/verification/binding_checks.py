@@ -236,6 +236,7 @@ def _check_output_path_against_schema(
         return f"节点 '{node_id}' 不存在，无法引用其输出"
 
     target = nodes_by_id[node_id]
+    target_type = target.get("type")
     parent_loop = loop_body_parents.get(node_id)
     if parent_loop and rest_path and rest_path[0] != "exports":
         return f"loop body 节点 '{node_id}' 只能通过 exports 暴露输出"
@@ -246,13 +247,13 @@ def _check_output_path_against_schema(
         else None
     )
 
-    if target.get("type") == "loop":
+    if target_type == "loop":
         loop_params = target.get("params") if isinstance(target, Mapping) else {}
         loop_schema = build_loop_output_schema(loop_params or {})
         if not loop_schema:
             return f"loop 节点 '{node_id}' 缺少 exports/out_schema 等输出定义，无法引用"
 
-        allowed_meta_fields = {"status", "loop_kind", "iterations"}
+        allowed_meta_fields = {"status", "loop_kind"}
         if rest_path:
             root_field = rest_path[0]
             if root_field not in {"items", "exports", "aggregates", *allowed_meta_fields}:
@@ -273,7 +274,14 @@ def _check_output_path_against_schema(
             loop_schema, _normalize_field_tokens(list(effective_path))
         )
 
-    if target.get("type") == "action":
+    if target_type == "condition":
+        pretty_path = ".".join(str(p) for p in rest_path) if rest_path else ""
+        suffix = f".{pretty_path}" if pretty_path else ""
+        return (
+            f"condition 节点 '{node_id}' 没有输出，不能通过 result_of.{node_id}{suffix} 被引用"
+        )
+
+    if target_type == "action":
         schema = _get_node_output_schema(target, actions_by_id) or {}
         if not rest_path:
             return None
@@ -388,6 +396,9 @@ def _get_output_schema_at_path(
     rest_path = parts[2:]
     node = nodes_by_id.get(node_id)
     node_type = node.get("type") if node else None
+
+    if node_type == "condition":
+        return None
 
     if node_type == "loop":
         params = node.get("params") if isinstance(node, Mapping) else {}

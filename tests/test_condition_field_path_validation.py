@@ -483,3 +483,52 @@ def test_condition_numeric_validation_rejects_non_numeric_field():
     errors = validate_completed_workflow(workflow, action_registry=ACTION_REGISTRY)
 
     assert any(err.code == "SCHEMA_MISMATCH" and err.field == "field" for err in errors)
+
+
+def test_condition_outputs_are_not_accessible():
+    workflow = {
+        "workflow_name": "condition_output_not_exposed",
+        "description": "",
+        "nodes": [
+            {"id": "start", "type": "start"},
+            {
+                "id": "get_temperatures",
+                "type": "action",
+                "action_id": "hr.get_today_temperatures.v1",
+                "params": {"date": "2024-02-01"},
+            },
+            {
+                "id": "check_temperature_data",
+                "type": "condition",
+                "params": {
+                    "kind": "is_not_empty",
+                    "source": "result_of.get_temperatures.data",
+                },
+                "true_to_node": None,
+                "false_to_node": None,
+            },
+            {
+                "id": "log_health_event",
+                "type": "action",
+                "action_id": "hr.record_health_event.v1",
+                "params": {
+                    "event_type": {
+                        "__from__": "result_of.check_temperature_data",
+                    }
+                },
+            },
+        ],
+        "edges": [
+            {"from": "start", "to": "get_temperatures"},
+            {"from": "get_temperatures", "to": "check_temperature_data"},
+            {"from": "check_temperature_data", "to": "log_health_event"},
+        ],
+    }
+
+    errors = validate_completed_workflow(workflow, action_registry=ACTION_REGISTRY)
+
+    assert any(
+        err.code == "SCHEMA_MISMATCH"
+        and "condition 节点 'check_temperature_data' 没有输出" in err.message
+        for err in errors
+    )

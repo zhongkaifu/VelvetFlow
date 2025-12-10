@@ -630,7 +630,9 @@ def _validate_nodes_recursive(
                         _flag_self_reference("source", source_path)
 
                 field_path = params.get("field") if isinstance(params.get("field"), str) else None
-                target_schemas: List[tuple[str, Mapping[str, Any] | None]] = []
+                target_schemas: List[
+                    tuple[str, Mapping[str, Any] | None, Mapping[str, Any] | None]
+                ] = []
                 for source_path, agg_spec in source_bindings:
                     normalized_source = normalize_reference_path(source_path)
                     base_schema = _resolve_condition_schema(
@@ -644,8 +646,12 @@ def _validate_nodes_recursive(
                     projected_schema = _project_schema_through_agg(base_schema, agg_spec)
                     target_schema = projected_schema
                     if field_path:
+                        try:
+                            field_tokens = parse_field_path(field_path)
+                        except Exception:
+                            field_tokens = [field_path]
                         target_schema = (
-                            _walk_schema_with_tokens(projected_schema, [field_path])
+                            _walk_schema_with_tokens(projected_schema, field_tokens)
                             if projected_schema
                             else None
                         )
@@ -662,7 +668,9 @@ def _validate_nodes_recursive(
                                     ),
                                 )
                             )
-                    target_schemas.append((normalized_source, target_schema))
+                    target_schemas.append(
+                        (normalized_source, projected_schema, target_schema)
+                    )
                     if field_path and target_schema is None:
                         errors.append(
                             ValidationError(
@@ -676,9 +684,10 @@ def _validate_nodes_recursive(
                         )
 
                 if kind == "list_not_empty":
-                    for normalized_source, target_schema in target_schemas:
-                        if target_schema:
-                            target_type = target_schema.get("type")
+                    for normalized_source, projected_schema, target_schema in target_schemas:
+                        schema_to_check = projected_schema if field_path else target_schema
+                        if schema_to_check:
+                            target_type = schema_to_check.get("type")
                             if not _is_array_schema_type(target_type):
                                 errors.append(
                                     ValidationError(
@@ -729,7 +738,7 @@ def _validate_nodes_recursive(
                         "less_than",
                         "between",
                     }:
-                        for normalized_source, target_schema in target_schemas:
+                        for normalized_source, _, target_schema in target_schemas:
                             if target_schema:
                                 field_type = target_schema.get("type")
                                 is_numeric_type = _is_numeric_schema_type(field_type)
@@ -747,7 +756,7 @@ def _validate_nodes_recursive(
                                     )
 
                 if kind == "contains" and field_path:
-                    for normalized_source, target_schema in target_schemas:
+                    for normalized_source, _, target_schema in target_schemas:
                         if not target_schema:
                             continue
 
