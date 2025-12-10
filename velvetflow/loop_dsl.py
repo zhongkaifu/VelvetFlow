@@ -22,7 +22,6 @@ def build_loop_output_schema(loop_params: Mapping[str, Any]) -> Optional[Dict[st
     properties: Dict[str, Any] = {
         "status": {"type": "string"},
         "loop_kind": {"type": "string"},
-        "iterations": {"type": "array", "items": {"type": "object"}},
     }
 
     items_spec = exports.get("items")
