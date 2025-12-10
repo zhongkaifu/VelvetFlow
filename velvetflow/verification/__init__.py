@@ -10,6 +10,10 @@ from velvetflow.verification.validation import (
     validate_param_binding,
     validate_param_binding_and_schema,
 )
+from velvetflow.verification.type_validation import (
+    convert_type_errors,
+    validate_workflow_types,
+)
 from velvetflow.verification.repair_suggestions import generate_repair_suggestions
 
 __all__ = [
@@ -18,5 +22,7 @@ __all__ = [
     "validate_completed_workflow",
     "validate_param_binding",
     "validate_param_binding_and_schema",
+    "validate_workflow_types",
+    "convert_type_errors",
     "generate_repair_suggestions",
 ]

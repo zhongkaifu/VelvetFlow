@@ -1,6 +1,9 @@
 # velvetflow/verification/type_validation.py
 from __future__ import annotations
-from typing import List, Dict, Any
+import re
+from typing import List, Dict, Any, Iterable
+
+from velvetflow.models import ValidationError
 
 from velvetflow.type_system import (
     TypeEnvironment,
@@ -12,22 +15,61 @@ from velvetflow.type_system import (
 )
 
 
+def _action_id(action_def: Dict[str, Any]) -> str:
+    return action_def.get("action_id") or action_def.get("id")
+
+
+def _matches_json_type(value: Any, schema_type: Any) -> bool:
+    types: Iterable[Any] = schema_type if isinstance(schema_type, list) else [schema_type]
+
+    for t in types:
+        if t is None:
+            return True
+        if t == "string" and isinstance(value, str):
+            return True
+        if t == "boolean" and isinstance(value, bool):
+            return True
+        if t == "integer" and isinstance(value, int) and not isinstance(value, bool):
+            return True
+        if t == "number" and isinstance(value, (int, float)) and not isinstance(value, bool):
+            return True
+        if t == "array" and isinstance(value, list):
+            return True
+        if t == "object" and isinstance(value, dict):
+            return True
+    return False
+
+
+def _value_type_label(value: Any) -> str:
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, int):
+        return "integer"
+    if isinstance(value, float):
+        return "number"
+    if isinstance(value, list):
+        return "array"
+    if isinstance(value, dict):
+        return "object"
+    return type(value).__name__
+
+
 def build_node_output_type(action_def: Dict[str, Any]) -> TypeRef:
     output_schema = action_def.get("output_schema") or {"type": "object"}
     return TypeRef(
         json_schema=output_schema,
-        source=f"action:{action_def.get('id')}:output"
+        source=f"action:{_action_id(action_def)}:output"
     )
 
 
 def get_param_expected_type(action_def: Dict[str, Any], param_name: str) -> TypeRef:
-    input_schema = action_def.get("input_schema") or {}
+    input_schema = action_def.get("arg_schema") or action_def.get("input_schema") or {}
     props = input_schema.get("properties") or {}
     if param_name not in props:
         return None
     return TypeRef(
         json_schema=props[param_name],
-        source=f"action:{action_def.get('id')}:input.{param_name}"
+        source=f"action:{_action_id(action_def)}:input.{param_name}"
     )
 
 
@@ -93,6 +135,13 @@ def check_param_type(
             )
         return
 
+    expected_type = expected.json_schema.get("type")
+    if expected_type is not None and not _matches_json_type(param_val, expected_type):
+        errors.append(
+            f"[TypeError] node '{node_id}' param '{param_name}' expects "
+            f"{expected_type}, got {_value_type_label(param_val)}"
+        )
+
 
 def validate_workflow_types(workflow, action_registry) -> None:
     errors: List[str] = []
@@ -120,3 +169,30 @@ def validate_workflow_types(workflow, action_registry) -> None:
 
     if errors:
         raise WorkflowTypeValidationError(errors)
+
+
+def convert_type_errors(type_errors: List[str]) -> List[ValidationError]:
+    converted: List[ValidationError] = []
+
+    for msg in type_errors:
+        node_id = None
+        field = None
+
+        node_match = re.search(r"node '([^']+)'", msg)
+        if node_match:
+            node_id = node_match.group(1)
+
+        param_match = re.search(r"param '([^']+)'", msg)
+        if param_match:
+            field = f"params.{param_match.group(1)}"
+
+        converted.append(
+            ValidationError(
+                code="SCHEMA_MISMATCH",
+                node_id=node_id,
+                field=field,
+                message=msg,
+            )
+        )
+
+    return converted

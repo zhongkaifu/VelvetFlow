@@ -22,6 +22,11 @@ from velvetflow.models import PydanticValidationError, ValidationError, Workflow
 from velvetflow.workflow_parser import WorkflowParseResult, parse_workflow_source
 from velvetflow.verification import precheck_loop_body_graphs, validate_completed_workflow
 from velvetflow.verification import generate_repair_suggestions
+from velvetflow.verification.type_validation import (
+    WorkflowTypeValidationError,
+    convert_type_errors,
+    validate_workflow_types,
+)
 from velvetflow.verification.semantic_analysis import analyze_workflow_semantics
 
 
@@ -148,6 +153,8 @@ def validate_workflow_data(
 
     workflow_parsed = parse_result.ast if parse_result.ast is not None else workflow_raw
 
+    actions_by_id = {a.get("action_id"): a for a in action_registry if a.get("action_id")}
+
     semantic_errors = analyze_workflow_semantics(workflow_parsed, action_registry)
     errors.extend(semantic_errors)
 
@@ -172,6 +179,11 @@ def validate_workflow_data(
 
     workflow_dict = workflow_model.model_dump(by_alias=True)
     errors.extend(validate_completed_workflow(workflow_dict, action_registry))
+
+    try:
+        validate_workflow_types(workflow_model, actions_by_id)
+    except WorkflowTypeValidationError as exc:
+        errors.extend(convert_type_errors(exc.errors))
     return errors
 
 

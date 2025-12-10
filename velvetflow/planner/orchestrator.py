@@ -57,6 +57,11 @@ from velvetflow.verification import (
     run_lightweight_static_rules,
     validate_completed_workflow,
 )
+from velvetflow.verification.type_validation import (
+    WorkflowTypeValidationError,
+    convert_type_errors,
+    validate_workflow_types,
+)
 from velvetflow.verification.validation import (
     _get_array_item_schema_from_output,
     _get_field_schema_from_item,
@@ -856,6 +861,16 @@ def _ensure_actions_registered_or_repair(
     return _attach_out_params_schema(final_workflow, actions_by_id)
 
 
+def _run_type_validation(
+    workflow: Workflow, actions_by_id: Mapping[str, Dict[str, Any]]
+) -> List[ValidationError]:
+    try:
+        validate_workflow_types(workflow, actions_by_id)
+        return []
+    except WorkflowTypeValidationError as exc:
+        return convert_type_errors(exc.errors)
+
+
 def _validate_and_repair_workflow(
     current_workflow: Workflow,
     *,
@@ -872,6 +887,7 @@ def _validate_and_repair_workflow(
         return f"{err.code}:{err.node_id or 'global'}:{err.field or 'global'}"
 
     last_good_workflow = last_good_workflow or current_workflow
+    actions_by_id = _index_actions_by_id(action_registry)
 
     for repair_round in range(max_repair_rounds + 1):
         log_section(f"校验 + 自修复轮次 {repair_round}")
@@ -926,6 +942,8 @@ def _validate_and_repair_workflow(
                     action_registry=action_registry,
                 )
             )
+
+        errors.extend(_run_type_validation(current_workflow, actions_by_id))
 
         current_errors_by_key = {_error_key(e): e for e in errors}
         if pending_attempts:
@@ -995,6 +1013,8 @@ def _validate_and_repair_workflow(
                 current_workflow.model_dump(by_alias=True),
                 action_registry=action_registry,
             )
+
+            errors.extend(_run_type_validation(current_workflow, actions_by_id))
 
             if not errors:
                 log_success("本地修正后校验通过，无需调用 LLM 继续修复。")
