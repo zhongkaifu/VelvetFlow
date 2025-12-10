@@ -10,10 +10,16 @@ Static assets in the same directory are also served, so running
 from __future__ import annotations
 """FastAPI entrypoint that powers the VelvetFlow playground UI."""
 
+import sys
 import traceback
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    # Ensure the local package is importable when running via `python webapp/server.py`.
+    sys.path.insert(0, str(REPO_ROOT))
 
 import velvetflow.logging_utils as logging_utils
 from fastapi import FastAPI, HTTPException
@@ -29,7 +35,6 @@ from velvetflow.models import Workflow
 from velvetflow.planner import plan_workflow_with_two_pass, update_workflow_with_two_pass
 from velvetflow.search import HybridActionSearchService, build_default_search_service
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
 SIMULATION_PATH = REPO_ROOT / "simulation_data.json"
 
 app = FastAPI(title="VelvetFlow Web API")
