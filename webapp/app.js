@@ -17,6 +17,12 @@ let currentTab = "json";
 let currentWorkflow = createEmptyWorkflow();
 let renderedNodes = [];
 let lastPositions = {};
+let nodePositions = {};
+
+let isDragging = false;
+let dragNodeId = null;
+let dragOffset = { x: 0, y: 0 };
+let dragBox = null;
 
 function createEmptyWorkflow() {
   return {
@@ -134,6 +140,16 @@ function layoutNodes(workflow) {
   return positions;
 }
 
+function syncPositions(workflow) {
+  const auto = layoutNodes(workflow);
+  const nextPositions = {};
+  (workflow.nodes || []).forEach((node) => {
+    nextPositions[node.id] = nodePositions[node.id] || auto[node.id];
+  });
+  nodePositions = nextPositions;
+  return nextPositions;
+}
+
 function drawNode(node, pos, mode) {
   const radius = 16;
   const width = 240;
@@ -236,7 +252,7 @@ function render(mode = currentTab) {
   ctx.clearRect(0, 0, workflowCanvas.width, workflowCanvas.height);
   renderedNodes = [];
   if (!currentWorkflow.nodes) return;
-  lastPositions = layoutNodes(currentWorkflow);
+  lastPositions = syncPositions(currentWorkflow);
 
   const edges = (currentWorkflow.edges || []).map(normalizeEdge);
   edges.forEach((edge) => {
@@ -311,6 +327,7 @@ async function requestPlan(requirement) {
 
     const payload = await response.json();
     renderLogs(payload.logs);
+    nodePositions = {};
     currentWorkflow = normalizeWorkflow(payload.workflow);
     updateEditor();
     render(currentTab);
@@ -381,6 +398,7 @@ function applyWorkflowFromEditor() {
 
 function resetWorkflow() {
   currentWorkflow = createEmptyWorkflow();
+  nodePositions = {};
   updateEditor();
   render(currentTab);
   appendLog("已重置为空 workflow");
@@ -421,7 +439,7 @@ function findNodeByPoint(point) {
 }
 
 function handleCanvasClick(event) {
-  if (currentTab !== "visual") return;
+  if (currentTab !== "visual" || isDragging) return;
   const point = canvasPointFromEvent(event);
   const hit = findNodeByPoint(point);
   if (!hit) return;
@@ -441,6 +459,38 @@ function handleCanvasClick(event) {
   }
 }
 
+function handleCanvasMouseDown(event) {
+  if (currentTab !== "visual") return;
+  const point = canvasPointFromEvent(event);
+  const hit = findNodeByPoint(point);
+  if (!hit) return;
+  isDragging = true;
+  dragNodeId = hit.id;
+  dragBox = hit;
+  dragOffset = { x: point.x - hit.x, y: point.y - hit.y };
+  workflowCanvas.style.cursor = "grabbing";
+}
+
+function handleCanvasMouseMove(event) {
+  if (!isDragging || currentTab !== "visual" || !dragNodeId || !dragBox) return;
+  const point = canvasPointFromEvent(event);
+  const topLeftX = point.x - dragOffset.x;
+  const topLeftY = point.y - dragOffset.y;
+  nodePositions[dragNodeId] = {
+    x: topLeftX + dragBox.width / 2,
+    y: topLeftY + dragBox.height / 2,
+  };
+  render(currentTab);
+}
+
+function stopDragging() {
+  if (!isDragging) return;
+  isDragging = false;
+  dragNodeId = null;
+  dragBox = null;
+  workflowCanvas.style.cursor = "grab";
+}
+
 function showEditHelp() {
   addChatMessage(
     "您可以在左侧 JSON 文本框中编辑节点或边，例如增加节点 {id: 'notify', type: 'action', display_name: '通知'} 并添加 {from_node: 'enable_access', to_node: 'notify'}，点击“应用修改”刷新。",
@@ -455,6 +505,10 @@ resetWorkflowBtn.addEventListener("click", resetWorkflow);
 
 tabs.forEach((tab) => tab.addEventListener("click", handleTabClick));
 workflowCanvas.addEventListener("click", handleCanvasClick);
+workflowCanvas.addEventListener("mousedown", handleCanvasMouseDown);
+workflowCanvas.addEventListener("mousemove", handleCanvasMouseMove);
+workflowCanvas.addEventListener("mouseup", stopDragging);
+workflowCanvas.addEventListener("mouseleave", stopDragging);
 editHelpBtn.addEventListener("click", showEditHelp);
 
 updateEditor();

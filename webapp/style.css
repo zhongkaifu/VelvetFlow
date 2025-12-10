@@ -145,6 +145,7 @@ canvas {
   background: radial-gradient(circle at 20% 20%, rgba(255, 255, 255, 0.04), transparent 40%),
     #0b1221;
   border: 1px solid var(--border);
+  cursor: grab;
 }
 
 .tab-hint {
