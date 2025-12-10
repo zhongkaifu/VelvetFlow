@@ -19,9 +19,58 @@ import uuid
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 try:
-    from crawl4ai import BrowserConfig, CacheMode, CrawlerRunConfig, LLMConfig, WebCrawler
+    from crawl4ai import BrowserConfig, CacheMode, CrawlerRunConfig, LLMConfig
+    try:  # Prefer native sync crawler when available
+        from crawl4ai import WebCrawler
+    except ImportError:  # pragma: no cover - backward compatibility
+        WebCrawler = None
+
+    try:
+        from crawl4ai import AsyncWebCrawler as _AsyncWebCrawler
+    except ImportError:  # pragma: no cover - async crawler not available
+        _AsyncWebCrawler = None
+
     from crawl4ai.extraction_strategy import LLMExtractionStrategy
     _CRAWL4AI_AVAILABLE = True
+
+    if WebCrawler is None and _AsyncWebCrawler is not None:  # pragma: no cover - exercised when sync crawler missing
+        import asyncio
+
+        class WebCrawler:  # type: ignore[misc]
+            """Synchronous shim built on crawl4ai.AsyncWebCrawler."""
+
+            def __init__(self, config: Any) -> None:
+                self._config = config
+                self._crawler: Any | None = None
+
+            def __enter__(self) -> "WebCrawler":
+                async def _start() -> Any:
+                    crawler = _AsyncWebCrawler(config=self._config)
+                    await crawler.__aenter__()
+                    return crawler
+
+                self._crawler = asyncio.run(_start())
+                return self
+
+            def run(self, *args: Any, **kwargs: Any) -> Any:
+                if self._crawler is None:  # pragma: no cover - defensive guard
+                    raise RuntimeError("Crawler not initialized")
+
+                async def _run() -> Any:
+                    return await self._crawler.arun(*args, **kwargs)
+
+                return asyncio.run(_run())
+
+            def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+                if self._crawler is None:  # pragma: no cover - defensive guard
+                    return
+
+                async def _stop() -> None:
+                    await self._crawler.__aexit__(exc_type, exc, tb)
+
+                asyncio.run(_stop())
+
+    AsyncWebCrawler = _AsyncWebCrawler
 except ModuleNotFoundError:  # pragma: no cover - exercised in environments without crawl4ai
     _CRAWL4AI_AVAILABLE = False
 
