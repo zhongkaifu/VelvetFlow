@@ -363,8 +363,20 @@ class ConditionEvaluationMixin:
             return _return(False, data)
 
         if kind == "compare":
-            op = params.get("op") or params.get("operator") or "=="
+            expr = params.get("expression") if isinstance(params.get("expression"), dict) else None
+            op = params.get("op") or params.get("operator")
+            if op is None and expr:
+                op = expr.get("op")
+            op = op or "=="
+
             target = params.get("value")
+            if target is None and expr:
+                right = expr.get("right")
+                if isinstance(right, Mapping):
+                    if "const" in right:
+                        target = right.get("const")
+                    elif "value" in right:
+                        target = right.get("value")
             field = params.get("field")
             values = _extract_values(data, field)
 
