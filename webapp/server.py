@@ -4,8 +4,8 @@ This server exposes two endpoints:
 - POST /api/plan: build or update a workflow from a natural-language requirement.
 - POST /api/run: execute a validated workflow with the simulated executor.
 
-Static assets in the same directory are also served, so `uvicorn webapp.server:app`
-will provide both the API and the front-end.
+Static assets in the same directory are also served, so running
+`python webapp/server.py` will provide both the API and the front-end.
 """
 from __future__ import annotations
 """FastAPI entrypoint that powers the VelvetFlow playground UI."""
@@ -159,3 +159,14 @@ def run_workflow(req: RunRequest) -> RunResponse:
 
 
 app.mount("/", StaticFiles(directory=Path(__file__).parent, html=True), name="static")
+
+
+if __name__ == "__main__":
+    import asyncio
+
+    from hypercorn.asyncio import serve
+    from hypercorn.config import Config
+
+    config = Config()
+    config.bind = ["0.0.0.0:8000"]
+    asyncio.run(serve(app, config))

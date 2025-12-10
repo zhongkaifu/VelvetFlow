@@ -94,11 +94,11 @@ VelvetFlow (repo root)
 
 ### Web 可视化界面（带 Planner/Executor 的实时交互）
 - `webapp/` 目录提供了基于 Canvas 的前端页面，包含 VelvetFlow Agent 对话框、DAG/流程图双 Tab 视图、可编辑的 workflow JSON 与 Run 执行按钮。
-- **请务必用 uvicorn 运行 FastAPI**（不要用 `python -m http.server` 之类的纯静态服务器，否则 `/api/plan`/`/api/run` 会返回 `Unsupported method ('POST')`）：
+- **请使用 `python webapp/server.py` 直接启动内置 API 服务**（不要用 `python -m http.server` 之类的纯静态服务器，否则 `/api/plan`/`/api/run` 会返回 `Unsupported method ('POST')`）：
   ```bash
   export OPENAI_API_KEY="<your_api_key>"
   pip install -r requirements.txt
-  uvicorn webapp.server:app --reload --port 8000
+  python webapp/server.py
   ```
   然后访问 <http://localhost:8000> 即可。对话框会把自然语言发送到 `/api/plan`，由 planner 自动构建/修复 workflow 并返回拓扑，Run 按钮会调用 `/api/run` 触发执行并输出运行日志/结果。
 
