@@ -400,6 +400,16 @@ def repair_workflow_with_llm(
 
     system_prompt = """
 你是一个工作流修复助手。
+【Workflow DSL 语法与语义（务必遵守）】
+- workflow = {workflow_name, description, nodes: []}，只能返回合法 JSON（edges 会由系统基于节点绑定自动推导，不需要生成）。
+- node 基本结构：{id, type, display_name, params, action_id?, out_params_schema?, loop/subgraph/branches?}。
+  type 仅允许 start/action/condition/loop/parallel/end/exit。start/exit/end 不需要 params/out_params_schema。
+  action 节点必须填写 action_id（来自动作库）与 params；只有 action 节点允许 out_params_schema。
+  condition 节点需包含 kind/source/field/op/value 以及 true_to_node/false_to_node（字符串或 null）。
+  loop 节点包含 loop_kind/iter/source/body_subgraph/exports，循环外部只能引用 exports.items 或 exports.aggregates。
+  parallel 节点的 branches 为非空数组，每个元素包含 id/entry_node/sub_graph_nodes。
+- params 内部可使用绑定 DSL：{"__from__": "result_of.<node_id>.<field_path>", "__agg__": <identity/count/...>}，
+  其中 <node_id> 必须存在且字段需与上游 output_schema 或 loop.exports 对齐。
 当前有一个 workflow JSON 和一组结构化校验错误 validation_errors。
 validation_errors 是 JSON 数组，元素包含 code/node_id/field/message。
 这些错误来自：
@@ -416,10 +426,9 @@ validation_errors 是 JSON 数组，元素包含 code/node_id/field/message。
 总体目标：在“尽量不改变工作流整体结构”的前提下，修复这些错误，使 workflow 通过静态校验。
 
 具体要求（很重要，请严格遵守）：
-1. 结构保持稳定：
-   - 不要增加或删除节点；
-   - 不要随意增加或删除 edges；
-   - 只能在必要时局部调整 edge.condition（true/false/null），一般情况下保持 edges 原样。
+ 1. 结构保持稳定：
+    - 不要增加或删除节点；
+    - edges 会由系统根据节点引用自动推导，不需要手动增删或调整 condition。
 
 2. action 节点修复优先级：
    - 首先根据 action_schemas[action_id].arg_schema 补齐 params 里缺失的必填字段，或修正错误类型；
@@ -454,7 +463,7 @@ validation_errors 是 JSON 数组，元素包含 code/node_id/field/message。
    - 请逐条对照 validation_errors，把所有问题修到为 0 再输出结果，避免留存隐患。
 
 9. 输出要求：
-   - 保持顶层结构：workflow_name/description/nodes/edges 不变（仅节点内部内容可调整）；
+   - 保持顶层结构：workflow_name/description/nodes 不变（仅节点内部内容可调整，edges 由系统推导）；
    - 节点的 id/type 不变；
    - 返回修复后的 workflow JSON，只返回 JSON 对象本身，不要包含代码块标记。
 10. 可用工具：当你需要结构化修改时，优先调用提供的工具（无 LLM 依赖、结果确定），用来修复 loop body 引用、补齐必填参数或写入指定字段。

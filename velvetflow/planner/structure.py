@@ -567,6 +567,16 @@ def plan_workflow_structure_with_llm(
 
     system_prompt = (
         "你是一个通用业务工作流编排助手。\n"
+        "【Workflow DSL 语法与语义（务必遵守）】\n"
+        "- workflow = {workflow_name, description, nodes: []}，只能返回合法 JSON（edges 会由系统基于节点绑定自动推导，不需要生成）。\n"
+        "- node 基本结构：{id, type, display_name, params, action_id?, out_params_schema?, loop/subgraph/branches?}。\n"
+        "  type 仅允许 start/action/condition/loop/parallel/end/exit。start/exit/end 不需要 params/out_params_schema。\n"
+        "  action 节点必须填写 action_id（来自动作库）与 params；只有 action 节点允许 out_params_schema。\n"
+        "  condition 节点需包含 kind/source/field/op/value 以及 true_to_node/false_to_node（字符串或 null）。\n"
+        "  loop 节点包含 loop_kind/iter/source/body_subgraph/exports，循环外部只能引用 exports.items 或 exports.aggregates。\n"
+        "  parallel 节点的 branches 为非空数组，每个元素包含 id/entry_node/sub_graph_nodes。\n"
+        "- params 内部可使用绑定 DSL：{\"__from__\": \"result_of.<node_id>.<field_path>\", \"__agg__\": <identity/count/...>}，"
+        "  其中 <node_id> 必须存在且字段需与上游 output_schema 或 loop.exports 对齐。\n"
         "系统中有一个 Action Registry，包含大量业务动作，你只能通过 search_business_actions 查询。\n"
         "构建方式：\n"
         "1) 使用 set_workflow_meta 设置工作流名称和描述。\n"
