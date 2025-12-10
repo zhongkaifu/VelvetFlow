@@ -53,7 +53,7 @@ VelvetFlow (repo root)
    ```bash
    python -m venv .venv
    source .venv/bin/activate
-   pip install --upgrade openai numpy pillow pydantic
+   pip install -r requirements.txt
    ```
 2. **设置凭证**
    ```bash
@@ -91,6 +91,16 @@ VelvetFlow (repo root)
    python update_workflow.py path/to/workflow.json --requirement "新增审批环节" --output workflow_updated.json
    ```
    - 将自然语言需求与现有 workflow 作为输入，调用 LLM 自动更新节点、参数与边；若校验失败会将错误列表反馈给 LLM 自动修复（最多 3 轮），最终写入通过校验的结果到 `--output` 指定的文件。
+
+### Web 可视化界面（带 Planner/Executor 的实时交互）
+- `webapp/` 目录提供了基于 Canvas 的前端页面，包含 VelvetFlow Agent 对话框、DAG/流程图双 Tab 视图、可编辑的 workflow JSON 与 Run 执行按钮。
+- **请使用 `python webapp/server.py` 直接启动内置 API 服务**（不要用 `python -m http.server` 之类的纯静态服务器，否则 `/api/plan`/`/api/run` 会返回 `Unsupported method ('POST')`）：
+  ```bash
+  export OPENAI_API_KEY="<your_api_key>"
+  pip install -r requirements.txt
+  python webapp/server.py
+  ```
+  然后访问 <http://localhost:8000> 即可。对话框会把自然语言发送到 `/api/plan`，由 planner 自动构建/修复 workflow 并返回拓扑，Run 按钮会调用 `/api/run` 触发执行并输出运行日志/结果。
 
 ## 异步工具调用、挂起与恢复
 - **触发异步**：在 action/loop 子图节点的 `params` 中加入 `"__invoke_mode": "async"`（或布尔 `"__async__": true`）即可请求异步调用。业务工具若直接返回 `AsyncToolHandle` 会被识别为异步；否则执行器会自动将同步输出包装为异步请求句柄。异步调用会写入 `GLOBAL_ASYNC_RESULT_STORE`，并返回 `{"status": "async_pending", ...}`。
