@@ -384,7 +384,7 @@
     "action_id": "common.search_and_crawl_web_content.v1",
     "name": "Search then crawl in-domain content with LLM guidance",
     "domain": "common",
-    "description": "Automatically execute three steps around a user's natural-language query: search for candidate URLs, keep same-domain links for crawl4ai scraping, let the LLM decide if needs are met or deeper same-site crawling is required, and finally aggregate cross-page content for the response.",
+    "description": "Automatically execute three steps around a user's natural-language query: search Google for candidate URLs, keep same-domain links for crawl4ai scraping, let the LLM decide if needs are met or deeper same-site crawling is required, and finally aggregate cross-page content for the response.",
     "tool_name": "search_and_crawl_web_content",
     "tags": [
       "web-search",

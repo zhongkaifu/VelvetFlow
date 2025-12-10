@@ -1511,7 +1511,7 @@ def register_builtin_tools() -> None:
         Tool(
             name="search_and_crawl_web_content",
             description=(
-                "Search for a natural-language query, crawl in-domain pages with crawl4ai, let an LLM assess coverage, and return a multi-page summary."
+                "Search Google for a natural-language query, crawl in-domain pages with crawl4ai, let an LLM assess coverage, and return a multi-page summary."
             ),
             function=business_action,
             args_schema={
