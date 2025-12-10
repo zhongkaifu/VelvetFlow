@@ -15,6 +15,7 @@ const tabContents = document.querySelectorAll(".tab-content");
 
 let currentTab = "json";
 let currentWorkflow = createEmptyWorkflow();
+let lastRunResults = {};
 let renderedNodes = [];
 let lastPositions = {};
 let nodePositions = {};
@@ -94,11 +95,30 @@ function describeNode(node) {
   const inputs = collectParamKeys(node.inputs || node.input_params || node.params || node.args);
   const outputs = collectParamKeys(node.outputs || node.output_params || node.output);
   const toolLabel = node.type === "action" ? node.action_id || node.display_name || node.id : null;
+  const runInfo = lastRunResults[node.id];
+  const runtimeInputs = runInfo && runInfo.params ? runInfo.params : undefined;
+  const runtimeOutputs = runInfo
+    ? Object.keys(runInfo)
+        .filter((key) => key !== "params")
+        .reduce((acc, key) => ({ ...acc, [key]: runInfo[key] }), {})
+    : undefined;
   return {
     inputs,
     outputs,
     toolLabel,
+    runtimeInputs,
+    runtimeOutputs,
   };
+}
+
+function summarizeValue(value, limit = 160) {
+  try {
+    const text = typeof value === "string" ? value : JSON.stringify(value);
+    if (text.length > limit) return `${text.slice(0, limit)}…`;
+    return text;
+  } catch (error) {
+    return String(value);
+  }
 }
 
 function wrapText(text, maxWidth, font = "13px Inter") {
@@ -153,11 +173,18 @@ function syncPositions(workflow) {
 function drawNode(node, pos, mode) {
   const radius = 16;
   const width = 240;
-  const { inputs, outputs, toolLabel } = describeNode(node);
+  const { inputs, outputs, toolLabel, runtimeInputs, runtimeOutputs } = describeNode(node);
   const contentLines = [];
   if (toolLabel) contentLines.push(`工具: ${toolLabel}`);
   contentLines.push(`入参: ${inputs.length ? inputs.join(", ") : "-"}`);
   contentLines.push(`出参: ${outputs.length ? outputs.join(", ") : "-"}`);
+
+  if (runtimeInputs !== undefined) {
+    contentLines.push(`运行入参: ${summarizeValue(runtimeInputs)}`);
+  }
+  if (runtimeOutputs !== undefined && Object.keys(runtimeOutputs).length > 0) {
+    contentLines.push(`运行结果: ${summarizeValue(runtimeOutputs)}`);
+  }
 
   const wrappedLines = contentLines.flatMap((line) => wrapText(line, width - 28));
   const baseHeight = 72;
@@ -327,6 +354,7 @@ async function requestPlan(requirement) {
 
     const payload = await response.json();
     renderLogs(payload.logs);
+    lastRunResults = {};
     nodePositions = {};
     currentWorkflow = normalizeWorkflow(payload.workflow);
     updateEditor();
@@ -362,6 +390,8 @@ async function requestRun() {
     const payload = await response.json();
     renderLogs(payload.logs);
     setStatus(payload.status === "completed" ? "运行完成" : "挂起等待回调", "success");
+    lastRunResults = payload.result || {};
+    render(currentTab);
     appendLog(`运行结果: ${payload.status}`);
     addChatMessage(`执行状态：${payload.status}。结果：${JSON.stringify(payload.result, null, 2)}`, "agent");
   } catch (error) {
@@ -388,6 +418,7 @@ function applyWorkflowFromEditor() {
       throw new Error("workflow 需要包含 nodes 数组");
     }
     currentWorkflow = normalizeWorkflow(parsed);
+    lastRunResults = {};
     render(currentTab);
     appendLog("已应用手动修改并刷新画布");
     addChatMessage("收到您的修改，Canvas 已同步更新。", "agent");
@@ -399,6 +430,7 @@ function applyWorkflowFromEditor() {
 function resetWorkflow() {
   currentWorkflow = createEmptyWorkflow();
   nodePositions = {};
+  lastRunResults = {};
   updateEditor();
   render(currentTab);
   appendLog("已重置为空 workflow");
