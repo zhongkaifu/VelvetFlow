@@ -8,7 +8,11 @@ import json
 
 from velvetflow.type_system import WorkflowTypeValidationError
 from velvetflow.verification.type_validation import validate_workflow_types
-from velvetflow.verification.type_repair import RepairAction, RepairResult
+from velvetflow.verification.type_repair import (
+    RepairAction,
+    RepairResult,
+    attempt_local_type_repairs,
+)
 
 
 @runtime_checkable
@@ -279,3 +283,74 @@ def llm_based_repair_workflow(
         last_error=last_error_text,
         local_repair=None,
     )
+
+
+def repair_workflow_types_with_local_and_llm(
+    *,
+    workflow: Any,
+    action_registry: Any,
+    llm_client: LLMClientProtocol,
+    config: Optional[LLMRepairConfig] = None,
+) -> LLMRepairResult:
+    """
+    Run type validation with layered repairs: rule-based first, LLM fallback.
+
+    1) 调用 ``validate_workflow_types``。若通过，直接返回。
+    2) 若有错误，先用 ``attempt_local_type_repairs`` 自动修复常见问题。
+    3) 如果仍有错误，再调用 ``llm_based_repair_workflow``，把剩余错误
+       和本地修复的 suggestions 作为提示。
+    4) 最后再次运行 ``validate_workflow_types``，确保返回的 workflow 类型安全。
+    """
+
+    if config is None:
+        config = LLMRepairConfig()
+
+    try:
+        validate_workflow_types(workflow, action_registry)
+        return LLMRepairResult(
+            workflow=workflow,
+            rounds=0,
+            success=True,
+            last_error=None,
+            local_repair=None,
+        )
+    except WorkflowTypeValidationError as exc:
+        initial_errors = list(exc.errors)
+
+    local_repair = attempt_local_type_repairs(workflow, action_registry)
+    if not local_repair.remaining_errors:
+        # 本地修复已解决全部问题，做一次最终校验
+        validate_workflow_types(workflow, action_registry)
+        return LLMRepairResult(
+            workflow=workflow,
+            rounds=0,
+            success=True,
+            last_error=None,
+            local_repair=local_repair,
+        )
+
+    llm_result = llm_based_repair_workflow(
+        workflow=workflow,
+        action_registry=action_registry,
+        type_errors=local_repair.remaining_errors or initial_errors,
+        suggestions=local_repair.suggestions,
+        llm_client=llm_client,
+        config=config,
+    )
+
+    llm_result.local_repair = local_repair
+
+    if llm_result.success:
+        # 再次确认类型安全
+        try:
+            validate_workflow_types(llm_result.workflow, action_registry)
+        except WorkflowTypeValidationError as exc:  # pragma: no cover - defensive
+            return LLMRepairResult(
+                workflow=llm_result.workflow,
+                rounds=llm_result.rounds,
+                success=False,
+                last_error="\n".join(exc.errors),
+                local_repair=local_repair,
+            )
+
+    return llm_result

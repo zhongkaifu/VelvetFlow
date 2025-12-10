@@ -14,6 +14,7 @@ from velvetflow.verification.type_validation import (
     convert_type_errors,
     validate_workflow_types,
 )
+from velvetflow.verification.llm_repair import repair_workflow_types_with_local_and_llm
 from velvetflow.verification.repair_suggestions import generate_repair_suggestions
 
 __all__ = [
@@ -25,4 +26,5 @@ __all__ = [
     "validate_workflow_types",
     "convert_type_errors",
     "generate_repair_suggestions",
+    "repair_workflow_types_with_local_and_llm",
 ]
