@@ -523,3 +523,108 @@ def test_loop_invalid_accumulator_reference_is_repaired():
         node for node in workflow_dict.get("nodes", []) if node.get("id") == "send_email"
     )
     assert "email_content" not in (send_email.get("params") or {})
+
+
+def test_loop_and_condition_without_action_ids_still_pass_type_validation():
+    workflow = {
+        "workflow_name": "员工体温健康预警工作流",
+        "nodes": [
+            {"id": "start", "type": "start"},
+            {
+                "id": "get_temperatures",
+                "type": "action",
+                "action_id": "hr.get_today_temperatures.v1",
+                "params": {"date": "2024-06-01"},
+            },
+            {
+                "id": "loop_employees",
+                "type": "loop",
+                "params": {
+                    "loop_kind": "for_each",
+                    "source": {"__from__": "result_of.get_temperatures.data"},
+                    "item_alias": "employee",
+                    "body_subgraph": {
+                        "nodes": [
+                            {
+                                "id": "check_temperature",
+                                "type": "condition",
+                                "params": {
+                                    "source": "employee",
+                                    "field": "temperature",
+                                    "threshold": 38,
+                                    "kind": "greater_than",
+                                },
+                                "true_to_node": "add_to_warning_list",
+                                "false_to_node": None,
+                                "parent_node_id": "loop_employees",
+                            },
+                            {
+                                "id": "add_to_warning_list",
+                                "type": "action",
+                                "action_id": "hr.update_employee_health_profile.v1",
+                                "params": {
+                                    "employee_id": "placeholder",
+                                    "last_check_date": "2024-06-01",
+                                    "last_temperature": 0,
+                                    "status": "warning",
+                                },
+                                "parent_node_id": "loop_employees",
+                            },
+                        ],
+                        "entry": "check_temperature",
+                        "exit": "add_to_warning_list",
+                    },
+                        "exports": {
+                            "items": {
+                                "from_node": "add_to_warning_list",
+                                "fields": ["employee_id", "last_temperature", "status"],
+                            }
+                        },
+                },
+            },
+            {
+                "id": "check_warning_list_empty",
+                "type": "condition",
+                "params": {
+                    "source": "result_of.loop_employees.exports.items",
+                    "kind": "list_not_empty",
+                },
+                "true_to_node": "generate_warning_report",
+                "false_to_node": "generate_normal_report",
+            },
+            {
+                "id": "generate_warning_report",
+                "type": "action",
+                "action_id": "hr.record_health_event.v1",
+                "params": {
+                    "event_type": "健康预警报告",
+                    "date": {"__from__": "result_of.get_temperatures.date"},
+                    "abnormal_count": 1,
+                },
+            },
+            {
+                "id": "generate_normal_report",
+                "type": "action",
+                "action_id": "hr.record_health_event.v1",
+                "params": {
+                    "event_type": "普通健康报告",
+                    "date": {"__from__": "result_of.get_temperatures.date"},
+                    "abnormal_count": 0,
+                },
+            },
+            {"id": "end", "type": "end"},
+        ],
+        "edges": [
+            {"from": "start", "to": "get_temperatures"},
+            {"from": "get_temperatures", "to": "loop_employees"},
+            {"from": "loop_employees", "to": "check_warning_list_empty"},
+            {"from": "check_warning_list_empty", "to": "generate_warning_report", "condition": True},
+            {"from": "check_warning_list_empty", "to": "generate_normal_report", "condition": False},
+            {"from": "generate_warning_report", "to": "end"},
+            {"from": "generate_normal_report", "to": "end"},
+        ],
+    }
+
+    errors = validate_workflow_data(workflow, ACTION_REGISTRY)
+
+    assert errors == []
