@@ -8,7 +8,7 @@ import pytest
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
-from velvetflow.bindings import BindingContext
+from velvetflow.bindings import BindingContext, eval_node_params
 from velvetflow.models import Workflow
 
 
@@ -44,3 +44,125 @@ def test_type_mismatch_reports_actual_type():
 
     with pytest.raises(TypeError, match=r"值类型为 int，不支持字段 'id' 访问"):
         ctx.resolve_binding({"__from__": "result_of.a.output.id"})
+
+
+def test_missing_action_output_field_falls_back_to_schema():
+    workflow = Workflow.model_validate(
+        {
+            "workflow_name": "news-email",
+            "nodes": [
+                {
+                    "id": "analyze_top_movers",
+                    "type": "action",
+                    "action_id": "common.search_news.v1",
+                    "out_params_schema": {
+                        "type": "object",
+                        "properties": {
+                            "results": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "title": {"type": "string"},
+                                        "url": {"type": "string"},
+                                        "snippet": {"type": "string"},
+                                    },
+                                    "required": ["title", "url", "snippet"],
+                                },
+                            }
+                        },
+                        "required": ["results"],
+                    },
+                },
+                {
+                    "id": "send_email",
+                    "type": "action",
+                    "action_id": "productivity.compose_outlook_email.v1",
+                    "params": {
+                        "email_content": "{'__from__': 'result_of.analyze_top_movers.results', '__agg__': 'format_join', 'format': 'Title: {title}\\nSummary: {snippet}\\nURL: {url}'}",
+                        "emailTo": "user@example.com",
+                    },
+                },
+            ],
+            "edges": [],
+        }
+    )
+
+    ctx = BindingContext(
+        workflow,
+        {
+            "analyze_top_movers": {
+                "status": "tool_error",
+                "tool_name": "search_news",
+                "action_id": "common.search_news.v1",
+                "error": "network failure",
+                "params": {"query": "NVDA"},
+            }
+        },
+    )
+
+    email_node = next(n for n in workflow.nodes if n.id == "send_email")
+    resolved = eval_node_params(email_node, ctx)
+
+    assert resolved["email_content"] == ""
+
+
+def test_format_join_missing_fields_render_empty_strings():
+    workflow = Workflow.model_validate(
+        {
+            "workflow_name": "news-email",
+            "nodes": [
+                {
+                    "id": "analyze_top_movers",
+                    "type": "action",
+                    "action_id": "common.search_news.v1",
+                    "out_params_schema": {
+                        "type": "object",
+                        "properties": {
+                            "results": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "title": {"type": "string"},
+                                        "url": {"type": "string"},
+                                        "snippet": {"type": "string"},
+                                    },
+                                },
+                            }
+                        },
+                    },
+                },
+                {
+                    "id": "send_email",
+                    "type": "action",
+                    "action_id": "productivity.compose_outlook_email.v1",
+                    "params": {
+                        "email_content": "{'__from__': 'result_of.analyze_top_movers.results', '__agg__': 'format_join', 'format': 'Title: {title}\\nSummary: {snippet}\\nURL: {url}'}",
+                        "emailTo": "user@example.com",
+                    },
+                },
+            ],
+            "edges": [],
+        }
+    )
+
+    ctx = BindingContext(
+        workflow,
+        {
+            "analyze_top_movers": {
+                "results": [
+                    {"title": "Stock A", "snippet": "Up 5%"},
+                    {"url": "https://example.com/b"},
+                ]
+            }
+        },
+    )
+
+    email_node = next(n for n in workflow.nodes if n.id == "send_email")
+    resolved = eval_node_params(email_node, ctx)
+
+    assert (
+        resolved["email_content"]
+        == "Title: Stock A\nSummary: Up 5%\nURL: \nTitle: \nSummary: \nURL: https://example.com/b"
+    )
