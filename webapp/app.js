@@ -16,12 +16,14 @@ const visualTabContent = document.querySelector('[data-view="visual"]');
 const jsonTabContent = document.querySelector('[data-view="json"]');
 const canvasPanel = document.querySelector(".canvas-panel");
 const canvasHost = document.getElementById("canvasHost");
-const nodeActionSelect = document.getElementById("nodeActionSelect");
-const nodeDisplayNameInput = document.getElementById("nodeDisplayName");
-const addNodeButton = document.getElementById("addNodeButton");
-const workflowNodeList = document.getElementById("workflowNodeList");
-const actionChooser = document.getElementById("actionChooser");
-const nodeTypeButtons = Array.from(document.querySelectorAll("[data-node-type]"));
+const addNodeMenu = document.getElementById("addNodeMenu");
+const addNodeTypeSelect = document.getElementById("addNodeType");
+const addNodeNameInput = document.getElementById("addNodeName");
+const addNodeActionSelect = document.getElementById("addNodeActionSelect");
+const addNodeActionRow = document.getElementById("addNodeActionRow");
+const confirmAddNodeBtn = document.getElementById("confirmAddNode");
+const cancelAddNodeBtn = document.getElementById("cancelAddNode");
+const closeAddNodeMenuBtn = document.getElementById("closeAddNodeMenu");
 
 const NODE_WIDTH = 320;
 
@@ -57,16 +59,16 @@ async function loadActionCatalog() {
   }
 }
 
-function populateActionSelect() {
-  if (!nodeActionSelect) return;
+function populateActionSelect(target = addNodeActionSelect) {
+  if (!target) return;
   const actions = Object.values(actionCatalog);
-  nodeActionSelect.innerHTML = "";
+  target.innerHTML = "";
 
   if (!actions.length) {
     const placeholder = document.createElement("option");
     placeholder.value = "custom_action";
     placeholder.textContent = "custom_action";
-    nodeActionSelect.appendChild(placeholder);
+    target.appendChild(placeholder);
     return;
   }
 
@@ -74,7 +76,7 @@ function populateActionSelect() {
     const option = document.createElement("option");
     option.value = action.action_id;
     option.textContent = `${action.action_id}${action.name ? ` · ${action.name}` : ""}`;
-    nodeActionSelect.appendChild(option);
+    target.appendChild(option);
   });
 }
 
@@ -536,24 +538,25 @@ function rebuildEdgesFromBindings(workflow) {
 function setSelectedNodeType(type) {
   if (!type) return;
   selectedNodeType = type;
-  nodeTypeButtons.forEach((btn) => {
-    const isActive = btn.dataset.nodeType === type;
-    btn.setAttribute("aria-selected", isActive);
-  });
-  if (actionChooser) {
-    actionChooser.style.display = type === "action" ? "flex" : "none";
+  if (addNodeTypeSelect && addNodeTypeSelect.value !== type) {
+    addNodeTypeSelect.value = type;
+  }
+  if (addNodeActionRow) {
+    addNodeActionRow.style.display = type === "action" ? "flex" : "none";
   }
 }
 
-function addNodeToCurrentGraph() {
+function addNodeToCurrentGraph(options = {}) {
   if (!isCanvasTab(currentTab)) {
     switchToTab("visual");
   }
   const context = getTabContext(currentTab);
   const graph = context.graph || currentWorkflow;
-  const displayName = nodeDisplayNameInput ? nodeDisplayNameInput.value.trim() : "";
-  const actionId = nodeActionSelect ? nodeActionSelect.value : undefined;
-  const newNode = createDefaultNode(selectedNodeType, graph, {
+  const type = options.type || (addNodeTypeSelect ? addNodeTypeSelect.value : selectedNodeType);
+  setSelectedNodeType(type);
+  const displayName = options.displayName || (addNodeNameInput ? addNodeNameInput.value.trim() : "");
+  const actionId = options.actionId || (addNodeActionSelect ? addNodeActionSelect.value : undefined);
+  const newNode = createDefaultNode(type, graph, {
     display_name: displayName,
     action_id: actionId,
   });
@@ -562,8 +565,42 @@ function addNodeToCurrentGraph() {
   context.saveGraph(updatedGraph);
   clearPositionCaches(context.tabKey || currentTab);
   render(currentTab);
-  if (nodeDisplayNameInput) nodeDisplayNameInput.value = "";
-  appendLog(`已添加 ${selectedNodeType} 节点：${newNode.id}`);
+  if (addNodeNameInput) addNodeNameInput.value = "";
+  appendLog(`已添加 ${type} 节点：${newNode.id}`);
+}
+
+function positionAddMenu(event) {
+  if (!addNodeMenu) return;
+  const wrapperRect = (canvasHost || workflowCanvas).getBoundingClientRect();
+  const menuWidth = addNodeMenu.offsetWidth || 320;
+  const menuHeight = addNodeMenu.offsetHeight || 260;
+  const relativeX = event.clientX - wrapperRect.left;
+  const relativeY = event.clientY - wrapperRect.top;
+  const left = Math.min(Math.max(12, relativeX), wrapperRect.width - menuWidth - 12);
+  const top = Math.min(Math.max(12, relativeY), wrapperRect.height - menuHeight - 12);
+  addNodeMenu.style.left = `${left}px`;
+  addNodeMenu.style.top = `${top}px`;
+}
+
+function showAddNodeMenu(event) {
+  if (!addNodeMenu) return;
+  event.preventDefault();
+  if (!isCanvasTab(currentTab)) {
+    switchToTab("visual");
+  }
+  if (!Object.keys(actionCatalog).length) {
+    loadActionCatalog();
+  }
+  populateActionSelect(addNodeActionSelect);
+  addNodeMenu.classList.remove("hidden");
+  setSelectedNodeType(addNodeTypeSelect ? addNodeTypeSelect.value : selectedNodeType);
+  positionAddMenu(event);
+}
+
+function hideAddNodeMenu() {
+  if (addNodeMenu) {
+    addNodeMenu.classList.add("hidden");
+  }
 }
 
 function removeNodeFromGraph(nodeId, context = getTabContext(currentTab)) {
@@ -589,52 +626,6 @@ function removeNodeFromGraph(nodeId, context = getTabContext(currentTab)) {
   }
   render(currentTab);
   appendLog(`已删除节点：${nodeId}`);
-}
-
-function renderNodeList(context = getTabContext(currentTab)) {
-  if (!workflowNodeList) return;
-  const graph = context.graph || currentWorkflow;
-  const nodes = Array.isArray(graph.nodes) ? graph.nodes : [];
-  workflowNodeList.innerHTML = "";
-
-  if (!nodes.length) {
-    const empty = document.createElement("p");
-    empty.className = "muted";
-    empty.textContent = "当前子图暂无节点，选择左侧类型后点击“添加结点”开始构建";
-    workflowNodeList.appendChild(empty);
-    return;
-  }
-
-  nodes.forEach((node) => {
-    if (!node) return;
-    const item = document.createElement("div");
-    item.className = "node-list__item";
-
-    const info = document.createElement("div");
-    const title = document.createElement("p");
-    title.className = "node-list__title";
-    title.textContent = node.display_name || node.id;
-    const meta = document.createElement("p");
-    meta.className = "node-list__meta";
-    if (node.type === "action") {
-      const toolLabel = node.action_id || "未指定 action_id";
-      meta.textContent = `类型：action ｜ ${toolLabel}`;
-    } else {
-      meta.textContent = `类型：${node.type}`;
-    }
-    info.appendChild(title);
-    info.appendChild(meta);
-
-    const removeBtn = document.createElement("button");
-    removeBtn.type = "button";
-    removeBtn.className = "node-list__remove";
-    removeBtn.textContent = "删除";
-    removeBtn.addEventListener("click", () => removeNodeFromGraph(node.id, context));
-
-    item.appendChild(info);
-    item.appendChild(removeBtn);
-    workflowNodeList.appendChild(item);
-  });
 }
 
 function openNodeDialog(node, context = getTabContext()) {
@@ -749,6 +740,10 @@ function openNodeDialog(node, context = getTabContext()) {
 
   const actionsRow = document.createElement("div");
   actionsRow.className = "modal__actions";
+  const deleteBtn = document.createElement("button");
+  deleteBtn.type = "button";
+  deleteBtn.className = "button button--danger";
+  deleteBtn.textContent = "删除节点";
   const cancelBtn = document.createElement("button");
   cancelBtn.type = "button";
   cancelBtn.className = "button button--ghost";
@@ -757,6 +752,7 @@ function openNodeDialog(node, context = getTabContext()) {
   saveBtn.type = "button";
   saveBtn.className = "button button--primary";
   saveBtn.textContent = "保存并刷新";
+  actionsRow.appendChild(deleteBtn);
   actionsRow.appendChild(cancelBtn);
   actionsRow.appendChild(saveBtn);
   dialog.appendChild(actionsRow);
@@ -794,6 +790,13 @@ function openNodeDialog(node, context = getTabContext()) {
     context.saveGraph(updatedGraph);
     render(currentTab);
     appendLog(`节点 ${node.id} 已更新并重新绘制`);
+    close();
+  });
+
+  deleteBtn.addEventListener("click", () => {
+    const confirmed = window.confirm(`确认删除节点 ${node.display_name || node.id} 吗？`);
+    if (!confirmed) return;
+    removeNodeFromGraph(node.id, context);
     close();
   });
 
@@ -868,6 +871,10 @@ function openConditionDialog(node, context = getTabContext()) {
 
   const actionsRow = document.createElement("div");
   actionsRow.className = "modal__actions";
+  const deleteBtn = document.createElement("button");
+  deleteBtn.type = "button";
+  deleteBtn.className = "button button--danger";
+  deleteBtn.textContent = "删除节点";
   const cancelBtn = document.createElement("button");
   cancelBtn.type = "button";
   cancelBtn.className = "button button--ghost";
@@ -876,6 +883,7 @@ function openConditionDialog(node, context = getTabContext()) {
   saveBtn.type = "button";
   saveBtn.className = "button button--primary";
   saveBtn.textContent = "保存条件";
+  actionsRow.appendChild(deleteBtn);
   actionsRow.appendChild(cancelBtn);
   actionsRow.appendChild(saveBtn);
   dialog.appendChild(actionsRow);
@@ -916,6 +924,13 @@ function openConditionDialog(node, context = getTabContext()) {
     context.saveGraph(updatedGraph);
     render(currentTab);
     appendLog(`条件节点 ${node.id} 已更新`);
+    close();
+  });
+
+  deleteBtn.addEventListener("click", () => {
+    const confirmed = window.confirm(`确认删除条件节点 ${node.display_name || node.id} 吗？`);
+    if (!confirmed) return;
+    removeNodeFromGraph(node.id, context);
     close();
   });
 }
@@ -1349,7 +1364,6 @@ function render(mode = currentTab) {
     attachCanvasTo(mode);
   }
 
-  renderNodeList(context);
   resizeCanvas(graph);
   ctx.clearRect(0, 0, workflowCanvas.width, workflowCanvas.height);
   renderedNodes = [];
@@ -1641,8 +1655,18 @@ function handleCanvasDoubleClick(event) {
   openNodeDialog(target, context);
 }
 
+function handleCanvasContextMenu(event) {
+  if (!isCanvasTab(currentTab)) return;
+  const point = canvasPointFromEvent(event);
+  const hit = findNodeByPoint(point);
+  event.preventDefault();
+  if (hit) return;
+  showAddNodeMenu(event);
+}
+
 function handleCanvasMouseDown(event) {
   if (!isCanvasTab(currentTab)) return;
+  hideAddNodeMenu();
   const point = canvasPointFromEvent(event);
   const hit = findNodeByPoint(point);
   if (!hit) return;
@@ -1690,13 +1714,27 @@ runWorkflowBtn.addEventListener("click", requestRun);
 applyWorkflowBtn.addEventListener("click", applyWorkflowFromEditor);
 resetWorkflowBtn.addEventListener("click", resetWorkflow);
 workflowEditor.addEventListener("input", autoSizeEditor);
-nodeTypeButtons.forEach((btn) =>
-  btn.addEventListener("click", () => setSelectedNodeType(btn.dataset.nodeType)),
-);
-if (addNodeButton) addNodeButton.addEventListener("click", addNodeToCurrentGraph);
+if (addNodeTypeSelect)
+  addNodeTypeSelect.addEventListener("change", () => setSelectedNodeType(addNodeTypeSelect.value));
+if (confirmAddNodeBtn)
+  confirmAddNodeBtn.addEventListener("click", () => {
+    addNodeToCurrentGraph();
+    hideAddNodeMenu();
+  });
+if (cancelAddNodeBtn) cancelAddNodeBtn.addEventListener("click", hideAddNodeMenu);
+if (closeAddNodeMenuBtn) closeAddNodeMenuBtn.addEventListener("click", hideAddNodeMenu);
+document.addEventListener("click", (event) => {
+  if (!addNodeMenu || addNodeMenu.classList.contains("hidden")) return;
+  if (addNodeMenu.contains(event.target)) return;
+  hideAddNodeMenu();
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") hideAddNodeMenu();
+});
 
 tabs.forEach((tab) => tab.addEventListener("click", handleTabClick));
 workflowCanvas.addEventListener("dblclick", handleCanvasDoubleClick);
+workflowCanvas.addEventListener("contextmenu", handleCanvasContextMenu);
 workflowCanvas.addEventListener("mousedown", handleCanvasMouseDown);
 workflowCanvas.addEventListener("mousemove", handleCanvasMouseMove);
 workflowCanvas.addEventListener("mouseup", stopDragging);
