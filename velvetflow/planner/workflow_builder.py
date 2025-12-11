@@ -9,7 +9,7 @@ from typing import Any, Dict, Mapping, Optional
 
 from velvetflow.logging_utils import log_warn
 from velvetflow.loop_dsl import iter_workflow_and_loop_body_nodes
-from velvetflow.models import infer_edges_from_bindings
+from velvetflow.models import merge_edges
 
 
 def _normalize_condition_label(raw: Any) -> Optional[str]:
@@ -33,31 +33,10 @@ def attach_condition_branches(workflow: Dict[str, Any]) -> Dict[str, Any]:
 
     copied = {**workflow}
     nodes = copied.get("nodes") if isinstance(copied.get("nodes"), list) else []
-    edges = copied.get("edges") if isinstance(copied.get("edges"), list) else []
 
-    node_lookup: Dict[str, Mapping[str, Any]] = {}
-    for node in nodes:
-        if isinstance(node, Mapping):
-            node_lookup[str(node.get("id"))] = node
-
-    for edge in edges:
-        if not isinstance(edge, Mapping):
-            continue
-        from_node = edge.get("from") or edge.get("from_node")
-        to_node = edge.get("to") or edge.get("to_node")
-        cond_label = _normalize_condition_label(edge.get("condition"))
-
-        if not cond_label or not isinstance(from_node, str) or not isinstance(to_node, str):
-            continue
-
-        source_node = node_lookup.get(from_node)
-        if not source_node or source_node.get("type") != "condition":
-            continue
-
-        if cond_label == "true":
-            source_node.setdefault("true_to_node", to_node)
-        elif cond_label == "false":
-            source_node.setdefault("false_to_node", to_node)
+    # 条件分支信息应直接存在节点定义中，不再依赖外部连线声明。
+    copied["nodes"] = nodes
+    copied["edges"] = merge_edges(nodes)
 
     return copied
 
@@ -72,6 +51,9 @@ class WorkflowBuilder:
         self.workflow_name: str = "unnamed_workflow"
         self.description: str = ""
         self.nodes: Dict[str, Dict[str, Any]] = {}
+        # 默认创建起止节点，确保从 start 开始构建。
+        self.add_node("start", "start")
+        self.add_node("end", "end")
 
     def set_meta(self, name: str, description: Optional[str]):
         if name:
@@ -197,8 +179,31 @@ class WorkflowBuilder:
         }
         # Provide implicitly derived edges as read-only context for downstream
         # tools/LLM refinement while keeping the source of truth in param
-        # bindings. 遍历主图与 loop 子图的所有节点，确保子图中的引用同样被纳入。 
-        workflow["edges"] = infer_edges_from_bindings(iter_workflow_and_loop_body_nodes(workflow))
+        # bindings. 遍历主图与 loop 子图的所有节点，确保子图中的引用同样被纳入。
+        reachability_edges = merge_edges(iter_workflow_and_loop_body_nodes(workflow))
+        workflow["edges"] = merge_edges(iter_workflow_and_loop_body_nodes(workflow))
+
+        start_id = next((n.get("id") for n in workflow["nodes"] if n.get("type") == "start"), None)
+        if isinstance(start_id, str):
+            reachable = set()
+            stack = [start_id]
+            while stack:
+                nid = stack.pop()
+                if nid in reachable:
+                    continue
+                reachable.add(nid)
+                for edge in reachability_edges:
+                    if not isinstance(edge, Mapping):
+                        continue
+                    if edge.get("from") != nid:
+                        continue
+                    nxt = edge.get("to")
+                    if isinstance(nxt, str) and nxt not in reachable:
+                        stack.append(nxt)
+
+            workflow["nodes"] = [n for n in workflow["nodes"] if n.get("id") in reachable]
+            workflow["edges"] = merge_edges(workflow["nodes"])
+
         return attach_condition_branches(workflow)
 
 

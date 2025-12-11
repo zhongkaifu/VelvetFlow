@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import re
-from typing import Any, Dict, Iterable, List, Literal, Mapping, Optional, Set
+from typing import Any, Dict, Iterable, List, Literal, Mapping, Optional, Set, Tuple
 
 from velvetflow.loop_dsl import loop_body_has_action
 from velvetflow.reference_utils import normalize_reference_path
@@ -222,25 +222,49 @@ def infer_edges_from_bindings(nodes: Iterable[Any]) -> List[Dict[str, Any]]:
         params = _extract_params(node)
 
         # 参数依赖推导出的隐式连线
-        deps = {
-            ref
-            for ref in _collect_refs(params)
-            if ref in node_ids and ref != nid
-        }
+        deps = {ref for ref in _collect_refs(params) if ref != nid}
 
         # condition.source 支持直接引用节点 id，需同样计入依赖以驱动上游执行。
         if isinstance(node, Node) and node.type == "condition":
             cond_source = node.params.get("source")
-            if isinstance(cond_source, str) and cond_source in node_ids and cond_source != nid:
-                deps.add(cond_source)
+            normalized = normalize_reference_path(cond_source) if isinstance(cond_source, str) else cond_source
+            if isinstance(normalized, str):
+                if normalized.startswith("result_of."):
+                    parts = normalized.split(".")
+                    if len(parts) >= 2 and parts[1]:
+                        deps.add(parts[1])
+                elif normalized in node_ids and normalized != nid:
+                    deps.add(normalized)
             if isinstance(cond_source, list):
-                deps.update({s for s in cond_source if isinstance(s, str) and s in node_ids and s != nid})
+                for item in cond_source:
+                    normalized_item = normalize_reference_path(item) if isinstance(item, str) else item
+                    if isinstance(normalized_item, str):
+                        if normalized_item.startswith("result_of."):
+                            parts = normalized_item.split(".")
+                            if len(parts) >= 2 and parts[1]:
+                                deps.add(parts[1])
+                        elif normalized_item in node_ids and normalized_item != nid:
+                            deps.add(normalized_item)
         elif isinstance(node, Mapping) and node.get("type") == "condition":
             cond_source = params.get("source")
-            if isinstance(cond_source, str) and cond_source in node_ids and cond_source != nid:
-                deps.add(cond_source)
+            normalized = normalize_reference_path(cond_source) if isinstance(cond_source, str) else cond_source
+            if isinstance(normalized, str):
+                if normalized.startswith("result_of."):
+                    parts = normalized.split(".")
+                    if len(parts) >= 2 and parts[1]:
+                        deps.add(parts[1])
+                elif normalized in node_ids and normalized != nid:
+                    deps.add(normalized)
             if isinstance(cond_source, list):
-                deps.update({s for s in cond_source if isinstance(s, str) and s in node_ids and s != nid})
+                for item in cond_source:
+                    normalized_item = normalize_reference_path(item) if isinstance(item, str) else item
+                    if isinstance(normalized_item, str):
+                        if normalized_item.startswith("result_of."):
+                            parts = normalized_item.split(".")
+                            if len(parts) >= 2 and parts[1]:
+                                deps.add(parts[1])
+                        elif normalized_item in node_ids and normalized_item != nid:
+                            deps.add(normalized_item)
 
         for dep in sorted(deps):
             pair = (dep, nid)
@@ -286,6 +310,67 @@ def infer_edges_from_bindings(nodes: Iterable[Any]) -> List[Dict[str, Any]]:
             edges.append({"from": nid, "to": target, "condition": cond_label})
 
     return edges
+
+
+def merge_edges(nodes: Iterable[Any], *, add_start_connectors: bool = True) -> List[Dict[str, Any]]:
+    """Infer edges from node bindings and condition branches.
+
+    The merged result also injects virtual edges from the first ``start`` node to
+    any node without inbound edges so downstream consumers can always traverse
+    the workflow from a single entry point.
+    """
+
+    node_list = list(nodes)
+
+    def _extract_node_id(node: Any) -> Optional[str]:
+        if isinstance(node, Node):
+            return node.id
+        if isinstance(node, Mapping):
+            raw_id = node.get("id")
+            return raw_id if isinstance(raw_id, str) else None
+        return None
+
+    node_ids: Set[str] = {nid for nid in (_extract_node_id(n) for n in node_list) if nid}
+
+    merged: List[Dict[str, Any]] = []
+    seen: Set[Tuple[str, str, Optional[str]]] = set()
+
+    def _add_edge(frm: Any, to: Any, *, condition: Any = None, note: Any = None):
+        if not isinstance(frm, str) or not isinstance(to, str):
+            return
+        key = (frm, to, str(condition) if condition is not None else None)
+        if key in seen:
+            return
+        seen.add(key)
+        merged.append({"from": frm, "to": to, "condition": key[2], "note": note})
+
+    for edge in infer_edges_from_bindings(node_list):
+        _add_edge(edge.get("from"), edge.get("to"), condition=edge.get("condition"))
+
+    if add_start_connectors and node_ids:
+        start_id = None
+        for node in node_list:
+            if isinstance(node, Mapping) and node.get("type") == "start":
+                start_id = node.get("id")
+                break
+            if isinstance(node, Node) and getattr(node, "type", None) == "start":
+                start_id = getattr(node, "id", None)
+                break
+
+        if start_id and isinstance(start_id, str):
+            indegree: Dict[str, int] = {nid: 0 for nid in node_ids}
+            for edge in merged:
+                frm = edge.get("from")
+                to = edge.get("to")
+                if to in node_ids:
+                    indegree[to] += 1
+
+            for nid, deg in indegree.items():
+                if nid == start_id or deg > 0:
+                    continue
+                _add_edge(start_id, nid)
+
+    return merged
 
 
 @dataclass
@@ -543,8 +628,16 @@ class Workflow:
     def edges(self) -> List[Edge]:
         """Always rebuild edges from the latest node bindings."""
 
-        inferred = infer_edges_from_bindings(self.nodes)
-        return [Edge(from_node=e["from"], to_node=e["to"], condition=e.get("condition")) for e in inferred]
+        merged = merge_edges(self.nodes)
+        return [
+            Edge(
+                from_node=e["from"],
+                to_node=e["to"],
+                condition=e.get("condition"),
+                note=e.get("note"),
+            )
+            for e in merged
+        ]
 
     @classmethod
     def model_validate(cls, data: Any) -> "Workflow":
@@ -562,7 +655,6 @@ class Workflow:
             errors.append({"loc": ("nodes",), "msg": "nodes 必须是数组"})
 
         parsed_nodes: List[Node] = []
-
         if isinstance(raw_nodes, list):
             for idx, node in enumerate(raw_nodes):
                 try:
@@ -574,6 +666,11 @@ class Workflow:
 
         if errors:
             raise PydanticValidationError(errors)
+
+        if not any(n.type == "start" for n in parsed_nodes):
+            parsed_nodes.insert(0, Node(id="start", type="start", params={}))
+        if not any(n.type == "end" for n in parsed_nodes):
+            parsed_nodes.append(Node(id="end", type="end", params={}))
 
         # ensure unique node ids
         seen = set()
@@ -678,6 +775,7 @@ class Workflow:
             "workflow_name": self.workflow_name,
             "description": self.description,
             "nodes": [n.model_dump(by_alias=by_alias) for n in self.nodes],
+            "edges": [e.model_dump(by_alias=by_alias) for e in self.edges],
         }
 
 
@@ -691,5 +789,6 @@ __all__ = [
     "PydanticValidationError",
     "ValidationError",
     "infer_edges_from_bindings",
+    "merge_edges",
     "Workflow",
 ]

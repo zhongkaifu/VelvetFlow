@@ -22,7 +22,13 @@ def test_attach_condition_branches_populates_branch_targets():
         "workflow_name": "demo",
         "description": "",
         "nodes": [
-            {"id": "check", "type": "condition", "params": {}},
+            {
+                "id": "check",
+                "type": "condition",
+                "params": {},
+                "true_to_node": "yes",
+                "false_to_node": "no",
+            },
             {
                 "id": "yes",
                 "type": "action",
@@ -36,10 +42,6 @@ def test_attach_condition_branches_populates_branch_targets():
                 "params": {"email_content": "no branch"},
             },
         ],
-        "edges": [
-            {"from": "check", "to": "yes", "condition": True},
-            {"from": "check", "to": "no", "condition": False},
-        ],
     }
 
     updated = attach_condition_branches(workflow)
@@ -47,6 +49,11 @@ def test_attach_condition_branches_populates_branch_targets():
 
     assert check_node.get("true_to_node") == "yes"
     assert check_node.get("false_to_node") == "no"
+
+    edge_conditions = {(e.get("from"), e.get("to"), e.get("condition")) for e in updated.get("edges", [])}
+
+    assert ("check", "yes", "true") in edge_conditions
+    assert ("check", "no", "false") in edge_conditions
 
 
 def test_executor_respects_condition_branch_targets():
@@ -197,10 +204,6 @@ def test_condition_branch_allows_null_exit():
             },
             {"id": "end", "type": "end"},
         ],
-        "edges": [
-            {"from": "start", "to": "check"},
-            {"from": "check", "to": "end", "condition": False},
-        ],
     }
 
     errors = validate_completed_workflow(workflow_dict, action_registry=[])
@@ -230,22 +233,11 @@ def test_executor_prefers_explicit_branch_over_edges_for_null_target():
                 "false_to_node": "f_branch",
             },
             {
-                "id": "t_branch",
-                "type": "action",
-                "action_id": "productivity.compose_outlook_email.v1",
-                "params": {"email_content": "true branch"},
-            },
-            {
                 "id": "f_branch",
                 "type": "action",
                 "action_id": "productivity.compose_outlook_email.v1",
                 "params": {"email_content": "false branch"},
             },
-        ],
-        "edges": [
-            {"from": "start", "to": "check"},
-            {"from": "check", "to": "t_branch", "condition": True},
-            {"from": "check", "to": "f_branch", "condition": False},
         ],
     }
 
@@ -260,7 +252,6 @@ def test_executor_prefers_explicit_branch_over_edges_for_null_target():
     results = executor.run()
 
     assert "check" in results
-    assert "t_branch" not in results
     assert "f_branch" not in results
 
 
@@ -283,11 +274,6 @@ def test_string_null_target_stops_branch():
                 "action_id": "productivity.compose_outlook_email.v1",
                 "params": {"email_content": "notify"},
             },
-        ],
-        "edges": [
-            {"from": "start", "to": "check"},
-            {"from": "check", "to": "null", "condition": True},
-            {"from": "check", "to": "notify", "condition": False},
         ],
     }
 
