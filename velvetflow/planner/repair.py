@@ -24,12 +24,10 @@ from velvetflow.logging_utils import (
     log_llm_message,
     log_llm_usage,
     log_success,
-    log_tool_call,
     log_warn,
 )
 from velvetflow.models import Node, PydanticValidationError, ValidationError, Workflow
 from velvetflow.planner.action_guard import ensure_registered_actions
-from velvetflow.planner.repair_tools import REPAIR_TOOLS, apply_repair_tool
 from velvetflow.verification import generate_repair_suggestions, validate_completed_workflow
 
 
@@ -607,12 +605,12 @@ validation_errors 是 JSON 数组，元素包含 code/node_id/field/message。
    - 系统会在有限轮次内重新校验；如果你忽略任何一条 validation_error，流程将直接进入下一轮甚至终止。
    - 请逐条对照 validation_errors，把所有问题修到为 0 再输出结果，避免留存隐患。
 
-9. 输出要求：
-   - 保持顶层结构：workflow_name/description/nodes 不变（仅节点内部内容可调整，edges 由系统推导）；
-   - 节点的 id/type 不变；
-   - 返回修复后的 workflow JSON，只返回 JSON 对象本身，不要包含代码块标记。
-   - 如果修改量较大，也可以返回针对 workflow.json 的 unified diff 补丁；系统会尝试用 git apply 将补丁合并回 workflow 并继续校验。
-10. 可用工具：当你需要结构化修改时，优先调用提供的工具（无 LLM 依赖、结果确定），用来修复 loop body 引用、补齐必填参数或写入指定字段。
+9. 输出要求（新策略，务必遵守）：
+  - 保持顶层结构：workflow_name/description/nodes 不变（仅节点内部内容可调整，edges 由系统推导）；
+  - 节点的 id/type 不变；
+  - **只能输出针对 workflow.json 的 unified diff 补丁**，不要返回完整 JSON 或其他格式；
+  - VelvetFlow Repair 会使用 git apply 将补丁合并回 workflow 并继续校验，补丁头中的文件名请使用 workflow.json；
+  - 禁止调用任何工具或函数，直接根据错误分析生成补丁文本。
 """
 
     messages = [
@@ -632,104 +630,45 @@ validation_errors 是 JSON 数组，元素包含 code/node_id/field/message。
         },
     ]
 
-    working_workflow: Dict[str, Any] = broken_workflow
-
-    while True:
-        with child_span("repair_llm"):
-            resp = client.chat.completions.create(
-                model=model,
-                messages=messages,
-                tools=REPAIR_TOOLS,
-                tool_choice="auto",
-                temperature=0.1,
-            )
-        log_llm_usage(model, getattr(resp, "usage", None), operation="repair_workflow")
-        if not resp.choices:
-            raise RuntimeError("repair_workflow_with_llm 未返回任何候选消息")
-
-        msg = resp.choices[0].message
-        log_llm_message(
-            model,
-            msg,
-            operation="repair_workflow",
+    with child_span("repair_llm"):
+        resp = client.chat.completions.create(
+            model=model,
+            messages=messages,
+            temperature=0.1,
         )
-        if msg.tool_calls:
-            messages.append({"role": "assistant", "content": msg.content or "", "tool_calls": msg.tool_calls})
-            for tc in msg.tool_calls:
-                func_name = tc.function.name
-                raw_args = tc.function.arguments
-                try:
-                    args = json.loads(raw_args) if raw_args else {}
-                except json.JSONDecodeError:
-                    log_error(f"[repair_workflow_with_llm] 无法解析工具参数: {raw_args}")
-                    args = {}
 
-                log_tool_call(
-                    source="repair_workflow_with_llm",
-                    tool_name=func_name,
-                    tool_call_id=tc.id,
-                    args=args or raw_args,
-                )
-                patched_workflow, summary = apply_repair_tool(
-                    tool_name=func_name,
-                    args=args,
-                    workflow=working_workflow,
-                    validation_errors=validation_errors,
-                    action_registry=action_registry,
-                )
-                log_tool_call(
-                    source="repair_workflow_with_llm",
-                    tool_name=f"{func_name} 完成",
-                    tool_call_id=tc.id,
-                    args=summary,
-                )
-                if summary.get("applied"):
-                    working_workflow = patched_workflow
+    log_llm_usage(model, getattr(resp, "usage", None), operation="repair_workflow")
+    if not resp.choices:
+        raise RuntimeError("repair_workflow_with_llm 未返回任何候选消息")
 
-                messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": tc.id,
-                        "content": json.dumps(
-                            {
-                                "workflow": working_workflow,
-                                "summary": summary,
-                            },
-                            ensure_ascii=False,
-                        ),
-                    }
-                )
-            continue
+    msg = resp.choices[0].message
+    log_llm_message(
+        model,
+        msg,
+        operation="repair_workflow",
+    )
 
-        content = msg.content or ""
-        text = content.strip()
-        if text.startswith("```"):
-            text = text.strip("`")
-            if "\n" in text:
-                first_line, rest = text.split("\n", 1)
-                if first_line.strip().lower().startswith("json"):
-                    text = rest
+    content = msg.content or ""
+    text = content.strip()
+    if text.startswith("```"):
+        text = text.strip("`")
+        if "\n" in text:
+            first_line, rest = text.split("\n", 1)
+            if first_line.strip().lower().startswith("json"):
+                text = rest
 
-        if not text:
-            log_warn("[repair_workflow_with_llm] LLM 返回空内容，使用最近一次工具输出。")
-            return working_workflow
+    if not text:
+        raise RuntimeError("[repair_workflow_with_llm] LLM 返回空内容，未能提供补丁。")
 
-        if _looks_like_patch(text):
-            patched_workflow = _apply_patch_output(working_workflow, text)
-            if patched_workflow is not None:
-                log_info("[repair_workflow_with_llm] 接收到补丁输出，已通过 git apply 合并。")
-                return patched_workflow
+    if not _looks_like_patch(text):
+        raise RuntimeError("[repair_workflow_with_llm] 仅接受 unified diff 补丁输出，当前响应不符合新策略。")
 
-            log_warn("[repair_workflow_with_llm] 补丁输出应用失败，尝试直接解析 JSON。")
+    patched_workflow = _apply_patch_output(broken_workflow, text)
+    if patched_workflow is None:
+        raise RuntimeError("[repair_workflow_with_llm] 补丁输出应用失败，请返回可被 git apply 的有效补丁。")
 
-        try:
-            repaired_workflow = json.loads(text)
-        except json.JSONDecodeError:
-            log_error("[repair_workflow_with_llm] 无法解析模型返回 JSON")
-            log_debug(content)
-            raise
-
-        return repaired_workflow
+    log_info("[repair_workflow_with_llm] 接收到补丁输出，已通过 git apply 合并。")
+    return patched_workflow
 
 
 __all__ = [
