@@ -139,6 +139,8 @@ def _inject_line_numbers_into_patch(
                 return start
         return None
 
+    guessed = False
+
     while idx < len(lines):
         line = lines[idx]
         if not line.startswith("@@"):
@@ -154,7 +156,8 @@ def _inject_line_numbers_into_patch(
 
         start = _find_hunk_start(hunk_ops)
         if start is None:
-            return None
+            guessed = True
+            start = 0
 
         old_len = sum(1 for ln in hunk_ops if ln.startswith((" ", "-")))
         new_len = sum(1 for ln in hunk_ops if ln.startswith((" ", "+")))
@@ -164,6 +167,11 @@ def _inject_line_numbers_into_patch(
     normalized = "\n".join(rewritten)
     if patch_text.endswith("\n"):
         normalized += "\n"
+    if guessed:
+        log_warn(
+            "[repair_workflow_with_llm] 补丁缺少行号且无法通过上下文定位，已使用默认起始行填充 @@ 范围，git apply 可能失败。"
+        )
+
     return normalized
 
 
