@@ -57,6 +57,7 @@ def update_workflow_with_llm(
         "  action 节点必须填写 action_id（来自动作库）与 params；只有 action 节点允许 out_params_schema。\n"
         "  condition 节点需包含 kind/source/field/op/value 以及 true_to_node/false_to_node（字符串或 null）。\n"
         "  loop 节点包含 loop_kind/iter/source/body_subgraph/exports，循环外部只能引用 exports.items 或 exports.aggregates。\n"
+        "  loop.body_subgraph 内不需要也不允许显式声明 edges、entry 或 exit 节点，如发现请直接删除。\n"
         "  parallel 节点的 branches 为非空数组，每个元素包含 id/entry_node/sub_graph_nodes。\n"
         "- params 内部可使用绑定 DSL：{\"__from__\": \"result_of.<node_id>.<field_path>\", \"__agg__\": <identity/count/...>}，"
         "  其中 <node_id> 必须存在且字段需与上游 output_schema 或 loop.exports 对齐。\n\n"
