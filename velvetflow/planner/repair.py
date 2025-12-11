@@ -5,7 +5,12 @@
 
 import json
 import os
+import subprocess
+import tempfile
 from dataclasses import asdict
+import itertools
+import re
+from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from openai import OpenAI
@@ -77,6 +82,138 @@ def _convert_pydantic_errors(
         )
 
     return validation_errors
+
+
+def _looks_like_patch(text: str) -> bool:
+    """Return True if a string resembles a unified diff patch."""
+
+    stripped = text.lstrip()
+    return stripped.startswith("diff --git") or stripped.startswith("--- ") or stripped.startswith("*** ")
+
+
+def _rewrite_patch_paths(patch_text: str, target_path: Path) -> str:
+    """Rewrite patch file headers to point to the temporary workflow path."""
+
+    target_name = target_path.name
+    old_name = f"a/{target_name}"
+    new_name = f"b/{target_name}"
+    rewritten_lines = []
+    for line in patch_text.splitlines():
+        if line.startswith("diff --git"):
+            rewritten_lines.append(f"diff --git {old_name} {new_name}")
+        elif line.startswith("--- "):
+            rewritten_lines.append(f"--- {old_name}")
+        elif line.startswith("+++ "):
+            rewritten_lines.append(f"+++ {new_name}")
+        else:
+            rewritten_lines.append(line)
+
+    if patch_text.endswith("\n"):
+        return "\n".join(rewritten_lines) + "\n"
+    return "\n".join(rewritten_lines)
+
+
+def _apply_patch_output(workflow: Mapping[str, Any], patch_text: str) -> Optional[Dict[str, Any]]:
+    """Apply a unified diff patch to the serialized workflow using git."""
+
+    workflow_json = json.dumps(workflow, ensure_ascii=False, indent=2, sort_keys=True)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        workflow_path = Path(tmpdir) / "workflow.json"
+        workflow_path.write_text(workflow_json, encoding="utf-8")
+
+        rewritten_patch = _rewrite_patch_paths(patch_text, workflow_path)
+        result = subprocess.run(
+            ["git", "apply", "--whitespace=nowarn", "--unsafe-paths", "-"],
+            input=rewritten_patch,
+            text=True,
+            capture_output=True,
+            cwd=workflow_path.parent,
+        )
+
+        if result.returncode != 0:
+            log_error("[repair_workflow_with_llm] 无法应用补丁，git apply 失败。")
+            if result.stdout or result.stderr:
+                log_debug(
+                    "[repair_workflow_with_llm] git apply 输出:\n"
+                    f"stdout: {result.stdout}\nstderr: {result.stderr}"
+                )
+
+            manual = _apply_unified_diff_text(workflow_json, patch_text)
+            if manual is None:
+                return None
+
+            try:
+                return json.loads(manual)
+            except json.JSONDecodeError:
+                log_error("[repair_workflow_with_llm] 补丁应用后不是合法 JSON，忽略该补丁。")
+                return None
+
+        patched_content = workflow_path.read_text(encoding="utf-8")
+
+    try:
+        return json.loads(patched_content)
+    except json.JSONDecodeError:
+        log_error("[repair_workflow_with_llm] 补丁应用后不是合法 JSON，忽略该补丁。")
+    return None
+
+
+_HUNK_HEADER_RE = re.compile(r"@@ -(?P<old_start>\d+)(?:,(?P<old_len>\d+))? +\+(?P<new_start>\d+)(?:,(?P<new_len>\d+))? @@")
+
+
+def _apply_unified_diff_text(original: str, patch_text: str) -> Optional[str]:
+    """Fallback parser to apply simple unified diff patches in pure Python."""
+
+    original_lines = original.splitlines(keepends=True)
+    patched_lines: List[str] = []
+    idx = 0
+
+    lines_iter = iter(patch_text.splitlines())
+    for line in lines_iter:
+        if not line.startswith("@@ "):
+            continue
+
+        match = _HUNK_HEADER_RE.match(line)
+        if not match:
+            return None
+
+        old_start = int(match.group("old_start")) - 1
+
+        if old_start > len(original_lines):
+            return None
+
+        patched_lines.extend(original_lines[idx:old_start])
+        idx = old_start
+
+        for hunk_line in lines_iter:
+            if hunk_line.startswith("@@ "):
+                lines_iter = itertools.chain([hunk_line], lines_iter)
+                break
+            if hunk_line.startswith("diff --git") or hunk_line.startswith("--- ") or hunk_line.startswith("+++ "):
+                continue
+            if hunk_line.startswith(" "):
+                content = hunk_line[1:]
+                if idx >= len(original_lines) or original_lines[idx].rstrip("\n") != content:
+                    return None
+                patched_lines.append(original_lines[idx])
+                idx += 1
+            elif hunk_line.startswith("-"):
+                content = hunk_line[1:]
+                if idx >= len(original_lines) or original_lines[idx].rstrip("\n") != content:
+                    return None
+                idx += 1
+            elif hunk_line.startswith("+"):
+                patched_lines.append(hunk_line[1:] + "\n")
+            elif hunk_line == "":
+                patched_lines.append("\n")
+            else:
+                return None
+        else:
+            pass
+
+    patched_lines.extend(original_lines[idx:])
+
+    return "".join(patched_lines)
 
 
 def _make_failure_validation_error(message: str) -> ValidationError:
@@ -474,6 +611,7 @@ validation_errors 是 JSON 数组，元素包含 code/node_id/field/message。
    - 保持顶层结构：workflow_name/description/nodes 不变（仅节点内部内容可调整，edges 由系统推导）；
    - 节点的 id/type 不变；
    - 返回修复后的 workflow JSON，只返回 JSON 对象本身，不要包含代码块标记。
+   - 如果修改量较大，也可以返回针对 workflow.json 的 unified diff 补丁；系统会尝试用 git apply 将补丁合并回 workflow 并继续校验。
 10. 可用工具：当你需要结构化修改时，优先调用提供的工具（无 LLM 依赖、结果确定），用来修复 loop body 引用、补齐必填参数或写入指定字段。
 """
 
@@ -575,6 +713,14 @@ validation_errors 是 JSON 数组，元素包含 code/node_id/field/message。
         if not text:
             log_warn("[repair_workflow_with_llm] LLM 返回空内容，使用最近一次工具输出。")
             return working_workflow
+
+        if _looks_like_patch(text):
+            patched_workflow = _apply_patch_output(working_workflow, text)
+            if patched_workflow is not None:
+                log_info("[repair_workflow_with_llm] 接收到补丁输出，已通过 git apply 合并。")
+                return patched_workflow
+
+            log_warn("[repair_workflow_with_llm] 补丁输出应用失败，尝试直接解析 JSON。")
 
         try:
             repaired_workflow = json.loads(text)
