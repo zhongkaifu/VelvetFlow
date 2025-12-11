@@ -12,9 +12,13 @@ from __future__ import annotations
 
 import sys
 import traceback
+import asyncio
+import json
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+import anyio
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
@@ -25,7 +29,7 @@ import velvetflow.logging_utils as logging_utils
 from fastapi import FastAPI, HTTPException
 from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ValidationError
 
@@ -109,6 +113,32 @@ def _capture_logs():
         logging_utils.console_log = original
 
 
+@contextmanager
+def _capture_logs_stream(queue: "asyncio.Queue[Dict[str, Any]]"):
+    """Capture console logs and forward them to an async queue for streaming."""
+
+    original = logging_utils.console_log
+
+    def patched(level: str, message: str) -> None:
+        line = f"[{level.upper()}] {message}"
+        try:
+            queue.put_nowait({"type": "log", "message": line})
+        except Exception:
+            # Avoid breaking the request if queue operations fail.
+            pass
+        try:
+            original(level, message)
+        except Exception:
+            # Avoid breaking the request if console output fails.
+            pass
+
+    logging_utils.console_log = patched
+    try:
+        yield
+    finally:
+        logging_utils.console_log = original
+
+
 def _serialize_workflow(workflow: Workflow) -> Dict[str, Any]:
     normalized = workflow.model_dump(by_alias=True)
     normalized["edges"] = [edge.model_dump(by_alias=True) for edge in workflow.edges]
@@ -152,6 +182,74 @@ def plan_workflow(req: PlanRequest) -> PlanResponse:
         ) from exc
 
     return PlanResponse(workflow=_serialize_workflow(workflow), logs=logs)
+
+
+@app.post("/api/plan/stream")
+async def plan_workflow_stream(req: PlanRequest) -> StreamingResponse:
+    """Stream planning logs and the final workflow over SSE."""
+
+    if not req.requirement.strip():
+        raise HTTPException(status_code=400, detail="requirement 不能为空")
+
+    queue: asyncio.Queue[Dict[str, Any]] = asyncio.Queue()
+
+    async def run_planner() -> None:
+        try:
+            search_service = _get_search_service()
+        except Exception as exc:  # noqa: BLE001 - surface startup errors
+            await queue.put({"type": "error", "message": f"构建检索服务失败: {exc}"})
+            await queue.put({"type": "end"})
+            return
+
+        try:
+            with _capture_logs_stream(queue):
+                if req.existing_workflow:
+                    workflow = await asyncio.to_thread(
+                        update_workflow_with_two_pass,
+                        existing_workflow=req.existing_workflow,
+                        requirement=req.requirement,
+                        search_service=search_service,
+                        action_registry=BUSINESS_ACTIONS,
+                        max_repair_rounds=3,
+                    )
+                else:
+                    workflow = await asyncio.to_thread(
+                        plan_workflow_with_two_pass,
+                        nl_requirement=req.requirement,
+                        search_service=search_service,
+                        action_registry=BUSINESS_ACTIONS,
+                        max_rounds=100,
+                        max_repair_rounds=3,
+                    )
+
+            await queue.put({"type": "result", "workflow": _serialize_workflow(workflow)})
+        except Exception as exc:  # noqa: BLE001 - keep API message concise
+            await queue.put(
+                {
+                    "type": "error",
+                    "message": f"规划或自修复失败: {exc} | trace: {traceback.format_exc()}",
+                }
+            )
+        finally:
+            await queue.put({"type": "end"})
+
+    async def event_stream():
+        planner_task = asyncio.create_task(run_planner())
+        try:
+            while True:
+                event = await queue.get()
+                if event.get("type") == "end":
+                    break
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+        finally:
+            planner_task.cancel()
+            with anyio.CancelScope(shield=True):
+                try:
+                    await planner_task
+                except Exception:
+                    pass
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
 @app.post("/api/run", response_model=RunResponse)
