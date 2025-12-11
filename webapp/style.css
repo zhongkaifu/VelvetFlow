@@ -206,10 +206,6 @@ canvas {
   font-size: 13px;
 }
 
-.hidden {
-  display: none;
-}
-
 .context-menu {
   position: absolute;
   min-width: 280px;
@@ -222,6 +218,10 @@ canvas {
   gap: 10px;
   display: flex;
   flex-direction: column;
+}
+
+.hidden {
+  display: none !important;
 }
 
 .context-menu__header {
