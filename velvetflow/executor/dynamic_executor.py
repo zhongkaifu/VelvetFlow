@@ -104,6 +104,7 @@ class DynamicActionExecutor(
         binding_ctx: BindingContext,
         visited: Set[str],
         reachable: Set[str],
+        blocked: Set[str],
         sorted_nodes: List[Node],
     ) -> ExecutionCheckpoint:
         pending_ids = [n.id for n in sorted_nodes if n.id not in visited]
@@ -113,6 +114,7 @@ class DynamicActionExecutor(
             visited=list(visited),
             reachable=list(reachable),
             pending_ids=pending_ids,
+            blocked=list(blocked),
         )
 
     def _execute_graph(
@@ -135,6 +137,7 @@ class DynamicActionExecutor(
         if checkpoint:
             visited: Set[str] = set(checkpoint.visited)
             reachable: Set[str] = set(checkpoint.reachable)
+            blocked: Set[str] = set(checkpoint.blocked)
             pending: List[Node] = [
                 self.node_models[nid]
                 for nid in checkpoint.pending_ids
@@ -163,6 +166,7 @@ class DynamicActionExecutor(
 
             visited = set()
             reachable = set(start_nodes)
+            blocked: Set[str] = set()
             pending = list(sorted_nodes)
 
         results = binding_ctx.results
@@ -172,7 +176,7 @@ class DynamicActionExecutor(
             remaining: List[Node] = []
             for node_model in pending:
                 nid = node_model.id
-                if nid in visited or (reachable and nid not in reachable):
+                if nid in visited or nid in blocked or (reachable and nid not in reachable):
                     remaining.append(node_model)
                     continue
                 visited.add(nid)
@@ -254,6 +258,7 @@ class DynamicActionExecutor(
                             binding_ctx,
                             visited,
                             reachable,
+                            blocked,
                             sorted_nodes,
                         )
                         suspension = WorkflowSuspension(
@@ -309,11 +314,22 @@ class DynamicActionExecutor(
                     results[nid] = payload
                     self._record_node_metrics(payload)
                     next_ids = self._next_nodes(
-                        self._derive_edges(workflow),
+                        edges,
                         nid,
                         cond_value=cond_value,
                         nodes_data=nodes_data,
                     )
+                    inactive_branch = (
+                        node.get("false_to_node")
+                        if cond_value is True
+                        else node.get("true_to_node")
+                    )
+                    if isinstance(inactive_branch, str):
+                        blocked_nodes = self._collect_downstream_nodes(
+                            edges, inactive_branch
+                        )
+                        blocked.update(blocked_nodes)
+                        reachable.difference_update(blocked_nodes)
                     for nxt in next_ids:
                         if nxt not in visited:
                             reachable.add(nxt)
@@ -340,7 +356,7 @@ class DynamicActionExecutor(
                         next_ids = [matched_to]
                     else:
                         next_ids = self._next_nodes(
-                            self._derive_edges(workflow),
+                            edges,
                             nid,
                             cond_value=switch_payload.get("matched_case"),
                             nodes_data=nodes_data,
@@ -376,7 +392,7 @@ class DynamicActionExecutor(
                         action_id=action_id,
                     )
                     next_ids = self._next_nodes(
-                        self._derive_edges(workflow), nid, nodes_data=nodes_data
+                        edges, nid, nodes_data=nodes_data
                     )
                     for nxt in next_ids:
                         if nxt not in visited:
@@ -395,7 +411,7 @@ class DynamicActionExecutor(
                     continue
 
                 next_ids = self._next_nodes(
-                    self._derive_edges(workflow), nid, nodes_data=nodes_data
+                    edges, nid, nodes_data=nodes_data
                 )
                 for nxt in next_ids:
                     if nxt not in visited:

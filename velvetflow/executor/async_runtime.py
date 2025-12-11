@@ -67,6 +67,7 @@ class ExecutionCheckpoint:
     visited: List[str]
     reachable: List[str]
     pending_ids: List[str]
+    blocked: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -75,6 +76,7 @@ class ExecutionCheckpoint:
             "visited": list(self.visited),
             "reachable": list(self.reachable),
             "pending_ids": list(self.pending_ids),
+            "blocked": list(self.blocked),
         }
 
     @classmethod
@@ -85,6 +87,7 @@ class ExecutionCheckpoint:
             visited=list(payload.get("visited", [])),
             reachable=list(payload.get("reachable", [])),
             pending_ids=list(payload.get("pending_ids", [])),
+            blocked=list(payload.get("blocked", [])),
         )
 
     def save_to_file(self, file_path: str | Path) -> None:
