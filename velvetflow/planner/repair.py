@@ -663,6 +663,7 @@ validation_errors 是 JSON 数组，元素包含 code/node_id/field/message。
     if not _looks_like_patch(text):
         raise RuntimeError("[repair_workflow_with_llm] 仅接受 unified diff 补丁输出，当前响应不符合新策略。")
 
+    log_info(f"[repair_workflow_with_llm] 收到补丁内容如下：\n{text}")
     patched_workflow = _apply_patch_output(broken_workflow, text)
     if patched_workflow is None:
         raise RuntimeError("[repair_workflow_with_llm] 补丁输出应用失败，请返回可被 git apply 的有效补丁。")
