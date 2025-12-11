@@ -5,7 +5,6 @@ from __future__ import annotations
 
 """A small set of real, ready-to-use business tools."""
 
-import asyncio
 import html
 import json
 import os
@@ -14,15 +13,74 @@ import textwrap
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
-from html.parser import HTMLParser
 from pathlib import Path
 import uuid
-from typing import Any, Awaitable, Callable, Dict, List, Mapping, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 try:
-    from crawl4ai import AsyncWebCrawler, BrowserConfig, CacheMode, CrawlerRunConfig, LLMConfig
+    from crawl4ai import BrowserConfig, CacheMode, CrawlerRunConfig, LLMConfig
+    try:  # Prefer native sync crawler when available
+        from crawl4ai import WebCrawler
+    except ImportError:  # pragma: no cover - backward compatibility
+        WebCrawler = None
+
+    try:
+        from crawl4ai import AsyncWebCrawler as _AsyncWebCrawler
+    except ImportError:  # pragma: no cover - async crawler not available
+        _AsyncWebCrawler = None
+
     from crawl4ai.extraction_strategy import LLMExtractionStrategy
     _CRAWL4AI_AVAILABLE = True
+
+    if WebCrawler is None and _AsyncWebCrawler is not None:  # pragma: no cover - exercised when sync crawler missing
+        import asyncio
+
+        class WebCrawler:  # type: ignore[misc]
+            """Synchronous shim built on crawl4ai.AsyncWebCrawler.
+
+            A dedicated event loop is kept alive for the lifetime of the crawler
+            so Playwright connections do not get tied to short-lived loops.
+            """
+
+            def __init__(self, config: Any) -> None:
+                self._config = config
+                self._crawler: Any | None = None
+                self._loop: asyncio.AbstractEventLoop | None = None
+
+            def __enter__(self) -> "WebCrawler":
+                async def _start() -> Any:
+                    crawler = _AsyncWebCrawler(config=self._config)
+                    await crawler.__aenter__()
+                    return crawler
+
+                # Keep a dedicated loop alive for the crawler lifecycle to avoid
+                # Playwright connections being associated with a closed loop.
+                self._loop = asyncio.new_event_loop()
+                self._crawler = self._loop.run_until_complete(_start())
+                return self
+
+            def run(self, *args: Any, **kwargs: Any) -> Any:
+                if self._crawler is None or self._loop is None:  # pragma: no cover - defensive guard
+                    raise RuntimeError("Crawler not initialized")
+
+                async def _run() -> Any:
+                    return await self._crawler.arun(*args, **kwargs)
+
+                return self._loop.run_until_complete(_run())
+
+            def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+                if self._crawler is None or self._loop is None:  # pragma: no cover - defensive guard
+                    return
+
+                async def _stop() -> None:
+                    await self._crawler.__aexit__(exc_type, exc, tb)
+
+                try:
+                    self._loop.run_until_complete(_stop())
+                finally:
+                    self._loop.close()
+
+    AsyncWebCrawler = _AsyncWebCrawler
 except ModuleNotFoundError:  # pragma: no cover - exercised in environments without crawl4ai
     _CRAWL4AI_AVAILABLE = False
 
@@ -40,7 +98,7 @@ except ModuleNotFoundError:  # pragma: no cover - exercised in environments with
     class _MissingCacheMode:
         BYPASS = "bypass"
 
-    AsyncWebCrawler = BrowserConfig = CrawlerRunConfig = LLMConfig = _MissingCrawlerDependency()
+    AsyncWebCrawler = BrowserConfig = CrawlerRunConfig = LLMConfig = WebCrawler = _MissingCrawlerDependency()
     CacheMode = _MissingCacheMode()
     LLMExtractionStrategy = _MissingCrawlerDependency()
 
@@ -87,61 +145,22 @@ def _resolve_search_url(raw_url: str) -> str:
         uddg = urllib.parse.parse_qs(parsed.query).get("uddg", [])
         if uddg:
             return _normalize_web_url(urllib.parse.unquote(uddg[0]))
+    if raw_url.startswith("/url") or "google.com/url" in raw_url:
+        parsed = urllib.parse.urlparse(raw_url)
+        query_params = urllib.parse.parse_qs(parsed.query)
+        target = query_params.get("q") or query_params.get("url")
+        if target:
+            return _normalize_web_url(target[0])
     return _normalize_web_url(raw_url)
 
 
-class _DuckDuckGoParser(HTMLParser):
-    """Minimal parser to extract search results from DuckDuckGo HTML."""
-
-    def __init__(self, limit: int) -> None:
-        super().__init__()
-        self.limit = limit
-        self.results: List[Dict[str, str]] = []
-        self._capturing_title = False
-        self._capturing_snippet = False
-        self._current_href: str | None = None
-        self._title_parts: List[str] = []
-        self._snippet_parts: List[str] = []
-
-    def handle_starttag(self, tag: str, attrs: List[Tuple[str, str | None]]) -> None:  # pragma: no cover - HTML parsing
-        attrs_dict = {k: v for k, v in attrs}
-        if tag == "a" and "result__a" in (attrs_dict.get("class") or ""):
-            self._capturing_title = True
-            self._current_href = attrs_dict.get("href")
-            self._title_parts = []
-        if tag in {"p", "div", "span"} and "result__snippet" in (attrs_dict.get("class") or ""):
-            self._capturing_snippet = True
-            self._snippet_parts = []
-
-    def handle_data(self, data: str) -> None:  # pragma: no cover - HTML parsing
-        if self._capturing_title:
-            self._title_parts.append(data.strip())
-        if self._capturing_snippet:
-            self._snippet_parts.append(data.strip())
-
-    def handle_endtag(self, tag: str) -> None:  # pragma: no cover - HTML parsing
-        if self._capturing_title and tag == "a":
-            title = " ".join(self._title_parts).strip()
-            if title and self._current_href:
-                self.results.append({"title": title, "url": self._current_href})
-            self._capturing_title = False
-            self._title_parts = []
-            self._current_href = None
-            if len(self.results) >= self.limit:
-                raise StopIteration
-        if self._capturing_snippet and tag in {"p", "div", "span"}:
-            snippet = " ".join(self._snippet_parts).strip()
-            if snippet and self.results:
-                if "snippet" not in self.results[-1]:
-                    self.results[-1]["snippet"] = snippet
-            self._capturing_snippet = False
-            self._snippet_parts = []
-            if len(self.results) >= self.limit:
-                raise StopIteration
-
-
 def search_web(query: str, limit: int = 5, timeout: int = 8) -> Dict[str, List[Dict[str, str]]]:
-    """Perform a DuckDuckGo HTML search and return top results with snippets."""
+    """Perform a Google search via the googlesearch-python package.
+
+    The helper normalizes common result shapes from the package (objects,
+    dictionaries, or raw URLs) into a consistent list of dictionaries containing
+    title, url, and snippet fields.
+    """
 
     def _clean_text(value: str) -> str:
         text_no_tags = re.sub(r"<[^>]+>", " ", value)
@@ -151,41 +170,103 @@ def search_web(query: str, limit: int = 5, timeout: int = 8) -> Dict[str, List[D
     if not query:
         raise ValueError("query is required for web search")
 
-    encoded_q = urllib.parse.quote_plus(query)
-    url = f"https://duckduckgo.com/html/?q={encoded_q}&kl=us-en"
-    req = urllib.request.Request(
-        url,
-        headers={"User-Agent": "Mozilla/5.0 (compatible; VelvetFlow/1.0)"},
-    )
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            raw_html = resp.read().decode("utf-8", errors="ignore")
-    except Exception as exc:  # pragma: no cover - network-dependent
-        raise RuntimeError(f"web search failed: {exc}") from exc
+        from googlesearch import search as google_search
+    except ImportError as exc:  # pragma: no cover - optional dependency
+        raise ImportError(
+            "googlesearch-python is required for web search; install it with 'pip install googlesearch-python'."
+        ) from exc
 
-    parser = _DuckDuckGoParser(limit)
-    try:
-        parser.feed(raw_html)
-    except StopIteration:  # pragma: no cover - parser stops early when limit reached
-        pass
-
-    results: List[Dict[str, str]] = []
-    for entry in parser.results:
-        title_value = _clean_text(entry.get("title", ""))
-        url_value = _resolve_search_url(entry.get("url", ""))
-        snippet_value = _clean_text(entry.get("snippet", "")) or title_value
-
-        if title_value and url_value:
-            results.append(
-                {
-                    "title": title_value,
-                    "url": url_value,
-                    "snippet": snippet_value,
-                }
+    def _search_via_package() -> List[Dict[str, str]]:
+        try:
+            raw_results = google_search(
+                query,
+                num_results=max(limit, 1),
+                lang="en",
+                advanced=True,
+                sleep_interval=1,
             )
+        except Exception as exc:  # pragma: no cover - network-dependent
+            raise RuntimeError(f"web search failed: {exc}") from exc
 
-        if len(results) >= limit:
-            break
+        results: List[Dict[str, str]] = []
+
+        for entry in raw_results:
+            title_value = ""
+            url_value = ""
+            snippet_value = ""
+
+            if isinstance(entry, Mapping):
+                title_value = entry.get("title") or entry.get("name") or ""
+                url_value = entry.get("url") or entry.get("link") or entry.get("href") or ""
+                snippet_value = entry.get("description") or entry.get("snippet") or entry.get("summary") or ""
+            elif hasattr(entry, "__dict__"):
+                title_value = getattr(entry, "title", "") or getattr(entry, "name", "")
+                url_value = getattr(entry, "url", "") or getattr(entry, "link", "") or getattr(entry, "href", "")
+                snippet_value = getattr(entry, "description", "") or getattr(entry, "snippet", "")
+            elif isinstance(entry, str):
+                url_value = entry
+                title_value = entry
+
+            title_value = _clean_text(str(title_value))
+            url_value = _resolve_search_url(str(url_value))
+            snippet_value = _clean_text(str(snippet_value)) or title_value
+
+            if title_value and url_value:
+                results.append(
+                    {
+                        "title": title_value,
+                        "url": url_value,
+                        "snippet": snippet_value,
+                    }
+                )
+
+            if len(results) >= limit:
+                break
+
+        return results
+
+    def _search_via_html() -> List[Dict[str, str]]:
+        encoded_q = urllib.parse.quote_plus(query)
+        url = f"https://www.google.com/search?q={encoded_q}&hl=en"
+        req = urllib.request.Request(
+            url,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; VelvetFlow/1.0)"},
+        )
+
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                raw_html = resp.read().decode("utf-8", errors="ignore")
+        except Exception as exc:  # pragma: no cover - network-dependent
+            raise RuntimeError(f"web search failed: {exc}") from exc
+
+        pattern = re.compile(
+            r"<a href=\"(?P<href>/url\?q=[^\"]+)\"[^>]*>\s*<h3[^>]*>(?P<title>.*?)</h3>[\s\S]*?(?P<snippet><div class=\"[^\"]*\">.*?</div>)",
+            re.IGNORECASE,
+        )
+
+        results: List[Dict[str, str]] = []
+        for match in pattern.finditer(raw_html):
+            title_value = _clean_text(match.group("title"))
+            url_value = _resolve_search_url(match.group("href"))
+            snippet_value = _clean_text(match.group("snippet")) or title_value
+
+            if title_value and url_value:
+                results.append(
+                    {
+                        "title": title_value,
+                        "url": url_value,
+                        "snippet": snippet_value,
+                    }
+                )
+            if len(results) >= limit:
+                break
+
+        return results
+
+    results = _search_via_package()
+    if not results:
+        results = _search_via_html()
 
     return {"results": results}
 
@@ -637,19 +718,6 @@ def compose_outlook_email(email_content: str, emailTo: Optional[str] = None) -> 
     }
 
 
-def _run_coroutine(factory: Callable[[], Awaitable[Any]]) -> Any:
-    """Safely execute an async coroutine factory from sync code."""
-
-    try:
-        return asyncio.run(factory())
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        try:
-            return loop.run_until_complete(factory())
-        finally:
-            loop.close()
-
-
 def _normalize_internal_url(candidate: str, base_url: str) -> str:
     """Resolve and validate that the candidate URL stays within the base domain."""
 
@@ -799,51 +867,53 @@ def _crawl_page_once(
     instruction: str,
     api_token: Optional[str],
     llm_provider: str,
-    run_coroutine: Callable[[Callable[[], Awaitable[Any]]], Any],
 ) -> Dict[str, Any]:
     """Crawl a single URL and return extracted content plus in-domain links."""
 
-    async def _scrape() -> tuple[Any, List[Dict[str, Any]]]:
-        browser_conf = BrowserConfig(headless=True, verbose=False)
-        attempts: List[Dict[str, Any]] = []
+    browser_conf = BrowserConfig(headless=True, verbose=False)
+    attempts: List[Dict[str, Any]] = []
 
-        async with AsyncWebCrawler(config=browser_conf) as crawler:
-            if api_token:
-                llm_conf = LLMConfig(provider=llm_provider, api_token=api_token)
-                llm_strategy = LLMExtractionStrategy(
-                    llm_config=llm_conf,
-                    schema=None,
-                    extraction_type="text",
-                    instruction=instruction,
-                    input_format="markdown",
-                    verbose=False,
-                )
-                llm_run = CrawlerRunConfig(cache_mode=CacheMode.BYPASS, extraction_strategy=llm_strategy)
-                llm_result = await crawler.arun(url=url, config=llm_run)
-                attempts.append(
-                    {
-                        "method": "llm_extraction",
-                        "success": llm_result.success,
-                        "status_code": llm_result.status_code,
-                        "error": llm_result.error_message,
-                    }
-                )
-                if llm_result.success:
-                    return llm_result, attempts
+    with WebCrawler(config=browser_conf) as crawler:
+        result = None
 
+        if api_token:
+            llm_conf = LLMConfig(provider=llm_provider, api_token=api_token)
+            llm_strategy = LLMExtractionStrategy(
+                llm_config=llm_conf,
+                schema=None,
+                extraction_type="text",
+                instruction=instruction,
+                input_format="markdown",
+                verbose=False,
+            )
+            llm_run = CrawlerRunConfig(cache_mode=CacheMode.BYPASS, extraction_strategy=llm_strategy)
+            llm_result = crawler.run(url=url, config=llm_run)
+            attempts.append(
+                {
+                    "method": "llm_extraction",
+                    "success": getattr(llm_result, "success", False),
+                    "status_code": getattr(llm_result, "status_code", None),
+                    "error": getattr(llm_result, "error_message", None),
+                }
+            )
+            if getattr(llm_result, "success", False):
+                result = llm_result
+
+        if result is None or not getattr(result, "success", False):
             fallback_run = CrawlerRunConfig(cache_mode=CacheMode.BYPASS)
-            fallback_result = await crawler.arun(url=url, config=fallback_run)
+            fallback_result = crawler.run(url=url, config=fallback_run)
             attempts.append(
                 {
                     "method": "raw_scrape",
-                    "success": fallback_result.success,
-                    "status_code": fallback_result.status_code,
-                    "error": fallback_result.error_message,
+                    "success": getattr(fallback_result, "success", False),
+                    "status_code": getattr(fallback_result, "status_code", None),
+                    "error": getattr(fallback_result, "error_message", None),
                 }
             )
-            return fallback_result, attempts
+            result = fallback_result
 
-    result, _attempts = run_coroutine(_scrape)
+    # result is guaranteed to be set after the crawler context
+    assert result is not None
 
     raw_content = getattr(result, "extracted_content", "") or ""
     if isinstance(raw_content, (dict, list)):
@@ -874,7 +944,6 @@ def _scrape_single_url(
     *,
     llm_instruction: Optional[str] = None,
     llm_provider: str = "openai/gpt-4o-mini",
-    run_coroutine: Callable[[Callable[[], Awaitable[Any]]], Any] = _run_coroutine,
 ) -> Dict[str, Any]:
     """Download and analyze a single web page according to a request."""
 
@@ -909,13 +978,7 @@ def _scrape_single_url(
             continue
 
         visited.add(current)
-        page_result = _crawl_page_once(
-            current,
-            instruction,
-            api_token,
-            llm_provider,
-            run_coroutine,
-        )
+        page_result = _crawl_page_once(current, instruction, api_token, llm_provider)
         page_result["url"] = current
         collected.append(page_result)
 
@@ -1190,7 +1253,7 @@ def register_builtin_tools() -> None:
     register_tool(
         Tool(
             name="search_web",
-            description="Perform a Bing search and return titles, URLs, and snippets.",
+            description="Perform a Google search and return titles, URLs, and snippets.",
             function=search_web,
             args_schema={
                 "type": "object",
@@ -1390,7 +1453,7 @@ def register_builtin_tools() -> None:
         Tool(
             name="search_and_crawl_web_content",
             description=(
-                "Search for a natural-language query, crawl in-domain pages with crawl4ai, let an LLM assess coverage, and return a multi-page summary."
+                "Search Google for a natural-language query, crawl in-domain pages with crawl4ai, let an LLM assess coverage, and return a multi-page summary."
             ),
             function=business_action,
             args_schema={

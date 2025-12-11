@@ -23,6 +23,7 @@ fake_crawl4ai.CacheMode = types.SimpleNamespace(BYPASS="bypass")
 fake_crawl4ai.CrawlerRunConfig = _Dummy
 fake_crawl4ai.LLMConfig = _Dummy
 fake_crawl4ai.LLMExtractionStrategy = _Dummy
+fake_crawl4ai.WebCrawler = _Dummy
 
 sys.modules.setdefault("crawl4ai", fake_crawl4ai)
 fake_extraction_strategy = types.ModuleType("crawl4ai.extraction_strategy")
@@ -111,7 +112,6 @@ def test_scrape_single_url_stays_on_domain(monkeypatch):
     result = builtin._scrape_single_url(
         "https://example.com/start",
         "find info",
-        run_coroutine=lambda factory: factory(),
     )
 
     assert visits == ["https://example.com/start", "https://example.com/internal"]
