@@ -239,7 +239,7 @@ def _apply_binding_aggregator(
     agg = _get_binding_agg(binding)
 
     input_schema: Optional[Mapping[str, Any]] = None
-    output_schema: Optional[Mapping[str, Any]] = actual_schema
+    output_schema: Optional[Mapping[str, Any]] = None
 
     agg_obj = binding.get("binding") if isinstance(binding.get("binding"), Mapping) else None
     if isinstance(agg_obj, Mapping):
@@ -248,10 +248,10 @@ def _apply_binding_aggregator(
         if isinstance(agg_obj.get("output_type"), str):
             output_schema = {"type": agg_obj["output_type"]}
 
-    if not isinstance(agg, str):
+    if agg is None:
+        agg = "identity"
+    elif not isinstance(agg, str):
         return output_schema, input_schema
-
-    agg = agg or "identity"
 
     if agg in {"count", "count_if"}:
         input_schema = input_schema or {"type": "array"}
@@ -267,6 +267,9 @@ def _apply_binding_aggregator(
             isinstance(step, Mapping) and step.get("op") == "format_join" for step in steps
         ):
             output_schema = output_schema or {"type": "string"}
+
+    # Default to the source schema when the aggregator does not override it.
+    output_schema = output_schema or actual_schema
 
     return output_schema, input_schema
 
