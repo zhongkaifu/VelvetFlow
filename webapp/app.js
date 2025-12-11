@@ -700,15 +700,18 @@ function layoutNodes(workflow) {
   const { nodes } = workflow;
   const positions = {};
   const columns = Math.max(3, Math.ceil(Math.sqrt(nodes.length)));
+  const topPadding = 60;
+  const bottomPadding = 60;
+  const rows = Math.ceil(nodes.length / columns) || 1;
   const spacingX = workflowCanvas.width / (columns + 1);
-  const spacingY = workflowCanvas.height / (Math.ceil(nodes.length / columns) + 1);
+  const spacingY = Math.max(120, (workflowCanvas.height - topPadding - bottomPadding) / rows);
 
   nodes.forEach((node, index) => {
     const col = index % columns;
     const row = Math.floor(index / columns);
     positions[node.id] = {
       x: spacingX * (col + 1),
-      y: spacingY * (row + 1),
+      y: topPadding + spacingY * row,
     };
   });
   return positions;
