@@ -219,7 +219,8 @@ textarea#workflowEditor {
   font-family: "JetBrains Mono", "SFMono-Regular", Menlo, Consolas, monospace;
   font-size: 14px;
   line-height: 1.5;
-  resize: vertical;
+  resize: none;
+  overflow: hidden;
 }
 
 .chat-panel {

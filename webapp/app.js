@@ -898,8 +898,16 @@ function roundedRect(x, y, width, height, radius) {
   ctx.closePath();
 }
 
+function autoSizeEditor() {
+  if (!workflowEditor) return;
+  workflowEditor.style.height = "auto";
+  const newHeight = Math.max(workflowEditor.scrollHeight, 200);
+  workflowEditor.style.height = `${newHeight}px`;
+}
+
 function updateEditor() {
   workflowEditor.value = JSON.stringify(currentWorkflow, null, 2);
+  autoSizeEditor();
 }
 
 async function requestPlan(requirement) {
@@ -1131,6 +1139,7 @@ chatForm.addEventListener("submit", handleChatSubmit);
 runWorkflowBtn.addEventListener("click", requestRun);
 applyWorkflowBtn.addEventListener("click", applyWorkflowFromEditor);
 resetWorkflowBtn.addEventListener("click", resetWorkflow);
+workflowEditor.addEventListener("input", autoSizeEditor);
 
 tabs.forEach((tab) => tab.addEventListener("click", handleTabClick));
 workflowCanvas.addEventListener("dblclick", handleCanvasDoubleClick);
