@@ -16,6 +16,12 @@ const visualTabContent = document.querySelector('[data-view="visual"]');
 const jsonTabContent = document.querySelector('[data-view="json"]');
 const canvasPanel = document.querySelector(".canvas-panel");
 const canvasHost = document.getElementById("canvasHost");
+const nodeActionSelect = document.getElementById("nodeActionSelect");
+const nodeDisplayNameInput = document.getElementById("nodeDisplayName");
+const addNodeButton = document.getElementById("addNodeButton");
+const workflowNodeList = document.getElementById("workflowNodeList");
+const actionChooser = document.getElementById("actionChooser");
+const nodeTypeButtons = Array.from(document.querySelectorAll("[data-node-type]"));
 
 const NODE_WIDTH = 320;
 
@@ -28,6 +34,7 @@ let nodePositionsByTab = {};
 let lastPositionsByTab = {};
 let tabDirtyFlags = {};
 let actionCatalog = {};
+let selectedNodeType = "action";
 
 let isDragging = false;
 let dragNodeId = null;
@@ -44,9 +51,31 @@ async function loadActionCatalog() {
       if (action && action.action_id) acc[action.action_id] = action;
       return acc;
     }, {});
+    populateActionSelect();
   } catch (error) {
     appendLog(`业务工具清单加载失败：${error.message}`);
   }
+}
+
+function populateActionSelect() {
+  if (!nodeActionSelect) return;
+  const actions = Object.values(actionCatalog);
+  nodeActionSelect.innerHTML = "";
+
+  if (!actions.length) {
+    const placeholder = document.createElement("option");
+    placeholder.value = "custom_action";
+    placeholder.textContent = "custom_action";
+    nodeActionSelect.appendChild(placeholder);
+    return;
+  }
+
+  actions.forEach((action) => {
+    const option = document.createElement("option");
+    option.value = action.action_id;
+    option.textContent = `${action.action_id}${action.name ? ` · ${action.name}` : ""}`;
+    nodeActionSelect.appendChild(option);
+  });
 }
 
 function createEmptyWorkflow() {
@@ -56,6 +85,59 @@ function createEmptyWorkflow() {
     nodes: [],
     edges: [],
   };
+}
+
+function generateNodeId(prefix, graph = currentWorkflow) {
+  const existing = new Set((graph.nodes || []).map((n) => n.id));
+  const base = prefix || "node";
+  let counter = 1;
+  let candidate = `${base}_${counter}`;
+  while (existing.has(candidate)) {
+    counter += 1;
+    candidate = `${base}_${counter}`;
+  }
+  return candidate;
+}
+
+function createDefaultNode(type, graph = currentWorkflow, options = {}) {
+  const id = generateNodeId(type, graph);
+  const display = options.display_name || `${type} ${id}`;
+
+  if (type === "action") {
+    const defaultAction = options.action_id || Object.keys(actionCatalog)[0] || "custom_action";
+    return {
+      id,
+      type: "action",
+      action_id: defaultAction,
+      display_name: display,
+      params: {},
+    };
+  }
+
+  if (type === "condition") {
+    return {
+      id,
+      type: "condition",
+      display_name: display,
+      params: {},
+      true_to_node: "",
+      false_to_node: "",
+    };
+  }
+
+  if (type === "loop") {
+    return {
+      id,
+      type: "loop",
+      display_name: display,
+      params: {
+        body_subgraph: { nodes: [], edges: [] },
+        exports: {},
+      },
+    };
+  }
+
+  return { id, type, display_name: display };
 }
 
 function normalizeEdge(edge) {
@@ -449,6 +531,110 @@ function rebuildEdgesFromBindings(workflow) {
     });
   });
   workflow.edges = normalizeWorkflow({ edges: [...(workflow.edges || []), ...newEdges] }).edges;
+}
+
+function setSelectedNodeType(type) {
+  if (!type) return;
+  selectedNodeType = type;
+  nodeTypeButtons.forEach((btn) => {
+    const isActive = btn.dataset.nodeType === type;
+    btn.setAttribute("aria-selected", isActive);
+  });
+  if (actionChooser) {
+    actionChooser.style.display = type === "action" ? "flex" : "none";
+  }
+}
+
+function addNodeToCurrentGraph() {
+  if (!isCanvasTab(currentTab)) {
+    switchToTab("visual");
+  }
+  const context = getTabContext(currentTab);
+  const graph = context.graph || currentWorkflow;
+  const displayName = nodeDisplayNameInput ? nodeDisplayNameInput.value.trim() : "";
+  const actionId = nodeActionSelect ? nodeActionSelect.value : undefined;
+  const newNode = createDefaultNode(selectedNodeType, graph, {
+    display_name: displayName,
+    action_id: actionId,
+  });
+
+  const updatedGraph = { ...graph, nodes: [...(graph.nodes || []), newNode] };
+  context.saveGraph(updatedGraph);
+  clearPositionCaches(context.tabKey || currentTab);
+  render(currentTab);
+  if (nodeDisplayNameInput) nodeDisplayNameInput.value = "";
+  appendLog(`已添加 ${selectedNodeType} 节点：${newNode.id}`);
+}
+
+function removeNodeFromGraph(nodeId, context = getTabContext(currentTab)) {
+  if (!nodeId) return;
+  const graph = context.graph || currentWorkflow;
+  if (!graph.nodes || !graph.nodes.length) return;
+
+  const targetNode = (graph.nodes || []).find((n) => n && n.id === nodeId);
+  const updatedNodes = graph.nodes.filter((n) => n && n.id !== nodeId);
+  if (updatedNodes.length === graph.nodes.length) return;
+
+  const updatedEdges = (graph.edges || []).filter((edge) => {
+    const from = edge.from_node || edge.from;
+    const to = edge.to_node || edge.to;
+    return from !== nodeId && to !== nodeId;
+  });
+
+  const updatedGraph = { ...graph, nodes: updatedNodes, edges: updatedEdges };
+  context.saveGraph(updatedGraph);
+  clearPositionCaches(context.tabKey || currentTab);
+  if (context.kind === "root" && targetNode && targetNode.type === "loop") {
+    closeLoopTab(`loop:${nodeId}`);
+  }
+  render(currentTab);
+  appendLog(`已删除节点：${nodeId}`);
+}
+
+function renderNodeList(context = getTabContext(currentTab)) {
+  if (!workflowNodeList) return;
+  const graph = context.graph || currentWorkflow;
+  const nodes = Array.isArray(graph.nodes) ? graph.nodes : [];
+  workflowNodeList.innerHTML = "";
+
+  if (!nodes.length) {
+    const empty = document.createElement("p");
+    empty.className = "muted";
+    empty.textContent = "当前子图暂无节点，选择左侧类型后点击“添加结点”开始构建";
+    workflowNodeList.appendChild(empty);
+    return;
+  }
+
+  nodes.forEach((node) => {
+    if (!node) return;
+    const item = document.createElement("div");
+    item.className = "node-list__item";
+
+    const info = document.createElement("div");
+    const title = document.createElement("p");
+    title.className = "node-list__title";
+    title.textContent = node.display_name || node.id;
+    const meta = document.createElement("p");
+    meta.className = "node-list__meta";
+    if (node.type === "action") {
+      const toolLabel = node.action_id || "未指定 action_id";
+      meta.textContent = `类型：action ｜ ${toolLabel}`;
+    } else {
+      meta.textContent = `类型：${node.type}`;
+    }
+    info.appendChild(title);
+    info.appendChild(meta);
+
+    const removeBtn = document.createElement("button");
+    removeBtn.type = "button";
+    removeBtn.className = "node-list__remove";
+    removeBtn.textContent = "删除";
+    removeBtn.addEventListener("click", () => removeNodeFromGraph(node.id, context));
+
+    item.appendChild(info);
+    item.appendChild(removeBtn);
+    workflowNodeList.appendChild(item);
+  });
 }
 
 function openNodeDialog(node, context = getTabContext()) {
@@ -1163,6 +1349,7 @@ function render(mode = currentTab) {
     attachCanvasTo(mode);
   }
 
+  renderNodeList(context);
   resizeCanvas(graph);
   ctx.clearRect(0, 0, workflowCanvas.width, workflowCanvas.height);
   renderedNodes = [];
@@ -1503,6 +1690,10 @@ runWorkflowBtn.addEventListener("click", requestRun);
 applyWorkflowBtn.addEventListener("click", applyWorkflowFromEditor);
 resetWorkflowBtn.addEventListener("click", resetWorkflow);
 workflowEditor.addEventListener("input", autoSizeEditor);
+nodeTypeButtons.forEach((btn) =>
+  btn.addEventListener("click", () => setSelectedNodeType(btn.dataset.nodeType)),
+);
+if (addNodeButton) addNodeButton.addEventListener("click", addNodeToCurrentGraph);
 
 tabs.forEach((tab) => tab.addEventListener("click", handleTabClick));
 workflowCanvas.addEventListener("dblclick", handleCanvasDoubleClick);
@@ -1516,6 +1707,8 @@ const editorResizeObserver = new ResizeObserver(() => render(currentTab));
 editorResizeObserver.observe(workflowEditor);
 window.addEventListener("resize", () => render(currentTab));
 
+populateActionSelect();
+setSelectedNodeType(selectedNodeType);
 loadActionCatalog();
 updateEditor();
 render();
