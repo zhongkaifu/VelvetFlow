@@ -1,7 +1,6 @@
 const workflowCanvas = document.getElementById("workflowCanvas");
 const ctx = workflowCanvas.getContext("2d");
 const chatLog = document.getElementById("chatLog");
-const buildLog = document.getElementById("buildLog");
 const chatForm = document.getElementById("chatForm");
 const userInput = document.getElementById("userInput");
 const statusIndicator = document.getElementById("statusIndicator");
@@ -120,7 +119,13 @@ function addChatMessage(text, role = "agent") {
   div.className = `chat-message ${role}`;
   div.textContent = text;
   chatLog.appendChild(div);
-  chatLog.scrollTop = chatLog.scrollHeight;
+  scrollChatToBottom();
+}
+
+function scrollChatToBottom() {
+  requestAnimationFrame(() => {
+    chatLog.scrollTop = chatLog.scrollHeight;
+  });
 }
 
 function appendLog(text) {
@@ -128,8 +133,8 @@ function appendLog(text) {
   div.className = "log-entry";
   const now = new Date().toLocaleTimeString();
   div.textContent = `[${now}] ${text}`;
-  buildLog.appendChild(div);
-  buildLog.scrollTop = buildLog.scrollHeight;
+  chatLog.appendChild(div);
+  scrollChatToBottom();
 }
 
 function renderLogs(logs = [], echoToChat = false) {
@@ -448,8 +453,12 @@ function rebuildEdgesFromBindings(workflow) {
 
 function openNodeDialog(node, context = getTabContext()) {
   if (!node) return;
+  if (node.type === "condition") {
+    openConditionDialog(node, context);
+    return;
+  }
   if (node.type !== "action") {
-    addChatMessage("当前仅支持编辑 action 节点的入参/出参。", "agent");
+    addChatMessage("当前仅支持编辑 action 或 condition 节点的参数。", "agent");
     return;
   }
 
@@ -603,6 +612,126 @@ function openNodeDialog(node, context = getTabContext()) {
   });
 
   refreshIO(actionSelect.value);
+}
+
+function openConditionDialog(node, context = getTabContext()) {
+  const overlay = document.createElement("div");
+  overlay.className = "modal-overlay";
+
+  const dialog = document.createElement("div");
+  dialog.className = "modal";
+
+  const title = document.createElement("div");
+  title.className = "modal__title";
+  title.textContent = `编辑条件节点：${node.display_name || node.id}`;
+  dialog.appendChild(title);
+
+  const nameRow = document.createElement("div");
+  nameRow.className = "modal__row";
+  const nameLabel = document.createElement("label");
+  nameLabel.textContent = "显示名称";
+  const nameInput = document.createElement("input");
+  nameInput.className = "modal__input";
+  nameInput.value = node.display_name || "";
+  nameRow.appendChild(nameLabel);
+  nameRow.appendChild(nameInput);
+  dialog.appendChild(nameRow);
+
+  const paramsHeader = document.createElement("div");
+  paramsHeader.className = "modal__subtitle";
+  paramsHeader.textContent = "条件参数 (支持 result_of.* 引用或常量)";
+  dialog.appendChild(paramsHeader);
+
+  const paramsContainer = document.createElement("div");
+  paramsContainer.className = "modal__grid";
+  dialog.appendChild(paramsContainer);
+
+  const addParamBtn = document.createElement("button");
+  addParamBtn.type = "button";
+  addParamBtn.className = "button button--ghost";
+  addParamBtn.textContent = "新增参数";
+
+  const paramRows = [];
+
+  function addParamRow(key = "", value = "") {
+    const row = document.createElement("div");
+    row.className = "modal__field";
+
+    const keyInput = document.createElement("input");
+    keyInput.className = "modal__input";
+    keyInput.placeholder = "参数名";
+    keyInput.value = key;
+
+    const valueInput = document.createElement("textarea");
+    valueInput.className = "modal__input modal__textarea";
+    valueInput.placeholder = "参数值，支持 JSON 或 result_of.* 引用";
+    valueInput.value = value;
+
+    row.appendChild(keyInput);
+    row.appendChild(valueInput);
+    paramsContainer.appendChild(row);
+    paramRows.push({ keyInput, valueInput });
+  }
+
+  const params = node.params || {};
+  const entries = Object.keys(params).length ? Object.entries(params) : [["", ""]];
+  entries.forEach(([key, value]) => addParamRow(key, stringifyBinding(value)));
+
+  addParamBtn.addEventListener("click", () => addParamRow());
+  dialog.appendChild(addParamBtn);
+
+  const actionsRow = document.createElement("div");
+  actionsRow.className = "modal__actions";
+  const cancelBtn = document.createElement("button");
+  cancelBtn.type = "button";
+  cancelBtn.className = "button button--ghost";
+  cancelBtn.textContent = "取消";
+  const saveBtn = document.createElement("button");
+  saveBtn.type = "button";
+  saveBtn.className = "button button--primary";
+  saveBtn.textContent = "保存条件";
+  actionsRow.appendChild(cancelBtn);
+  actionsRow.appendChild(saveBtn);
+  dialog.appendChild(actionsRow);
+
+  overlay.appendChild(dialog);
+  document.body.appendChild(overlay);
+
+  const close = () => overlay.remove();
+  cancelBtn.addEventListener("click", close);
+  overlay.addEventListener("click", (evt) => {
+    if (evt.target === overlay) close();
+  });
+
+  saveBtn.addEventListener("click", () => {
+    const updatedParams = {};
+    paramRows.forEach(({ keyInput, valueInput }) => {
+      const name = keyInput.value.trim();
+      if (!name) return;
+      const parsed = parseBinding(valueInput.value);
+      if (parsed !== undefined) {
+        updatedParams[name] = parsed;
+      }
+    });
+
+    const updatedGraph = {
+      ...(context.graph || currentWorkflow),
+      nodes: (context.graph.nodes || []).map((n) =>
+        n.id === node.id
+          ? {
+              ...n,
+              display_name: nameInput.value.trim() || n.display_name,
+              params: updatedParams,
+            }
+          : n,
+      ),
+    };
+    rebuildEdgesFromBindings(updatedGraph);
+    context.saveGraph(updatedGraph);
+    render(currentTab);
+    appendLog(`条件节点 ${node.id} 已更新`);
+    close();
+  });
 }
 
 function wrapText(text, maxWidth, font = "15px Inter") {
@@ -1134,7 +1263,6 @@ async function streamEvents(url, options, onEvent) {
 
 async function requestPlan(requirement) {
   setStatus("规划中", "warning");
-  buildLog.innerHTML = "";
   appendLog(`收到需求：${requirement}`);
   addChatMessage(`已收到需求：“${requirement}”，开始规划/校验/修复。`, "agent");
   try {
