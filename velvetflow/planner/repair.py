@@ -7,6 +7,7 @@ import json
 import os
 import subprocess
 import tempfile
+import textwrap
 from dataclasses import asdict
 import itertools
 import re
@@ -87,6 +88,24 @@ def _looks_like_patch(text: str) -> bool:
 
     stripped = text.lstrip()
     return stripped.startswith("diff --git") or stripped.startswith("--- ") or stripped.startswith("*** ")
+
+
+def _contains_patch_hunks(text: str) -> bool:
+    """Heuristically detect whether the patch has at least one hunk header."""
+
+    return any(line.startswith("@@ ") for line in text.splitlines())
+
+
+def _normalize_patch_text(text: str) -> str:
+    """Trim indentation and ensure patches retain expected formatting."""
+
+    if not text:
+        return ""
+
+    normalized = textwrap.dedent(text)
+    if normalized.endswith("\n"):
+        return normalized
+    return normalized + "\n"
 
 
 def _rewrite_patch_paths(patch_text: str, target_path: Path) -> str:
@@ -649,19 +668,24 @@ validation_errors 是 JSON 数组，元素包含 code/node_id/field/message。
     )
 
     content = msg.content or ""
-    text = content.strip()
+    text = _normalize_patch_text(content.strip())
     if text.startswith("```"):
         text = text.strip("`")
         if "\n" in text:
             first_line, rest = text.split("\n", 1)
             if first_line.strip().lower().startswith("json"):
-                text = rest
+                text = _normalize_patch_text(rest)
 
     if not text:
         raise RuntimeError("[repair_workflow_with_llm] LLM 返回空内容，未能提供补丁。")
 
     if not _looks_like_patch(text):
         raise RuntimeError("[repair_workflow_with_llm] 仅接受 unified diff 补丁输出，当前响应不符合新策略。")
+
+    if not _contains_patch_hunks(text):
+        raise RuntimeError(
+            "[repair_workflow_with_llm] 收到的补丁缺少 @@ hunk 信息，无法应用，请返回包含具体修改的 unified diff。"
+        )
 
     log_info(f"[repair_workflow_with_llm] 收到补丁内容如下：\n{text}")
     patched_workflow = _apply_patch_output(broken_workflow, text)
