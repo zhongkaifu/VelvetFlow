@@ -9,7 +9,7 @@ from typing import Any, Dict, Mapping, Optional
 
 from velvetflow.logging_utils import log_warn
 from velvetflow.loop_dsl import iter_workflow_and_loop_body_nodes
-from velvetflow.models import infer_edges_from_bindings
+from velvetflow.models import infer_depends_on_from_edges, infer_edges_from_bindings
 
 
 def _normalize_condition_label(raw: Any) -> Optional[str]:
@@ -22,6 +22,19 @@ def _normalize_condition_label(raw: Any) -> Optional[str]:
             return lowered
 
     return None
+
+
+def _attach_depends_on(workflow: Dict[str, Any]) -> None:
+    edges = workflow.get("edges") if isinstance(workflow.get("edges"), list) else []
+    nodes = list(iter_workflow_and_loop_body_nodes(workflow))
+    depends_map = infer_depends_on_from_edges(nodes, edges)
+
+    for node in nodes:
+        if not isinstance(node, Mapping):
+            continue
+        nid = node.get("id")
+        if isinstance(nid, str):
+            node["depends_on"] = depends_map.get(nid, [])
 
 
 def attach_condition_branches(workflow: Dict[str, Any]) -> Dict[str, Any]:
@@ -59,6 +72,7 @@ def attach_condition_branches(workflow: Dict[str, Any]) -> Dict[str, Any]:
         elif cond_label == "false":
             source_node.setdefault("false_to_node", to_node)
 
+    _attach_depends_on(copied)
     return copied
 
 
@@ -92,6 +106,7 @@ class WorkflowBuilder:
         cases: Optional[list[Dict[str, Any]]] = None,
         default_to_node: Optional[str] = None,
         parent_node_id: Optional[str] = None,
+        depends_on: Optional[list[str]] = None,
     ):
         if node_id in self.nodes:
             log_warn(f"[Builder] 节点 {node_id} 已存在，将覆盖。")
@@ -104,6 +119,7 @@ class WorkflowBuilder:
                     "params": params or {},
                     "out_params_schema": out_params_schema,
                     "parent_node_id": parent_node_id,
+                    "depends_on": depends_on or [],
                 }
             )
         elif node_type == "condition":
@@ -114,6 +130,7 @@ class WorkflowBuilder:
                     "true_to_node": true_to_node,
                     "false_to_node": false_to_node,
                     "parent_node_id": parent_node_id,
+                    "depends_on": depends_on or [],
                 }
             )
         elif node_type == "switch":
@@ -124,6 +141,7 @@ class WorkflowBuilder:
                     "cases": cases or [],
                     "default_to_node": default_to_node,
                     "parent_node_id": parent_node_id,
+                    "depends_on": depends_on or [],
                 }
             )
         elif node_type == "loop":
@@ -132,6 +150,7 @@ class WorkflowBuilder:
                     "display_name": display_name,
                     "params": params or {},
                     "parent_node_id": parent_node_id,
+                    "depends_on": depends_on or [],
                 }
             )
         else:
@@ -140,6 +159,7 @@ class WorkflowBuilder:
                     "display_name": display_name,
                     "params": params or {},
                     "parent_node_id": parent_node_id,
+                    "depends_on": depends_on or [],
                 }
             )
 

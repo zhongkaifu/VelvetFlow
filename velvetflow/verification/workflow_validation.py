@@ -5,7 +5,12 @@
 from collections import deque
 from typing import Any, Dict, List, Mapping, Optional
 
-from velvetflow.models import ValidationError, Workflow, infer_edges_from_bindings
+from velvetflow.models import (
+    ValidationError,
+    Workflow,
+    infer_depends_on_from_edges,
+    infer_edges_from_bindings,
+)
 from velvetflow.loop_dsl import index_loop_body_nodes, loop_body_has_action
 
 from .binding_checks import (
@@ -138,6 +143,7 @@ def validate_completed_workflow(
     nodes = workflow.get("nodes", [])
     # 拓扑与连通性基于最新的绑定推导，避免依赖可能过期的显式快照。
     inferred_edges = infer_edges_from_bindings(nodes)
+    depends_map = infer_depends_on_from_edges(nodes, inferred_edges)
 
     nodes_by_id = _index_nodes_by_id(workflow)
     loop_body_parents = index_loop_body_nodes(workflow)
@@ -171,6 +177,28 @@ def validate_completed_workflow(
                     message="节点 params 包含不支持的字段，已在校验阶段移除。",
                 )
             )
+
+        depends_on_val = node.get("depends_on")
+        if depends_on_val is not None and not isinstance(depends_on_val, list):
+            errors.append(
+                ValidationError(
+                    code="INVALID_SCHEMA",
+                    node_id=node.get("id"),
+                    field="depends_on",
+                    message="depends_on 必须是节点 id 的字符串数组。",
+                )
+            )
+        elif isinstance(depends_on_val, list):
+            for dep in depends_on_val:
+                if not isinstance(dep, str) or dep not in node_ids:
+                    errors.append(
+                        ValidationError(
+                            code="INVALID_SCHEMA",
+                            node_id=node.get("id"),
+                            field="depends_on",
+                            message="depends_on 中的节点引用无效，请确保依赖指向已存在的节点。",
+                        )
+                    )
         errors.set_context(None)
 
     # ---------- 图连通性校验 ----------
@@ -180,12 +208,21 @@ def validate_completed_workflow(
         adj: Dict[str, List[str]] = {}
         indegree: Dict[str, int] = {nid: 0 for nid in node_ids}
 
-        for e in inferred_edges:
-            frm = e.get("from")
-            to = e.get("to")
-            if frm in node_ids and to in node_ids:
-                adj.setdefault(frm, []).append(to)
-                indegree[to] += 1
+        used_dep_edges = False
+        for nid, deps in depends_map.items():
+            for dep in deps:
+                if dep in node_ids and nid in node_ids:
+                    adj.setdefault(dep, []).append(nid)
+                    indegree[nid] += 1
+                    used_dep_edges = True
+
+        if not used_dep_edges:
+            for e in inferred_edges:
+                frm = e.get("from")
+                to = e.get("to")
+                if frm in node_ids and to in node_ids:
+                    adj.setdefault(frm, []).append(to)
+                    indegree[to] += 1
 
         zero_indegree = [nid for nid, deg in indegree.items() if deg == 0]
         if nodes and not zero_indegree:

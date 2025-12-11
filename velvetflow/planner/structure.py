@@ -32,6 +32,7 @@ from velvetflow.planner.workflow_builder import (
     WorkflowBuilder,
     attach_condition_branches,
 )
+from velvetflow.loop_dsl import iter_workflow_and_loop_body_nodes
 from velvetflow.search import HybridActionSearchService
 from velvetflow.models import infer_edges_from_bindings
 
@@ -86,6 +87,7 @@ ACTION_NODE_FIELDS = {
     "params",
     "out_params_schema",
     "parent_node_id",
+    "depends_on",
 }
 
 CONDITION_NODE_FIELDS = {
@@ -96,6 +98,7 @@ CONDITION_NODE_FIELDS = {
     "true_to_node",
     "false_to_node",
     "parent_node_id",
+    "depends_on",
 }
 
 SWITCH_NODE_FIELDS = {
@@ -106,6 +109,7 @@ SWITCH_NODE_FIELDS = {
     "cases",
     "default_to_node",
     "parent_node_id",
+    "depends_on",
 }
 
 LOOP_NODE_FIELDS = {
@@ -114,13 +118,14 @@ LOOP_NODE_FIELDS = {
     "display_name",
     "params",
     "parent_node_id",
+    "depends_on",
 }
 
 def _attach_inferred_edges(workflow: Dict[str, Any]) -> Dict[str, Any]:
     """Rebuild derived edges so LLMs can see the implicit wiring."""
 
     copied = copy.deepcopy(workflow)
-    nodes = copied.get("nodes") if isinstance(copied.get("nodes"), list) else []
+    nodes = list(iter_workflow_and_loop_body_nodes(copied))
     copied["edges"] = infer_edges_from_bindings(nodes)
     return attach_condition_branches(copied)
 
@@ -569,7 +574,7 @@ def plan_workflow_structure_with_llm(
         "你是一个通用业务工作流编排助手。\n"
         "【Workflow DSL 语法与语义（务必遵守）】\n"
         "- workflow = {workflow_name, description, nodes: []}，只能返回合法 JSON（edges 会由系统基于节点绑定自动推导，不需要生成）。\n"
-        "- node 基本结构：{id, type, display_name, params, action_id?, out_params_schema?, loop/subgraph/branches?}。\n"
+        "- node 基本结构：{id, type, display_name, params, depends_on, action_id?, out_params_schema?, loop/subgraph/branches?}。\n"
         "  type 仅允许 start/action/condition/loop/parallel/end/exit。start/exit/end 不需要 params/out_params_schema。\n"
         "  action 节点必须填写 action_id（来自动作库）与 params；只有 action 节点允许 out_params_schema。\n"
         "  condition 节点需包含 kind/source/field/op/value 以及 true_to_node/false_to_node（字符串或 null）。\n"
@@ -584,7 +589,8 @@ def plan_workflow_structure_with_llm(
         "2) 当需要业务动作时，必须先用 search_business_actions 查询候选；add_action_node 的 action_id 必须取自最近一次 candidates.id。\n"
         "3) 如需修改已创建节点（补充 display_name/params/分支指向/父节点等），请调用 update_action_node 或 update_condition_node 并传入需要覆盖的字段列表；调用后务必检查上下游关联节点是否也需要同步更新以保持一致性。\n"
         "4) condition 节点必须显式提供 true_to_node 和 false_to_node，值可以是节点 id（继续执行）或 null（表示该分支结束）；通过节点 params 中的输入/输出引用表达依赖关系，不需要显式绘制 edges。\n"
-        "5) 当结构完成时调用 finalize_workflow。\n\n"
+        "5) 请为每个节点维护 depends_on（字符串数组），列出其直接依赖的上游节点；当节点被 condition.true_to_node/false_to_node 指向时，必须将该 condition 节点加入目标节点的 depends_on。\n"
+        "6) 当结构完成时调用 finalize_workflow。\n\n"
         "特别注意：只有 action 节点需要 out_params_schema，condition 节点没有该属性；out_params_schema 的格式应为 {\"参数名\": \"类型\"}，仅需列出业务 action 输出参数的名称与类型，不要添加额外描述或示例。\n\n"
         "【非常重要的原则】\n"
         "1. 所有示例（包括后续你在补参阶段看到的示例）都只是为说明“DSL 的写法”和“节点之间如何连线”，\n"

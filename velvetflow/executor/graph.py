@@ -4,7 +4,12 @@ from __future__ import annotations
 from typing import Any, Dict, List, Mapping, Optional, Set
 
 from velvetflow.logging_utils import log_warn
-from velvetflow.models import Node, Workflow, infer_edges_from_bindings
+from velvetflow.models import (
+    Node,
+    Workflow,
+    infer_depends_on_from_edges,
+    infer_edges_from_bindings,
+)
 
 
 class GraphTraversalMixin:
@@ -24,11 +29,16 @@ class GraphTraversalMixin:
         all_ids = set(nodes.keys())
         to_ids = set()
         from_ids = set()
+        depends_map = infer_depends_on_from_edges(nodes.values(), edges)
         for e in edges:
             if not isinstance(e, Mapping):
                 continue
             to_ids.add(e.get("to"))
             from_ids.add(e.get("from"))
+        for nid, deps in depends_map.items():
+            for dep in deps:
+                to_ids.add(nid)
+                from_ids.add(dep)
 
         inbound_free = list(all_ids - to_ids)
 
@@ -51,19 +61,29 @@ class GraphTraversalMixin:
 
         nodes = workflow.nodes
         edges = self._derive_edges(workflow)
+        depends_map = infer_depends_on_from_edges(workflow.model_dump(by_alias=True).get("nodes", []), edges)
 
         indegree: Dict[str, int] = {n.id: 0 for n in nodes}
         adjacency: Dict[str, List[str]] = {n.id: [] for n in nodes}
         node_lookup: Dict[str, Node] = {n.id: n for n in nodes}
-        for e in edges:
-            if not isinstance(e, Mapping):
-                continue
-            frm = e.get("from")
-            to = e.get("to")
-            if not frm or not to or frm not in indegree or to not in indegree:
-                continue
-            indegree[to] += 1
-            adjacency[frm].append(to)
+        used_dep_edges = False
+        for nid, deps in depends_map.items():
+            for dep in deps:
+                if dep in indegree and nid in indegree:
+                    indegree[nid] += 1
+                    adjacency[dep].append(nid)
+                    used_dep_edges = True
+
+        if not used_dep_edges:
+            for e in edges:
+                if not isinstance(e, Mapping):
+                    continue
+                frm = e.get("from")
+                to = e.get("to")
+                if not frm or not to or frm not in indegree or to not in indegree:
+                    continue
+                indegree[to] += 1
+                adjacency[frm].append(to)
 
         stack = [nid for nid, deg in indegree.items() if deg == 0]
         if not stack:

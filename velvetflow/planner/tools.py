@@ -64,6 +64,11 @@ PLANNER_TOOLS = [
                         "description": "节点参数，可为空，但稍后会在第二阶段补全。",
                         "additionalProperties": True,
                     },
+                    "depends_on": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "该节点依赖的上游节点 id 列表。",
+                    },
                     "parent_node_id": {
                         "type": ["string", "null"],
                         "description": "父节点 ID（例如循环/并行等子图的宿主节点），无父节点则为 null。",
@@ -146,6 +151,11 @@ PLANNER_TOOLS = [
                         "type": ["string", "null"],
                         "description": "条件为假时跳转的目标节点 id，或 null 表示该分支结束。",
                     },
+                    "depends_on": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "当前条件节点依赖的上游节点 id 列表。",
+                    },
                     "parent_node_id": {
                         "type": ["string", "null"],
                         "description": "父节点 ID（例如循环/并行等子图的宿主节点），无父节点则为 null。",
@@ -198,6 +208,11 @@ PLANNER_TOOLS = [
                         "type": ["string", "null"],
                         "description": "无匹配时的默认跳转节点 id，或 null 表示结束。",
                     },
+                    "depends_on": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "该 switch 节点依赖的上游节点 id 列表。",
+                    },
                     "parent_node_id": {
                         "type": ["string", "null"],
                         "description": "父节点 ID（如循环子图宿主节点），无父节点则为 null。",
@@ -227,6 +242,11 @@ PLANNER_TOOLS = [
                     },
                     "out_params_schema": {"type": "object"},
                     "action_id": {"type": "string"},
+                    "depends_on": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "覆盖当前 action 节点的 depends_on 列表。",
+                    },
                     "parent_node_id": {
                         "type": ["string", "null"],
                         "description": "可选的父节点 ID，提供时会覆盖现有的 parent_node_id。",
@@ -298,6 +318,11 @@ PLANNER_TOOLS = [
                         "type": ["string", "null"],
                         "description": "条件为假时跳转的目标节点 id，或 null 表示该分支结束。",
                     },
+                    "depends_on": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "覆盖 condition 节点的 depends_on 依赖列表。",
+                    },
                     "parent_node_id": {
                         "type": ["string", "null"],
                         "description": "可选的父节点 ID，提供时会覆盖现有的 parent_node_id。",
@@ -345,6 +370,11 @@ PLANNER_TOOLS = [
                         },
                     },
                     "default_to_node": {"type": ["string", "null"]},
+                    "depends_on": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "覆盖 switch 节点的 depends_on 依赖列表。",
+                    },
                     "parent_node_id": {
                         "type": ["string", "null"],
                         "description": "可选的父节点 ID，提供时会覆盖现有的 parent_node_id。",
@@ -481,6 +511,11 @@ PLANNER_TOOLS = [
                         "description": "加入 loop.body_subgraph 的已创建节点 id 列表，可包含子循环。",
                         "items": {"type": "string"},
                     },
+                    "depends_on": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "该 loop 节点依赖的上游节点 id 列表。",
+                    },
                     "parent_node_id": {
                         "type": ["string", "null"],
                         "description": "父节点 ID，可指向上层 loop 以形成嵌套，无父节点则为 null。",
@@ -600,6 +635,11 @@ PLANNER_TOOLS = [
                         "type": "array",
                         "description": "将已有节点纳入 loop.body_subgraph 的 id 列表，可包含嵌套 loop。",
                         "items": {"type": "string"},
+                    },
+                    "depends_on": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "覆盖 loop 节点的 depends_on 依赖列表。",
                     },
                     "parent_node_id": {
                         "type": ["string", "null"],
