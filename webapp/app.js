@@ -646,9 +646,12 @@ function estimateNodeHeight(node) {
   return baseHeight + dynamicHeight;
 }
 
-function estimateWorkflowHeight(workflow) {
+function estimateWorkflowHeight(workflow, widthHint = 1200, heightHint = 720) {
   const nodes = workflow && Array.isArray(workflow.nodes) ? workflow.nodes : [];
-  if (!nodes.length) return 480;
+  if (!nodes.length) return Math.max(420, heightHint);
+
+  const { meta } = layoutNodes(workflow, { width: widthHint, heightHint });
+  if (meta && meta.height) return meta.height;
 
   const columns = Math.max(2, Math.ceil(Math.sqrt(nodes.length)));
   const rows = Math.ceil(nodes.length / columns);
@@ -685,8 +688,8 @@ function resizeCanvas(graph) {
   const jsonHeight = measureHiddenHeight(jsonTabContent);
   const activeContent = getTabContent(currentTab) || visualTabContent;
   const visualHeight = Math.max(measureHiddenHeight(visualTabContent), measureHiddenHeight(activeContent));
-  const contentHeight = estimateWorkflowHeight(graph || currentWorkflow);
   const viewportBase = Math.max(420, window.innerHeight - 260);
+  const contentHeight = estimateWorkflowHeight(graph || currentWorkflow, targetWidth, viewportBase);
   const targetHeight = Math.max(contentHeight, jsonHeight, visualHeight, viewportBase);
 
   workflowCanvas.style.width = "100%";
@@ -696,19 +699,24 @@ function resizeCanvas(graph) {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 }
 
-function layoutNodes(workflow) {
+function layoutNodes(workflow, options = {}) {
   const { nodes = [], edges = [] } = workflow;
-  if (!nodes.length) return {};
+  if (!nodes.length) return { positions: {}, meta: { height: 0, width: 0 } };
+
+  const width = options.width || (workflowCanvas ? workflowCanvas.width : 1200);
+  const heightHint = options.heightHint || (workflowCanvas ? workflowCanvas.height : 720);
 
   const nodeOrder = nodes.map((n) => n.id);
   const indegree = {};
   const level = {};
   const outgoing = {};
+  const incoming = {};
 
   nodeOrder.forEach((id) => {
     indegree[id] = 0;
     level[id] = 0;
     outgoing[id] = [];
+    incoming[id] = [];
   });
 
   edges.forEach((edge) => {
@@ -719,6 +727,8 @@ function layoutNodes(workflow) {
     if (level[to] === undefined) level[to] = 0;
     outgoing[from] = outgoing[from] || [];
     outgoing[from].push(to);
+    incoming[to] = incoming[to] || [];
+    incoming[to].push(from);
     indegree[to] += 1;
   });
 
@@ -753,33 +763,91 @@ function layoutNodes(workflow) {
     layers[layerIndex].push(id);
   });
 
+  const layerOrderIndex = {};
+  const sortedLayers = {};
   const layerKeys = Object.keys(layers)
     .map((n) => Number(n))
     .sort((a, b) => a - b);
 
-  const topPadding = 90;
+  layerKeys.forEach((layerIndex, idx) => {
+    const row = layers[layerIndex];
+    const ranked = row
+      .map((id, rawIndex) => {
+        const parents = incoming[id] || [];
+        const parentRanks = parents.map((p) => layerOrderIndex[p]).filter((v) => v !== undefined);
+        const barycenter = parentRanks.length ? parentRanks.reduce((a, b) => a + b, 0) / parentRanks.length : rawIndex;
+        return { id, score: barycenter };
+      })
+      .sort((a, b) => a.score - b.score);
+
+    sortedLayers[layerIndex] = ranked.map((item, order) => {
+      layerOrderIndex[item.id] = order;
+      return item.id;
+    });
+
+    // Encourage continuity by re-evaluating based on outgoing neighbors after parents are placed.
+    if (idx > 0) {
+      const adjusted = sortedLayers[layerIndex]
+        .map((id, order) => {
+          const children = outgoing[id] || [];
+          const childRanks = children.map((c) => layerOrderIndex[c]).filter((v) => v !== undefined);
+          const childScore = childRanks.length
+            ? childRanks.reduce((a, b) => a + b, 0) / childRanks.length
+            : order;
+          return { id, score: (order + childScore) / 2 };
+        })
+        .sort((a, b) => a.score - b.score)
+        .map((item, order) => {
+          layerOrderIndex[item.id] = order;
+          return item.id;
+        });
+
+      sortedLayers[layerIndex] = adjusted;
+    }
+  });
+
+  const topPadding = 80;
   const bottomPadding = 60;
-  const maxPerRow = Math.max(...layerKeys.map((k) => layers[k].length));
-  const rowCount = layerKeys.length || 1;
-  const spacingX = Math.max(NODE_WIDTH + 40, workflowCanvas.width / Math.max(2, maxPerRow));
-  const availableHeight = Math.max(400, workflowCanvas.height - topPadding - bottomPadding);
-  const spacingY = Math.max(140, availableHeight / rowCount);
+  const minGapX = 48;
+  const minGapY = 42;
+  const heightById = nodes.reduce((acc, node) => {
+    acc[node.id] = estimateNodeHeight(node);
+    return acc;
+  }, {});
+  const layerHeights = layerKeys.map((k) => Math.max(...(sortedLayers[k] || layers[k]).map((id) => heightById[id]), 120));
+  const safeHeight = Math.max(400, heightHint - topPadding - bottomPadding);
+  const gapY = Math.max(minGapY, Math.min(160, safeHeight / Math.max(1, layerKeys.length)));
 
   const positions = {};
+  let currentY = topPadding;
   layerKeys.forEach((layerIndex) => {
-    const row = layers[layerIndex];
-    const totalWidth = (row.length - 1) * spacingX;
-    const startX = workflowCanvas.width / 2 - totalWidth / 2;
-    const y = topPadding + layerIndex * spacingY;
+    const row = sortedLayers[layerIndex] || layers[layerIndex];
+    const rowWidth = row.length * NODE_WIDTH;
+    const gapCount = Math.max(0, row.length - 1);
+    const gapX = Math.max(minGapX, Math.min(200, (width - rowWidth) / Math.max(1, gapCount) - 12));
+    const totalWidth = rowWidth + gapCount * gapX;
+    const startX = width / 2 - totalWidth / 2 + NODE_WIDTH / 2;
+    const rowHeight = layerHeights[layerKeys.indexOf(layerIndex)] || 140;
+    const y = currentY + rowHeight / 2;
     row.forEach((id, idx) => {
       positions[id] = {
-        x: startX + idx * spacingX,
+        x: startX + idx * (NODE_WIDTH + gapX),
         y,
       };
     });
+    currentY += rowHeight + gapY;
   });
 
-  return positions;
+  const padding = 48;
+  const maxY = Math.max(...Object.entries(positions).map(([id, pos]) => pos.y + (heightById[id] || 0) / 2));
+  const minY = Math.min(...Object.entries(positions).map(([id, pos]) => pos.y - (heightById[id] || 0) / 2));
+  const meta = {
+    width,
+    height: maxY - minY + bottomPadding + padding,
+    bounds: { minY, maxY },
+  };
+
+  return { positions, meta };
 }
 
 function positionStoreFor(tabId) {
@@ -790,7 +858,10 @@ function positionStoreFor(tabId) {
 }
 
 function syncPositions(workflow, tabId) {
-  const auto = layoutNodes(workflow);
+  const { positions: auto } = layoutNodes(workflow, {
+    width: workflowCanvas ? workflowCanvas.width : undefined,
+    heightHint: workflowCanvas ? workflowCanvas.height : undefined,
+  });
   const store = positionStoreFor(tabId);
   const nextPositions = {};
   (workflow.nodes || []).forEach((node) => {
