@@ -4,7 +4,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Mapping, Optional, Set
 
 from velvetflow.logging_utils import log_warn
-from velvetflow.models import Node, Workflow, infer_edges_from_bindings
+from velvetflow.models import Node, Workflow, merge_edges
 
 
 class GraphTraversalMixin:
@@ -13,38 +13,19 @@ class GraphTraversalMixin:
     def _derive_edges(self, workflow: Workflow) -> List[Dict[str, Any]]:
         """Rebuild implicit edges from the latest node bindings."""
 
-        # 所有连线信息都由绑定实时推导，不再消费/缓存声明式 edges 字段。
-        return infer_edges_from_bindings(workflow.nodes)
+        # 仅根据节点定义推导连线，统一从 start 开始遍历。
+        return merge_edges(workflow.nodes)
 
     def _find_start_nodes(
         self, nodes: Mapping[str, Dict[str, Any]], edges: List[Dict[str, Any]]
     ) -> List[str]:
-        """Locate start nodes by combining explicit标记与“无入度”节点。"""
-
-        all_ids = set(nodes.keys())
-        to_ids = set()
-        from_ids = set()
-        for e in edges:
-            if not isinstance(e, Mapping):
-                continue
-            to_ids.add(e.get("to"))
-            from_ids.add(e.get("from"))
-
-        inbound_free = list(all_ids - to_ids)
+        """Locate the designated start node and enforce single entry."""
 
         starts = [nid for nid, n in nodes.items() if n.get("type") == "start"]
-        condition_starts = [
-            nid for nid, n in nodes.items() if n.get("type") == "condition" and nid in inbound_free
-        ]
-
-        outbound_roots = [nid for nid in inbound_free if nid in from_ids]
-
         if starts:
-            return list(dict.fromkeys(starts + condition_starts + outbound_roots))
+            return [starts[0]]
 
-        # 若没有显式 start 节点，则退化为无入度节点集合以保证流程仍可执行。
-        merged = list(dict.fromkeys(condition_starts + outbound_roots + inbound_free))
-        return merged
+        raise ValueError("工作流缺少 start 节点，无法执行。")
 
     def _topological_sort(self, workflow: Workflow) -> List[Node]:
         """Return execution order while validating reachability constraints."""
@@ -91,6 +72,15 @@ class GraphTraversalMixin:
 
         if reachable:
             ordered = [nid for nid in ordered if nid in reachable]
+
+        start_nodes = [n.id for n in nodes if n.type == "start"]
+        end_nodes = [n.id for n in nodes if n.type == "end"]
+        if start_nodes:
+            primary_start = start_nodes[0]
+            ordered = [primary_start] + [nid for nid in ordered if nid != primary_start]
+        if end_nodes:
+            tail_end = [nid for nid in ordered if nid in end_nodes]
+            ordered = [nid for nid in ordered if nid not in end_nodes] + tail_end
 
         return [node_lookup[nid] for nid in ordered]
 

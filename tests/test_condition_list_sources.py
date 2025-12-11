@@ -180,8 +180,9 @@ def test_list_not_empty_handles_field_over_list_items():
     executor = DynamicActionExecutor(workflow)
     binding_ctx = BindingContext(workflow, results={})
 
+    condition_node = next(n for n in workflow.nodes if n.type == "condition")
     cond_result, debug = executor._eval_condition(
-        workflow.nodes[0].model_dump(), binding_ctx, include_debug=True
+        condition_node.model_dump(), binding_ctx, include_debug=True
     )
 
     assert cond_result is True

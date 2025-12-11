@@ -170,6 +170,13 @@ def test_non_loop_parent_normalizes_to_null():
 def test_builder_adds_switch_nodes_and_infers_edges():
     builder = WorkflowBuilder()
     builder.add_node(
+        node_id="fetch",
+        node_type="action",
+        action_id="demo.fetch",
+        display_name=None,
+        params={},
+    )
+    builder.add_node(
         node_id="decide",
         node_type="switch",
         display_name="Decide next",
@@ -188,5 +195,22 @@ def test_builder_adds_switch_nodes_and_infers_edges():
 
     assert ("decide", "next", "ok") in edge_conditions
     assert any(cond == "default" for _, _, cond in edge_conditions)
+
+
+def test_builder_removes_nodes_unreachable_from_start():
+    builder = WorkflowBuilder()
+    builder.add_node(
+        node_id="orphan",
+        node_type="action",
+        action_id="demo.orphan",
+        display_name=None,
+        params={"message": {"__from__": "result_of.ghost.message"}},
+    )
+
+    workflow = builder.to_workflow()
+    node_ids = {n.get("id") for n in workflow["nodes"]}
+
+    assert "start" in node_ids and "end" in node_ids
+    assert "orphan" not in node_ids
 
 

@@ -146,6 +146,11 @@ class DynamicActionExecutor(
         else:
             if start_nodes is None:
                 start_nodes = self._find_start_nodes(nodes_data, edges)
+            else:
+                if "start" in nodes_data:
+                    start_nodes = [nodes_data["start"]["id"]]
+                else:
+                    raise ValueError("工作流缺少 start 节点，无法执行。")
 
             indegree = {nid: 0 for nid in nodes_data}
             for e in edges:
@@ -160,9 +165,6 @@ class DynamicActionExecutor(
             start_nodes = list(dict.fromkeys(start_nodes)) if start_nodes else []
             if not start_nodes:
                 start_nodes = zero_indegree
-            if not start_nodes and sorted_nodes:
-                log_warn("未找到 start 节点，将从任意一个节点开始（仅 demo）。")
-                start_nodes = [sorted_nodes[0].id]
 
             visited = set()
             reachable = set(start_nodes)
@@ -427,6 +429,8 @@ class DynamicActionExecutor(
                     },
                     node_id=nid,
                 )
+                if ntype == "end":
+                    return results
                 self._record_node_metrics(results.get(nid))
 
             pending = remaining

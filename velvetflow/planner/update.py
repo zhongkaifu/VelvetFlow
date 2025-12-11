@@ -54,6 +54,7 @@ def update_workflow_with_llm(
         "- workflow = {workflow_name, description, nodes: []}，只能返回合法 JSON（edges 会由系统基于节点绑定自动推导，不需要生成）。\n"
         "- node 基本结构：{id, type, display_name, params, action_id?, out_params_schema?, loop/subgraph/branches?}。\n"
         "  type 仅允许 start/action/condition/loop/parallel/end/exit。start/exit/end 不需要 params/out_params_schema。\n"
+        "  工作流必须从 start 节点开始，到 end 节点结束；请保持结构连贯，避免生成与 start 无关的孤立节点。\n"
         "  action 节点必须填写 action_id（来自动作库）与 params；只有 action 节点允许 out_params_schema。\n"
         "  condition 节点需包含 kind/source/field/op/value 以及 true_to_node/false_to_node（字符串或 null）。\n"
         "  loop 节点包含 loop_kind/iter/source/body_subgraph/exports，循环外部只能引用 exports.items 或 exports.aggregates。\n"

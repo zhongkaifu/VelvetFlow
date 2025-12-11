@@ -259,12 +259,19 @@ def _safe_repair_invalid_loop_body(workflow_raw: Mapping[str, Any]) -> Workflow:
         if not body_nodes:
             start_id = f"{node.get('id')}_body_entry"
             end_id = f"{node.get('id')}_body_exit"
+            action_id = f"{node.get('id')}_body_action"
             body_nodes = [
                 {"id": start_id, "type": "start"},
+                {"id": action_id, "type": "action", "action_id": "loop.body.placeholder", "params": {}},
                 {"id": end_id, "type": "end"},
             ]
             edges = body.get("edges") if isinstance(body.get("edges"), list) else []
-            edges.append({"from": start_id, "to": end_id})
+            edges.extend(
+                [
+                    {"from": start_id, "to": action_id},
+                    {"from": action_id, "to": end_id},
+                ]
+            )
             body["entry"] = body.get("entry") or start_id
             body["exit"] = body.get("exit") or end_id
             body["edges"] = edges
@@ -404,6 +411,7 @@ def repair_workflow_with_llm(
 - workflow = {workflow_name, description, nodes: []}，只能返回合法 JSON（edges 会由系统基于节点绑定自动推导，不需要生成）。
 - node 基本结构：{id, type, display_name, params, action_id?, out_params_schema?, loop/subgraph/branches?}。
   type 仅允许 start/action/condition/loop/parallel/end/exit。start/exit/end 不需要 params/out_params_schema。
+  工作流必须从 start 节点开始，到 end 节点结束；请保持结构连贯，避免生成与 start 无关的孤立节点。
   action 节点必须填写 action_id（来自动作库）与 params；只有 action 节点允许 out_params_schema。
   condition 节点需包含 kind/source/field/op/value 以及 true_to_node/false_to_node（字符串或 null）。
   loop 节点包含 loop_kind/iter/source/body_subgraph/exports，循环外部只能引用 exports.items 或 exports.aggregates。

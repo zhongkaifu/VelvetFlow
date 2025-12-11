@@ -33,7 +33,7 @@ from velvetflow.planner.workflow_builder import (
     attach_condition_branches,
 )
 from velvetflow.search import HybridActionSearchService
-from velvetflow.models import infer_edges_from_bindings
+from velvetflow.models import merge_edges
 
 
 CONDITION_ALLOWED_KINDS = {
@@ -121,7 +121,7 @@ def _attach_inferred_edges(workflow: Dict[str, Any]) -> Dict[str, Any]:
 
     copied = copy.deepcopy(workflow)
     nodes = copied.get("nodes") if isinstance(copied.get("nodes"), list) else []
-    copied["edges"] = infer_edges_from_bindings(nodes)
+    copied["edges"] = merge_edges(nodes)
     return attach_condition_branches(copied)
 
 
@@ -456,7 +456,7 @@ def _prepare_skeleton_for_coverage(
 
 def _find_nodes_without_upstream(workflow: Mapping[str, Any]) -> List[Dict[str, Any]]:
     nodes = workflow.get("nodes") if isinstance(workflow.get("nodes"), list) else []
-    inferred_edges = infer_edges_from_bindings(nodes)
+    inferred_edges = merge_edges(nodes, add_start_connectors=False)
 
     indegree = {}
     for node in nodes:
@@ -571,6 +571,7 @@ def plan_workflow_structure_with_llm(
         "- workflow = {workflow_name, description, nodes: []}，只能返回合法 JSON（edges 会由系统基于节点绑定自动推导，不需要生成）。\n"
         "- node 基本结构：{id, type, display_name, params, action_id?, out_params_schema?, loop/subgraph/branches?}。\n"
         "  type 仅允许 start/action/condition/loop/parallel/end/exit。start/exit/end 不需要 params/out_params_schema。\n"
+        "  工作流必须从 start 节点开始，到 end 节点结束；请先创建 start/end，再沿着 start 可达路径逐步补齐到 end，避免生成与 start 无关的孤立节点。\n"
         "  action 节点必须填写 action_id（来自动作库）与 params；只有 action 节点允许 out_params_schema。\n"
         "  condition 节点需包含 kind/source/field/op/value 以及 true_to_node/false_to_node（字符串或 null）。\n"
         "  loop 节点包含 loop_kind/iter/source/body_subgraph/exports，循环外部只能引用 exports.items 或 exports.aggregates。\n"

@@ -5,7 +5,7 @@
 from collections import deque
 from typing import Any, Dict, List, Mapping, Optional
 
-from velvetflow.models import ValidationError, Workflow, infer_edges_from_bindings
+from velvetflow.models import ValidationError, Workflow, merge_edges
 from velvetflow.loop_dsl import index_loop_body_nodes, loop_body_has_action
 
 from .binding_checks import (
@@ -96,7 +96,7 @@ def run_lightweight_static_rules(
     actions_by_id = _index_actions_by_id(action_registry)
     loop_body_parents = index_loop_body_nodes(workflow)
 
-    inferred_edges = infer_edges_from_bindings(workflow.get("nodes") or [])
+    inferred_edges = merge_edges(workflow.get("nodes") or [])
     binding_issues: List[str] = []
     for node in workflow.get("nodes", []) or []:
         nid = node.get("id")
@@ -137,7 +137,7 @@ def validate_completed_workflow(
 
     nodes = workflow.get("nodes", [])
     # 拓扑与连通性基于最新的绑定推导，避免依赖可能过期的显式快照。
-    inferred_edges = infer_edges_from_bindings(nodes)
+    inferred_edges = merge_edges(nodes)
 
     nodes_by_id = _index_nodes_by_id(workflow)
     loop_body_parents = index_loop_body_nodes(workflow)
