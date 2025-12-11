@@ -859,6 +859,36 @@ function drawArrow(from, to, label) {
   ctx.restore();
 }
 
+function buildDisplayEdges(graph) {
+  const normalized = normalizeWorkflow(graph || {});
+  const baseEdges = (normalized.edges || []).map(normalizeEdge);
+  const seen = new Set(baseEdges.map((e) => `${e.from_node}->${e.to_node}`));
+  const displayEdges = [...baseEdges];
+
+  const addEdge = (from, to, condition) => {
+    if (!from || !to) return;
+    const key = `${from}->${to}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    displayEdges.push({ from_node: from, to_node: to, condition });
+  };
+
+  (normalized.nodes || []).forEach((node) => {
+    if (!node) return;
+
+    if (node.type === "condition") {
+      addEdge(node.id, node.true_to_node, "true");
+      addEdge(node.id, node.false_to_node, "false");
+    }
+
+    const refs = new Set();
+    collectRefsFromValue(node.params, refs);
+    refs.forEach((fromId) => addEdge(fromId, node.id));
+  });
+
+  return displayEdges;
+}
+
 function render(mode = currentTab) {
   const context = getTabContext(mode);
   const graph = context.graph || currentWorkflow;
@@ -874,7 +904,7 @@ function render(mode = currentTab) {
   if (!graph.nodes) return;
   lastPositions = syncPositions(graph, tabKey);
 
-  const edges = (graph.edges || []).map(normalizeEdge);
+  const edges = buildDisplayEdges(graph);
   edges.forEach((edge) => {
     const from = lastPositions[edge.from_node];
     const to = lastPositions[edge.to_node];
