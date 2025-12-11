@@ -624,6 +624,7 @@ def _align_binding_and_param_types(
                 actions_by_id,
                 loop_body_parents=loop_body_parents,
             )
+            expected_path = path.replace("params.", "", 1)
             effective_schema, agg_input_schema = _binding_io_schemas(source_schema, binding)
 
             if agg_input_schema and not _schemas_compatible(agg_input_schema, source_schema):
