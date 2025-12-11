@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>VelvetFlow Workflow Studio</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="app">
+    <header class="app__header">
+      <div class="title-block">
+        <img src="/logo.jpg" alt="VelvetFlow logo" class="logo" />
+        <div>
+          <div class="eyebrow">VelvetFlow Agent Playground</div>
+          <h1>可视化 Workflow Builder</h1>
+          <p class="subtitle">用自然语言描述需求，自动构建、修改并运行可视化 DAG。</p>
+        </div>
+      </div>
+    </header>
+
+    <main class="layout">
+      <section class="canvas-panel">
+        <div class="tab-bar" role="tablist">
+          <button class="tab tab--active" data-tab="json" role="tab" aria-selected="true">Workflow JSON</button>
+          <button class="tab" data-tab="visual" role="tab" aria-selected="false">流程图视图</button>
+        </div>
+        <div class="tab-content" data-view="json">
+          <div class="editor">
+            <div class="editor__header">
+              <h3>Workflow JSON</h3>
+              <div class="editor__actions">
+                <button id="resetWorkflow" class="button button--ghost">重置</button>
+                <button id="applyWorkflow" class="button">应用修改</button>
+              </div>
+            </div>
+            <p class="muted">您可以直接编辑 DAG，VelvetFlow 会重新渲染画布。</p>
+            <textarea id="workflowEditor" spellcheck="false" aria-label="workflow json"></textarea>
+          </div>
+        </div>
+        <div class="tab-content tab-content--hidden" data-view="visual">
+          <div id="canvasHost">
+            <canvas id="workflowCanvas" width="1080" height="620" aria-label="workflow canvas"></canvas>
+            <p class="muted tab-hint">提示：双击节点可在对话框中修改入参/引用并查看出参定义，动作节点会展示对应的业务工具；双击 loop 节点会打开子图标签。</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="chat-panel">
+        <div class="panel__header">
+          <div>
+            <h2>VelvetFlow Agent 对话框</h2>
+            <p class="muted">输入自然语言需求以构建或迭代 workflow，构建进度会实时展示。</p>
+          </div>
+          <div class="status" id="statusIndicator">等待输入</div>
+        </div>
+        <div class="chat-log" id="chatLog" aria-live="polite"></div>
+        <div class="build-log" id="buildLog" aria-live="polite" aria-label="构建日志"></div>
+        <form id="chatForm" class="chat-input" autocomplete="off">
+          <label class="visually-hidden" for="userInput">需求输入</label>
+          <textarea id="userInput" placeholder="例如：为新员工入职构建流程，包含账号申请、设备分配和审批" required></textarea>
+          <div class="chat-actions">
+            <button type="button" id="editHelp" class="button button--ghost" title="如何修改现有 workflow">修改说明</button>
+            <div class="chat-actions__group">
+              <button type="submit" class="button button--primary">发送给 Agent</button>
+              <button type="button" id="runWorkflow" class="button button--primary">运行 workflow</button>
+            </div>
+          </div>
+        </form>
+      </section>
+    </main>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
