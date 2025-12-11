@@ -17,7 +17,6 @@
           <p class="subtitle">用自然语言描述需求，自动构建、修改并运行可视化 DAG。</p>
         </div>
       </div>
-      <button id="runWorkflow" class="button button--primary">Run</button>
     </header>
 
     <main class="layout">
@@ -60,7 +59,10 @@
           <textarea id="userInput" placeholder="例如：为新员工入职构建流程，包含账号申请、设备分配和审批" required></textarea>
           <div class="chat-actions">
             <button type="button" id="editHelp" class="button button--ghost" title="如何修改现有 workflow">修改说明</button>
-            <button type="submit" class="button button--primary">发送给 Agent</button>
+            <div class="chat-actions__group">
+              <button type="submit" class="button button--primary">发送给 Agent</button>
+              <button type="button" id="runWorkflow" class="button button--primary">运行 workflow</button>
+            </div>
           </div>
         </form>
       </section>

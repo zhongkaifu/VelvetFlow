@@ -274,6 +274,12 @@ textarea#workflowEditor {
   align-items: center;
 }
 
+.chat-actions__group {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
 .button {
   border: 1px solid var(--border);
   background: rgba(255, 255, 255, 0.03);
