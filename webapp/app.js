@@ -203,16 +203,46 @@ function parseBinding(text) {
   }
 }
 
-function collectReferenceOptions(currentNodeId) {
+function collectLoopExportOptions(node) {
+  if (!node || node.type !== "loop") return [];
+  const params = node.params || {};
+  const exportsSpec = params.exports || {};
+  const base = `result_of.${node.id}.exports`;
   const options = [];
+
+  const items = exportsSpec.items;
+  if (items) {
+    options.push(`${base}.items`);
+    const fields = Array.isArray(items.fields) ? items.fields : [];
+    fields.forEach((field) => {
+      const key = String(field);
+      options.push(`${base}.items.${key}`);
+      options.push(`${base}.items[*].${key}`);
+    });
+    options.push(`${base}.items.length`);
+  }
+
+  const aggregates = Array.isArray(exportsSpec.aggregates) ? exportsSpec.aggregates : [];
+  aggregates.forEach((agg) => {
+    if (agg && agg.name) {
+      options.push(`${base}.aggregates.${agg.name}`);
+    }
+  });
+
+  return options;
+}
+
+function collectReferenceOptions(currentNodeId) {
+  const options = new Set();
   (currentWorkflow.nodes || []).forEach((node) => {
     if (!node || node.id === currentNodeId) return;
     const outputs = extractOutputDefs(outputSchemaFor(node.action_id, node));
     outputs.forEach((field) => {
-      options.push(`result_of.${node.id}.${field.name}`);
+      options.add(`result_of.${node.id}.${field.name}`);
     });
+    collectLoopExportOptions(node).forEach((opt) => options.add(opt));
   });
-  return options;
+  return Array.from(options);
 }
 
 function collectRefsFromValue(value, refs) {
