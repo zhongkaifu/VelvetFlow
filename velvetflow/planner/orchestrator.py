@@ -151,6 +151,43 @@ def _iter_bindings_with_schema(
             yield from _iter_bindings_with_schema(item, item_schema, f"{path_prefix}[{idx}]")
 
 
+def _binding_io_schemas(
+    source_schema: Optional[Mapping[str, Any]], binding: Mapping[str, Any]
+) -> tuple[Optional[Mapping[str, Any]], Optional[Mapping[str, Any]]]:
+    """Infer aggregator input/output schemas for a binding."""
+
+    if not isinstance(binding, Mapping):
+        return source_schema, None
+
+    agg = binding.get("__agg__")
+    agg_input: Optional[Mapping[str, Any]] = None
+    agg_output: Optional[Mapping[str, Any]] = None
+
+    if isinstance(agg, Mapping):
+        if isinstance(agg.get("input_type"), str):
+            agg_input = {"type": agg["input_type"]}
+        if isinstance(agg.get("output_type"), str):
+            agg_output = {"type": agg["output_type"]}
+        agg = agg.get("op")
+
+    if agg in {"count", "count_if"}:
+        agg_input = agg_input or {"type": "array"}
+        agg_output = agg_output or {"type": "integer"}
+    if agg in {"join", "format_join", "filter_map"}:
+        agg_input = agg_input or {"type": "array"}
+        agg_output = agg_output or {"type": "string"}
+    if agg == "pipeline":
+        agg_input = agg_input or {"type": "array"}
+        steps = binding.get("steps")
+        if isinstance(steps, list) and any(
+            isinstance(step, Mapping) and step.get("op") == "format_join"
+            for step in steps
+        ):
+            agg_output = agg_output or {"type": "string"}
+
+    return agg_output or source_schema, agg_input
+
+
 def _find_unregistered_action_nodes(
     workflow_dict: Dict[str, Any],
     actions_by_id: Dict[str, Dict[str, Any]],
@@ -450,8 +487,27 @@ def _align_reference_field_types(
                 actions_by_id,
                 loop_body_parents=loop_body_parents,
             )
+            effective_schema, agg_input_schema = _binding_io_schemas(
+                source_schema, binding
+            )
+            if agg_input_schema and not _schemas_compatible(
+                agg_input_schema, source_schema
+            ):
+                errors.append(
+                    ValidationError(
+                        code="SCHEMA_MISMATCH",
+                        node_id=node_id,
+                        field=path.replace("params.", "", 1),
+                        message=(
+                            f"参数 {path} 使用 __agg__ 需要类型为 {agg_input_schema.get('type')} 的输入，"
+                            f"但来源 {from_path} 的类型为 {', '.join(sorted(_schema_types(source_schema))) or '未知'}"
+                        ),
+                    )
+                )
+                continue
+
             target_type = _schema_primary_type(binding_schema)
-            source_type = _schema_primary_type(source_schema)
+            source_type = _schema_primary_type(effective_schema)
 
             if target_type is None or source_type is None or target_type == source_type:
                 continue
@@ -530,40 +586,6 @@ def _align_binding_and_param_types(
     pick the only compatible field if unique; otherwise, emit a repair
     suggestion listing candidates.
     """
-
-    def _binding_io_schemas(
-        source_schema: Optional[Mapping[str, Any]], binding: Mapping[str, Any]
-    ) -> tuple[Optional[Mapping[str, Any]], Optional[Mapping[str, Any]]]:
-        if not isinstance(binding, Mapping):
-            return source_schema, None
-
-        agg = binding.get("__agg__")
-        agg_input: Optional[Mapping[str, Any]] = None
-        agg_output: Optional[Mapping[str, Any]] = source_schema
-
-        if isinstance(agg, Mapping):
-            if isinstance(agg.get("input_type"), str):
-                agg_input = {"type": agg["input_type"]}
-            if isinstance(agg.get("output_type"), str):
-                agg_output = {"type": agg["output_type"]}
-            agg = agg.get("op")
-
-        if agg in {"count", "count_if"}:
-            agg_input = agg_input or {"type": "array"}
-            agg_output = agg_output or {"type": "integer"}
-        if agg in {"join", "format_join", "filter_map"}:
-            agg_input = agg_input or {"type": "array"}
-            agg_output = agg_output or {"type": "string"}
-        if agg == "pipeline":
-            agg_input = agg_input or {"type": "array"}
-            steps = binding.get("steps")
-            if isinstance(steps, list) and any(
-                isinstance(step, Mapping) and step.get("op") == "format_join"
-                for step in steps
-            ):
-                agg_output = agg_output or {"type": "string"}
-
-        return agg_output, agg_input
 
     wf_dict = workflow.model_dump(by_alias=True)
     actions_by_id = _index_actions_by_id(action_registry)

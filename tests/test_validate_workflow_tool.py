@@ -12,6 +12,7 @@ from validate_workflow import validate_workflow_data
 from velvetflow.action_registry import BUSINESS_ACTIONS
 from velvetflow.models import ValidationError, Workflow
 from velvetflow.planner.repair_tools import _apply_local_repairs_for_unknown_params
+from velvetflow.planner.orchestrator import _align_reference_field_types
 from velvetflow.verification.validation import validate_completed_workflow
 
 ACTION_REGISTRY = BUSINESS_ACTIONS
@@ -523,3 +524,42 @@ def test_loop_invalid_accumulator_reference_is_repaired():
         node for node in workflow_dict.get("nodes", []) if node.get("id") == "send_email"
     )
     assert "email_content" not in (send_email.get("params") or {})
+
+
+def test_align_reference_field_types_respects_count_agg():
+    workflow = Workflow.model_validate(
+        {
+            "workflow_name": "count_items",
+            "nodes": [
+                {"id": "start", "type": "start"},
+                {
+                    "id": "search_news",
+                    "type": "action",
+                    "action_id": "common.search_news.v1",
+                    "params": {"query": "AI"},
+                },
+                {
+                    "id": "record_event",
+                    "type": "action",
+                    "action_id": "hr.record_health_event.v1",
+                    "params": {
+                        "event_type": "新闻告警",
+                        "abnormal_count": {
+                            "__from__": "result_of.search_news.results",
+                            "__agg__": "count",
+                        },
+                    },
+                },
+                {"id": "end", "type": "end"},
+            ],
+            "edges": [
+                {"from": "start", "to": "search_news"},
+                {"from": "search_news", "to": "record_event"},
+                {"from": "record_event", "to": "end"},
+            ],
+        }
+    )
+
+    _, errors = _align_reference_field_types(workflow, action_registry=ACTION_REGISTRY)
+
+    assert not any(err.code == "SCHEMA_MISMATCH" for err in errors)
