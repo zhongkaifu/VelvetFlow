@@ -10,11 +10,13 @@ const runWorkflowBtn = document.getElementById("runWorkflow");
 const applyWorkflowBtn = document.getElementById("applyWorkflow");
 const resetWorkflowBtn = document.getElementById("resetWorkflow");
 const editHelpBtn = document.getElementById("editHelp");
-const tabs = document.querySelectorAll(".tab");
-const tabContents = document.querySelectorAll(".tab-content");
+const tabBar = document.querySelector(".tab-bar");
+let tabs = Array.from(document.querySelectorAll(".tab"));
+let tabContents = Array.from(document.querySelectorAll(".tab-content"));
 const visualTabContent = document.querySelector('[data-view="visual"]');
 const jsonTabContent = document.querySelector('[data-view="json"]');
 const canvasPanel = document.querySelector(".canvas-panel");
+const canvasHost = document.getElementById("canvasHost");
 
 const NODE_WIDTH = 320;
 
@@ -23,13 +25,16 @@ let currentWorkflow = createEmptyWorkflow();
 let lastRunResults = {};
 let renderedNodes = [];
 let lastPositions = {};
-let nodePositions = {};
+let nodePositionsByTab = {};
+let lastPositionsByTab = {};
+let tabDirtyFlags = {};
 let actionCatalog = {};
 
 let isDragging = false;
 let dragNodeId = null;
 let dragOffset = { x: 0, y: 0 };
 let dragBox = null;
+let dragTabKey = null;
 
 async function loadActionCatalog() {
   try {
@@ -70,6 +75,46 @@ function normalizeWorkflow(workflow) {
   return { ...workflow, edges };
 }
 
+function refreshTabCollections() {
+  tabs = Array.from(document.querySelectorAll(".tab"));
+  tabContents = Array.from(document.querySelectorAll(".tab-content"));
+}
+
+function isCanvasTab(tabId) {
+  return tabId === "visual" || tabId.startsWith("loop:");
+}
+
+function getTabContent(tabId) {
+  return tabContents.find((content) => content.dataset.view === tabId);
+}
+
+function attachCanvasTo(tabId) {
+  if (!isCanvasTab(tabId) || !canvasHost) return;
+  const target = getTabContent(tabId);
+  if (target && canvasHost.parentElement !== target) {
+    target.appendChild(canvasHost);
+  }
+}
+
+function markTabDirty(tabId, dirty = true) {
+  if (!tabId || tabId === "json" || tabId === "visual") return;
+  tabDirtyFlags[tabId] = dirty;
+  const tab = tabs.find((t) => t.dataset.tab === tabId);
+  if (tab) {
+    tab.classList.toggle("tab--dirty", !!dirty);
+  }
+}
+
+function clearPositionCaches(tabId) {
+  if (tabId) {
+    delete nodePositionsByTab[tabId];
+    delete lastPositionsByTab[tabId];
+    return;
+  }
+  nodePositionsByTab = {};
+  lastPositionsByTab = {};
+}
+
 function addChatMessage(text, role = "agent") {
   const div = document.createElement("div");
   div.className = `chat-message ${role}`;
@@ -107,6 +152,125 @@ function setStatus(label, variant = "info") {
   statusIndicator.textContent = label;
   statusIndicator.style.background = theme.bg;
   statusIndicator.style.color = theme.color;
+}
+
+function findLoopNode(loopId, workflow = currentWorkflow) {
+  if (!workflow || !Array.isArray(workflow.nodes)) return null;
+  for (const node of workflow.nodes) {
+    if (node && node.id === loopId && node.type === "loop") {
+      return { node, container: workflow };
+    }
+    const params = node && node.params;
+    const body = params && params.body_subgraph;
+    if (body && body.nodes) {
+      const nested = findLoopNode(loopId, body);
+      if (nested) return nested;
+    }
+  }
+  return null;
+}
+
+function getTabContext(tabId = currentTab) {
+  if (tabId && tabId.startsWith("loop:")) {
+    const loopId = tabId.replace("loop:", "");
+    const found = findLoopNode(loopId);
+    const bodyGraph = (found && found.node && found.node.params && found.node.params.body_subgraph) || {
+      nodes: [],
+      edges: [],
+    };
+    return {
+      kind: "loop",
+      tabKey: tabId,
+      loopId,
+      graph: normalizeWorkflow(bodyGraph),
+      saveGraph(updatedGraph) {
+        const target = findLoopNode(loopId);
+        if (!target) return;
+        const params = { ...(target.node.params || {}), body_subgraph: normalizeWorkflow(updatedGraph) };
+        target.node.params = params;
+        updateEditor();
+        markTabDirty(tabId, true);
+      },
+    };
+  }
+
+  return {
+    kind: "root",
+    tabKey: "root",
+    graph: normalizeWorkflow(currentWorkflow),
+    saveGraph(updatedGraph) {
+      currentWorkflow = normalizeWorkflow(updatedGraph);
+      updateEditor();
+    },
+  };
+}
+
+function ensureLoopTab(loopNode) {
+  if (!loopNode || loopNode.type !== "loop") return;
+  const tabId = `loop:${loopNode.id}`;
+  const existing = tabs.find((t) => t.dataset.tab === tabId);
+  if (existing) {
+    switchToTab(tabId);
+    return;
+  }
+
+  const tabButton = document.createElement("button");
+  tabButton.className = "tab";
+  tabButton.dataset.tab = tabId;
+  tabButton.setAttribute("role", "tab");
+  tabButton.setAttribute("aria-selected", "false");
+  tabButton.innerHTML = `子图: ${loopNode.display_name || loopNode.id}<button class="tab__close" aria-label="关闭子图">×</button>`;
+
+  const closeBtn = tabButton.querySelector(".tab__close");
+  closeBtn.addEventListener("click", (evt) => {
+    evt.stopPropagation();
+    closeLoopTab(tabId);
+  });
+  tabButton.addEventListener("click", handleTabClick);
+
+  const tabContent = document.createElement("div");
+  tabContent.className = "tab-content tab-content--hidden";
+  tabContent.dataset.view = tabId;
+  tabContent.innerHTML = `<p class="muted tab-hint">正在查看循环 ${
+    loopNode.display_name || loopNode.id
+  } 的子图，双击节点可编辑；关闭前会提示确认已保存修改。</p>`;
+
+  tabBar.appendChild(tabButton);
+  canvasPanel.appendChild(tabContent);
+  tabDirtyFlags[tabId] = false;
+  refreshTabCollections();
+  switchToTab(tabId);
+}
+
+function closeLoopTab(tabId) {
+  if (!tabId || !tabId.startsWith("loop:")) return;
+  const dirty = tabDirtyFlags[tabId];
+  if (dirty) {
+    const confirmClose = window.confirm("子图节点已修改，确认已保存并关闭吗？选择取消可继续编辑。");
+    if (!confirmClose) return;
+  }
+
+  const button = tabs.find((t) => t.dataset.tab === tabId);
+  const content = getTabContent(tabId);
+  if (button) button.remove();
+  if (content) content.remove();
+  clearPositionCaches(tabId);
+  delete tabDirtyFlags[tabId];
+  refreshTabCollections();
+  if (currentTab === tabId) {
+    switchToTab("visual");
+  }
+}
+
+function closeAllLoopTabs(force = false) {
+  tabs
+    .filter((t) => t.dataset.tab && t.dataset.tab.startsWith("loop:"))
+    .forEach((t) => {
+      if (force) {
+        tabDirtyFlags[t.dataset.tab] = false;
+      }
+      closeLoopTab(t.dataset.tab);
+    });
 }
 
 function collectParamKeys(value) {
@@ -232,9 +396,9 @@ function collectLoopExportOptions(node) {
   return options;
 }
 
-function collectReferenceOptions(currentNodeId) {
+function collectReferenceOptions(currentNodeId, graph = currentWorkflow) {
   const options = new Set();
-  (currentWorkflow.nodes || []).forEach((node) => {
+  (graph.nodes || []).forEach((node) => {
     if (!node || node.id === currentNodeId) return;
     const outputs = extractOutputDefs(outputSchemaFor(node.action_id, node));
     outputs.forEach((field) => {
@@ -282,7 +446,7 @@ function rebuildEdgesFromBindings(workflow) {
   workflow.edges = normalizeWorkflow({ edges: [...(workflow.edges || []), ...newEdges] }).edges;
 }
 
-function openNodeDialog(node) {
+function openNodeDialog(node, context = getTabContext()) {
   if (!node) return;
   if (node.type !== "action") {
     addChatMessage("当前仅支持编辑 action 节点的入参/出参。", "agent");
@@ -349,7 +513,7 @@ function openNodeDialog(node) {
     outputsContainer.innerHTML = "";
 
     const paramDefs = extractParamDefs(paramsSchemaFor(actionId));
-    const refOptions = collectReferenceOptions(node.id);
+    const refOptions = collectReferenceOptions(node.id, context.graph || currentWorkflow);
     paramDefs.forEach((param) => {
       const row = document.createElement("label");
       row.className = "modal__field";
@@ -427,10 +591,12 @@ function openNodeDialog(node) {
       }
     });
 
-    const newNode = { ...node, action_id: actionSelect.value, params: updatedParams };
-    currentWorkflow.nodes = currentWorkflow.nodes.map((n) => (n.id === node.id ? newNode : n));
-    rebuildEdgesFromBindings(currentWorkflow);
-    updateEditor();
+    const updatedGraph = {
+      ...(context.graph || currentWorkflow),
+      nodes: (context.graph.nodes || []).map((n) => (n.id === node.id ? { ...n, action_id: actionSelect.value, params: updatedParams } : n)),
+    };
+    rebuildEdgesFromBindings(updatedGraph);
+    context.saveGraph(updatedGraph);
     render(currentTab);
     appendLog(`节点 ${node.id} 已更新并重新绘制`);
     close();
@@ -511,14 +677,15 @@ function measureHiddenHeight(element) {
   return height;
 }
 
-function resizeCanvas() {
+function resizeCanvas(graph) {
   const dpr = window.devicePixelRatio || 1;
   const panelWidth = canvasPanel ? canvasPanel.getBoundingClientRect().width : workflowCanvas.clientWidth;
   const targetWidth = Math.max(480, panelWidth - 16);
 
   const jsonHeight = measureHiddenHeight(jsonTabContent);
-  const visualHeight = measureHiddenHeight(visualTabContent);
-  const contentHeight = estimateWorkflowHeight(currentWorkflow);
+  const activeContent = getTabContent(currentTab) || visualTabContent;
+  const visualHeight = Math.max(measureHiddenHeight(visualTabContent), measureHiddenHeight(activeContent));
+  const contentHeight = estimateWorkflowHeight(graph || currentWorkflow);
   const viewportBase = Math.max(420, window.innerHeight - 260);
   const targetHeight = Math.max(contentHeight, jsonHeight, visualHeight, viewportBase);
 
@@ -547,13 +714,22 @@ function layoutNodes(workflow) {
   return positions;
 }
 
-function syncPositions(workflow) {
+function positionStoreFor(tabId) {
+  if (!nodePositionsByTab[tabId]) {
+    nodePositionsByTab[tabId] = {};
+  }
+  return nodePositionsByTab[tabId];
+}
+
+function syncPositions(workflow, tabId) {
   const auto = layoutNodes(workflow);
+  const store = positionStoreFor(tabId);
   const nextPositions = {};
   (workflow.nodes || []).forEach((node) => {
-    nextPositions[node.id] = nodePositions[node.id] || auto[node.id];
+    nextPositions[node.id] = store[node.id] || auto[node.id];
   });
-  nodePositions = nextPositions;
+  nodePositionsByTab[tabId] = nextPositions;
+  lastPositionsByTab[tabId] = nextPositions;
   return nextPositions;
 }
 
@@ -663,13 +839,21 @@ function drawArrow(from, to, label) {
 }
 
 function render(mode = currentTab) {
-  resizeCanvas();
+  const context = getTabContext(mode);
+  const graph = context.graph || currentWorkflow;
+  const tabKey = context.tabKey || mode;
+
+  if (isCanvasTab(mode)) {
+    attachCanvasTo(mode);
+  }
+
+  resizeCanvas(graph);
   ctx.clearRect(0, 0, workflowCanvas.width, workflowCanvas.height);
   renderedNodes = [];
-  if (!currentWorkflow.nodes) return;
-  lastPositions = syncPositions(currentWorkflow);
+  if (!graph.nodes) return;
+  lastPositions = syncPositions(graph, tabKey);
 
-  const edges = (currentWorkflow.edges || []).map(normalizeEdge);
+  const edges = (graph.edges || []).map(normalizeEdge);
   edges.forEach((edge) => {
     const from = lastPositions[edge.from_node];
     const to = lastPositions[edge.to_node];
@@ -678,7 +862,7 @@ function render(mode = currentTab) {
     }
   });
 
-  currentWorkflow.nodes.forEach((node) => {
+  graph.nodes.forEach((node) => {
     const pos = lastPositions[node.id];
     if (pos) {
       const box = drawNode(node, pos, mode);
@@ -751,7 +935,8 @@ async function requestPlan(requirement) {
     const payload = await response.json();
     renderLogs(payload.logs, true);
     lastRunResults = {};
-    nodePositions = {};
+    clearPositionCaches();
+    closeAllLoopTabs(true);
     currentWorkflow = normalizeWorkflow(payload.workflow);
     updateEditor();
     render(currentTab);
@@ -816,6 +1001,8 @@ function applyWorkflowFromEditor() {
     }
     currentWorkflow = normalizeWorkflow(parsed);
     lastRunResults = {};
+    clearPositionCaches();
+    closeAllLoopTabs(true);
     render(currentTab);
     appendLog("已应用手动修改并刷新画布");
     addChatMessage("收到您的修改，Canvas 已同步更新。", "agent");
@@ -826,16 +1013,19 @@ function applyWorkflowFromEditor() {
 
 function resetWorkflow() {
   currentWorkflow = createEmptyWorkflow();
-  nodePositions = {};
+  clearPositionCaches();
+  closeAllLoopTabs(true);
   lastRunResults = {};
   updateEditor();
   render(currentTab);
   appendLog("已重置为空 workflow");
 }
 
-function handleTabClick(event) {
-  const tab = event.target;
-  currentTab = tab.dataset.tab;
+function switchToTab(tabId) {
+  const tab = tabs.find((t) => t.dataset.tab === tabId);
+  if (!tab) return;
+  currentTab = tabId;
+  attachCanvasTo(tabId);
   tabs.forEach((t) => {
     t.classList.toggle("tab--active", t === tab);
     t.setAttribute("aria-selected", t === tab);
@@ -845,6 +1035,12 @@ function handleTabClick(event) {
     content.classList.toggle("tab-content--hidden", !isActive);
   });
   render(currentTab);
+}
+
+function handleTabClick(event) {
+  const tab = event.currentTarget || event.target;
+  if (!tab || !tab.dataset.tab) return;
+  switchToTab(tab.dataset.tab);
 }
 
 function canvasPointFromEvent(event) {
@@ -868,18 +1064,24 @@ function findNodeByPoint(point) {
 }
 
 function handleCanvasDoubleClick(event) {
-  if (currentTab !== "visual" || isDragging) return;
+  if (!isCanvasTab(currentTab) || isDragging) return;
+  const context = getTabContext(currentTab);
   const point = canvasPointFromEvent(event);
   const hit = findNodeByPoint(point);
   if (!hit) return;
-  const target = currentWorkflow.nodes.find((n) => n.id === hit.id);
+  const target = (context.graph.nodes || []).find((n) => n.id === hit.id);
   if (!target) return;
 
-  openNodeDialog(target);
+  if (target.type === "loop") {
+    ensureLoopTab(target);
+    return;
+  }
+
+  openNodeDialog(target, context);
 }
 
 function handleCanvasMouseDown(event) {
-  if (currentTab !== "visual") return;
+  if (!isCanvasTab(currentTab)) return;
   const point = canvasPointFromEvent(event);
   const hit = findNodeByPoint(point);
   if (!hit) return;
@@ -887,15 +1089,19 @@ function handleCanvasMouseDown(event) {
   dragNodeId = hit.id;
   dragBox = hit;
   dragOffset = { x: point.x - hit.x, y: point.y - hit.y };
+  const ctxInfo = getTabContext(currentTab);
+  dragTabKey = ctxInfo.tabKey || currentTab;
   workflowCanvas.style.cursor = "grabbing";
 }
 
 function handleCanvasMouseMove(event) {
-  if (!isDragging || currentTab !== "visual" || !dragNodeId || !dragBox) return;
+  if (!isDragging || !isCanvasTab(currentTab) || !dragNodeId || !dragBox) return;
   const point = canvasPointFromEvent(event);
   const topLeftX = point.x - dragOffset.x;
   const topLeftY = point.y - dragOffset.y;
-  nodePositions[dragNodeId] = {
+  const ctxInfo = getTabContext(currentTab);
+  const store = positionStoreFor(dragTabKey || ctxInfo.tabKey || currentTab);
+  store[dragNodeId] = {
     x: topLeftX + dragBox.width / 2,
     y: topLeftY + dragBox.height / 2,
   };
@@ -907,6 +1113,7 @@ function stopDragging() {
   isDragging = false;
   dragNodeId = null;
   dragBox = null;
+  dragTabKey = null;
   workflowCanvas.style.cursor = "grab";
 }
 
