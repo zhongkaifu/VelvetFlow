@@ -246,14 +246,13 @@ textarea#workflowEditor {
   font-size: 12px;
 }
 
-.chat-log,
-.build-log {
+.chat-log {
   border: 1px solid var(--border);
   border-radius: 12px;
   background: #0a0f1c;
   padding: 12px;
-  max-height: 240px;
-  overflow: auto;
+  max-height: 360px;
+  overflow-y: auto;
 }
 
 .chat-message {
@@ -278,6 +277,10 @@ textarea#workflowEditor {
   color: var(--muted);
   margin-bottom: 6px;
   font-size: 13px;
+  padding: 6px 8px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px dashed rgba(255, 255, 255, 0.08);
 }
 
 .chat-input {
@@ -389,6 +392,11 @@ textarea#workflowEditor {
   border-radius: 10px;
   color: var(--text);
   font-size: 14px;
+}
+
+.modal__textarea {
+  min-height: 64px;
+  resize: vertical;
 }
 
 .modal__subtitle {
