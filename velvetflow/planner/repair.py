@@ -93,18 +93,78 @@ def _looks_like_patch(text: str) -> bool:
 def _contains_patch_hunks(text: str) -> bool:
     """Heuristically detect whether the patch has at least one hunk header."""
 
-    return any(line.startswith("@@ ") for line in text.splitlines())
+    return any(line.startswith("@@") for line in text.splitlines())
 
 
 def _has_valid_hunk_headers(text: str) -> bool:
     """Validate that all hunk headers follow the unified diff format."""
 
     for line in text.splitlines():
-        if not line.startswith("@@ "):
+        if not line.startswith("@@"):
             continue
         if not _HUNK_HEADER_RE.match(line):
             return False
     return True
+
+
+def _inject_line_numbers_into_patch(
+    workflow: Mapping[str, Any], patch_text: str
+) -> Optional[str]:
+    """Attempt to add unified diff ranges to hunks that omit line numbers.
+
+    Some model responses return hunk headers like ``@@`` without the required
+    ``-<start>,<len> +<start>,<len>`` ranges. This helper scans the original
+    ``workflow.json`` content to locate each hunk by its context/removal lines
+    and rewrites the headers with concrete line numbers.
+    """
+
+    original_lines = json.dumps(
+        workflow, ensure_ascii=False, indent=2, sort_keys=True
+    ).splitlines()
+
+    lines = patch_text.splitlines()
+    rewritten: List[str] = []
+    idx = 0
+
+    def _find_hunk_start(ops: List[str]) -> Optional[int]:
+        required = [ln[1:] for ln in ops if ln.startswith((" ", "-"))]
+        if not required:
+            return 0
+
+        for start in range(0, len(original_lines) - len(required) + 1):
+            for offset, expected in enumerate(required):
+                if original_lines[start + offset] != expected:
+                    break
+            else:
+                return start
+        return None
+
+    while idx < len(lines):
+        line = lines[idx]
+        if not line.startswith("@@"):
+            rewritten.append(line)
+            idx += 1
+            continue
+
+        hunk_ops: List[str] = []
+        idx += 1
+        while idx < len(lines) and not lines[idx].startswith("@@"):
+            hunk_ops.append(lines[idx])
+            idx += 1
+
+        start = _find_hunk_start(hunk_ops)
+        if start is None:
+            return None
+
+        old_len = sum(1 for ln in hunk_ops if ln.startswith((" ", "-")))
+        new_len = sum(1 for ln in hunk_ops if ln.startswith((" ", "+")))
+        rewritten.append(f"@@ -{start + 1},{old_len} +{start + 1},{new_len} @@")
+        rewritten.extend(hunk_ops)
+
+    normalized = "\n".join(rewritten)
+    if patch_text.endswith("\n"):
+        normalized += "\n"
+    return normalized
 
 
 def _normalize_patch_text(text: str) -> str:
@@ -701,9 +761,16 @@ validation_errors 是 JSON 数组，元素包含 code/node_id/field/message。
         )
 
     if not _has_valid_hunk_headers(text):
-        raise RuntimeError(
-            "[repair_workflow_with_llm] 补丁中的 @@ hunk header 格式无效，必须包含具体行号（例如 @@ -12,3 +12,4 @@），请返回可直接 git apply 的补丁。"
-        )
+        fixed = _inject_line_numbers_into_patch(broken_workflow, text)
+        if fixed:
+            log_warn(
+                "[repair_workflow_with_llm] 收到的补丁缺少行号，已自动补齐 @@ 范围并继续尝试应用。"
+            )
+            text = fixed
+        else:
+            raise RuntimeError(
+                "[repair_workflow_with_llm] 补丁中的 @@ hunk header 格式无效，必须包含具体行号（例如 @@ -12,3 +12,4 @@），请返回可直接 git apply 的补丁。"
+            )
 
     log_info(f"[repair_workflow_with_llm] 收到补丁内容如下：\n{text}")
     patched_workflow = _apply_patch_output(broken_workflow, text)
