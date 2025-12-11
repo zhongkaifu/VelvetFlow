@@ -96,6 +96,17 @@ def _contains_patch_hunks(text: str) -> bool:
     return any(line.startswith("@@ ") for line in text.splitlines())
 
 
+def _has_valid_hunk_headers(text: str) -> bool:
+    """Validate that all hunk headers follow the unified diff format."""
+
+    for line in text.splitlines():
+        if not line.startswith("@@ "):
+            continue
+        if not _HUNK_HEADER_RE.match(line):
+            return False
+    return True
+
+
 def _normalize_patch_text(text: str) -> str:
     """Trim indentation and ensure patches retain expected formatting."""
 
@@ -687,6 +698,11 @@ validation_errors 是 JSON 数组，元素包含 code/node_id/field/message。
     if not _contains_patch_hunks(text):
         raise RuntimeError(
             "[repair_workflow_with_llm] 收到的补丁缺少 @@ hunk 信息，无法应用，请返回包含具体修改的 unified diff。"
+        )
+
+    if not _has_valid_hunk_headers(text):
+        raise RuntimeError(
+            "[repair_workflow_with_llm] 补丁中的 @@ hunk header 格式无效，必须包含具体行号（例如 @@ -12,3 +12,4 @@），请返回可直接 git apply 的补丁。"
         )
 
     log_info(f"[repair_workflow_with_llm] 收到补丁内容如下：\n{text}")
