@@ -740,6 +740,11 @@ function drawNode(node, pos, mode) {
   const radius = 16;
   const width = NODE_WIDTH;
   const { inputs, outputs, toolLabel, runtimeInputs, runtimeOutputs } = describeNode(node);
+  const runInfo = lastRunResults[node.id];
+  const executed = runInfo !== undefined;
+  const executionStyle = executed
+    ? { fill: "rgba(74, 222, 128, 0.14)", stroke: "rgba(34, 197, 94, 0.9)", badgeBg: "rgba(74, 222, 128, 0.16)", badgeText: "#4ade80", label: "已执行" }
+    : { fill: "rgba(255, 255, 255, 0.04)", stroke: "rgba(255, 255, 255, 0.12)", badgeBg: "rgba(148, 163, 184, 0.18)", badgeText: "#cbd5e1", label: "未执行" };
   const contentLines = [];
   if (toolLabel) contentLines.push(`工具: ${toolLabel}`);
   contentLines.push(`入参: ${inputs.length ? inputs.join(", ") : "-"}`);
@@ -767,12 +772,25 @@ function drawNode(node, pos, mode) {
   };
   const fill = typeColors[node.type] || "#94a3b8";
   ctx.save();
-  ctx.fillStyle = "rgba(255,255,255,0.04)";
-  ctx.strokeStyle = "rgba(255,255,255,0.12)";
+  ctx.fillStyle = executionStyle.fill;
+  ctx.strokeStyle = executionStyle.stroke;
   ctx.lineWidth = 1.2;
   roundedRect(pos.x - width / 2, pos.y - height / 2, width, height, radius);
   ctx.fill();
   ctx.stroke();
+
+  ctx.fillStyle = executionStyle.badgeBg;
+  ctx.strokeStyle = executionStyle.stroke;
+  ctx.lineWidth = 1;
+  const badgeWidth = 64;
+  const badgeHeight = 22;
+  roundedRect(pos.x + width / 2 - badgeWidth - 12, pos.y - height / 2 + 12, badgeWidth, badgeHeight, 10);
+  ctx.fill();
+  ctx.stroke();
+  ctx.fillStyle = executionStyle.badgeText;
+  ctx.font = "13px Inter";
+  ctx.textAlign = "center";
+  ctx.fillText(executionStyle.label, pos.x + width / 2 - badgeWidth / 2 - 12, pos.y - height / 2 + 28);
 
   ctx.fillStyle = fill;
   ctx.font = "14px Inter";
