@@ -144,6 +144,8 @@ def _apply_patch_output(workflow: Mapping[str, Any], patch_text: str) -> Optiona
             ["git", "apply", "--whitespace=nowarn", "--unsafe-paths", "-"],
             input=rewritten_patch,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             capture_output=True,
             cwd=workflow_path.parent,
         )
