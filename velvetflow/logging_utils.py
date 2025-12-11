@@ -10,6 +10,7 @@ import contextvars
 import json
 import os
 import shutil
+import sys
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -185,7 +186,23 @@ def console_log(level: str, message: str) -> None:
     if trace:
         trace_prefix = f" [trace={trace.trace_id} span={trace.span_id}]"
     prefix = f"{color}{icon} [{level:>5}] {_timestamp()}{trace_prefix} |{RESET} "
-    print(prefix + _format_lines(message))
+    _safe_print(prefix + _format_lines(message))
+
+
+def _safe_print(text: str) -> None:
+    """Print text while tolerating encoding issues on non-UTF-8 consoles."""
+
+    output = text if text.endswith("\n") else text + "\n"
+    encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+    try:
+        sys.stdout.buffer.write(output.encode(encoding, errors="replace"))
+    except Exception:
+        # Fallback to UTF-8 to ensure logs are emitted even on misconfigured streams.
+        sys.stdout.buffer.write(output.encode("utf-8", errors="replace"))
+    try:
+        sys.stdout.flush()
+    except Exception:
+        pass
 
 
 def log_info(*messages: str) -> None:
@@ -319,7 +336,7 @@ def log_event(
         record.update(ctx.to_dict())
 
     json_line = json.dumps(record, ensure_ascii=False)
-    print(json_line)
+    _safe_print(json_line)
     _persist_record(record)
 
 
