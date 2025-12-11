@@ -39,9 +39,38 @@
           </div>
         </div>
         <div class="tab-content tab-content--hidden" data-view="visual">
-          <div id="canvasHost">
-            <canvas id="workflowCanvas" width="1080" height="620" aria-label="workflow canvas"></canvas>
-            <p class="muted tab-hint">提示：双击节点可在对话框中修改入参/引用并查看出参定义，动作节点会展示对应的业务工具；双击 loop 节点会打开子图标签。</p>
+          <div class="canvas-wrapper">
+            <div id="canvasHost">
+              <canvas id="workflowCanvas" width="1080" height="620" aria-label="workflow canvas"></canvas>
+              <p class="muted tab-hint">提示：在画布空白处右键添加节点，双击节点可编辑参数或跳转循环子图；编辑弹窗内可删除节点。</p>
+            </div>
+            <div id="addNodeMenu" class="context-menu hidden" role="dialog" aria-modal="true" aria-label="添加节点">
+              <div class="context-menu__header">
+                <h4>添加新节点</h4>
+                <button type="button" class="context-menu__close" aria-label="关闭" id="closeAddNodeMenu">×</button>
+              </div>
+              <label class="context-menu__field">
+                <span>节点类型</span>
+                <select id="addNodeType" class="context-menu__input">
+                  <option value="action" selected>动作 (action)</option>
+                  <option value="condition">条件 (condition)</option>
+                  <option value="loop">循环 (loop)</option>
+                </select>
+              </label>
+              <label class="context-menu__field">
+                <span>显示名称（可选）</span>
+                <input id="addNodeName" class="context-menu__input" placeholder="例如：审批节点" />
+              </label>
+              <label class="context-menu__field" id="addNodeActionRow">
+                <span>业务工具 (action_id)</span>
+                <select id="addNodeActionSelect" class="context-menu__input" aria-label="选择业务工具"></select>
+              </label>
+              <div class="context-menu__actions">
+                <button type="button" class="button button--ghost" id="cancelAddNode">取消</button>
+                <button type="button" class="button button--primary" id="confirmAddNode">添加节点</button>
+              </div>
+              <p class="muted context-menu__hint">提示：节点会自动布局，若需要拖动可按住节点移动位置。</p>
+            </div>
           </div>
         </div>
       </section>

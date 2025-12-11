@@ -121,6 +121,25 @@ h1 {
   gap: 10px;
 }
 
+.canvas-wrapper {
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 8px;
+  position: relative;
+}
+
+.button--full {
+  width: 100%;
+}
+
+.button--danger {
+  background: rgba(244, 67, 94, 0.12);
+  border: 1px solid rgba(244, 67, 94, 0.4);
+  color: var(--danger);
+  box-shadow: 0 10px 30px rgba(244, 67, 94, 0.15);
+}
+
 #canvasHost {
   display: flex;
   flex-direction: column;
@@ -185,6 +204,64 @@ canvas {
 .tab-hint {
   margin: 0;
   font-size: 13px;
+}
+
+.context-menu {
+  position: absolute;
+  min-width: 280px;
+  background: #0c1323;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px;
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.5);
+  z-index: 10;
+  gap: 10px;
+  display: flex;
+  flex-direction: column;
+}
+
+.hidden {
+  display: none !important;
+}
+
+.context-menu__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+
+.context-menu__close {
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  font-size: 20px;
+  cursor: pointer;
+}
+
+.context-menu__field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 14px;
+}
+
+.context-menu__input {
+  background: #0a0f1c;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--text);
+  padding: 10px 12px;
+}
+
+.context-menu__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.context-menu__hint {
+  font-size: 12px;
 }
 
 .editor {
