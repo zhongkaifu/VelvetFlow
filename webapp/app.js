@@ -697,23 +697,88 @@ function resizeCanvas(graph) {
 }
 
 function layoutNodes(workflow) {
-  const { nodes } = workflow;
-  const positions = {};
-  const columns = Math.max(3, Math.ceil(Math.sqrt(nodes.length)));
-  const topPadding = 60;
-  const bottomPadding = 60;
-  const rows = Math.ceil(nodes.length / columns) || 1;
-  const spacingX = workflowCanvas.width / (columns + 1);
-  const spacingY = Math.max(120, (workflowCanvas.height - topPadding - bottomPadding) / rows);
+  const { nodes = [], edges = [] } = workflow;
+  if (!nodes.length) return {};
 
-  nodes.forEach((node, index) => {
-    const col = index % columns;
-    const row = Math.floor(index / columns);
-    positions[node.id] = {
-      x: spacingX * (col + 1),
-      y: topPadding + spacingY * row,
-    };
+  const nodeOrder = nodes.map((n) => n.id);
+  const indegree = {};
+  const level = {};
+  const outgoing = {};
+
+  nodeOrder.forEach((id) => {
+    indegree[id] = 0;
+    level[id] = 0;
+    outgoing[id] = [];
   });
+
+  edges.forEach((edge) => {
+    const from = edge.from_node || edge.from;
+    const to = edge.to_node || edge.to;
+    if (!from || !to) return;
+    if (indegree[to] === undefined) indegree[to] = 0;
+    if (level[to] === undefined) level[to] = 0;
+    outgoing[from] = outgoing[from] || [];
+    outgoing[from].push(to);
+    indegree[to] += 1;
+  });
+
+  const queue = nodeOrder.filter((id) => indegree[id] === 0);
+  const visited = new Set(queue);
+
+  while (queue.length) {
+    const current = queue.shift();
+    const nextLevel = level[current] + 1;
+    (outgoing[current] || []).forEach((neighbor) => {
+      level[neighbor] = Math.max(level[neighbor] || 0, nextLevel);
+      indegree[neighbor] -= 1;
+      if (indegree[neighbor] === 0 && !visited.has(neighbor)) {
+        visited.add(neighbor);
+        queue.push(neighbor);
+      }
+    });
+  }
+
+  // Handle any remaining nodes (cycles or disconnected) by assigning them to the last level.
+  const maxKnownLevel = Math.max(0, ...Object.values(level));
+  nodeOrder.forEach((id) => {
+    if (!visited.has(id)) {
+      level[id] = maxKnownLevel + 1;
+    }
+  });
+
+  const layers = {};
+  nodeOrder.forEach((id) => {
+    const layerIndex = level[id] || 0;
+    if (!layers[layerIndex]) layers[layerIndex] = [];
+    layers[layerIndex].push(id);
+  });
+
+  const layerKeys = Object.keys(layers)
+    .map((n) => Number(n))
+    .sort((a, b) => a - b);
+
+  const topPadding = 90;
+  const bottomPadding = 60;
+  const maxPerRow = Math.max(...layerKeys.map((k) => layers[k].length));
+  const rowCount = layerKeys.length || 1;
+  const spacingX = Math.max(NODE_WIDTH + 40, workflowCanvas.width / Math.max(2, maxPerRow));
+  const availableHeight = Math.max(400, workflowCanvas.height - topPadding - bottomPadding);
+  const spacingY = Math.max(140, availableHeight / rowCount);
+
+  const positions = {};
+  layerKeys.forEach((layerIndex) => {
+    const row = layers[layerIndex];
+    const totalWidth = (row.length - 1) * spacingX;
+    const startX = workflowCanvas.width / 2 - totalWidth / 2;
+    const y = topPadding + layerIndex * spacingY;
+    row.forEach((id, idx) => {
+      positions[id] = {
+        x: startX + idx * spacingX,
+        y,
+      };
+    });
+  });
+
   return positions;
 }
 
@@ -958,6 +1023,44 @@ function updateEditor() {
   autoSizeEditor();
 }
 
+async function streamEvents(url, options, onEvent) {
+  const response = await fetch(url, options);
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}));
+    const hint =
+      [404, 405, 501].includes(response.status)
+        ? "后端 API 未启动，请运行 `python webapp/server.py` 后再试。"
+        : "";
+    throw new Error(detail.detail || detail.message || hint || response.statusText);
+  }
+
+  if (!response.body) {
+    throw new Error("当前浏览器不支持流式响应");
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const parts = buffer.split("\n\n");
+    buffer = parts.pop();
+    for (const part of parts) {
+      const content = part.trim();
+      if (!content) continue;
+      const payload = content.startsWith("data:") ? content.slice(5).trim() : content;
+      try {
+        onEvent(JSON.parse(payload));
+      } catch (error) {
+        console.warn("无法解析流式消息", payload, error);
+      }
+    }
+  }
+}
+
 async function requestPlan(requirement) {
   setStatus("规划中", "warning");
   buildLog.innerHTML = "";
@@ -976,27 +1079,40 @@ async function requestPlan(requirement) {
     }
     addChatMessage("正在调用 VelvetFlow Planner，请稍候，处理中间状态……", "agent");
 
-    const response = await fetch("/api/plan", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ requirement, existing_workflow: existingWorkflow }),
-    });
+    let streamError = null;
+    let finalWorkflow = null;
 
-    if (!response.ok) {
-      const detail = await response.json().catch(() => ({}));
-      const hint =
-        [404, 405, 501].includes(response.status)
-          ? "后端 API 未启动，请运行 `python webapp/server.py` 后再试。"
-          : "";
-      throw new Error(detail.detail || detail.message || hint || response.statusText);
+    await streamEvents(
+      "/api/plan/stream",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ requirement, existing_workflow: existingWorkflow }),
+      },
+      (event) => {
+        if (!event || !event.type) return;
+        if (event.type === "log" && event.message) {
+          appendLog(event.message);
+          addChatMessage(`流程更新：${event.message}`, "agent");
+        } else if (event.type === "result" && event.workflow) {
+          finalWorkflow = normalizeWorkflow(event.workflow);
+        } else if (event.type === "error") {
+          streamError = event.message || "未知错误";
+        }
+      },
+    );
+
+    if (streamError) {
+      throw new Error(streamError);
+    }
+    if (!finalWorkflow) {
+      throw new Error("未收到构建结果");
     }
 
-    const payload = await response.json();
-    renderLogs(payload.logs, true);
     lastRunResults = {};
     clearPositionCaches();
     closeAllLoopTabs(true);
-    currentWorkflow = normalizeWorkflow(payload.workflow);
+    currentWorkflow = finalWorkflow;
     updateEditor();
     render(currentTab);
     setStatus("构建完成", "success");
