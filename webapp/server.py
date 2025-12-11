@@ -25,6 +25,7 @@ import velvetflow.logging_utils as logging_utils
 from fastapi import FastAPI, HTTPException
 from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ValidationError
 
@@ -185,6 +186,13 @@ def list_actions() -> List[ActionInfo]:
         )
         for action in BUSINESS_ACTIONS
     ]
+
+
+@app.get("/logo.jpg")
+def serve_logo() -> FileResponse:
+    """Serve the VelvetFlow logo from the repository root."""
+
+    return FileResponse(REPO_ROOT / "logo.jpg", media_type="image/jpeg")
 
 
 app.mount("/", StaticFiles(directory=Path(__file__).parent, html=True), name="static")
