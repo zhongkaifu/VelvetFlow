@@ -709,6 +709,23 @@ validation_errors 是 JSON 数组，元素包含 code/node_id/field/message。
   - 保持顶层结构：workflow_name/description/nodes 不变（仅节点内部内容可调整，edges 由系统推导）；
   - 节点的 id/type 不变；
   - **只能输出针对 workflow.json 的 unified diff 补丁**，不要返回完整 JSON 或其他格式；
+  - 补丁必须满足 git apply 的格式约束，遵循以下 schema：
+    - 首部：
+      ```
+      --- workflow.json
+      +++ workflow.json
+      ```
+    - 至少包含一个 hunk，且每个 hunk header 均为 `@@ -<旧起始行>,<旧长度> +<新起始行>,<新长度> @@`；行号必须是正整数，长度可省略但推荐填写；
+    - hunk 内容仅包含三类行：`-` 开头的删除行、`+` 开头的新增行、` ` 开头的上下文行；
+    - 不要省略 `---/+++` 与 `@@` 行，也不要输出 markdown 代码块包裹；
+    - 示例：
+      ```
+      --- workflow.json
+      +++ workflow.json
+      @@ -12,3 +12,4 @@
+      -  "params": {}
+      +  "params": {"foo": "bar"}
+      ```
   - VelvetFlow Repair 会使用 git apply 将补丁合并回 workflow 并继续校验，补丁头中的文件名请使用 workflow.json；
   - 禁止调用任何工具或函数，直接根据错误分析生成补丁文本。
 """
