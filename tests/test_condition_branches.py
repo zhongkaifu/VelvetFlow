@@ -4,6 +4,7 @@
 import pytest
 
 from velvetflow.executor import DynamicActionExecutor
+from velvetflow.bindings import BindingContext
 from velvetflow.models import Workflow
 from velvetflow.verification.validation import validate_completed_workflow
 from velvetflow.planner.workflow_builder import WorkflowBuilder, attach_condition_branches
@@ -91,6 +92,58 @@ def test_executor_respects_condition_branch_targets():
     )
 
     results = executor.run()
+
+    assert "notify_yes" in results
+    assert "notify_no" not in results
+
+
+def test_condition_blocks_inactive_branch_even_if_preseeded():
+    workflow_dict = {
+        "workflow_name": "branching_demo",
+        "description": "",
+        "nodes": [
+            {"id": "start", "type": "start"},
+            {
+                "id": "check",
+                "type": "condition",
+                "params": {"kind": "equals", "source": True, "value": True},
+                "true_to_node": "notify_yes",
+                "false_to_node": "notify_no",
+            },
+            {
+                "id": "notify_yes",
+                "type": "action",
+                "action_id": "productivity.compose_outlook_email.v1",
+                "params": {
+                    "from_condition": {"__from__": "result_of.check.condition_result"},
+                    "email_content": "condition true",
+                },
+            },
+            {
+                "id": "notify_no",
+                "type": "action",
+                "action_id": "productivity.compose_outlook_email.v1",
+                "params": {
+                    "from_condition": {"__from__": "result_of.check.condition_result"},
+                    "email_content": "condition false",
+                },
+            },
+        ],
+    }
+
+    workflow = Workflow.model_validate(workflow_dict)
+    executor = DynamicActionExecutor(
+        workflow,
+        simulations={
+            "productivity.compose_outlook_email.v1": {"result": {"status": "simulated"}}
+        },
+    )
+
+    all_nodes = [n.id for n in workflow.nodes]
+    binding_ctx = BindingContext(workflow, {})
+    results = executor._execute_graph(
+        executor.workflow_dict, binding_ctx, start_nodes=all_nodes
+    )
 
     assert "notify_yes" in results
     assert "notify_no" not in results

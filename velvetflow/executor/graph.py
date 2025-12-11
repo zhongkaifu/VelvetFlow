@@ -158,3 +158,27 @@ class GraphTraversalMixin:
             elif cond_label is not None and cond == cond_label:
                 res.append(e.get("to"))
         return [r for r in res if r not in {None, "null"}]
+
+    def _collect_downstream_nodes(
+        self, edges: List[Dict[str, Any]], start: str
+    ) -> Set[str]:
+        """Return all nodes reachable from ``start`` following edge definitions."""
+
+        visited: Set[str] = set()
+        stack: List[str] = [start]
+
+        while stack:
+            nid = stack.pop()
+            if not isinstance(nid, str) or nid in visited:
+                continue
+            visited.add(nid)
+            for e in edges:
+                if not isinstance(e, Mapping):
+                    continue
+                if e.get("from") != nid:
+                    continue
+                nxt = e.get("to")
+                if isinstance(nxt, str) and nxt not in visited:
+                    stack.append(nxt)
+
+        return visited
