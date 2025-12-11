@@ -151,6 +151,17 @@ def _check_edges_and_branches(
 
     for node_id, node in nodes_by_id.items():
         ntype = node.get("type")
+        depends_on = node.get("depends_on") if isinstance(node.get("depends_on"), list) else []
+        for dep in depends_on:
+            if isinstance(dep, str) and dep not in nodes_by_id:
+                errors.append(
+                    ValidationError(
+                        code="UNDEFINED_REFERENCE",
+                        node_id=node_id,
+                        field="depends_on",
+                        message=f"节点 '{node_id}' 的 depends_on 引用了不存在的节点 '{dep}'。",
+                    )
+                )
         if ntype == "condition":
             for branch_field in ("true_to_node", "false_to_node"):
                 target = node.get(branch_field)

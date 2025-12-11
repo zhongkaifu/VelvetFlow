@@ -259,12 +259,19 @@ def _safe_repair_invalid_loop_body(workflow_raw: Mapping[str, Any]) -> Workflow:
         if not body_nodes:
             start_id = f"{node.get('id')}_body_entry"
             end_id = f"{node.get('id')}_body_exit"
+            action_id = f"{node.get('id')}_body_action"
             body_nodes = [
                 {"id": start_id, "type": "start"},
+                {"id": action_id, "type": "action"},
                 {"id": end_id, "type": "end"},
             ]
             edges = body.get("edges") if isinstance(body.get("edges"), list) else []
-            edges.append({"from": start_id, "to": end_id})
+            edges.extend(
+                [
+                    {"from": start_id, "to": action_id},
+                    {"from": action_id, "to": end_id},
+                ]
+            )
             body["entry"] = body.get("entry") or start_id
             body["exit"] = body.get("exit") or end_id
             body["edges"] = edges

@@ -157,6 +157,15 @@ class ParamBinding:
     steps: List[Dict[str, Any]] | None = None
 
 
+def _extract_node_id(node: Any) -> Optional[str]:
+    if isinstance(node, Node):
+        return node.id
+    if isinstance(node, Mapping):
+        raw_id = node.get("id")
+        return raw_id if isinstance(raw_id, str) else None
+    return None
+
+
 def infer_edges_from_bindings(nodes: Iterable[Any]) -> List[Dict[str, Any]]:
     """Infer directed edges from node parameter bindings.
 
@@ -167,14 +176,6 @@ def infer_edges_from_bindings(nodes: Iterable[Any]) -> List[Dict[str, Any]]:
     """
 
     node_list = list(nodes)
-
-    def _extract_node_id(node: Any) -> Optional[str]:
-        if isinstance(node, Node):
-            return node.id
-        if isinstance(node, Mapping):
-            raw_id = node.get("id")
-            return raw_id if isinstance(raw_id, str) else None
-        return None
 
     def _extract_params(node: Any) -> Mapping[str, Any]:
         if isinstance(node, Node):
@@ -288,6 +289,46 @@ def infer_edges_from_bindings(nodes: Iterable[Any]) -> List[Dict[str, Any]]:
     return edges
 
 
+def infer_depends_on_from_edges(
+    nodes: Iterable[Any], edges: Iterable[Mapping[str, Any]]
+) -> Dict[str, List[str]]:
+    """Infer depends_on relationships from edges and existing declarations."""
+
+    node_list = list(nodes)
+    node_ids = {_extract_node_id(n) for n in node_list}
+    node_ids.discard(None)
+
+    depends_map: Dict[str, Set[str]] = {nid: set() for nid in node_ids}
+
+    for node in node_list:
+        nid = _extract_node_id(node)
+        if not nid:
+            continue
+        existing = None
+        if isinstance(node, Node):
+            existing = node.depends_on
+        elif isinstance(node, Mapping):
+            existing = node.get("depends_on")
+
+        if isinstance(existing, list):
+            for dep in existing:
+                if isinstance(dep, str) and dep in node_ids and dep != nid:
+                    depends_map.setdefault(nid, set()).add(dep)
+
+    for edge in edges:
+        if not isinstance(edge, Mapping):
+            continue
+        frm = edge.get("from") if "from" in edge else edge.get("from_node")
+        to = edge.get("to") if "to" in edge else edge.get("to_node")
+        if not isinstance(frm, str) or not isinstance(to, str):
+            continue
+        if frm not in node_ids or to not in node_ids or frm == to:
+            continue
+        depends_map.setdefault(to, set()).add(frm)
+
+    return {nid: sorted(deps) for nid, deps in depends_map.items()}
+
+
 @dataclass
 class Node:
     """Base workflow node definition.
@@ -300,6 +341,7 @@ class Node:
     action_id: Optional[str] = None
     display_name: Optional[str] = None
     params: Dict[str, Any] = field(default_factory=dict)
+    depends_on: List[str] = field(default_factory=list)
 
     @classmethod
     def model_validate(cls, data: Any) -> "Node":
@@ -332,6 +374,14 @@ class Node:
             raise PydanticValidationError(errors)
 
         params = data.get("params") if isinstance(data.get("params"), Mapping) else {}
+        depends_on_raw = data.get("depends_on")
+        depends_on: List[str] = []
+        if depends_on_raw is None:
+            depends_on = []
+        elif isinstance(depends_on_raw, list):
+            depends_on = [d for d in depends_on_raw if isinstance(d, str)]
+        else:
+            errors.append({"loc": ("depends_on",), "msg": "depends_on 必须是字符串数组"})
 
         action_id = data.get("action_id")
         if action_id is not None and not isinstance(action_id, str):
@@ -363,6 +413,7 @@ class Node:
                 display_name=data.get("display_name"),
                 out_params_schema=out_params_schema if isinstance(out_params_schema, Mapping) else None,
                 params=dict(params),
+                depends_on=depends_on,
             )
 
         if node_type == "condition":
@@ -382,6 +433,7 @@ class Node:
                 params=dict(params),
                 true_to_node=true_to_node if isinstance(true_to_node, str) else None,
                 false_to_node=false_to_node if isinstance(false_to_node, str) else None,
+                depends_on=depends_on,
             )
 
         if node_type == "switch":
@@ -411,6 +463,7 @@ class Node:
                 params=dict(params),
                 cases=validated_cases,
                 default_to_node=default_to_node if isinstance(default_to_node, str) else None,
+                depends_on=depends_on,
             )
 
         if errors:
@@ -422,6 +475,7 @@ class Node:
             action_id=action_id if isinstance(action_id, str) else None,
             display_name=data.get("display_name"),
             params=dict(params),
+            depends_on=depends_on,
         )
 
     def model_dump(self, *, by_alias: bool = False) -> Dict[str, Any]:
@@ -431,6 +485,7 @@ class Node:
             "action_id": self.action_id,
             "display_name": self.display_name,
             "params": self.params,
+            "depends_on": self.depends_on,
         }
 
 
@@ -691,5 +746,6 @@ __all__ = [
     "PydanticValidationError",
     "ValidationError",
     "infer_edges_from_bindings",
+    "infer_depends_on_from_edges",
     "Workflow",
 ]

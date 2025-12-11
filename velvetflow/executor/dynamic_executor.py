@@ -17,7 +17,7 @@ from velvetflow.logging_utils import (
     log_warn,
     use_trace_context,
 )
-from velvetflow.models import Node, Workflow
+from velvetflow.models import Node, Workflow, infer_depends_on_from_edges
 
 from .async_runtime import (
     ExecutionCheckpoint,
@@ -128,6 +128,7 @@ class DynamicActionExecutor(
         nodes_data = {n["id"]: n for n in workflow.model_dump(by_alias=True)["nodes"]}
         sorted_nodes = self._topological_sort(workflow)
         edges = self._derive_edges(workflow)
+        depends_map = infer_depends_on_from_edges(nodes_data.values(), edges)
 
         graph_label = workflow_dict.get("workflow_name", "")
         log_section("执行工作流", graph_label)
@@ -176,7 +177,13 @@ class DynamicActionExecutor(
             remaining: List[Node] = []
             for node_model in pending:
                 nid = node_model.id
-                if nid in visited or nid in blocked or (reachable and nid not in reachable):
+                deps = depends_map.get(nid, [])
+                if (
+                    nid in visited
+                    or nid in blocked
+                    or (reachable and nid not in reachable)
+                    or any(dep not in visited for dep in deps)
+                ):
                     remaining.append(node_model)
                     continue
                 visited.add(nid)
