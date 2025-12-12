@@ -114,7 +114,9 @@ def _capture_logs():
 
 
 @contextmanager
-def _capture_logs_stream(queue: "asyncio.Queue[Dict[str, Any]]"):
+def _capture_logs_stream(
+    queue: "asyncio.Queue[Dict[str, Any]]", loop: asyncio.AbstractEventLoop
+):
     """Capture console logs and forward them to an async queue for streaming."""
 
     original = logging_utils.console_log
@@ -122,7 +124,7 @@ def _capture_logs_stream(queue: "asyncio.Queue[Dict[str, Any]]"):
     def patched(level: str, message: str) -> None:
         line = f"[{level.upper()}] {message}"
         try:
-            queue.put_nowait({"type": "log", "message": line})
+            loop.call_soon_threadsafe(queue.put_nowait, {"type": "log", "message": line})
         except Exception:
             # Avoid breaking the request if queue operations fail.
             pass
@@ -191,6 +193,7 @@ async def plan_workflow_stream(req: PlanRequest) -> StreamingResponse:
     if not req.requirement.strip():
         raise HTTPException(status_code=400, detail="requirement 不能为空")
 
+    loop = asyncio.get_running_loop()
     queue: asyncio.Queue[Dict[str, Any]] = asyncio.Queue()
 
     async def run_planner() -> None:
@@ -202,7 +205,7 @@ async def plan_workflow_stream(req: PlanRequest) -> StreamingResponse:
             return
 
         try:
-            with _capture_logs_stream(queue):
+            with _capture_logs_stream(queue, loop):
                 if req.existing_workflow:
                     workflow = await asyncio.to_thread(
                         update_workflow_with_two_pass,
