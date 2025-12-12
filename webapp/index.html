@@ -40,6 +40,14 @@
         </div>
         <div class="tab-content" data-view="visual">
           <div class="canvas-wrapper">
+            <div class="canvas-toolbar">
+              <div class="canvas-toolbar__group">
+                <button type="button" class="icon-button" id="zoomOut" aria-label="缩小">−</button>
+                <span class="canvas-toolbar__label" id="zoomValue">100%</span>
+                <button type="button" class="icon-button" id="zoomIn" aria-label="放大">＋</button>
+              </div>
+              <button type="button" class="button button--ghost" id="resetView">重置视图</button>
+            </div>
             <div id="canvasHost">
               <canvas id="workflowCanvas" width="1080" height="620" aria-label="workflow canvas"></canvas>
               <p class="muted tab-hint">提示：在画布空白处右键添加节点，双击节点可编辑参数或跳转循环子图；编辑弹窗内可删除节点。</p>

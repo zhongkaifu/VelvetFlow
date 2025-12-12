@@ -24,8 +24,15 @@ const addNodeActionRow = document.getElementById("addNodeActionRow");
 const confirmAddNodeBtn = document.getElementById("confirmAddNode");
 const cancelAddNodeBtn = document.getElementById("cancelAddNode");
 const closeAddNodeMenuBtn = document.getElementById("closeAddNodeMenu");
+const zoomInBtn = document.getElementById("zoomIn");
+const zoomOutBtn = document.getElementById("zoomOut");
+const resetViewBtn = document.getElementById("resetView");
+const zoomValue = document.getElementById("zoomValue");
 
 const NODE_WIDTH = 320;
+const MIN_SCALE = 0.5;
+const MAX_SCALE = 2.5;
+const SCALE_STEP = 0.1;
 
 let currentTab = "visual";
 let currentWorkflow = createEmptyWorkflow();
@@ -43,6 +50,10 @@ let dragNodeId = null;
 let dragOffset = { x: 0, y: 0 };
 let dragBox = null;
 let dragTabKey = null;
+let isPanning = false;
+let panStart = { x: 0, y: 0 };
+let panOrigin = { x: 0, y: 0 };
+let viewState = { scale: 1, offset: { x: 0, y: 0 } };
 
 async function loadActionCatalog() {
   try {
@@ -1168,26 +1179,28 @@ function resizeCanvas(graph) {
   const panelWidth = canvasPanel ? canvasPanel.getBoundingClientRect().width : workflowCanvas.clientWidth;
   const targetWidth = Math.max(480, panelWidth - 16);
 
-  const jsonHeight = measureHiddenHeight(jsonTabContent);
-  const activeContent = getTabContent(currentTab) || visualTabContent;
-  const visualHeight = Math.max(measureHiddenHeight(visualTabContent), measureHiddenHeight(activeContent));
   const viewportBase = Math.max(420, window.innerHeight - 260);
   const contentHeight = estimateWorkflowHeight(graph || currentWorkflow, targetWidth, viewportBase);
-  const targetHeight = Math.max(contentHeight, jsonHeight, visualHeight, viewportBase);
+  const targetHeight = Math.max(viewportBase, contentHeight + 40);
 
   workflowCanvas.style.width = "100%";
   workflowCanvas.style.height = `${Math.round(targetHeight)}px`;
   workflowCanvas.width = Math.floor(targetWidth * dpr);
   workflowCanvas.height = Math.floor(targetHeight * dpr);
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+
+function applyViewTransform() {
+  const dpr = window.devicePixelRatio || 1;
+  const scale = viewState.scale || 1;
+  ctx.setTransform(dpr * scale, 0, 0, dpr * scale, viewState.offset.x * dpr, viewState.offset.y * dpr);
 }
 
 function layoutNodes(workflow, options = {}) {
   const { nodes = [], edges = [] } = workflow;
   if (!nodes.length) return { positions: {}, meta: { height: 0, width: 0 } };
 
-  const width = options.width || (workflowCanvas ? workflowCanvas.width : 1200);
-  const heightHint = options.heightHint || (workflowCanvas ? workflowCanvas.height : 720);
+  const width = options.width || (workflowCanvas ? workflowCanvas.clientWidth : 1200);
+  const heightHint = options.heightHint || (workflowCanvas ? workflowCanvas.clientHeight : 720);
 
   const nodeOrder = nodes.map((n) => n.id);
   const indegree = {};
@@ -1342,8 +1355,8 @@ function positionStoreFor(tabId) {
 
 function syncPositions(workflow, tabId) {
   const { positions: auto } = layoutNodes(workflow, {
-    width: workflowCanvas ? workflowCanvas.width : undefined,
-    heightHint: workflowCanvas ? workflowCanvas.height : undefined,
+    width: workflowCanvas ? workflowCanvas.clientWidth : undefined,
+    heightHint: workflowCanvas ? workflowCanvas.clientHeight : undefined,
   });
   const store = positionStoreFor(tabId);
   const nextPositions = {};
@@ -1518,7 +1531,9 @@ function render(mode = currentTab) {
   }
 
   resizeCanvas(graph);
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.clearRect(0, 0, workflowCanvas.width, workflowCanvas.height);
+  applyViewTransform();
   renderedNodes = [];
   if (!graph.nodes) return;
   lastPositions = syncPositions(graph, tabKey);
@@ -1774,14 +1789,52 @@ function handleTabClick(event) {
   switchToTab(tab.dataset.tab);
 }
 
+function screenPointToWorld(point) {
+  const scale = viewState.scale || 1;
+  const offset = viewState.offset || { x: 0, y: 0 };
+  return {
+    x: (point.x - offset.x) / scale,
+    y: (point.y - offset.y) / scale,
+  };
+}
+
 function canvasPointFromEvent(event) {
   const rect = workflowCanvas.getBoundingClientRect();
-  const scaleX = workflowCanvas.width / rect.width;
-  const scaleY = workflowCanvas.height / rect.height;
-  return {
-    x: (event.clientX - rect.left) * scaleX,
-    y: (event.clientY - rect.top) * scaleY,
+  const point = {
+    x: event.clientX - rect.left,
+    y: event.clientY - rect.top,
   };
+  return screenPointToWorld(point);
+}
+
+function updateZoomLabel() {
+  if (zoomValue) {
+    zoomValue.textContent = `${Math.round((viewState.scale || 1) * 100)}%`;
+  }
+}
+
+function setViewScale(nextScale, focalPoint) {
+  const clamped = Math.min(MAX_SCALE, Math.max(MIN_SCALE, nextScale));
+  const rect = workflowCanvas.getBoundingClientRect();
+  const focus = focalPoint || { x: rect.width / 2, y: rect.height / 2 };
+  const worldFocus = screenPointToWorld(focus);
+
+  viewState = {
+    scale: clamped,
+    offset: {
+      x: focus.x - worldFocus.x * clamped,
+      y: focus.y - worldFocus.y * clamped,
+    },
+  };
+
+  updateZoomLabel();
+  render(currentTab);
+}
+
+function resetView() {
+  viewState = { scale: 1, offset: { x: 0, y: 0 } };
+  updateZoomLabel();
+  render(currentTab);
 }
 
 function findNodeByPoint(point) {
@@ -1823,9 +1876,16 @@ function handleCanvasContextMenu(event) {
 function handleCanvasMouseDown(event) {
   if (!isCanvasTab(currentTab)) return;
   hideAddNodeMenu();
+  if (event.button !== 0) return;
   const point = canvasPointFromEvent(event);
   const hit = findNodeByPoint(point);
-  if (!hit) return;
+  if (!hit) {
+    isPanning = true;
+    panStart = { x: event.clientX, y: event.clientY };
+    panOrigin = { ...viewState.offset };
+    workflowCanvas.style.cursor = "grabbing";
+    return;
+  }
   isDragging = true;
   dragNodeId = hit.id;
   dragBox = hit;
@@ -1836,7 +1896,17 @@ function handleCanvasMouseDown(event) {
 }
 
 function handleCanvasMouseMove(event) {
-  if (!isDragging || !isCanvasTab(currentTab) || !dragNodeId || !dragBox) return;
+  if (!isCanvasTab(currentTab)) return;
+  if (isPanning) {
+    const dx = event.clientX - panStart.x;
+    const dy = event.clientY - panStart.y;
+    const scale = viewState.scale || 1;
+    viewState.offset.x = panOrigin.x + dx / scale;
+    viewState.offset.y = panOrigin.y + dy / scale;
+    render(currentTab);
+    return;
+  }
+  if (!isDragging || !dragNodeId || !dragBox) return;
   const point = canvasPointFromEvent(event);
   const topLeftX = point.x - dragOffset.x;
   const topLeftY = point.y - dragOffset.y;
@@ -1849,12 +1919,22 @@ function handleCanvasMouseMove(event) {
   render(currentTab);
 }
 
+function handleCanvasWheel(event) {
+  if (!isCanvasTab(currentTab)) return;
+  event.preventDefault();
+  const rect = workflowCanvas.getBoundingClientRect();
+  const focus = { x: event.clientX - rect.left, y: event.clientY - rect.top };
+  const delta = event.deltaY < 0 ? SCALE_STEP : -SCALE_STEP;
+  setViewScale((viewState.scale || 1) + delta, focus);
+}
+
 function stopDragging() {
-  if (!isDragging) return;
+  if (!isDragging && !isPanning) return;
   isDragging = false;
   dragNodeId = null;
   dragBox = null;
   dragTabKey = null;
+  isPanning = false;
   workflowCanvas.style.cursor = "grab";
 }
 
@@ -1895,7 +1975,18 @@ workflowCanvas.addEventListener("mousedown", handleCanvasMouseDown);
 workflowCanvas.addEventListener("mousemove", handleCanvasMouseMove);
 workflowCanvas.addEventListener("mouseup", stopDragging);
 workflowCanvas.addEventListener("mouseleave", stopDragging);
+workflowCanvas.addEventListener("wheel", handleCanvasWheel, { passive: false });
 editHelpBtn.addEventListener("click", showEditHelp);
+
+if (zoomInBtn) {
+  zoomInBtn.addEventListener("click", () => setViewScale((viewState.scale || 1) + SCALE_STEP));
+}
+if (zoomOutBtn) {
+  zoomOutBtn.addEventListener("click", () => setViewScale((viewState.scale || 1) - SCALE_STEP));
+}
+if (resetViewBtn) {
+  resetViewBtn.addEventListener("click", resetView);
+}
 
 const editorResizeObserver = new ResizeObserver(() => render(currentTab));
 editorResizeObserver.observe(workflowEditor);
@@ -1905,6 +1996,7 @@ populateActionSelect();
 setSelectedNodeType(selectedNodeType);
 loadActionCatalog();
 updateEditor();
+updateZoomLabel();
 render();
 appendLog("当前 workflow 为空，请输入需求开始规划或自行编辑 JSON。");
 addChatMessage("你好，我是 VelvetFlow Agent，请描述你的业务需求。", "agent");
