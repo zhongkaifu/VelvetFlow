@@ -240,6 +240,7 @@ def _summarize_validation_errors_for_llm(
     loop_hints: List[str] = []
     schema_hints: List[str] = []
     repair_prompts: List[str] = []
+    exploration_prompts: List[str] = []
 
     action_map: Dict[str, Mapping[str, Any]] = {}
     node_to_action: Dict[str, str] = {}
@@ -302,6 +303,25 @@ def _summarize_validation_errors_for_llm(
         prompt = _ERROR_TYPE_PROMPTS.get(err.code)
         if prompt:
             repair_prompts.append(f"- [{err.code}] {prompt}")
+        else:
+            # 当没有固定的修复模板时，提供可探索的方向，帮助 LLM 主动推理修复思路
+            directions: List[str] = [
+                "检查节点/字段的引用是否存在或命名一致，必要时重建引用路径。",
+                "对照可用的 action schema 或上游输出，确认类型与结构是否兼容。",
+                "如果依赖缺失，可使用工具为该节点补充上游或拆分节点降低耦合。",
+            ]
+            scope = "、".join(
+                part
+                for part in [
+                    f"节点 {err.node_id}" if err.node_id else "",
+                    f"字段 {err.field}" if err.field else "",
+                ]
+                if part
+            )
+            scope_hint = f"（定位 {scope}）" if scope else ""
+            exploration_prompts.append(
+                f"- [{err.code}] 暂无固定修复模板{scope_hint}，建议沿以下方向探索：{' '.join(directions)}"
+            )
 
         history = previous_attempts.get(_make_error_key(err))
         if history:
@@ -319,10 +339,11 @@ def _summarize_validation_errors_for_llm(
         lines.append("Loop 修复提示（补齐必填字段/字段名需与 source schema 对齐）：")
         lines.extend(sorted(set(loop_hints)))
 
-    if repair_prompts:
+    guidance_prompts = sorted(set(repair_prompts + exploration_prompts))
+    if guidance_prompts:
         lines.append("")
-        lines.append("错误特定提示（按类型引导 LLM 思考与修复）：")
-        lines.extend(sorted(set(repair_prompts)))
+        lines.append("错误修复指导/探索方向（请结合上下文尝试以下思路）：")
+        lines.extend(guidance_prompts)
 
     return "\n".join(lines)
 
