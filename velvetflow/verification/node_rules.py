@@ -532,7 +532,7 @@ def _validate_nodes_recursive(
                     "all_less_than": ["source", "field", "threshold"],
                     "equals": ["source", "value"],
                     "not_equals": ["source", "value"],
-                    "greater_than": ["source", "threshold"],
+                    "greater_than": ["source"],
                     "less_than": ["source", "threshold"],
                     "between": ["source", "min", "max"],
                     "contains": ["source", "field", "value"],
@@ -702,8 +702,22 @@ def _validate_nodes_recursive(
                                     )
                                 )
 
+                if kind == "greater_than":
+                    has_threshold = "threshold" in params
+                    has_value = "value" in params
+                    if not (has_threshold or has_value):
+                        errors.append(
+                            ValidationError(
+                                code="MISSING_REQUIRED_PARAM",
+                                node_id=nid,
+                                field="threshold",
+                                message=(
+                                    "condition 节点 '{nid}' (kind=greater_than) 需要 threshold 或 value 字段用于比较。"
+                                ).format(nid=nid),
+                            )
+                        )
+
                 if kind in {"any_greater_than", "all_less_than", "greater_than", "less_than", "between"}:
-                    threshold = params.get("threshold")
                     if kind == "between":
                         min_val = params.get("min")
                         max_val = params.get("max")
@@ -720,14 +734,20 @@ def _validate_nodes_recursive(
                                     )
                                 )
                     else:
-                        if not isinstance(threshold, (int, float)):
+                        comparator_field = "threshold"
+                        comparator_value = params.get("threshold")
+                        if kind == "greater_than" and comparator_value is None:
+                            comparator_field = "value"
+                            comparator_value = params.get("value")
+
+                        if not isinstance(comparator_value, (int, float)):
                             errors.append(
                                 ValidationError(
                                     code="SCHEMA_MISMATCH",
                                     node_id=nid,
-                                    field="threshold",
+                                    field=comparator_field,
                                     message=(
-                                        f"condition 节点 '{nid}' 的 threshold 必须是数字，用于比较。"
+                                        f"condition 节点 '{nid}' 的 {comparator_field} 必须是数字，用于比较。"
                                     ),
                                 )
                             )

@@ -736,7 +736,7 @@ def _coerce_condition_param_types(
     kind_numeric_fields = {
         "any_greater_than": ["threshold"],
         "all_less_than": ["threshold"],
-        "greater_than": ["threshold"],
+        "greater_than": ["threshold", "value"],
         "less_than": ["threshold"],
         "between": ["min", "max"],
         "max_in_range": ["min", "max"],
