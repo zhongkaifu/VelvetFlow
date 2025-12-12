@@ -30,7 +30,11 @@ from velvetflow.logging_utils import (
 from velvetflow.models import Node, PydanticValidationError, ValidationError, Workflow
 from velvetflow.planner.action_guard import ensure_registered_actions
 from velvetflow.planner.repair_tools import REPAIR_TOOLS, apply_repair_tool
-from velvetflow.verification import generate_repair_suggestions, validate_completed_workflow
+from velvetflow.verification import (
+    generate_repair_suggestions,
+    precheck_loop_body_graphs,
+    validate_completed_workflow,
+)
 
 
 def _convert_pydantic_errors(
@@ -382,7 +386,11 @@ def apply_rule_based_repairs(
         workflow_raw, action_registry, errors=validation_errors
     )
     try:
-        remaining_errors = validate_completed_workflow(patched_workflow, list(action_registry))
+        remaining_errors: List[ValidationError] = []
+        remaining_errors.extend(precheck_loop_body_graphs(patched_workflow))
+        remaining_errors.extend(
+            validate_completed_workflow(patched_workflow, list(action_registry))
+        )
     except Exception as exc:  # noqa: BLE001
         log_warn(f"[AutoRepair] 规则修复后重跑校验失败：{exc}")
         remaining_errors = list(validation_errors)
