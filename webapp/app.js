@@ -365,6 +365,18 @@ function renderLoopInspector(tabId) {
   helper.textContent = "上方为循环子图，您可以在此编辑节点；下方可调整循环节点的名称、循环来源与导出字段。";
   inspector.appendChild(helper);
 
+  const idField = document.createElement("label");
+  idField.className = "loop-inspector__field";
+  idField.innerHTML = '<span>节点 ID</span>';
+  const idInput = document.createElement("input");
+  idInput.type = "text";
+  idInput.className = "modal__input";
+  idInput.value = loopNode.id || "";
+  idInput.readOnly = true;
+  idInput.setAttribute("aria-readonly", "true");
+  idField.appendChild(idInput);
+  inspector.appendChild(idField);
+
   const nameField = document.createElement("label");
   nameField.className = "loop-inspector__field";
   nameField.innerHTML = '<span>显示名称</span>';
@@ -390,7 +402,7 @@ function renderLoopInspector(tabId) {
     input.name = name;
     input.placeholder = placeholder || "";
     input.className = "modal__input";
-    input.value = value || "";
+    input.value = stringifyBinding(value) || "";
     field.appendChild(input);
     return field;
   };
@@ -1043,6 +1055,19 @@ function openNodeDialog(node, context = getTabContext()) {
   title.textContent = `编辑节点：${node.display_name || node.action_id || node.id}`;
   dialog.appendChild(title);
 
+  const idRow = document.createElement("div");
+  idRow.className = "modal__row";
+  const idLabel = document.createElement("label");
+  idLabel.textContent = "节点 ID";
+  const idInput = document.createElement("input");
+  idInput.className = "modal__input";
+  idInput.value = node.id || "";
+  idInput.readOnly = true;
+  idInput.setAttribute("aria-readonly", "true");
+  idRow.appendChild(idLabel);
+  idRow.appendChild(idInput);
+  dialog.appendChild(idRow);
+
   const actionRow = document.createElement("div");
   actionRow.className = "modal__row";
   const actionLabel = document.createElement("label");
@@ -1202,6 +1227,19 @@ function openConditionDialog(node, context = getTabContext()) {
   title.textContent = `编辑条件节点：${node.display_name || node.id}`;
   dialog.appendChild(title);
 
+  const idRow = document.createElement("div");
+  idRow.className = "modal__row";
+  const idLabel = document.createElement("label");
+  idLabel.textContent = "节点 ID";
+  const idInput = document.createElement("input");
+  idInput.className = "modal__input";
+  idInput.value = node.id || "";
+  idInput.readOnly = true;
+  idInput.setAttribute("aria-readonly", "true");
+  idRow.appendChild(idLabel);
+  idRow.appendChild(idInput);
+  dialog.appendChild(idRow);
+
   const nameRow = document.createElement("div");
   nameRow.className = "modal__row";
   const nameLabel = document.createElement("label");
@@ -1212,6 +1250,49 @@ function openConditionDialog(node, context = getTabContext()) {
   nameRow.appendChild(nameLabel);
   nameRow.appendChild(nameInput);
   dialog.appendChild(nameRow);
+
+  const branchHeader = document.createElement("div");
+  branchHeader.className = "modal__subtitle";
+  branchHeader.textContent = "条件分支指向 (true/false_to_node)";
+  dialog.appendChild(branchHeader);
+
+  const branchGrid = document.createElement("div");
+  branchGrid.className = "modal__grid";
+  const branchInputs = {};
+
+  const nodeOptions = (context.graph.nodes || [])
+    .map((n) => n && n.id)
+    .filter((id) => id && id !== node.id);
+  const branchDatalistId = `branch-targets-${node.id}`;
+
+  const createBranchField = (label, value, name) => {
+    const field = document.createElement("label");
+    field.className = "modal__field";
+    field.innerHTML = `<div class="modal__field-label">${label}<span class="modal__hint">可填节点 id 或留空表示结束</span></div>`;
+    const input = document.createElement("input");
+    input.className = "modal__input";
+    input.name = name;
+    input.value = value || "";
+    input.setAttribute("list", branchDatalistId);
+    branchInputs[name] = input;
+    field.appendChild(input);
+    return field;
+  };
+
+  branchGrid.appendChild(createBranchField("true_to_node", node.true_to_node, "true_to_node"));
+  branchGrid.appendChild(createBranchField("false_to_node", node.false_to_node, "false_to_node"));
+  dialog.appendChild(branchGrid);
+
+  if (nodeOptions.length) {
+    const datalist = document.createElement("datalist");
+    datalist.id = branchDatalistId;
+    nodeOptions.forEach((id) => {
+      const option = document.createElement("option");
+      option.value = id;
+      datalist.appendChild(option);
+    });
+    dialog.appendChild(datalist);
+  }
 
   const paramsHeader = document.createElement("div");
   paramsHeader.className = "modal__subtitle";
@@ -1295,6 +1376,16 @@ function openConditionDialog(node, context = getTabContext()) {
       }
     });
 
+    const normalizeTarget = (text) => {
+      const trimmed = text.trim();
+      if (!trimmed) return null;
+      if (trimmed.toLowerCase() === "null") return null;
+      return trimmed;
+    };
+
+    const trueTarget = normalizeTarget(branchInputs.true_to_node ? branchInputs.true_to_node.value : "");
+    const falseTarget = normalizeTarget(branchInputs.false_to_node ? branchInputs.false_to_node.value : "");
+
     const updatedGraph = {
       ...(context.graph || currentWorkflow),
       nodes: (context.graph.nodes || []).map((n) =>
@@ -1303,6 +1394,8 @@ function openConditionDialog(node, context = getTabContext()) {
               ...n,
               display_name: nameInput.value.trim() || n.display_name,
               params: updatedParams,
+              true_to_node: trueTarget,
+              false_to_node: falseTarget,
             }
           : n,
       ),
