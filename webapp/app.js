@@ -1899,13 +1899,6 @@ function roundedRect(x, y, width, height, radius) {
 function autoSizeEditor() {
   if (!workflowEditor) return;
   const computed = getComputedStyle(workflowEditor);
-  const minHeight = parseFloat(computed.minHeight) || 200;
-  const maxHeight = Math.max(window.innerHeight * 0.7, minHeight);
-
-  workflowEditor.style.height = "auto";
-  const newHeight = Math.min(Math.max(workflowEditor.scrollHeight, minHeight), maxHeight);
-  workflowEditor.style.height = `${newHeight}px`;
-
   const parentWidth = workflowEditor.parentElement?.clientWidth || window.innerWidth;
   workflowEditor.style.width = "auto";
   const paddingX =
@@ -1931,6 +1924,13 @@ function autoSizeEditor() {
   const clampedWidth = Math.min(desiredWidth, parentWidth);
   workflowEditor.style.width = `${clampedWidth}px`;
   workflowEditor.style.maxWidth = "100%";
+
+  const minHeight = parseFloat(computed.minHeight) || 200;
+  const maxHeight = Math.max(window.innerHeight * 0.7, minHeight);
+
+  workflowEditor.style.height = "auto";
+  const newHeight = Math.min(Math.max(workflowEditor.scrollHeight, minHeight), maxHeight);
+  workflowEditor.style.height = `${newHeight}px`;
 }
 
 function updateEditor() {

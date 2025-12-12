@@ -340,8 +340,9 @@ textarea#workflowEditor {
   font-size: 14px;
   line-height: 1.5;
   resize: none;
-  overflow: hidden;
-  transition: height 0.12s ease, width 0.12s ease;
+  overflow-y: auto;
+  overflow-x: hidden;
+  transition: width 0.12s ease;
 }
 
 .chat-panel {
