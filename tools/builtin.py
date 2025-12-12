@@ -22,19 +22,21 @@ from typing import Any, Awaitable, Callable, Dict, List, Mapping, Optional, Tupl
 try:
     from scrapegraphai.graphs import SmartScraperGraph
     _SCRAPEGRAPH_AVAILABLE = True
-except ModuleNotFoundError:  # pragma: no cover - exercised in environments without scrapegraphai
+    _SCRAPEGRAPH_IMPORT_ERROR: Exception | None = None
+except Exception as exc:  # pragma: no cover - optional dependency or incompatible version
     _SCRAPEGRAPH_AVAILABLE = False
+    _SCRAPEGRAPH_IMPORT_ERROR = exc
 
     class _MissingScraperDependency:
         def __getattr__(self, name: str) -> None:  # pragma: no cover - defensive fallback
             raise ImportError(
-                "scrapegraphai is required for web scraping tools; install it with 'pip install scrapegraphai'."
-            )
+                "scrapegraphai is required for web scraping tools; install/upgrade it with 'pip install scrapegraphai'."
+            ) from _SCRAPEGRAPH_IMPORT_ERROR
 
         def __call__(self, *args: Any, **kwargs: Any) -> None:  # pragma: no cover - defensive fallback
             raise ImportError(
-                "scrapegraphai is required for web scraping tools; install it with 'pip install scrapegraphai'."
-            )
+                "scrapegraphai is required for web scraping tools; install/upgrade it with 'pip install scrapegraphai'."
+            ) from _SCRAPEGRAPH_IMPORT_ERROR
 
     SmartScraperGraph = _MissingScraperDependency()
 
@@ -42,8 +44,8 @@ except ModuleNotFoundError:  # pragma: no cover - exercised in environments with
 def _require_scrapegraphai() -> None:
     if not _SCRAPEGRAPH_AVAILABLE:
         raise ImportError(
-            "scrapegraphai is required for web scraping tools; install it with 'pip install scrapegraphai'."
-        )
+            "scrapegraphai is required for web scraping tools; install/upgrade it with 'pip install scrapegraphai'."
+        ) from _SCRAPEGRAPH_IMPORT_ERROR
 from openai import OpenAI
 
 from velvetflow.config import OPENAI_MODEL
