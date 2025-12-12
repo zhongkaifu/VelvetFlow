@@ -628,8 +628,228 @@ function removeNodeFromGraph(nodeId, context = getTabContext(currentTab)) {
   appendLog(`已删除节点：${nodeId}`);
 }
 
+function openLoopDialog(node, context = getTabContext()) {
+  if (!node || node.type !== "loop") return;
+  const params = node.params || {};
+
+  const overlay = document.createElement("div");
+  overlay.className = "modal-overlay";
+
+  const dialog = document.createElement("div");
+  dialog.className = "modal";
+
+  const title = document.createElement("div");
+  title.className = "modal__title";
+  title.textContent = `编辑循环节点：${node.display_name || node.id}`;
+  dialog.appendChild(title);
+
+  const nameRow = document.createElement("div");
+  nameRow.className = "modal__row";
+  const nameLabel = document.createElement("label");
+  nameLabel.textContent = "显示名称";
+  const nameInput = document.createElement("input");
+  nameInput.className = "modal__input";
+  nameInput.value = node.display_name || "";
+  nameRow.appendChild(nameLabel);
+  nameRow.appendChild(nameInput);
+  dialog.appendChild(nameRow);
+
+  const kindRow = document.createElement("div");
+  kindRow.className = "modal__row";
+  const kindLabel = document.createElement("label");
+  kindLabel.textContent = "循环类型";
+  const kindSelect = document.createElement("select");
+  kindSelect.className = "modal__select";
+  [
+    { value: "for_each", label: "for_each · 遍历列表" },
+    { value: "while", label: "while · 条件循环" },
+  ].forEach(({ value, label }) => {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = label;
+    kindSelect.appendChild(option);
+  });
+  kindSelect.value = params.loop_kind || "for_each";
+  kindRow.appendChild(kindLabel);
+  kindRow.appendChild(kindSelect);
+  dialog.appendChild(kindRow);
+
+  const sourceRow = document.createElement("div");
+  sourceRow.className = "modal__row";
+  const sourceLabel = document.createElement("label");
+  sourceLabel.textContent = "迭代来源 (source/iter)";
+  const sourceInput = document.createElement("input");
+  sourceInput.className = "modal__input";
+  sourceInput.placeholder = "如 result_of.fetch.items 或 JSON";
+  sourceInput.value = stringifyBinding(params.source || params.iter || "");
+  sourceRow.appendChild(sourceLabel);
+  sourceRow.appendChild(sourceInput);
+  dialog.appendChild(sourceRow);
+
+  const conditionRow = document.createElement("div");
+  conditionRow.className = "modal__row";
+  const conditionLabel = document.createElement("label");
+  conditionLabel.textContent = "退出条件 (condition)";
+  const conditionInput = document.createElement("input");
+  conditionInput.className = "modal__input";
+  conditionInput.placeholder = "while 循环退出条件，可为绑定路径或 JSON";
+  conditionInput.value = stringifyBinding(params.condition || "");
+  conditionRow.appendChild(conditionLabel);
+  conditionRow.appendChild(conditionInput);
+  dialog.appendChild(conditionRow);
+
+  const aliasRow = document.createElement("div");
+  aliasRow.className = "modal__row";
+  const aliasLabel = document.createElement("label");
+  aliasLabel.textContent = "循环变量名 (item_alias)";
+  const aliasInput = document.createElement("input");
+  aliasInput.className = "modal__input";
+  aliasInput.placeholder = "如 item、record 等";
+  aliasInput.value = params.item_alias || "";
+  aliasRow.appendChild(aliasLabel);
+  aliasRow.appendChild(aliasInput);
+  dialog.appendChild(aliasRow);
+
+  const exportsHeader = document.createElement("div");
+  exportsHeader.className = "modal__subtitle";
+  exportsHeader.textContent = "循环输出 exports (JSON，可选)";
+  dialog.appendChild(exportsHeader);
+
+  const exportsInput = document.createElement("textarea");
+  exportsInput.className = "modal__input modal__textarea";
+  exportsInput.placeholder = '{"items": {"from_node": "body_node", "fields": ["field"]}}';
+  exportsInput.value = params.exports ? JSON.stringify(params.exports, null, 2) : "";
+  dialog.appendChild(exportsInput);
+
+  const actionsRow = document.createElement("div");
+  actionsRow.className = "modal__actions";
+  const deleteBtn = document.createElement("button");
+  deleteBtn.type = "button";
+  deleteBtn.className = "button button--danger";
+  deleteBtn.textContent = "删除节点";
+  const cancelBtn = document.createElement("button");
+  cancelBtn.type = "button";
+  cancelBtn.className = "button button--ghost";
+  cancelBtn.textContent = "取消";
+  const saveBtn = document.createElement("button");
+  saveBtn.type = "button";
+  saveBtn.className = "button button--primary";
+  saveBtn.textContent = "保存并刷新";
+  actionsRow.appendChild(deleteBtn);
+  actionsRow.appendChild(cancelBtn);
+  actionsRow.appendChild(saveBtn);
+  dialog.appendChild(actionsRow);
+
+  overlay.appendChild(dialog);
+  document.body.appendChild(overlay);
+
+  const toggleRows = () => {
+    const kind = kindSelect.value || "for_each";
+    sourceRow.style.display = kind === "for_each" ? "flex" : "none";
+    conditionRow.style.display = kind === "while" ? "flex" : "none";
+  };
+  toggleRows();
+
+  const close = () => overlay.remove();
+  cancelBtn.addEventListener("click", close);
+  overlay.addEventListener("click", (evt) => {
+    if (evt.target === overlay) close();
+  });
+
+  kindSelect.addEventListener("change", toggleRows);
+
+  deleteBtn.addEventListener("click", () => {
+    const confirmed = window.confirm(`确认删除循环节点 ${node.display_name || node.id} 吗？`);
+    if (!confirmed) return;
+    removeNodeFromGraph(node.id, context);
+    close();
+  });
+
+  saveBtn.addEventListener("click", () => {
+    const nextParams = { ...(node.params || {}) };
+    const loopKind = kindSelect.value || "for_each";
+    nextParams.loop_kind = loopKind;
+
+    const sourceVal = parseBinding(sourceInput.value || "");
+    const conditionVal = parseBinding(conditionInput.value || "");
+
+    if (loopKind === "for_each") {
+      if (sourceVal !== undefined) {
+        nextParams.source = sourceVal;
+        nextParams.iter = sourceVal;
+      } else {
+        delete nextParams.source;
+        delete nextParams.iter;
+      }
+      if (conditionInput.value.trim()) {
+        if (conditionVal === undefined) {
+          window.alert("条件格式不合法，请输入有效的 JSON 或绑定路径。");
+          return;
+        }
+        nextParams.condition = conditionVal;
+      } else {
+        delete nextParams.condition;
+      }
+    } else {
+      delete nextParams.source;
+      delete nextParams.iter;
+      if (conditionVal === undefined) {
+        window.alert("请提供有效的退出条件 (condition)。");
+        return;
+      }
+      nextParams.condition = conditionVal;
+    }
+
+    const alias = aliasInput.value.trim();
+    if (alias) {
+      nextParams.item_alias = alias;
+    } else {
+      delete nextParams.item_alias;
+    }
+
+    const exportsText = exportsInput.value.trim();
+    if (exportsText) {
+      try {
+        nextParams.exports = JSON.parse(exportsText);
+      } catch (error) {
+        window.alert("exports 需为合法的 JSON 对象。");
+        return;
+      }
+    } else {
+      delete nextParams.exports;
+    }
+
+    if (!nextParams.body_subgraph) {
+      nextParams.body_subgraph = { nodes: [], edges: [] };
+    }
+
+    const updatedGraph = {
+      ...(context.graph || currentWorkflow),
+      nodes: (context.graph.nodes || []).map((n) =>
+        n.id === node.id
+          ? {
+              ...n,
+              display_name: nameInput.value.trim() || n.display_name,
+              params: nextParams,
+            }
+          : n,
+      ),
+    };
+
+    rebuildEdgesFromBindings(updatedGraph);
+    context.saveGraph(updatedGraph);
+    render(currentTab);
+    appendLog(`循环节点 ${node.id} 已更新`);
+    close();
+  });
+}
+
 function openNodeDialog(node, context = getTabContext()) {
   if (!node) return;
+  if (node.type === "loop") {
+    openLoopDialog(node, context);
+    return;
+  }
   if (node.type === "condition") {
     openConditionDialog(node, context);
     return;
@@ -1649,6 +1869,7 @@ function handleCanvasDoubleClick(event) {
 
   if (target.type === "loop") {
     ensureLoopTab(target);
+    openLoopDialog(target, context);
     return;
   }
 
