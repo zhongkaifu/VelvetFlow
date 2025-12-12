@@ -337,7 +337,21 @@ function renderLoopInspector(tabId) {
   const loopNode = found.node;
   const context = getTabContext(tabId);
   const { body_subgraph, ...restParams } = loopNode.params || {};
-  const paramsDraft = JSON.stringify(restParams || {}, null, 2);
+  const loopKind = restParams.loop_kind || restParams.kind || "";
+  const iterPath = restParams.iter || restParams.source || "";
+  const conditionPath = restParams.condition || "";
+  const itemAlias = restParams.item_alias || "";
+  const exports = restParams.exports || {};
+  const exportItems = Array.isArray(exports.items)
+    ? exports.items
+    : exports.items
+      ? [exports.items]
+      : [];
+  const exportAggregates = Array.isArray(exports.aggregates)
+    ? exports.aggregates
+    : exports.aggregates
+      ? [exports.aggregates]
+      : [];
 
   inspector.innerHTML = "";
 
@@ -348,7 +362,7 @@ function renderLoopInspector(tabId) {
 
   const helper = document.createElement("p");
   helper.className = "muted";
-  helper.textContent = "上方为循环子图，您可以在此编辑节点；下方可调整循环节点的名称与参数。";
+  helper.textContent = "上方为循环子图，您可以在此编辑节点；下方可调整循环节点的名称、循环来源与导出字段。";
   inspector.appendChild(helper);
 
   const nameField = document.createElement("label");
@@ -361,19 +375,158 @@ function renderLoopInspector(tabId) {
   nameField.appendChild(nameInput);
   inspector.appendChild(nameField);
 
-  const paramsField = document.createElement("label");
-  paramsField.className = "loop-inspector__field";
-  paramsField.innerHTML = '<span>循环参数 (JSON)</span>';
-  const paramsArea = document.createElement("textarea");
-  paramsArea.className = "modal__textarea";
-  paramsArea.rows = 6;
-  paramsArea.value = paramsDraft;
-  paramsField.appendChild(paramsArea);
+  const paramsSection = document.createElement("div");
+  paramsSection.className = "loop-inspector__section";
+
+  const paramsGrid = document.createElement("div");
+  paramsGrid.className = "loop-inspector__grid";
+
+  const createField = (label, value, placeholder, name) => {
+    const field = document.createElement("label");
+    field.className = "loop-inspector__field";
+    field.innerHTML = `<span>${label}</span>`;
+    const input = document.createElement("input");
+    input.type = "text";
+    input.name = name;
+    input.placeholder = placeholder || "";
+    input.className = "modal__input";
+    input.value = value || "";
+    field.appendChild(input);
+    return field;
+  };
+
+  paramsGrid.appendChild(createField("循环类型 (loop_kind)", loopKind, "例如：for_each", "loop_kind"));
+  paramsGrid.appendChild(createField("循环数据来源 (iter/source)", iterPath, "如 result_of.fetch.items", "iter"));
+  paramsGrid.appendChild(createField("条件字段 (condition，可选)", conditionPath, "可选：用于 while/条件循环", "condition"));
+  paramsGrid.appendChild(createField("循环项别名 (item_alias)", itemAlias, "如 item/user", "item_alias"));
+
+  paramsSection.appendChild(paramsGrid);
+  inspector.appendChild(paramsSection);
+
+  const exportsSection = document.createElement("div");
+  exportsSection.className = "loop-inspector__section";
+
+  const exportsTitle = document.createElement("div");
+  exportsTitle.className = "loop-inspector__title";
+  exportsTitle.textContent = "循环输出 (exports)";
+  exportsSection.appendChild(exportsTitle);
+
+  const itemsHeader = document.createElement("div");
+  itemsHeader.className = "loop-inspector__subtitle";
+  itemsHeader.textContent = "逐项输出 (items)";
+  exportsSection.appendChild(itemsHeader);
+
+  const itemsList = document.createElement("div");
+  itemsList.className = "loop-exports";
+
+  const createItemRow = (item = {}) => {
+    const row = document.createElement("div");
+    row.className = "loop-export-card";
+    row.dataset.exportItem = "true";
+
+    const header = document.createElement("div");
+    header.className = "loop-export-card__header";
+    const titleLabel = document.createElement("span");
+    titleLabel.textContent = "采集条目";
+    const removeBtn = document.createElement("button");
+    removeBtn.type = "button";
+    removeBtn.className = "icon-button";
+    removeBtn.textContent = "×";
+    removeBtn.title = "移除该条目";
+    removeBtn.addEventListener("click", () => row.remove());
+    header.appendChild(titleLabel);
+    header.appendChild(removeBtn);
+    row.appendChild(header);
+
+    const fields = document.createElement("div");
+    fields.className = "loop-export-card__fields";
+
+    const fromField = createField("来自节点 (from_node)", item.from_node || "", "body_subgraph 中的节点 id", "from_node");
+    const fieldsField = createField(
+      "导出字段 (fields)",
+      Array.isArray(item.fields) ? item.fields.join(", ") : item.fields || "",
+      "以逗号分隔的字段名",
+      "fields",
+    );
+    const modeField = createField("收集方式 (mode)", item.mode || "collect", "collect/first/last 等", "mode");
+
+    fieldsField.querySelector("input").dataset.commaList = "true";
+    modeField.querySelector("input").dataset.modeField = "true";
+
+    fields.appendChild(fromField);
+    fields.appendChild(fieldsField);
+    fields.appendChild(modeField);
+    row.appendChild(fields);
+
+    return row;
+  };
+
+  exportItems.forEach((item) => itemsList.appendChild(createItemRow(item)));
+
+  const addItemBtn = document.createElement("button");
+  addItemBtn.type = "button";
+  addItemBtn.className = "button button--ghost";
+  addItemBtn.textContent = "添加 items 输出";
+  addItemBtn.addEventListener("click", () => itemsList.appendChild(createItemRow()));
+
+  exportsSection.appendChild(itemsList);
+  exportsSection.appendChild(addItemBtn);
+
+  const aggregatesHeader = document.createElement("div");
+  aggregatesHeader.className = "loop-inspector__subtitle";
+  aggregatesHeader.textContent = "聚合输出 (aggregates)";
+  exportsSection.appendChild(aggregatesHeader);
+
+  const aggregatesList = document.createElement("div");
+  aggregatesList.className = "loop-exports";
+
+  const createAggregateRow = (agg = {}) => {
+    const row = document.createElement("div");
+    row.className = "loop-export-card";
+    row.dataset.exportAggregate = "true";
+
+    const header = document.createElement("div");
+    header.className = "loop-export-card__header";
+    const titleLabel = document.createElement("span");
+    titleLabel.textContent = "聚合规则";
+    const removeBtn = document.createElement("button");
+    removeBtn.type = "button";
+    removeBtn.className = "icon-button";
+    removeBtn.textContent = "×";
+    removeBtn.title = "移除聚合";
+    removeBtn.addEventListener("click", () => row.remove());
+    header.appendChild(titleLabel);
+    header.appendChild(removeBtn);
+    row.appendChild(header);
+
+    const fields = document.createElement("div");
+    fields.className = "loop-export-card__fields";
+    fields.appendChild(createField("来自节点 (from_node)", agg.from_node || "", "body_subgraph 中的节点 id", "from_node"));
+    fields.appendChild(createField("字段/表达式 (field)", agg.field || "", "如 total/score", "field"));
+    fields.appendChild(createField("聚合操作 (op)", agg.op || "", "sum/avg/count 等", "op"));
+    fields.appendChild(createField("输出别名 (alias)", agg.alias || "", "聚合结果名称", "alias"));
+    row.appendChild(fields);
+
+    return row;
+  };
+
+  exportAggregates.forEach((agg) => aggregatesList.appendChild(createAggregateRow(agg)));
+
+  const addAggregateBtn = document.createElement("button");
+  addAggregateBtn.type = "button";
+  addAggregateBtn.className = "button button--ghost";
+  addAggregateBtn.textContent = "添加聚合输出";
+  addAggregateBtn.addEventListener("click", () => aggregatesList.appendChild(createAggregateRow()));
+
+  exportsSection.appendChild(aggregatesList);
+  exportsSection.appendChild(addAggregateBtn);
+
   const hint = document.createElement("div");
   hint.className = "modal__hint";
-  hint.textContent = "不需要包含 body_subgraph，画布上的子图会自动同步。";
-  paramsField.appendChild(hint);
-  inspector.appendChild(paramsField);
+  hint.textContent = "提示：body_subgraph 会与上方子图保持同步；exports.items/aggregates 将用于循环外部的数据引用。";
+  exportsSection.appendChild(hint);
+
+  inspector.appendChild(exportsSection);
 
   const actions = document.createElement("div");
   actions.className = "modal__actions";
@@ -397,15 +550,85 @@ function renderLoopInspector(tabId) {
 
   saveBtn.addEventListener("click", () => {
     try {
-      const parsedParams = paramsArea.value.trim() ? JSON.parse(paramsArea.value) : {};
-      if (typeof parsedParams !== "object" || Array.isArray(parsedParams)) {
-        throw new Error("循环参数需要是对象");
+      const formData = new FormData();
+      Array.from(paramsGrid.querySelectorAll("input")).forEach((input) => {
+        formData.set(input.name, input.value.trim());
+      });
+
+      const updatedParams = { ...restParams };
+
+      const loopKindVal = formData.get("loop_kind");
+      const iterVal = formData.get("iter");
+      const conditionVal = formData.get("condition");
+      const aliasVal = formData.get("item_alias");
+
+      if (loopKindVal) updatedParams.loop_kind = loopKindVal;
+      else delete updatedParams.loop_kind;
+
+      if (iterVal) updatedParams.iter = iterVal;
+      else delete updatedParams.iter;
+
+      if (conditionVal) updatedParams.condition = conditionVal;
+      else delete updatedParams.condition;
+
+      if (aliasVal) updatedParams.item_alias = aliasVal;
+      else delete updatedParams.item_alias;
+
+      const exportsPayload = {};
+
+      const itemsPayload = Array.from(itemsList.querySelectorAll("[data-export-item]"))
+        .map((row) => {
+          const rowData = {};
+          row.querySelectorAll("input").forEach((input) => {
+            const val = input.value.trim();
+            if (!val) return;
+            if (input.dataset.commaList) {
+              rowData[input.name] = val
+                .split(",")
+                .map((v) => v.trim())
+                .filter(Boolean);
+            } else {
+              rowData[input.name] = val;
+            }
+          });
+          return Object.keys(rowData).length ? rowData : null;
+        })
+        .filter(Boolean);
+
+      if (itemsPayload.length) {
+        exportsPayload.items = itemsPayload;
       }
 
-      const updatedParams = {
-        ...parsedParams,
-        body_subgraph: normalizeWorkflow(context.graph || body_subgraph || { nodes: [], edges: [] }),
-      };
+      const aggregatesPayload = Array.from(aggregatesList.querySelectorAll("[data-export-aggregate]"))
+        .map((row) => {
+          const rowData = {};
+          row.querySelectorAll("input").forEach((input) => {
+            const val = input.value.trim();
+            if (val) rowData[input.name] = val;
+          });
+          return Object.keys(rowData).length ? rowData : null;
+        })
+        .filter(Boolean);
+
+      if (aggregatesPayload.length) {
+        exportsPayload.aggregates = aggregatesPayload;
+      }
+
+      if (Object.keys(exportsPayload).length) {
+        updatedParams.exports = exportsPayload;
+      } else {
+        delete updatedParams.exports;
+      }
+
+      if (iterVal) {
+        updatedParams.source = iterVal;
+      } else if (restParams.source) {
+        updatedParams.source = restParams.source;
+      } else {
+        delete updatedParams.source;
+      }
+
+      updatedParams.body_subgraph = normalizeWorkflow(context.graph || body_subgraph || { nodes: [], edges: [] });
 
       found.node.display_name = nameInput.value.trim() || loopNode.id;
       found.node.params = updatedParams;
