@@ -216,6 +216,31 @@ def test_condition_branch_allows_null_exit():
     assert "end" not in results
 
 
+def test_condition_requires_branch_targets():
+    workflow = {
+        "workflow_name": "missing_condition_branches",
+        "description": "",
+        "nodes": [
+            {
+                "id": "start",
+                "type": "start",
+            },
+            {
+                "id": "check",
+                "type": "condition",
+                "params": {"kind": "equals", "source": True, "value": True},
+            },
+        ],
+    }
+
+    errors = validate_completed_workflow(workflow, action_registry=[])
+
+    assert errors
+    assert errors[0].code == "MISSING_REQUIRED_PARAM"
+    assert "true_to_node" in errors[0].message
+    assert "LLM" in errors[0].message
+
+
 def test_executor_prefers_explicit_branch_over_edges_for_null_target():
     workflow_dict = {
         "workflow_name": "explicit_null_branch_stops",
