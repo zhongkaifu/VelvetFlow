@@ -62,8 +62,15 @@ class LoopExecutionMixin:
             if not isinstance(name, str) or not isinstance(from_node, str):
                 continue
 
-            kind = expr.get("kind")
+            expr_kind = expr.get("kind") if isinstance(expr, Mapping) else None
+            kind = (expr_kind or agg.get("kind") or "").lower()
             field = expr.get("field") if isinstance(expr, Mapping) else None
+            if field is None and isinstance(agg.get("field"), str):
+                field = agg.get("field")
+
+            if from_node not in results:
+                continue
+
             raw_source = results.get(from_node)
             values = self._extract_export_values(raw_source, field if isinstance(field, str) else None)
 
@@ -80,6 +87,21 @@ class LoopExecutionMixin:
                     "avg_state": avg_state.get(name),
                 },
             )
+
+            if kind == "count":
+                base = aggregates_output.get(name, 0) or 0
+                increment = len(values)
+                aggregates_output[name] = base + increment
+                log_json(
+                    "[loop.exports.aggregates] count 计算结果",
+                    {
+                        "name": name,
+                        "values_length": increment,
+                        "base": base,
+                        "result": aggregates_output[name],
+                    },
+                )
+                continue
 
             if kind == "count_if":
                 op = expr.get("op", "==")
