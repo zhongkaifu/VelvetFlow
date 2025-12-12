@@ -335,11 +335,14 @@ textarea#workflowEditor {
   border-radius: 8px;
   padding: 12px;
   min-height: 200px;
+  max-width: 100%;
   font-family: "JetBrains Mono", "SFMono-Regular", Menlo, Consolas, monospace;
   font-size: 14px;
   line-height: 1.5;
   resize: none;
-  overflow: hidden;
+  overflow-y: auto;
+  overflow-x: hidden;
+  transition: width 0.12s ease;
 }
 
 .chat-panel {
