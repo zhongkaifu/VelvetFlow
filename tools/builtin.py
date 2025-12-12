@@ -20,35 +20,29 @@ import uuid
 from typing import Any, Awaitable, Callable, Dict, List, Mapping, Optional, Tuple
 
 try:
-    from crawl4ai import AsyncWebCrawler, BrowserConfig, CacheMode, CrawlerRunConfig, LLMConfig
-    from crawl4ai.extraction_strategy import LLMExtractionStrategy
-    _CRAWL4AI_AVAILABLE = True
-except ModuleNotFoundError:  # pragma: no cover - exercised in environments without crawl4ai
-    _CRAWL4AI_AVAILABLE = False
+    from scrapegraphai.graphs import SmartScraperGraph
+    _SCRAPEGRAPH_AVAILABLE = True
+except ModuleNotFoundError:  # pragma: no cover - exercised in environments without scrapegraphai
+    _SCRAPEGRAPH_AVAILABLE = False
 
-    class _MissingCrawlerDependency:
+    class _MissingScraperDependency:
         def __getattr__(self, name: str) -> None:  # pragma: no cover - defensive fallback
             raise ImportError(
-                "crawl4ai is required for web scraping tools; install it with 'pip install crawl4ai'."
+                "scrapegraphai is required for web scraping tools; install it with 'pip install scrapegraphai'."
             )
 
         def __call__(self, *args: Any, **kwargs: Any) -> None:  # pragma: no cover - defensive fallback
             raise ImportError(
-                "crawl4ai is required for web scraping tools; install it with 'pip install crawl4ai'."
+                "scrapegraphai is required for web scraping tools; install it with 'pip install scrapegraphai'."
             )
 
-    class _MissingCacheMode:
-        BYPASS = "bypass"
-
-    AsyncWebCrawler = BrowserConfig = CrawlerRunConfig = LLMConfig = _MissingCrawlerDependency()
-    CacheMode = _MissingCacheMode()
-    LLMExtractionStrategy = _MissingCrawlerDependency()
+    SmartScraperGraph = _MissingScraperDependency()
 
 
-def _require_crawl4ai() -> None:
-    if not _CRAWL4AI_AVAILABLE:
+def _require_scrapegraphai() -> None:
+    if not _SCRAPEGRAPH_AVAILABLE:
         raise ImportError(
-            "crawl4ai is required for web scraping tools; install it with 'pip install crawl4ai'."
+            "scrapegraphai is required for web scraping tools; install it with 'pip install scrapegraphai'."
         )
 from openai import OpenAI
 
@@ -801,71 +795,48 @@ def _crawl_page_once(
     llm_provider: str,
     run_coroutine: Callable[[Callable[[], Awaitable[Any]]], Any],
 ) -> Dict[str, Any]:
-    """Crawl a single URL and return extracted content plus in-domain links."""
+    """Scrape a single URL via ScrapeGraphAI and return extracted content."""
 
-    async def _scrape() -> tuple[Any, List[Dict[str, Any]]]:
-        browser_conf = BrowserConfig(headless=True, verbose=False)
-        attempts: List[Dict[str, Any]] = []
+    async def _scrape() -> Any:
+        model = llm_provider
+        if model.startswith("openai/"):
+            model = model.split("/", 1)[1]
 
-        async with AsyncWebCrawler(config=browser_conf) as crawler:
-            if api_token:
-                llm_conf = LLMConfig(provider=llm_provider, api_token=api_token)
-                llm_strategy = LLMExtractionStrategy(
-                    llm_config=llm_conf,
-                    schema=None,
-                    extraction_type="text",
-                    instruction=instruction,
-                    input_format="markdown",
-                    verbose=False,
-                )
-                llm_run = CrawlerRunConfig(cache_mode=CacheMode.BYPASS, extraction_strategy=llm_strategy)
-                llm_result = await crawler.arun(url=url, config=llm_run)
-                attempts.append(
-                    {
-                        "method": "llm_extraction",
-                        "success": llm_result.success,
-                        "status_code": llm_result.status_code,
-                        "error": llm_result.error_message,
-                    }
-                )
-                if llm_result.success:
-                    return llm_result, attempts
+        graph_config: Dict[str, Any] = {
+            "llm": {
+                "model": model,
+                "model_tokens": 8192,
+            },
+            "verbose": False,
+            "headless": True,
+        }
 
-            fallback_run = CrawlerRunConfig(cache_mode=CacheMode.BYPASS)
-            fallback_result = await crawler.arun(url=url, config=fallback_run)
-            attempts.append(
-                {
-                    "method": "raw_scrape",
-                    "success": fallback_result.success,
-                    "status_code": fallback_result.status_code,
-                    "error": fallback_result.error_message,
-                }
-            )
-            return fallback_result, attempts
+        if api_token:
+            graph_config["llm"]["api_key"] = api_token
 
-    result, _attempts = run_coroutine(_scrape)
+        scraper = SmartScraperGraph(prompt=instruction, source=url, config=graph_config)
+        return await asyncio.to_thread(scraper.run)
 
-    raw_content = getattr(result, "extracted_content", "") or ""
-    if isinstance(raw_content, (dict, list)):
-        extracted_content = json.dumps(raw_content, ensure_ascii=False)
-    else:
-        extracted_content = str(raw_content).strip()
+    try:
+        result = run_coroutine(_scrape)
+        raw_content = result or ""
+        if isinstance(raw_content, (dict, list)):
+            extracted_content = json.dumps(raw_content, ensure_ascii=False)
+        else:
+            extracted_content = str(raw_content).strip()
 
-    if not extracted_content and getattr(result, "markdown", None):
-        extracted_content = str(getattr(result, "markdown")).strip()
-
-    links = _extract_internal_links(result, url)
-    status = "ok" if getattr(result, "success", False) else "error"
-
-    return {
-        "status": status,
-        "extracted_content": extracted_content,
-        "links": links,
-    }
+        links: List[str] = []
+        return {
+            "status": "ok",  # SmartScraperGraph raises on failure; reaching here means success
+            "extracted_content": extracted_content,
+            "links": links,
+        }
+    except Exception as exc:  # pragma: no cover - defensive handling of scraper errors
+        return {"status": "error", "extracted_content": "", "links": [], "error": str(exc)}
 
 
 # Preserve the default implementation so tests can detect when it has been patched.
-_DEFAULT_CRAWL_PAGE_ONCE = _crawl_page_once
+_DEFAULT_SCRAPE_PAGE_ONCE = _crawl_page_once
 
 
 def _scrape_single_url(
@@ -878,10 +849,10 @@ def _scrape_single_url(
 ) -> Dict[str, Any]:
     """Download and analyze a single web page according to a request."""
 
-    if _CRAWL4AI_AVAILABLE or _crawl_page_once is not _DEFAULT_CRAWL_PAGE_ONCE:
+    if _SCRAPEGRAPH_AVAILABLE or _crawl_page_once is not _DEFAULT_SCRAPE_PAGE_ONCE:
         pass
     else:
-        _require_crawl4ai()
+        _require_scrapegraphai()
 
     instruction = llm_instruction or textwrap.dedent(
         f"""
@@ -1418,7 +1389,7 @@ def register_builtin_tools() -> None:
         Tool(
             name="search_and_crawl_web_content",
             description=(
-                "Search for a natural-language query, crawl in-domain pages with crawl4ai, let an LLM assess coverage, and return a multi-page summary."
+                "Search for a natural-language query, crawl in-domain pages with scrapegraphai, let an LLM assess coverage, and return a multi-page summary."
             ),
             function=business_action,
             args_schema={

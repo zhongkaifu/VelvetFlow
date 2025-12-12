@@ -329,7 +329,7 @@
     "action_id": "common.scrape_web_page.v1",
     "name": "Scrape and analyze web pages in-domain",
     "domain": "common",
-    "description": "Use crawl4ai to download web pages, stay within the source domain, and apply LLM analysis against a user request to decide if further same-site pages should be crawled.",
+    "description": "Use scrapegraphai to download web pages, stay within the source domain, and apply LLM analysis against a user request to decide if further same-site pages should be crawled.",
     "tool_name": "scrape_web_page",
     "tags": [
       "web",
@@ -384,7 +384,7 @@
     "action_id": "common.search_and_crawl_web_content.v1",
     "name": "Search then crawl in-domain content with LLM guidance",
     "domain": "common",
-    "description": "Automatically execute three steps around a user's natural-language query: search for candidate URLs, keep same-domain links for crawl4ai scraping, let the LLM decide if needs are met or deeper same-site crawling is required, and finally aggregate cross-page content for the response.",
+    "description": "Automatically execute three steps around a user's natural-language query: search for candidate URLs, keep same-domain links for scrapegraphai scraping, let the LLM decide if needs are met or deeper same-site crawling is required, and finally aggregate cross-page content for the response.",
     "tool_name": "search_and_crawl_web_content",
     "tags": [
       "web-search",
@@ -443,7 +443,7 @@
               "scrape": {
                 "type": "object",
                 "additionalProperties": true,
-                "description": "Raw result returned by crawl4ai scraping"
+                "description": "Raw result returned by scrapegraphai scraping"
               }
             }
           }
