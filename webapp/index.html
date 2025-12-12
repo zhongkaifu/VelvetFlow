@@ -22,10 +22,10 @@
     <main class="layout">
       <section class="canvas-panel">
         <div class="tab-bar" role="tablist">
-          <button class="tab tab--active" data-tab="json" role="tab" aria-selected="true">Workflow JSON</button>
-          <button class="tab" data-tab="visual" role="tab" aria-selected="false">流程图视图</button>
+          <button class="tab" data-tab="json" role="tab" aria-selected="false">Workflow JSON</button>
+          <button class="tab tab--active" data-tab="visual" role="tab" aria-selected="true">流程图视图</button>
         </div>
-        <div class="tab-content" data-view="json">
+        <div class="tab-content tab-content--hidden" data-view="json">
           <div class="editor">
             <div class="editor__header">
               <h3>Workflow JSON</h3>
@@ -38,7 +38,7 @@
             <textarea id="workflowEditor" spellcheck="false" aria-label="workflow json"></textarea>
           </div>
         </div>
-        <div class="tab-content tab-content--hidden" data-view="visual">
+        <div class="tab-content" data-view="visual">
           <div class="canvas-wrapper">
             <div id="canvasHost">
               <canvas id="workflowCanvas" width="1080" height="620" aria-label="workflow canvas"></canvas>

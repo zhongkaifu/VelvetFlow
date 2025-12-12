@@ -27,7 +27,7 @@ const closeAddNodeMenuBtn = document.getElementById("closeAddNodeMenu");
 
 const NODE_WIDTH = 320;
 
-let currentTab = "json";
+let currentTab = "visual";
 let currentWorkflow = createEmptyWorkflow();
 let lastRunResults = {};
 let renderedNodes = [];
@@ -174,8 +174,11 @@ function getTabContent(tabId) {
 function attachCanvasTo(tabId) {
   if (!isCanvasTab(tabId) || !canvasHost) return;
   const target = getTabContent(tabId);
-  if (target && canvasHost.parentElement !== target) {
-    target.appendChild(canvasHost);
+  if (!target) return;
+  const slot = target.querySelector('[data-canvas-slot]');
+  const desiredParent = slot || target;
+  if (canvasHost.parentElement !== desiredParent) {
+    desiredParent.appendChild(canvasHost);
   }
 }
 
@@ -294,6 +297,118 @@ function getTabContext(tabId = currentTab) {
   };
 }
 
+function refreshLoopTabLabel(tabId, loopNode) {
+  const tab = tabs.find((t) => t.dataset.tab === tabId);
+  if (!tab || !loopNode) return;
+  const display = loopNode.display_name || loopNode.id;
+  tab.innerHTML = `子图: ${display}<button class="tab__close" aria-label="关闭子图">×</button>`;
+  const closeBtn = tab.querySelector(".tab__close");
+  if (closeBtn) {
+    closeBtn.addEventListener("click", (evt) => {
+      evt.stopPropagation();
+      closeLoopTab(tabId);
+    });
+  }
+}
+
+function renderLoopInspector(tabId) {
+  if (!tabId || !tabId.startsWith("loop:")) return;
+  const content = getTabContent(tabId);
+  const inspector = content && content.querySelector("[data-loop-inspector]");
+  if (!inspector) return;
+
+  const found = findLoopNode(tabId.replace("loop:", ""));
+  if (!found || !found.node) {
+    inspector.innerHTML = "<p class=\"muted\">未找到对应的循环节点，可能已被删除。</p>";
+    return;
+  }
+
+  const loopNode = found.node;
+  const context = getTabContext(tabId);
+  const { body_subgraph, ...restParams } = loopNode.params || {};
+  const paramsDraft = JSON.stringify(restParams || {}, null, 2);
+
+  inspector.innerHTML = "";
+
+  const title = document.createElement("div");
+  title.className = "loop-inspector__title";
+  title.textContent = `循环节点：${loopNode.display_name || loopNode.id}`;
+  inspector.appendChild(title);
+
+  const helper = document.createElement("p");
+  helper.className = "muted";
+  helper.textContent = "上方为循环子图，您可以在此编辑节点；下方可调整循环节点的名称与参数。";
+  inspector.appendChild(helper);
+
+  const nameField = document.createElement("label");
+  nameField.className = "loop-inspector__field";
+  nameField.innerHTML = '<span>显示名称</span>';
+  const nameInput = document.createElement("input");
+  nameInput.type = "text";
+  nameInput.className = "modal__input";
+  nameInput.value = loopNode.display_name || "";
+  nameField.appendChild(nameInput);
+  inspector.appendChild(nameField);
+
+  const paramsField = document.createElement("label");
+  paramsField.className = "loop-inspector__field";
+  paramsField.innerHTML = '<span>循环参数 (JSON)</span>';
+  const paramsArea = document.createElement("textarea");
+  paramsArea.className = "modal__textarea";
+  paramsArea.rows = 6;
+  paramsArea.value = paramsDraft;
+  paramsField.appendChild(paramsArea);
+  const hint = document.createElement("div");
+  hint.className = "modal__hint";
+  hint.textContent = "不需要包含 body_subgraph，画布上的子图会自动同步。";
+  paramsField.appendChild(hint);
+  inspector.appendChild(paramsField);
+
+  const actions = document.createElement("div");
+  actions.className = "modal__actions";
+  const deleteBtn = document.createElement("button");
+  deleteBtn.type = "button";
+  deleteBtn.className = "button button--danger";
+  deleteBtn.textContent = "删除循环节点";
+  const saveBtn = document.createElement("button");
+  saveBtn.type = "button";
+  saveBtn.className = "button button--primary";
+  saveBtn.textContent = "保存循环参数";
+  actions.appendChild(deleteBtn);
+  actions.appendChild(saveBtn);
+  inspector.appendChild(actions);
+
+  deleteBtn.addEventListener("click", () => {
+    const confirmed = window.confirm("确认删除该循环节点及其子图？此操作不可恢复。");
+    if (!confirmed) return;
+    deleteLoopNode(loopNode.id);
+  });
+
+  saveBtn.addEventListener("click", () => {
+    try {
+      const parsedParams = paramsArea.value.trim() ? JSON.parse(paramsArea.value) : {};
+      if (typeof parsedParams !== "object" || Array.isArray(parsedParams)) {
+        throw new Error("循环参数需要是对象");
+      }
+
+      const updatedParams = {
+        ...parsedParams,
+        body_subgraph: normalizeWorkflow(context.graph || body_subgraph || { nodes: [], edges: [] }),
+      };
+
+      found.node.display_name = nameInput.value.trim() || loopNode.id;
+      found.node.params = updatedParams;
+      refreshLoopTabLabel(tabId, found.node);
+      updateEditor();
+      markTabDirty(tabId, false);
+      render(tabId);
+      appendLog(`已保存循环 ${found.node.id} 的参数并同步到 workflow JSON`);
+    } catch (error) {
+      window.alert(`保存失败：${error.message}`);
+    }
+  });
+}
+
 function ensureLoopTab(loopNode) {
   if (!loopNode || loopNode.type !== "loop") return;
   const tabId = `loop:${loopNode.id}`;
@@ -309,25 +424,43 @@ function ensureLoopTab(loopNode) {
   tabButton.setAttribute("role", "tab");
   tabButton.setAttribute("aria-selected", "false");
   tabButton.innerHTML = `子图: ${loopNode.display_name || loopNode.id}<button class="tab__close" aria-label="关闭子图">×</button>`;
-
-  const closeBtn = tabButton.querySelector(".tab__close");
-  closeBtn.addEventListener("click", (evt) => {
-    evt.stopPropagation();
-    closeLoopTab(tabId);
-  });
   tabButton.addEventListener("click", handleTabClick);
 
   const tabContent = document.createElement("div");
   tabContent.className = "tab-content tab-content--hidden";
   tabContent.dataset.view = tabId;
-  tabContent.innerHTML = `<p class="muted tab-hint">正在查看循环 ${
-    loopNode.display_name || loopNode.id
-  } 的子图，双击节点可编辑；关闭前会提示确认已保存修改。</p>`;
+  const loopLayout = document.createElement("div");
+  loopLayout.className = "loop-tab";
+
+  const loopHeader = document.createElement("div");
+  loopHeader.className = "loop-tab__header";
+  loopHeader.innerHTML = `<div><h3>循环子图：${loopNode.display_name || loopNode.id}</h3><p class="muted">上半部分为循环子图，双击子节点可打开对应编辑弹窗。</p></div>`;
+
+  const loopBody = document.createElement("div");
+  loopBody.className = "loop-tab__body";
+
+  const canvasSlot = document.createElement("div");
+  canvasSlot.className = "loop-tab__canvas";
+  canvasSlot.dataset.canvasSlot = "true";
+  canvasSlot.innerHTML =
+    '<p class="muted tab-hint">提示：在子图画布空白处右键添加节点，双击节点可编辑或继续打开子循环。</p>';
+
+  const inspector = document.createElement("div");
+  inspector.className = "loop-tab__inspector";
+  inspector.dataset.loopInspector = "true";
+
+  loopBody.appendChild(canvasSlot);
+  loopBody.appendChild(inspector);
+  loopLayout.appendChild(loopHeader);
+  loopLayout.appendChild(loopBody);
+  tabContent.appendChild(loopLayout);
 
   tabBar.appendChild(tabButton);
   canvasPanel.appendChild(tabContent);
   tabDirtyFlags[tabId] = false;
   refreshTabCollections();
+  refreshLoopTabLabel(tabId, loopNode);
+  renderLoopInspector(tabId);
   switchToTab(tabId);
 }
 
@@ -626,6 +759,26 @@ function removeNodeFromGraph(nodeId, context = getTabContext(currentTab)) {
   }
   render(currentTab);
   appendLog(`已删除节点：${nodeId}`);
+}
+
+function deleteLoopNode(loopId) {
+  if (!loopId) return;
+  const found = findLoopNode(loopId);
+  if (!found || !found.container) return;
+  const container = found.container;
+  container.nodes = (container.nodes || []).filter((n) => n && n.id !== loopId);
+  container.edges = (container.edges || []).filter((edge) => {
+    const from = edge.from_node || edge.from;
+    const to = edge.to_node || edge.to;
+    return from !== loopId && to !== loopId;
+  });
+
+  clearPositionCaches();
+  tabDirtyFlags[`loop:${loopId}`] = false;
+  closeLoopTab(`loop:${loopId}`);
+  updateEditor();
+  render(currentTab);
+  appendLog(`已删除循环节点：${loopId}`);
 }
 
 function openNodeDialog(node, context = getTabContext()) {
@@ -1601,6 +1754,9 @@ function switchToTab(tabId) {
   if (!tab) return;
   currentTab = tabId;
   attachCanvasTo(tabId);
+  if (tabId.startsWith("loop:")) {
+    renderLoopInspector(tabId);
+  }
   tabs.forEach((t) => {
     t.classList.toggle("tab--active", t === tab);
     t.setAttribute("aria-selected", t === tab);
