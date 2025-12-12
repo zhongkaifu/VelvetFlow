@@ -491,6 +491,27 @@ def _validate_nodes_recursive(
             condition = params if isinstance(params, dict) else {}
             kind = condition.get("kind")
 
+            true_to_node = n.get("true_to_node")
+            false_to_node = n.get("false_to_node")
+            true_branch_empty = true_to_node is None or (
+                isinstance(true_to_node, str) and not true_to_node.strip()
+            )
+            false_branch_empty = false_to_node is None or (
+                isinstance(false_to_node, str) and not false_to_node.strip()
+            )
+            if true_branch_empty and false_branch_empty:
+                errors.append(
+                    ValidationError(
+                        code="MISSING_REQUIRED_PARAM",
+                        node_id=nid,
+                        field="true_to_node/false_to_node",
+                        message=(
+                            "condition 节点的 true_to_node 和 false_to_node 不能同时为空，"
+                            "请让 LLM 分析并使用工具修复该错误。"
+                        ),
+                    )
+                )
+
             if not kind:
                 errors.append(
                     ValidationError(
