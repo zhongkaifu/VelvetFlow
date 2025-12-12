@@ -262,6 +262,12 @@ def _check_output_path_against_schema(
                     f"或内置状态字段 {', '.join(sorted(allowed_meta_fields))} 暴露，找不到字段 '{root_field}'"
                 )
 
+            if root_field == "exports" and len(rest_path) == 1:
+                return (
+                    f"引用 loop 节点 '{node_id}' 的 exports 时必须指定 exports 内部的字段或结构，"
+                    "例如 exports.items/exports.aggregates。"
+                )
+
         if context_parent_loop and context_parent_loop == node_id and rest_path:
             if rest_path[0] == "exports":
                 return (

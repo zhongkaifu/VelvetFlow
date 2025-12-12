@@ -651,6 +651,26 @@ def _validate_nodes_recursive(
                     if _is_self_reference_path(source_path, nid):
                         _flag_self_reference("source", source_path)
 
+                for source_path, _agg_spec in source_bindings:
+                    schema_err = _check_output_path_against_schema(
+                        source_path,
+                        nodes_by_id,
+                        actions_by_id,
+                        loop_body_parents,
+                        context_node_id=nid,
+                    )
+                    if schema_err:
+                        errors.append(
+                            ValidationError(
+                                code="SCHEMA_MISMATCH",
+                                node_id=nid,
+                                field="source",
+                                message=(
+                                    f"condition 节点 '{nid}' 的 source 引用无效：{schema_err}"
+                                ),
+                            )
+                        )
+
                 field_path = params.get("field") if isinstance(params.get("field"), str) else None
                 target_schemas: List[
                     tuple[str, Mapping[str, Any] | None, Mapping[str, Any] | None]

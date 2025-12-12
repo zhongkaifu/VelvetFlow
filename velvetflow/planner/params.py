@@ -388,6 +388,7 @@ def fill_params_with_llm(
         "当某个字段需要引用其他节点的输出时，必须使用数据绑定 DSL，并且只能引用提供的 allowed_node_ids 中的节点。\n"
         "你只能从以下节点中读取上下游结果：result_of.<node_id>.<field>...，其中 node_id 必须来自 allowed_node_ids，field 必须存在于该节点的 output_schema。\n"
         "当引用循环节点时，只能使用 loop 节点的 exports（如 result_of.<loop_id>.items、result_of.<loop_id>.exports.items 或 result_of.<loop_id>.aggregates.xxx），禁止直接引用 loop body 的节点。\n"
+        "引用 loop.exports 结构时必须指向 exports 内部的具体字段或子结构，不能只写 result_of.<loop_id>.exports。\n"
         "若 loop.exports.items.fields 仅包含用来包裹完整输出的字段（如 data/record 等），需要通过 <字段>.<子字段> 的形式访问内部属性，不能直接写子字段名。\n"
         "所有节点的 params 不得为空；如无 obvious 默认值，需要分析上下游语义后调用工具补全。\n"
         "绑定 DSL 说明：\n"
