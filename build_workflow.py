@@ -97,7 +97,10 @@ def main():
         persist_workflow(workflow, json_path=json_path, dag_path=dag_path)
         print("\n现在可以使用 execute_workflow.py 从保存的 JSON 执行该流程。")
     except Exception as e:
-        print(f"\n[warning] 工作流持久化失败：{e}")
+        print("\n[warning] 工作流持久化失败：", repr(e))
+        print("[warning] 异常类型：", type(e).__name__)
+        print("[warning] 消息：", str(e))
+        print("[warning] Call stack:\n", traceback.format_exc())
 
 
 if __name__ == "__main__":
