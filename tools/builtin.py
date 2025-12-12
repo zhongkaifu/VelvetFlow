@@ -24,6 +24,36 @@ _SCRAPEGRAPH_AVAILABLE = False
 _SCRAPEGRAPH_IMPORT_ERROR: Exception | None = None
 _SCRAPEGRAPH_IMPORT_TRACEBACK = ""
 
+
+def _patch_langchain_for_scrapegraph() -> None:
+    """Provide a backward-compatibility shim for scrapegraphai's langchain import.
+
+    Some recent langchain-core releases removed ``init_chat_model`` from
+    ``langchain_core.language_models.chat_models``. ScrapeGraphAI still imports
+    that symbol, so we provide a thin shim that fails with a clear message if a
+    newer langchain-core is installed without that helper.
+    """
+
+    try:  # pragma: no cover - optional dependency
+        import langchain_core.language_models.chat_models as chat_models
+    except Exception:
+        return
+
+    if hasattr(chat_models, "init_chat_model"):
+        return
+
+    def init_chat_model(*args: Any, **kwargs: Any) -> Any:
+        raise ImportError(
+            "scrapegraphai requires langchain-core to expose init_chat_model;"
+            " install a compatible langchain-core version (e.g. <0.2) or use"
+            " 'pip install scrapegraphai[langchain]' to pull matching extras."
+        )
+
+    chat_models.init_chat_model = init_chat_model
+
+
+_patch_langchain_for_scrapegraph()
+
 try:
     from scrapegraphai.graphs import SmartScraperGraph
     _SCRAPEGRAPH_AVAILABLE = True
