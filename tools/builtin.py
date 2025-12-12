@@ -11,6 +11,7 @@ import json
 import os
 import re
 import textwrap
+import traceback
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -19,33 +20,43 @@ from pathlib import Path
 import uuid
 from typing import Any, Awaitable, Callable, Dict, List, Mapping, Optional, Tuple
 
+_SCRAPEGRAPH_AVAILABLE = False
+_SCRAPEGRAPH_IMPORT_ERROR: Exception | None = None
+_SCRAPEGRAPH_IMPORT_TRACEBACK = ""
+
 try:
     from scrapegraphai.graphs import SmartScraperGraph
     _SCRAPEGRAPH_AVAILABLE = True
-    _SCRAPEGRAPH_IMPORT_ERROR: Exception | None = None
+    _SCRAPEGRAPH_IMPORT_ERROR = None
 except Exception as exc:  # pragma: no cover - optional dependency or incompatible version
     _SCRAPEGRAPH_AVAILABLE = False
     _SCRAPEGRAPH_IMPORT_ERROR = exc
+    _SCRAPEGRAPH_IMPORT_TRACEBACK = "".join(traceback.format_exception(exc)).strip()
+
+    def _scrapegraph_dependency_message() -> str:
+        details = (
+            f"\n\nScrapeGraphAI import error:\n{_SCRAPEGRAPH_IMPORT_TRACEBACK}"
+            if _SCRAPEGRAPH_IMPORT_TRACEBACK
+            else ""
+        )
+        return (
+            "scrapegraphai is required for web scraping tools; install/upgrade it with 'pip install scrapegraphai'."
+            + details
+        )
 
     class _MissingScraperDependency:
         def __getattr__(self, name: str) -> None:  # pragma: no cover - defensive fallback
-            raise ImportError(
-                "scrapegraphai is required for web scraping tools; install/upgrade it with 'pip install scrapegraphai'."
-            ) from _SCRAPEGRAPH_IMPORT_ERROR
+            raise ImportError(_scrapegraph_dependency_message()) from _SCRAPEGRAPH_IMPORT_ERROR
 
         def __call__(self, *args: Any, **kwargs: Any) -> None:  # pragma: no cover - defensive fallback
-            raise ImportError(
-                "scrapegraphai is required for web scraping tools; install/upgrade it with 'pip install scrapegraphai'."
-            ) from _SCRAPEGRAPH_IMPORT_ERROR
+            raise ImportError(_scrapegraph_dependency_message()) from _SCRAPEGRAPH_IMPORT_ERROR
 
     SmartScraperGraph = _MissingScraperDependency()
 
 
 def _require_scrapegraphai() -> None:
     if not _SCRAPEGRAPH_AVAILABLE:
-        raise ImportError(
-            "scrapegraphai is required for web scraping tools; install/upgrade it with 'pip install scrapegraphai'."
-        ) from _SCRAPEGRAPH_IMPORT_ERROR
+        raise ImportError(_scrapegraph_dependency_message()) from _SCRAPEGRAPH_IMPORT_ERROR
 from openai import OpenAI
 
 from velvetflow.config import OPENAI_MODEL
