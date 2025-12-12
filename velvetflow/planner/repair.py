@@ -7,6 +7,7 @@ import json
 import os
 import subprocess
 import tempfile
+import textwrap
 from dataclasses import asdict
 import itertools
 import re
@@ -24,12 +25,10 @@ from velvetflow.logging_utils import (
     log_llm_message,
     log_llm_usage,
     log_success,
-    log_tool_call,
     log_warn,
 )
 from velvetflow.models import Node, PydanticValidationError, ValidationError, Workflow
 from velvetflow.planner.action_guard import ensure_registered_actions
-from velvetflow.planner.repair_tools import REPAIR_TOOLS, apply_repair_tool
 from velvetflow.verification import generate_repair_suggestions, validate_completed_workflow
 
 
@@ -91,6 +90,103 @@ def _looks_like_patch(text: str) -> bool:
     return stripped.startswith("diff --git") or stripped.startswith("--- ") or stripped.startswith("*** ")
 
 
+def _contains_patch_hunks(text: str) -> bool:
+    """Heuristically detect whether the patch has at least one hunk header."""
+
+    return any(line.startswith("@@") for line in text.splitlines())
+
+
+def _has_valid_hunk_headers(text: str) -> bool:
+    """Validate that all hunk headers follow the unified diff format."""
+
+    for line in text.splitlines():
+        if not line.startswith("@@"):
+            continue
+        if not _HUNK_HEADER_RE.match(line):
+            return False
+    return True
+
+
+def _inject_line_numbers_into_patch(
+    workflow: Mapping[str, Any], patch_text: str
+) -> Optional[str]:
+    """Attempt to add unified diff ranges to hunks that omit line numbers.
+
+    Some model responses return hunk headers like ``@@`` without the required
+    ``-<start>,<len> +<start>,<len>`` ranges. This helper scans the original
+    ``workflow.json`` content to locate each hunk by its context/removal lines
+    and rewrites the headers with concrete line numbers.
+    """
+
+    original_lines = json.dumps(
+        workflow, ensure_ascii=False, indent=2, sort_keys=True
+    ).splitlines()
+
+    lines = patch_text.splitlines()
+    rewritten: List[str] = []
+    idx = 0
+
+    def _find_hunk_start(ops: List[str]) -> Optional[int]:
+        required = [ln[1:] for ln in ops if ln.startswith((" ", "-"))]
+        if not required:
+            return 0
+
+        for start in range(0, len(original_lines) - len(required) + 1):
+            for offset, expected in enumerate(required):
+                if original_lines[start + offset] != expected:
+                    break
+            else:
+                return start
+        return None
+
+    guessed = False
+
+    while idx < len(lines):
+        line = lines[idx]
+        if not line.startswith("@@"):
+            rewritten.append(line)
+            idx += 1
+            continue
+
+        hunk_ops: List[str] = []
+        idx += 1
+        while idx < len(lines) and not lines[idx].startswith("@@"):
+            hunk_ops.append(lines[idx])
+            idx += 1
+
+        start = _find_hunk_start(hunk_ops)
+        if start is None:
+            guessed = True
+            start = 0
+
+        old_len = sum(1 for ln in hunk_ops if ln.startswith((" ", "-")))
+        new_len = sum(1 for ln in hunk_ops if ln.startswith((" ", "+")))
+        rewritten.append(f"@@ -{start + 1},{old_len} +{start + 1},{new_len} @@")
+        rewritten.extend(hunk_ops)
+
+    normalized = "\n".join(rewritten)
+    if patch_text.endswith("\n"):
+        normalized += "\n"
+    if guessed:
+        log_warn(
+            "[repair_workflow_with_llm] 补丁缺少行号且无法通过上下文定位，已使用默认起始行填充 @@ 范围，git apply 可能失败。"
+        )
+
+    return normalized
+
+
+def _normalize_patch_text(text: str) -> str:
+    """Trim indentation and ensure patches retain expected formatting."""
+
+    if not text:
+        return ""
+
+    normalized = textwrap.dedent(text)
+    if normalized.endswith("\n"):
+        return normalized
+    return normalized + "\n"
+
+
 def _rewrite_patch_paths(patch_text: str, target_path: Path) -> str:
     """Rewrite patch file headers to point to the temporary workflow path."""
 
@@ -127,6 +223,8 @@ def _apply_patch_output(workflow: Mapping[str, Any], patch_text: str) -> Optiona
             ["git", "apply", "--whitespace=nowarn", "--unsafe-paths", "-"],
             input=rewritten_patch,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             capture_output=True,
             cwd=workflow_path.parent,
         )
@@ -628,12 +726,29 @@ validation_errors 是 JSON 数组，元素包含 code/node_id/field/message。
    - 系统会在有限轮次内重新校验；如果你忽略任何一条 validation_error，流程将直接进入下一轮甚至终止。
    - 请逐条对照 validation_errors，把所有问题修到为 0 再输出结果，避免留存隐患。
 
-9. 输出要求：
-   - 保持顶层结构：workflow_name/description/nodes 不变（仅节点内部内容可调整，edges 由系统推导）；
-   - 节点的 id/type 不变；
-   - 返回修复后的 workflow JSON，只返回 JSON 对象本身，不要包含代码块标记。
-   - 如果修改量较大，也可以返回针对 workflow.json 的 unified diff 补丁；系统会尝试用 git apply 将补丁合并回 workflow 并继续校验。
-10. 可用工具：当你需要结构化修改时，优先调用提供的工具（无 LLM 依赖、结果确定），用来修复 loop body 引用、补齐必填参数或写入指定字段。
+9. 输出要求（新策略，务必遵守）：
+  - 保持顶层结构：workflow_name/description/nodes 不变（仅节点内部内容可调整，edges 由系统推导）；
+  - 节点的 id/type 不变；
+  - **只能输出针对 workflow.json 的 unified diff 补丁**，不要返回完整 JSON 或其他格式；
+  - 补丁必须满足 git apply 的格式约束，遵循以下 schema：
+    - 首部：
+      ```
+      --- workflow.json
+      +++ workflow.json
+      ```
+    - 至少包含一个 hunk，且每个 hunk header 均为 `@@ -<旧起始行>,<旧长度> +<新起始行>,<新长度> @@`；行号必须是正整数，长度可省略但推荐填写；
+    - hunk 内容仅包含三类行：`-` 开头的删除行、`+` 开头的新增行、` ` 开头的上下文行；
+    - 不要省略 `---/+++` 与 `@@` 行，也不要输出 markdown 代码块包裹；
+    - 示例：
+      ```
+      --- workflow.json
+      +++ workflow.json
+      @@ -12,3 +12,4 @@
+      -  "params": {}
+      +  "params": {"foo": "bar"}
+      ```
+  - VelvetFlow Repair 会使用 git apply 将补丁合并回 workflow 并继续校验，补丁头中的文件名请使用 workflow.json；
+  - 禁止调用任何工具或函数，直接根据错误分析生成补丁文本。
 """
 
     messages = [
@@ -653,104 +768,63 @@ validation_errors 是 JSON 数组，元素包含 code/node_id/field/message。
         },
     ]
 
-    working_workflow: Dict[str, Any] = broken_workflow
-
-    while True:
-        with child_span("repair_llm"):
-            resp = client.chat.completions.create(
-                model=model,
-                messages=messages,
-                tools=REPAIR_TOOLS,
-                tool_choice="auto",
-                temperature=0.1,
-            )
-        log_llm_usage(model, getattr(resp, "usage", None), operation="repair_workflow")
-        if not resp.choices:
-            raise RuntimeError("repair_workflow_with_llm 未返回任何候选消息")
-
-        msg = resp.choices[0].message
-        log_llm_message(
-            model,
-            msg,
-            operation="repair_workflow",
+    with child_span("repair_llm"):
+        resp = client.chat.completions.create(
+            model=model,
+            messages=messages,
+            temperature=0.1,
         )
-        if msg.tool_calls:
-            messages.append({"role": "assistant", "content": msg.content or "", "tool_calls": msg.tool_calls})
-            for tc in msg.tool_calls:
-                func_name = tc.function.name
-                raw_args = tc.function.arguments
-                try:
-                    args = json.loads(raw_args) if raw_args else {}
-                except json.JSONDecodeError:
-                    log_error(f"[repair_workflow_with_llm] 无法解析工具参数: {raw_args}")
-                    args = {}
 
-                log_tool_call(
-                    source="repair_workflow_with_llm",
-                    tool_name=func_name,
-                    tool_call_id=tc.id,
-                    args=args or raw_args,
-                )
-                patched_workflow, summary = apply_repair_tool(
-                    tool_name=func_name,
-                    args=args,
-                    workflow=working_workflow,
-                    validation_errors=validation_errors,
-                    action_registry=action_registry,
-                )
-                log_tool_call(
-                    source="repair_workflow_with_llm",
-                    tool_name=f"{func_name} 完成",
-                    tool_call_id=tc.id,
-                    args=summary,
-                )
-                if summary.get("applied"):
-                    working_workflow = patched_workflow
+    log_llm_usage(model, getattr(resp, "usage", None), operation="repair_workflow")
+    if not resp.choices:
+        raise RuntimeError("repair_workflow_with_llm 未返回任何候选消息")
 
-                messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": tc.id,
-                        "content": json.dumps(
-                            {
-                                "workflow": working_workflow,
-                                "summary": summary,
-                            },
-                            ensure_ascii=False,
-                        ),
-                    }
-                )
-            continue
+    msg = resp.choices[0].message
+    log_llm_message(
+        model,
+        msg,
+        operation="repair_workflow",
+    )
 
-        content = msg.content or ""
-        text = content.strip()
-        if text.startswith("```"):
-            text = text.strip("`")
-            if "\n" in text:
-                first_line, rest = text.split("\n", 1)
-                if first_line.strip().lower().startswith("json"):
-                    text = rest
+    content = msg.content or ""
+    text = _normalize_patch_text(content.strip())
+    if text.startswith("```"):
+        text = text.strip("`")
+        if "\n" in text:
+            first_line, rest = text.split("\n", 1)
+            if first_line.strip().lower().startswith("json"):
+                text = _normalize_patch_text(rest)
 
-        if not text:
-            log_warn("[repair_workflow_with_llm] LLM 返回空内容，使用最近一次工具输出。")
-            return working_workflow
+    if not text:
+        raise RuntimeError("[repair_workflow_with_llm] LLM 返回空内容，未能提供补丁。")
 
-        if _looks_like_patch(text):
-            patched_workflow = _apply_patch_output(working_workflow, text)
-            if patched_workflow is not None:
-                log_info("[repair_workflow_with_llm] 接收到补丁输出，已通过 git apply 合并。")
-                return patched_workflow
+    if not _looks_like_patch(text):
+        raise RuntimeError("[repair_workflow_with_llm] 仅接受 unified diff 补丁输出，当前响应不符合新策略。")
 
-            log_warn("[repair_workflow_with_llm] 补丁输出应用失败，尝试直接解析 JSON。")
+    if not _contains_patch_hunks(text):
+        raise RuntimeError(
+            "[repair_workflow_with_llm] 收到的补丁缺少 @@ hunk 信息，无法应用，请返回包含具体修改的 unified diff。"
+        )
 
-        try:
-            repaired_workflow = json.loads(text)
-        except json.JSONDecodeError:
-            log_error("[repair_workflow_with_llm] 无法解析模型返回 JSON")
-            log_debug(content)
-            raise
+    if not _has_valid_hunk_headers(text):
+        fixed = _inject_line_numbers_into_patch(broken_workflow, text)
+        if fixed:
+            log_warn(
+                "[repair_workflow_with_llm] 收到的补丁缺少行号，已自动补齐 @@ 范围并继续尝试应用。"
+            )
+            text = fixed
+        else:
+            raise RuntimeError(
+                "[repair_workflow_with_llm] 补丁中的 @@ hunk header 格式无效，必须包含具体行号（例如 @@ -12,3 +12,4 @@），请返回可直接 git apply 的补丁。"
+            )
 
-        return repaired_workflow
+    log_info(f"[repair_workflow_with_llm] 收到补丁内容如下：\n{text}")
+    patched_workflow = _apply_patch_output(broken_workflow, text)
+    if patched_workflow is None:
+        raise RuntimeError("[repair_workflow_with_llm] 补丁输出应用失败，请返回可被 git apply 的有效补丁。")
+
+    log_info("[repair_workflow_with_llm] 接收到补丁输出，已通过 git apply 合并。")
+    return patched_workflow
 
 
 __all__ = [
