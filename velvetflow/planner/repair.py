@@ -342,7 +342,7 @@ def _summarize_validation_errors_for_llm(
     guidance_prompts = sorted(set(repair_prompts + exploration_prompts))
     if guidance_prompts:
         lines.append("")
-        lines.append("错误修复指导/探索方向（请结合上下文尝试以下思路）：")
+        lines.append("错误特定提示/修复指导（请结合上下文尝试以下思路）：")
         lines.extend(guidance_prompts)
 
     return "\n".join(lines)
