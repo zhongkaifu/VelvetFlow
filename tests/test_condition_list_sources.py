@@ -9,18 +9,11 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-crawl4ai = types.ModuleType("crawl4ai")
-crawl4ai.AsyncWebCrawler = None
-crawl4ai.BrowserConfig = None
-crawl4ai.CacheMode = None
-crawl4ai.CrawlerRunConfig = None
-crawl4ai.LLMConfig = None
-sys.modules.setdefault("crawl4ai", crawl4ai)
-sys.modules.setdefault(
-    "crawl4ai.extraction_strategy",
-    types.ModuleType("crawl4ai.extraction_strategy"),
-)
-sys.modules["crawl4ai.extraction_strategy"].LLMExtractionStrategy = None
+scrapegraphai = types.ModuleType("scrapegraphai")
+scrapegraphai_graphs = types.ModuleType("scrapegraphai.graphs")
+scrapegraphai_graphs.SmartScraperGraph = None
+sys.modules.setdefault("scrapegraphai", scrapegraphai)
+sys.modules.setdefault("scrapegraphai.graphs", scrapegraphai_graphs)
 
 from velvetflow.action_registry import BUSINESS_ACTIONS
 from velvetflow.bindings import BindingContext

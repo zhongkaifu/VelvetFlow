@@ -9,25 +9,22 @@ import pytest
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
-fake_crawl4ai = types.ModuleType("crawl4ai")
+fake_scrapegraphai = types.ModuleType("scrapegraphai")
+fake_graphs = types.ModuleType("scrapegraphai.graphs")
 
 
 class _Dummy:
     def __init__(self, *args, **kwargs):
         pass
 
+    def run(self, *args, **kwargs):
+        return {}
 
-fake_crawl4ai.AsyncWebCrawler = _Dummy
-fake_crawl4ai.BrowserConfig = _Dummy
-fake_crawl4ai.CacheMode = types.SimpleNamespace(BYPASS="bypass")
-fake_crawl4ai.CrawlerRunConfig = _Dummy
-fake_crawl4ai.LLMConfig = _Dummy
-fake_crawl4ai.LLMExtractionStrategy = _Dummy
 
-sys.modules.setdefault("crawl4ai", fake_crawl4ai)
-fake_extraction_strategy = types.ModuleType("crawl4ai.extraction_strategy")
-fake_extraction_strategy.LLMExtractionStrategy = _Dummy
-sys.modules.setdefault("crawl4ai.extraction_strategy", fake_extraction_strategy)
+fake_graphs.SmartScraperGraph = _Dummy
+
+sys.modules.setdefault("scrapegraphai", fake_scrapegraphai)
+sys.modules.setdefault("scrapegraphai.graphs", fake_graphs)
 
 from tools import builtin
 
