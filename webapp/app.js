@@ -1898,9 +1898,39 @@ function roundedRect(x, y, width, height, radius) {
 
 function autoSizeEditor() {
   if (!workflowEditor) return;
+  const computed = getComputedStyle(workflowEditor);
+  const minHeight = parseFloat(computed.minHeight) || 200;
+  const maxHeight = Math.max(window.innerHeight * 0.7, minHeight);
+
   workflowEditor.style.height = "auto";
-  const newHeight = Math.max(workflowEditor.scrollHeight, 200);
+  const newHeight = Math.min(Math.max(workflowEditor.scrollHeight, minHeight), maxHeight);
   workflowEditor.style.height = `${newHeight}px`;
+
+  const parentWidth = workflowEditor.parentElement?.clientWidth || window.innerWidth;
+  workflowEditor.style.width = "auto";
+  const paddingX =
+    parseFloat(computed.paddingLeft || 0) +
+    parseFloat(computed.paddingRight || 0) +
+    parseFloat(computed.borderLeftWidth || 0) +
+    parseFloat(computed.borderRightWidth || 0);
+
+  const measureCtx =
+    autoSizeEditor._measureCtx || (autoSizeEditor._measureCtx = document.createElement("canvas").getContext("2d"));
+  let contentWidth = workflowEditor.scrollWidth;
+
+  if (measureCtx) {
+    measureCtx.font = `${computed.fontWeight} ${computed.fontSize} ${computed.fontFamily}`;
+    const maxLineWidth = workflowEditor.value
+      .split("\n")
+      .map((line) => measureCtx.measureText(line || " ").width)
+      .reduce((max, width) => Math.max(max, width), 0);
+    contentWidth = maxLineWidth;
+  }
+
+  const desiredWidth = Math.max(contentWidth + paddingX, parentWidth * 0.6);
+  const clampedWidth = Math.min(desiredWidth, parentWidth);
+  workflowEditor.style.width = `${clampedWidth}px`;
+  workflowEditor.style.maxWidth = "100%";
 }
 
 function updateEditor() {
@@ -2307,6 +2337,7 @@ if (resetViewBtn) {
 const editorResizeObserver = new ResizeObserver(() => render(currentTab));
 editorResizeObserver.observe(workflowEditor);
 window.addEventListener("resize", () => render(currentTab));
+window.addEventListener("resize", autoSizeEditor);
 
 populateActionSelect();
 setSelectedNodeType(selectedNodeType);
