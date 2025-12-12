@@ -240,6 +240,7 @@ def _summarize_validation_errors_for_llm(
     loop_hints: List[str] = []
     schema_hints: List[str] = []
     repair_prompts: List[str] = []
+    exploration_prompts: List[str] = []
 
     action_map: Dict[str, Mapping[str, Any]] = {}
     node_to_action: Dict[str, str] = {}
@@ -302,6 +303,25 @@ def _summarize_validation_errors_for_llm(
         prompt = _ERROR_TYPE_PROMPTS.get(err.code)
         if prompt:
             repair_prompts.append(f"- [{err.code}] {prompt}")
+        else:
+            # 当没有固定的修复模板时，提供可探索的方向，帮助 LLM 主动推理修复思路
+            directions: List[str] = [
+                "检查节点/字段的引用是否存在或命名一致，必要时重建引用路径。",
+                "对照可用的 action schema 或上游输出，确认类型与结构是否兼容。",
+                "如果依赖缺失，可使用工具为该节点补充上游或拆分节点降低耦合。",
+            ]
+            scope = "、".join(
+                part
+                for part in [
+                    f"节点 {err.node_id}" if err.node_id else "",
+                    f"字段 {err.field}" if err.field else "",
+                ]
+                if part
+            )
+            scope_hint = f"（定位 {scope}）" if scope else ""
+            exploration_prompts.append(
+                f"- [{err.code}] 暂无固定修复模板{scope_hint}，建议沿以下方向探索：{' '.join(directions)}"
+            )
 
         history = previous_attempts.get(_make_error_key(err))
         if history:
@@ -319,29 +339,30 @@ def _summarize_validation_errors_for_llm(
         lines.append("Loop 修复提示（补齐必填字段/字段名需与 source schema 对齐）：")
         lines.extend(sorted(set(loop_hints)))
 
-    if repair_prompts:
+    guidance_prompts = sorted(set(repair_prompts + exploration_prompts))
+    if guidance_prompts:
         lines.append("")
-        lines.append("错误特定提示（按类型引导 LLM 思考与修复）：")
-        lines.extend(sorted(set(repair_prompts)))
+        lines.append("错误特定提示/修复指导（请结合上下文尝试以下思路）：")
+        lines.extend(guidance_prompts)
 
     return "\n".join(lines)
 
 
 _ERROR_TYPE_PROMPTS: Dict[str, str] = {
-    "MISSING_REQUIRED_PARAM": "补齐 params.<field>，优先绑定上游符合 arg_schema 的输出或使用 schema 默认值。",
-    "UNKNOWN_ACTION_ID": "替换为 Action Registry 中存在的 action_id，保持节点含义最接近并同步校正 params。",
-    "UNKNOWN_PARAM": "移除或重命名 params 中未在 arg_schema 声明的字段，使其与 schema 对齐。",
-    "DISCONNECTED_GRAPH": "连接无入度/出度节点，确保从 start 或入参到每个节点都有可达路径。",
-    "INVALID_EDGE": "修复边的 from/to 以引用存在的节点，并保持条件字段合法。",
-    "SCHEMA_MISMATCH": "调整绑定字段或聚合方式，使类型与上游 output_schema/arg_schema 兼容。",
-    "INVALID_SCHEMA": "按 DSL 结构补齐/修正字段类型（nodes/edges/params），避免 JSON 结构缺失。",
-    "INVALID_LOOP_BODY": "补齐 loop.body_subgraph 的 entry/exit/nodes/edges，并确保 exports.items 字段匹配 body 输出。",
-    "STATIC_RULES_SUMMARY": "遵循静态规则摘要中的提示逐项修复，优先处理连通性和 schema 不匹配。",
-    "EMPTY_PARAM_VALUE": "为空的参数应填入非空值或绑定，避免空字符串/空对象。",
-    "EMPTY_PARAMS": "params 不能是空对象，为必填字段提供值或引用，并使用工具完成不确定的填充。",
-    "SELF_REFERENCE": "移除节点对自身 result_of.<node> 的引用，改用上游输出或拆分节点并通过工具应用修改。",
-    "SYNTAX_ERROR": "修正 DSL 语法（括号、逗号、引号等），使解析器能生成 AST。",
-    "GRAMMAR_VIOLATION": "遵循文法约束调整节点/字段位置，按期望的 token/产生式重新组织。",
+    "MISSING_REQUIRED_PARAM": "补齐 params.<field>，优先绑定上游符合 arg_schema 的输出或使用 schema 默认值。示例：如果 action 需要 params.prompt 且缺失，可绑定上游文案生成节点的 result.output。",
+    "UNKNOWN_ACTION_ID": "替换为 Action Registry 中存在的 action_id，保持节点含义最接近并同步校正 params。示例：将未知的 action_id 改为 registry 中的 text.generate，并保留 prompt/temperature 等参数。",
+    "UNKNOWN_PARAM": "移除或重命名 params 中未在 arg_schema 声明的字段，使其与 schema 对齐。示例：action schema 仅接受 prompt/temperature，应删除意外出现的 max_token 字段。",
+    "DISCONNECTED_GRAPH": "连接无入度/出度节点，确保从 start 或入参到每个节点都有可达路径。示例：为孤立的 summary 节点添加来自前置生成节点的边，并把结果导向 end。",
+    "INVALID_EDGE": "修复边的 from/to 以引用存在的节点，并保持条件字段合法。示例：若 edge.to 指向不存在的 node-3，可改为实际存在的 reviewer 节点。",
+    "SCHEMA_MISMATCH": "调整绑定字段或聚合方式，使类型与上游 output_schema/arg_schema 兼容。示例：如果上游输出是 list 而当前节点期望 string，可改为 join 列表或选择单个元素。",
+    "INVALID_SCHEMA": "按 DSL 结构补齐/修正字段类型（nodes/edges/params），避免 JSON 结构缺失。示例：在 workflow 缺少 edges 字段时补空数组，并确保 nodes 为列表。",
+    "INVALID_LOOP_BODY": "补齐 loop.body_subgraph 的 entry/exit/nodes/edges，并确保 exports.items 字段匹配 body 输出。示例：为 body_subgraph 增加 start/exit 节点和必要边，exports.items.fields 仅保留 body 输出中存在的字段。",
+    "STATIC_RULES_SUMMARY": "遵循静态规则摘要中的提示逐项修复，优先处理连通性和 schema 不匹配。示例：按摘要要求先修复未连接的边，再补齐缺失的必填参数。",
+    "EMPTY_PARAM_VALUE": "为空的参数应填入非空值或绑定，避免空字符串/空对象。示例：将空的 params.prompt 改为具体提示词或绑定上游结果。",
+    "EMPTY_PARAMS": "params 不能是空对象，为必填字段提供值或引用，并使用工具完成不确定的填充。示例：若节点类型为 action 但 params 为 {}，根据 arg_schema 填入 prompt/template 等必填字段。",
+    "SELF_REFERENCE": "移除节点对自身 result_of.<node> 的引用，改用上游输出或拆分节点并通过工具应用修改。示例：若 node-a.params.input 引用 result_of.node-a，可改为 result_of.previous-node。",
+    "SYNTAX_ERROR": "修正 DSL 语法（括号、逗号、引号等），使解析器能生成 AST。示例：补全缺失的引号或逗号，确保 JSON 能被解析。",
+    "GRAMMAR_VIOLATION": "遵循文法约束调整节点/字段位置，按期望的 token/产生式重新组织。示例：将误放在 edges 中的节点定义移回 nodes 列表。",
 }
 
 
