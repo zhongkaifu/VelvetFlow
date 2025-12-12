@@ -626,11 +626,59 @@ textarea#workflowEditor {
   font-weight: 700;
 }
 
+.loop-inspector__subtitle {
+  font-size: 14px;
+  color: var(--muted);
+  margin: 8px 0 4px;
+}
+
+.loop-inspector__section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 6px 8px;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+}
+
+.loop-inspector__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+}
+
 .loop-inspector__field {
   display: flex;
   flex-direction: column;
   gap: 6px;
   color: var(--muted);
+}
+
+.loop-exports {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.loop-export-card {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 8px;
+  background: rgba(255, 255, 255, 0.01);
+}
+
+.loop-export-card__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.loop-export-card__fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 8px;
 }
 
 @media (max-width: 1100px) {
