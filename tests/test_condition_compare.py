@@ -134,6 +134,31 @@ def test_condition_greater_than_executes_false_branch_when_below_threshold():
     assert "log_normal" in results
 
 
+def test_condition_greater_than_accepts_value_field():
+    workflow = _build_workflow(
+        {
+            "kind": "greater_than",
+            "source": {"temperature": 39},
+            "field": "temperature",
+            "value": 38,
+        },
+        true_node_id="add_to_warning_list",
+        false_node_id="log_normal",
+    )
+
+    executor = DynamicActionExecutor(
+        workflow,
+        simulations={
+            "productivity.compose_outlook_email.v1": {"result": {"status": "simulated"}}
+        },
+    )
+
+    results = executor.run()
+
+    assert "add_to_warning_list" in results
+    assert "log_normal" not in results
+
+
 def test_condition_compare_supports_expression_operator_and_target():
     workflow = _build_workflow(
         {
