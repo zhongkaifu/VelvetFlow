@@ -1898,6 +1898,13 @@ function roundedRect(x, y, width, height, radius) {
 
 function autoSizeEditor() {
   if (!workflowEditor) return;
+  const isHidden =
+    workflowEditor.offsetParent === null || workflowEditor.clientWidth === 0 || workflowEditor.clientHeight === 0;
+  if (isHidden) {
+    autoSizeEditor._pending = true;
+    return;
+  }
+  autoSizeEditor._pending = false;
   const computed = getComputedStyle(workflowEditor);
   const parentWidth = workflowEditor.parentElement?.clientWidth || window.innerWidth;
   workflowEditor.style.width = "auto";
@@ -2126,6 +2133,12 @@ function switchToTab(tabId) {
     const isActive = content.dataset.view === currentTab;
     content.classList.toggle("tab-content--hidden", !isActive);
   });
+  if (tabId === "json") {
+    requestAnimationFrame(() => {
+      if (autoSizeEditor._pending) autoSizeEditor();
+      autoSizeEditor();
+    });
+  }
   render(currentTab);
 }
 
