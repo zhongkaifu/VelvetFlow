@@ -9,6 +9,18 @@ function handleChatSubmit(event) {
   requestPlan(text);
 }
 
+function refreshWorkflowCanvases() {
+  clearPositionCaches();
+  const targets = new Set(["visual"]);
+  tabs.forEach((tab) => {
+    const tabId = tab.dataset.tab;
+    if (tabId && isCanvasTab(tabId)) {
+      targets.add(tabId);
+    }
+  });
+  targets.forEach((tabId) => render(tabId));
+}
+
 function applyWorkflowObject(payload, sourceLabel = "编辑器") {
   try {
     const parsed = typeof payload === "string" ? JSON.parse(payload) : payload;
@@ -20,7 +32,7 @@ function applyWorkflowObject(payload, sourceLabel = "编辑器") {
     clearPositionCaches();
     closeAllLoopTabs(true);
     updateEditor();
-    render(currentTab);
+    refreshWorkflowCanvases();
     appendLog(`已应用${sourceLabel}修改并刷新画布`);
     addChatMessage(`收到${sourceLabel}修改，Canvas 已同步更新。`, "agent");
   } catch (error) {
@@ -38,7 +50,7 @@ function resetWorkflow() {
   closeAllLoopTabs(true);
   lastRunResults = {};
   updateEditor();
-  render(currentTab);
+  refreshWorkflowCanvases();
   appendLog("已重置为空 workflow");
 }
 

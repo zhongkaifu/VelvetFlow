@@ -71,7 +71,7 @@ async function requestPlan(requirement) {
         } else if ((event.type === "snapshot" || event.type === "partial") && event.workflow) {
           currentWorkflow = normalizeWorkflow(event.workflow);
           updateEditor();
-          render(currentTab);
+          refreshWorkflowCanvases();
           if (typeof event.progress === "number") {
             const percent = Math.round(event.progress * 100);
             setStatus(`构建中 ${percent}%`, "warning");
@@ -96,7 +96,7 @@ async function requestPlan(requirement) {
     closeAllLoopTabs(true);
     currentWorkflow = finalWorkflow;
     updateEditor();
-    render(currentTab);
+    refreshWorkflowCanvases();
     setStatus("构建完成", "success");
     addChatMessage("已完成 DAG 规划与校验，可在画布上查看并继续修改。", "agent");
   } catch (error) {
