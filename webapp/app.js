@@ -2443,9 +2443,46 @@ function connectNodes(fromId, toId, context = getTabContext(currentTab)) {
   if (exists) return false;
 
   const updatedEdges = [...(normalized.edges || []), { from_node: fromId, to_node: toId }];
-  context.saveGraph({ ...normalized, edges: updatedEdges });
+  const graphWithEdges = { ...normalized, edges: updatedEdges };
+  const graphWithBindings = autoBindEdgeParams(graphWithEdges, fromId, toId);
+  context.saveGraph(graphWithBindings);
   appendLog(`已连接 ${fromId} → ${toId}`);
   return true;
+}
+
+function autoBindEdgeParams(graph, fromId, toId) {
+  if (!graph || !Array.isArray(graph.nodes)) return graph;
+  const nodes = [...graph.nodes];
+  const fromIndex = nodes.findIndex((n) => n && n.id === fromId);
+  const toIndex = nodes.findIndex((n) => n && n.id === toId);
+  if (fromIndex === -1 || toIndex === -1) return graph;
+
+  const source = nodes[fromIndex];
+  const target = nodes[toIndex];
+  const paramDefs = extractParamDefs(paramsSchemaFor(target.action_id));
+  if (!paramDefs.length) return graph;
+
+  const outputDefs = extractOutputDefs(outputSchemaFor(source.action_id, source));
+  const availableOutputs = outputDefs.length ? outputDefs : (describeNode(source).outputs || []).map((name) => ({ name }));
+  if (!availableOutputs.length) return graph;
+
+  const nextParams = { ...(target.params || {}) };
+  const bindings = [];
+
+  paramDefs.forEach((param) => {
+    const current = nextParams[param.name];
+    if (current !== undefined && current !== "") return;
+    const matched = availableOutputs.find((out) => out && out.name === param.name) || availableOutputs[0];
+    if (!matched || !matched.name) return;
+    nextParams[param.name] = { __from__: `result_of.${fromId}.${matched.name}` };
+    bindings.push(`${param.name}←${matched.name}`);
+  });
+
+  if (!bindings.length) return graph;
+
+  nodes[toIndex] = { ...target, params: nextParams };
+  appendLog(`已自动绑定 ${fromId} 输出到 ${toId} 输入：${bindings.join(", ")}`);
+  return { ...graph, nodes };
 }
 
 function handleCanvasMouseUp(event) {
