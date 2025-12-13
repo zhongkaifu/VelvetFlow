@@ -95,6 +95,8 @@ class ValidationError:
     node_id: Optional[str]
     field: Optional[str]
     message: str
+    expected: Optional[str] = None
+    actual_value: Optional[str] = None
 
 
 @dataclass

@@ -352,6 +352,58 @@ def _summarize_validation_errors_for_llm(
     return "\n".join(lines)
 
 
+def _camel_case_error_code(code: str) -> str:
+    return "".join(part.capitalize() for part in code.lower().split("_"))
+
+
+def _format_errors_for_llm_payload(
+    errors: Sequence[ValidationError],
+) -> Dict[str, List[Dict[str, Any]]]:
+    """Format validation errors for LLM consumption.
+
+    The payload follows the structure expected by downstream LLM repair steps:
+
+    {
+        "errors": [
+            {
+                "type": "InvalidConditionPath",
+                "message": "false_to_node references a branch that is unreachable",
+                "location": "/nodes/cond_1/false_to_node",
+                "expected": "Node must lead to a valid downstream execution path",
+                "actual_value": "step_8"
+            }
+        ]
+    }
+    """
+
+    def _location(err: ValidationError) -> Optional[str]:
+        parts: List[str] = []
+        if err.node_id:
+            parts.append(f"/nodes/{err.node_id}")
+        if err.field:
+            normalized = err.field.replace(".", "/")
+            if not normalized.startswith("/"):
+                normalized = f"/{normalized}"
+            parts.append(normalized)
+        if not parts:
+            return None
+        return "".join(parts)
+
+    formatted: List[Dict[str, Any]] = []
+    for err in errors:
+        formatted.append(
+            {
+                "type": _camel_case_error_code(err.code),
+                "message": err.message,
+                "location": _location(err),
+                "expected": err.expected,
+                "actual_value": err.actual_value,
+            }
+        )
+
+    return {"errors": formatted}
+
+
 _ERROR_TYPE_PROMPTS: Dict[str, str] = {
     "MISSING_REQUIRED_PARAM": "补齐 params.<field>，优先绑定上游符合 arg_schema 的输出或使用 schema 默认值。示例：如果 action 需要 params.prompt 且缺失，可绑定上游文案生成节点的 result.output。",
     "UNKNOWN_ACTION_ID": "替换为 Action Registry 中存在的 action_id，保持节点含义最接近并同步校正 params。示例：将未知的 action_id 改为 registry 中的 text.generate，并保留 prompt/temperature 等参数。",
@@ -560,6 +612,8 @@ def repair_workflow_with_llm(
 ) -> Dict[str, Any]:
     client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
+    formatted_errors = _format_errors_for_llm_payload(validation_errors)
+
     action_schemas = {}
     for a in action_registry:
         aid = a["action_id"]
@@ -584,8 +638,19 @@ def repair_workflow_with_llm(
   parallel 节点的 branches 为非空数组，每个元素包含 id/entry_node/sub_graph_nodes。
 - params 内部可使用绑定 DSL：{"__from__": "result_of.<node_id>.<field_path>", "__agg__": <identity/count/...>}，
   其中 <node_id> 必须存在且字段需与上游 output_schema 或 loop.exports 对齐。
-当前有一个 workflow JSON 和一组结构化校验错误 validation_errors。
-validation_errors 是 JSON 数组，元素包含 code/node_id/field/message。
+当前有一个 workflow JSON 和一组结构化校验错误 errors。
+errors 采用以下格式提供，字段 expected/actual_value 可能为空：
+  {
+    "errors": [
+      {
+        "type": "InvalidConditionPath",
+        "message": "false_to_node references a branch that is unreachable",
+        "location": "/nodes/cond_1/false_to_node",
+        "expected": "Node must lead to a valid downstream execution path",
+        "actual_value": "step_8"
+      }
+    ]
+  }
 这些错误来自：
 - action 参数缺失或不符合 arg_schema
 - condition 条件不完整
@@ -652,7 +717,9 @@ validation_errors 是 JSON 数组，元素包含 code/node_id/field/message。
                 {
                     "workflow": broken_workflow,
                     "validation_error_summary": error_summary,
+                    # "validation_errors" is kept for backward compatibility, "errors" follows the latest LLM contract.
                     "validation_errors": [asdict(e) for e in validation_errors],
+                    "errors": formatted_errors.get("errors", []),
                     "previous_failed_attempts": previous_failed_attempts,
                     "action_schemas": action_schemas,
                 },
