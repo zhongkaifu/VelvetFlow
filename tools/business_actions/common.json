@@ -222,6 +222,85 @@
     "enabled": true
   },
   {
+    "action_id": "common.web_scraper.search_and_crawl.v1",
+    "name": "Search then crawl with LLM guidance",
+    "domain": "common",
+    "description": "接收自然语言需求，先进行网页搜索得到链接，再调用 LLM 爬虫深入抓取并回答问题。",
+    "tool_name": "web_scraper.search_and_crawl",
+    "tags": [
+      "web-scraping",
+      "crawler",
+      "llm",
+      "search",
+      "automation"
+    ],
+    "arg_schema": {
+      "type": "object",
+      "properties": {
+        "goal": {
+          "type": "string",
+          "description": "用户的自然语言需求，会作为搜索 query 以及爬虫的目标。"
+        },
+        "search_limit": {
+          "type": "integer",
+          "default": 5,
+          "description": "从搜索结果中提取的最大 URL 数量。"
+        },
+        "max_pages": {"type": "integer", "default": 40, "description": "LLM 爬虫最多抓取的页面数量。"},
+        "same_domain_only": {"type": "boolean", "default": true, "description": "是否限制只抓取同域名链接。"},
+        "concurrency": {"type": "integer", "default": 2, "description": "爬虫的并发抓取数。"},
+        "politeness_delay": {"type": "number", "default": 0.8, "description": "相邻抓取请求之间的延迟（秒）。"},
+        "llm_model": {"type": "string", "default": "gpt-4o-mini", "description": "用于决策与总结的 LLM 模型。"},
+        "openai_api_key": {"type": "string", "description": "可选的 OpenAI API Key，缺省时读取环境变量。"},
+        "page_md_chars": {"type": "integer", "default": 9000, "description": "单页提取 Markdown 的最大字符数。"},
+        "goal_check_interval": {"type": "integer", "default": 10, "description": "每抓取多少页让 LLM 判断是否满足目标。"},
+        "min_enqueue_score": {"type": "integer", "default": 55, "description": "入队下一步抓取链接的最低得分阈值。"},
+        "timeout_ms": {"type": "integer", "default": 20000, "description": "单页抓取的超时时间（毫秒）。"}
+      },
+      "required": [
+        "goal"
+      ]
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "query": {"type": "string", "description": "规范化后的用户需求。"},
+        "seed_urls": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "从搜索结果抽取的起始 URL 列表。"
+        },
+        "search_results": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "title": {"type": "string"},
+              "url": {"type": "string"},
+              "snippet": {"type": "string", "description": "搜索结果的摘要。"}
+            },
+            "required": [
+              "title",
+              "url",
+              "snippet"
+            ]
+          },
+          "description": "网页搜索返回的结果列表。"
+        },
+        "crawl_result": {
+          "type": "object",
+          "description": "common.web_scraper.llm_crawl.v1 的执行结果。"
+        }
+      },
+      "required": [
+        "query",
+        "seed_urls",
+        "crawl_result"
+      ]
+    },
+    "enabled": true
+  },
+  {
     "action_id": "common.join_list.v1",
     "name": "Join list of strings",
     "domain": "common",
