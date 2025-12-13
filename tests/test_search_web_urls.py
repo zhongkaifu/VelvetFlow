@@ -14,17 +14,6 @@ def _install_dummy_module(name: str, attrs: dict[str, object]) -> None:
     sys.modules[name] = module
 
 
-_install_dummy_module(
-    "crawl4ai",
-    {
-        "AsyncWebCrawler": object,
-        "BrowserConfig": object,
-        "CacheMode": object,
-        "CrawlerRunConfig": object,
-        "LLMConfig": object,
-    },
-)
-_install_dummy_module("crawl4ai.extraction_strategy", {"LLMExtractionStrategy": object})
 _install_dummy_module("openai", {"OpenAI": object})
 
 from tools.builtin import _normalize_web_url, _resolve_search_url

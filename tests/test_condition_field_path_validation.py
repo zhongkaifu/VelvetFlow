@@ -2,26 +2,11 @@
 # License: BSD 3-Clause License
 
 import sys
-import types
 from pathlib import Path
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
-
-# Provide stub modules for optional dependencies used by executor
-crawl4ai = types.ModuleType("crawl4ai")
-crawl4ai.AsyncWebCrawler = None
-crawl4ai.BrowserConfig = None
-crawl4ai.CacheMode = None
-crawl4ai.CrawlerRunConfig = None
-crawl4ai.LLMConfig = None
-sys.modules.setdefault("crawl4ai", crawl4ai)
-sys.modules.setdefault(
-    "crawl4ai.extraction_strategy",
-    types.ModuleType("crawl4ai.extraction_strategy"),
-)
-sys.modules["crawl4ai.extraction_strategy"].LLMExtractionStrategy = None
 
 from velvetflow.action_registry import BUSINESS_ACTIONS
 from velvetflow.executor import DynamicActionExecutor
@@ -39,28 +24,32 @@ def _workflow_with_extracted_content_field():
         "nodes": [
             {"id": "start", "type": "start"},
             {
-                "id": "scrape_news",
+                "id": "log_health_event",
                 "type": "action",
-                "action_id": "common.scrape_web_page.v1",
-                "params": {
-                    "urls": ["https://example.com"],
-                    "user_request": "news summary",
-                },
+                "action_id": "hr.record_health_event.v1",
+                "params": {"event_type": "fever"},
+            },
+            {
+                "id": "finish_log",
+                "type": "action",
+                "action_id": "productivity.compose_outlook_email.v1",
+                "params": {"email_content": "done"},
             },
             {
                 "id": "check_results",
                 "type": "condition",
                 "params": {
                     "kind": "not_empty",
-                    "source": "result_of.scrape_news.extracted_content",
+                    "source": "result_of.log_health_event.event_id",
                 },
-                "true_to_node": None,
+                "true_to_node": "finish_log",
                 "false_to_node": None,
             },
         ],
         "edges": [
-            {"from": "start", "to": "scrape_news"},
-            {"from": "scrape_news", "to": "check_results"},
+            {"from": "start", "to": "log_health_event"},
+            {"from": "log_health_event", "to": "check_results"},
+            {"from": "check_results", "to": "finish_log", "condition": True},
         ],
     }
 
@@ -170,24 +159,31 @@ def test_condition_validation_accepts_loop_export_field_schema():
                     },
                 },
             },
-            {
-                "id": "cond_warning_list_not_empty",
-                "type": "condition",
-                "params": {
-                    "source": "result_of.loop_check_temperature.exports.items",
-                    "field": "employee_id",
-                    "kind": "list_not_empty",
+                {
+                    "id": "cond_warning_list_not_empty",
+                    "type": "condition",
+                    "params": {
+                        "source": "result_of.loop_check_temperature.exports.items",
+                        "field": "employee_id",
+                        "kind": "list_not_empty",
+                    },
+                    "true_to_node": "notify_team",
+                    "false_to_node": None,
                 },
-                "true_to_node": None,
-                "false_to_node": None,
-            },
-        ],
-        "edges": [
-            {"from": "start", "to": "get_temperatures"},
-            {"from": "get_temperatures", "to": "loop_check_temperature"},
-            {"from": "loop_check_temperature", "to": "cond_warning_list_not_empty"},
-        ],
-    }
+                {
+                    "id": "notify_team",
+                    "type": "action",
+                    "action_id": "productivity.compose_outlook_email.v1",
+                    "params": {"email_content": "alert"},
+                },
+            ],
+            "edges": [
+                {"from": "start", "to": "get_temperatures"},
+                {"from": "get_temperatures", "to": "loop_check_temperature"},
+                {"from": "loop_check_temperature", "to": "cond_warning_list_not_empty"},
+                {"from": "cond_warning_list_not_empty", "to": "notify_team", "condition": True},
+            ],
+        }
 
     errors = validate_completed_workflow(workflow, action_registry=ACTION_REGISTRY)
 
@@ -514,8 +510,8 @@ def test_executor_uses_field_value_for_not_empty():
     executor = DynamicActionExecutor(
         workflow,
         simulations={
-            "common.scrape_web_page.v1": {
-                "result": {"status": "ok", "extracted_content": "breaking news"}
+            "hr.record_health_event.v1": {
+                "result": {"status": "ok", "event_id": "event-123"}
             }
         },
     )
@@ -526,7 +522,7 @@ def test_executor_uses_field_value_for_not_empty():
     resolved_value = results["check_results"].get("resolved_value")
 
     assert condition_result is True
-    assert resolved_value == "breaking news"
+    assert resolved_value == "event-123"
 
 
 def _workflow_with_numeric_field(field: str):
@@ -550,13 +546,20 @@ def _workflow_with_numeric_field(field: str):
                     "field": field,
                     "threshold": 37,
                 },
-                "true_to_node": None,
+                "true_to_node": "notify_temp_check",
                 "false_to_node": None,
+            },
+            {
+                "id": "notify_temp_check",
+                "type": "action",
+                "action_id": "productivity.compose_outlook_email.v1",
+                "params": {"email_content": "temperature review"},
             },
         ],
         "edges": [
             {"from": "start", "to": "temperatures"},
             {"from": "temperatures", "to": "check_temperature"},
+            {"from": "check_temperature", "to": "notify_temp_check", "condition": True},
         ],
     }
 
