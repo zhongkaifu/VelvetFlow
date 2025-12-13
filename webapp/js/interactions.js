@@ -272,11 +272,30 @@ editorResizeObserver.observe(workflowEditor);
 window.addEventListener("resize", () => render(currentTab));
 window.addEventListener("resize", autoSizeEditor);
 
-populateActionSelect();
-setSelectedNodeType(selectedNodeType);
-loadActionCatalog();
-updateEditor();
-updateZoomLabel();
-render();
-appendLog("当前 workflow 为空，请输入需求开始规划或自行编辑 JSON。");
-addChatMessage("你好，我是 VelvetFlow Agent，请描述你的业务需求。", "agent");
+let hasShownWelcome = false;
+
+function showWelcomeMessage() {
+  if (hasShownWelcome) return;
+  addChatMessage("你好，我是 VelvetFlow Agent，请描述你的业务需求。", "agent");
+  if (userInput) {
+    userInput.focus();
+  }
+  hasShownWelcome = true;
+}
+
+function bootstrapApp() {
+  populateActionSelect();
+  setSelectedNodeType(selectedNodeType);
+  loadActionCatalog();
+  updateEditor();
+  updateZoomLabel();
+  render();
+  appendLog("当前 workflow 为空，请输入需求开始规划或自行编辑 JSON。");
+  showWelcomeMessage();
+}
+
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", bootstrapApp);
+} else {
+  bootstrapApp();
+}
