@@ -1684,15 +1684,29 @@ function syncPositions(workflow, tabId) {
   return nextPositions;
 }
 
-function drawNode(node, pos, mode) {
+function layoutPortAnchors(labels = [], pos, width, height, side) {
+  const count = Math.max(1, labels.length || 0);
+  const top = pos.y - height / 2 + 64;
+  const bottom = pos.y + height / 2 - 30;
+  const available = Math.max(32, bottom - top);
+  const gap = available / (count + 1);
+  const x = side === "left" ? pos.x - width / 2 : pos.x + width / 2;
+  const anchors = [];
+  for (let i = 0; i < count; i += 1) {
+    anchors.push({
+      x,
+      y: top + gap * (i + 1),
+      label: labels[i] || `${side === "left" ? "in" : "out"}${i + 1}`,
+      side,
+    });
+  }
+  return anchors;
+}
+
+function measureNode(node, pos, mode) {
   const radius = 16;
   const width = NODE_WIDTH;
   const { inputs, outputs, toolLabel, runtimeInputs, runtimeOutputs } = describeNode(node);
-  const runInfo = lastRunResults[node.id];
-  const executed = runInfo !== undefined;
-  const executionStyle = executed
-    ? { fill: "rgba(74, 222, 128, 0.14)", stroke: "rgba(34, 197, 94, 0.9)", badgeBg: "rgba(74, 222, 128, 0.16)", badgeText: "#4ade80", label: "已执行" }
-    : { fill: "rgba(255, 255, 255, 0.04)", stroke: "rgba(255, 255, 255, 0.12)", badgeBg: "rgba(148, 163, 184, 0.18)", badgeText: "#cbd5e1", label: "未执行" };
   const contentLines = [];
   if (toolLabel) contentLines.push(`工具: ${toolLabel}`);
   contentLines.push(`入参: ${inputs.length ? inputs.join(", ") : "-"}`);
@@ -1709,6 +1723,58 @@ function drawNode(node, pos, mode) {
   const baseHeight = 90;
   const dynamicHeight = wrappedLines.length * 18;
   const height = baseHeight + dynamicHeight;
+
+  const portAnchors = {
+    inputs: layoutPortAnchors(inputs, pos, width, height, "left"),
+    outputs: layoutPortAnchors(outputs, pos, width, height, "right"),
+  };
+
+  return {
+    radius,
+    width,
+    height,
+    inputs,
+    outputs,
+    toolLabel,
+    runtimeInputs,
+    runtimeOutputs,
+    wrappedLines,
+    portAnchors,
+  };
+}
+
+function drawPort(anchor) {
+  const bubbleColor = anchor.side === "left" ? "#22d3ee" : "#c084fc";
+  ctx.save();
+  ctx.fillStyle = "rgba(15, 23, 42, 0.7)";
+  ctx.strokeStyle = "rgba(148, 163, 184, 0.7)";
+  ctx.lineWidth = 1.4;
+  ctx.beginPath();
+  ctx.arc(anchor.x, anchor.y, 8, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+
+  ctx.beginPath();
+  ctx.fillStyle = bubbleColor;
+  ctx.arc(anchor.x, anchor.y, 4, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.font = "13px Inter";
+  ctx.fillStyle = "#cbd5e1";
+  ctx.textAlign = anchor.side === "left" ? "left" : "right";
+  const offset = anchor.side === "left" ? 14 : -14;
+  ctx.fillText(anchor.label, anchor.x + offset, anchor.y + 4);
+  ctx.restore();
+}
+
+function drawNode(node, pos, mode, geometry = measureNode(node, pos, mode)) {
+  const { radius, width, height, inputs, outputs, toolLabel, runtimeInputs, runtimeOutputs, wrappedLines, portAnchors } =
+    geometry;
+  const runInfo = lastRunResults[node.id];
+  const executed = runInfo !== undefined;
+  const executionStyle = executed
+    ? { fill: "rgba(74, 222, 128, 0.14)", stroke: "rgba(34, 197, 94, 0.9)", badgeBg: "rgba(74, 222, 128, 0.16)", badgeText: "#4ade80", label: "已执行" }
+    : { fill: "rgba(255, 255, 255, 0.04)", stroke: "rgba(255, 255, 255, 0.12)", badgeBg: "rgba(148, 163, 184, 0.18)", badgeText: "#cbd5e1", label: "未执行" };
 
   const typeColors = {
     start: "#22d3ee",
@@ -1758,6 +1824,9 @@ function drawNode(node, pos, mode) {
     ctx.fillText(line, pos.x - width / 2 + 14, offsetY);
     offsetY += 18;
   });
+
+  portAnchors.inputs.forEach(drawPort);
+  portAnchors.outputs.forEach(drawPort);
   ctx.restore();
 
   return {
@@ -1766,6 +1835,8 @@ function drawNode(node, pos, mode) {
     y: pos.y - height / 2,
     width,
     height,
+    inputs: portAnchors.inputs,
+    outputs: portAnchors.outputs,
   };
 }
 
@@ -1773,10 +1844,10 @@ function drawArrow(from, to, label) {
   const dx = to.x - from.x;
   const dy = to.y - from.y;
   const angle = Math.atan2(dy, dx);
-  const startX = from.x + Math.cos(angle) * 80;
-  const startY = from.y + Math.sin(angle) * 32;
-  const endX = to.x - Math.cos(angle) * 80;
-  const endY = to.y - Math.sin(angle) * 32;
+  const startX = from.x + Math.cos(angle) * 14;
+  const startY = from.y + Math.sin(angle) * 14;
+  const endX = to.x - Math.cos(angle) * 14;
+  const endY = to.y - Math.sin(angle) * 14;
 
   ctx.save();
   ctx.strokeStyle = "rgba(148, 163, 184, 0.8)";
@@ -1805,6 +1876,13 @@ function drawArrow(from, to, label) {
     ctx.fillText(String(label), 0, -6);
   }
   ctx.restore();
+}
+
+function pickPortAnchor(portList, usageMap, usageKey, fallback) {
+  if (!portList || !portList.length) return fallback;
+  const index = usageMap[usageKey] || 0;
+  usageMap[usageKey] = index + 1;
+  return portList[Math.min(index, portList.length - 1)];
 }
 
 function buildDisplayEdges(graph) {
@@ -1854,19 +1932,43 @@ function render(mode = currentTab) {
   if (!graph.nodes) return;
   lastPositions = syncPositions(graph, tabKey);
 
+  const nodeGeometries = {};
+  (graph.nodes || []).forEach((node) => {
+    const pos = lastPositions[node.id];
+    if (pos) {
+      nodeGeometries[node.id] = measureNode(node, pos, mode);
+    }
+  });
+
   const edges = buildDisplayEdges(graph);
+  const portUsage = { inputs: {}, outputs: {} };
   edges.forEach((edge) => {
     const from = lastPositions[edge.from_node];
     const to = lastPositions[edge.to_node];
     if (from && to) {
-      drawArrow(from, to, edge.condition);
+      const fromGeom = nodeGeometries[edge.from_node];
+      const toGeom = nodeGeometries[edge.to_node];
+      const fromAnchor = pickPortAnchor(
+        fromGeom && fromGeom.portAnchors ? fromGeom.portAnchors.outputs : null,
+        portUsage.outputs,
+        edge.from_node,
+        from,
+      );
+      const toAnchor = pickPortAnchor(
+        toGeom && toGeom.portAnchors ? toGeom.portAnchors.inputs : null,
+        portUsage.inputs,
+        edge.to_node,
+        to,
+      );
+      drawArrow(fromAnchor, toAnchor, edge.condition);
     }
   });
 
   graph.nodes.forEach((node) => {
     const pos = lastPositions[node.id];
     if (pos) {
-      const box = drawNode(node, pos, mode);
+      const geometry = nodeGeometries[node.id];
+      const box = drawNode(node, pos, mode, geometry);
       if (box) renderedNodes.push(box);
     }
   });
