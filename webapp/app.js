@@ -1,3 +1,34 @@
+import {
+  createEmptyWorkflow,
+  generateNodeId,
+  createDefaultNode,
+  normalizeEdge,
+  normalizeWorkflow,
+  describeNode,
+  summarizeValue,
+  paramsSchemaFor,
+  outputSchemaFor,
+  extractParamDefs,
+  extractOutputDefs,
+  parseBinding,
+  stringifyBinding,
+  collectLoopExportOptions,
+  collectRefsFromValue,
+} from "./workflow-utils.js";
+import {
+  resizeCanvas,
+  applyViewTransform,
+  layoutNodes,
+  measureNode,
+  drawNode,
+  drawArrow,
+  pickPortAnchor,
+  buildDisplayEdges,
+  findNodeByPoint,
+  findPortHit,
+  findAnchorByLabel,
+} from "./canvas-renderer.js";
+
 const workflowCanvas = document.getElementById("workflowCanvas");
 const ctx = workflowCanvas.getContext("2d");
 const chatLog = document.getElementById("chatLog");
@@ -29,7 +60,6 @@ const zoomOutBtn = document.getElementById("zoomOut");
 const resetViewBtn = document.getElementById("resetView");
 const zoomValue = document.getElementById("zoomValue");
 
-const NODE_WIDTH = 320;
 const MIN_SCALE = 0.5;
 const MAX_SCALE = 2.5;
 const SCALE_STEP = 0.1;
@@ -54,6 +84,7 @@ let isPanning = false;
 let panStart = { x: 0, y: 0 };
 let panOrigin = { x: 0, y: 0 };
 let viewState = { scale: 1, offset: { x: 0, y: 0 } };
+let linkingEdge = null;
 
 async function loadActionCatalog() {
   try {
@@ -89,84 +120,6 @@ function populateActionSelect(target = addNodeActionSelect) {
     option.textContent = `${action.action_id}${action.name ? ` · ${action.name}` : ""}`;
     target.appendChild(option);
   });
-}
-
-function createEmptyWorkflow() {
-  return {
-    workflow_name: "",
-    description: "",
-    nodes: [],
-    edges: [],
-  };
-}
-
-function generateNodeId(prefix, graph = currentWorkflow) {
-  const existing = new Set((graph.nodes || []).map((n) => n.id));
-  const base = prefix || "node";
-  let counter = 1;
-  let candidate = `${base}_${counter}`;
-  while (existing.has(candidate)) {
-    counter += 1;
-    candidate = `${base}_${counter}`;
-  }
-  return candidate;
-}
-
-function createDefaultNode(type, graph = currentWorkflow, options = {}) {
-  const id = generateNodeId(type, graph);
-  const display = options.display_name || `${type} ${id}`;
-
-  if (type === "action") {
-    const defaultAction = options.action_id || Object.keys(actionCatalog)[0] || "custom_action";
-    return {
-      id,
-      type: "action",
-      action_id: defaultAction,
-      display_name: display,
-      params: {},
-    };
-  }
-
-  if (type === "condition") {
-    return {
-      id,
-      type: "condition",
-      display_name: display,
-      params: {},
-      true_to_node: "",
-      false_to_node: "",
-    };
-  }
-
-  if (type === "loop") {
-    return {
-      id,
-      type: "loop",
-      display_name: display,
-      params: {
-        body_subgraph: { nodes: [], edges: [] },
-        exports: {},
-      },
-    };
-  }
-
-  return { id, type, display_name: display };
-}
-
-function normalizeEdge(edge) {
-  if (Array.isArray(edge) && edge.length >= 2) {
-    return { from_node: edge[0], to_node: edge[1], condition: edge[2] };
-  }
-  return {
-    from_node: edge.from_node || edge.from,
-    to_node: edge.to_node || edge.to,
-    condition: edge.condition,
-  };
-}
-
-function normalizeWorkflow(workflow) {
-  const edges = Array.isArray(workflow.edges) ? workflow.edges.map(normalizeEdge) : [];
-  return { ...workflow, edges };
 }
 
 function refreshTabCollections() {
@@ -741,160 +694,17 @@ function closeAllLoopTabs(force = false) {
     });
 }
 
-function collectParamKeys(value) {
-  if (!value) return [];
-  if (Array.isArray(value)) return value.map(String);
-  if (typeof value === "object") return Object.keys(value);
-  return [String(value)];
-}
-
-function describeNode(node) {
-  const inputs = collectParamKeys(node.inputs || node.input_params || node.params || node.args);
-  const outputs = collectParamKeys(node.outputs || node.output_params || node.output);
-  const toolLabel = node.type === "action" ? node.action_id || node.display_name || node.id : null;
-  const runInfo = lastRunResults[node.id];
-  const runtimeInputs = runInfo && runInfo.params ? runInfo.params : undefined;
-  const runtimeOutputs = runInfo
-    ? Object.keys(runInfo)
-        .filter((key) => key !== "params")
-        .reduce((acc, key) => ({ ...acc, [key]: runInfo[key] }), {})
-    : undefined;
-  return {
-    inputs,
-    outputs,
-    toolLabel,
-    runtimeInputs,
-    runtimeOutputs,
-  };
-}
-
-function summarizeValue(value, limit = 160) {
-  try {
-    const text = typeof value === "string" ? value : JSON.stringify(value);
-    if (text.length > limit) return `${text.slice(0, limit)}…`;
-    return text;
-  } catch (error) {
-    return String(value);
-  }
-}
-
-function paramsSchemaFor(actionId) {
-  const action = actionCatalog[actionId];
-  return (action && (action.params_schema || action.arg_schema)) || {};
-}
-
-function outputSchemaFor(actionId, node) {
-  if (node && node.out_params_schema) return node.out_params_schema;
-  const action = actionCatalog[actionId];
-  return (action && (action.output_schema || action.out_params_schema)) || {};
-}
-
-function extractParamDefs(schema) {
-  const properties = schema && typeof schema === "object" ? schema.properties || {} : {};
-  const required = Array.isArray(schema && schema.required) ? schema.required : [];
-  return Object.entries(properties).map(([name, def]) => ({
-    name,
-    type: def && def.type ? def.type : "",
-    description: def && def.description ? def.description : "",
-    required: required.includes(name),
-  }));
-}
-
-function extractOutputDefs(schema) {
-  const properties = schema && typeof schema === "object" ? schema.properties || {} : {};
-  const required = Array.isArray(schema && schema.required) ? schema.required : [];
-  return Object.entries(properties).map(([name, def]) => ({
-    name,
-    type: def && def.type ? def.type : "",
-    description: def && def.description ? def.description : "",
-    required: required.includes(name),
-  }));
-}
-
-function stringifyBinding(value) {
-  if (value && typeof value === "object" && value.__from__) return String(value.__from__);
-  if (value === null || value === undefined) return "";
-  if (typeof value === "string") return value;
-  try {
-    return JSON.stringify(value);
-  } catch (error) {
-    return String(value);
-  }
-}
-
-function parseBinding(text) {
-  const trimmed = text.trim();
-  if (!trimmed) return undefined;
-  if (trimmed.startsWith("result_of.")) {
-    return { __from__: trimmed };
-  }
-  try {
-    return JSON.parse(trimmed);
-  } catch (error) {
-    return trimmed;
-  }
-}
-
-function collectLoopExportOptions(node) {
-  if (!node || node.type !== "loop") return [];
-  const params = node.params || {};
-  const exportsSpec = params.exports || {};
-  const base = `result_of.${node.id}.exports`;
-  const options = [];
-
-  const items = exportsSpec.items;
-  if (items) {
-    options.push(`${base}.items`);
-    const fields = Array.isArray(items.fields) ? items.fields : [];
-    fields.forEach((field) => {
-      const key = String(field);
-      options.push(`${base}.items.${key}`);
-      options.push(`${base}.items[*].${key}`);
-    });
-    options.push(`${base}.items.length`);
-  }
-
-  const aggregates = Array.isArray(exportsSpec.aggregates) ? exportsSpec.aggregates : [];
-  aggregates.forEach((agg) => {
-    if (agg && agg.name) {
-      options.push(`${base}.aggregates.${agg.name}`);
-    }
-  });
-
-  return options;
-}
-
 function collectReferenceOptions(currentNodeId, graph = currentWorkflow) {
   const options = new Set();
   (graph.nodes || []).forEach((node) => {
     if (!node || node.id === currentNodeId) return;
-    const outputs = extractOutputDefs(outputSchemaFor(node.action_id, node));
+    const outputs = extractOutputDefs(outputSchemaFor(node.action_id, node, actionCatalog));
     outputs.forEach((field) => {
       options.add(`result_of.${node.id}.${field.name}`);
     });
     collectLoopExportOptions(node).forEach((opt) => options.add(opt));
   });
   return Array.from(options);
-}
-
-function collectRefsFromValue(value, refs) {
-  if (!value) return;
-  if (Array.isArray(value)) {
-    value.forEach((item) => collectRefsFromValue(item, refs));
-    return;
-  }
-  if (typeof value === "object") {
-    if (value.__from__ && typeof value.__from__ === "string" && value.__from__.startsWith("result_of.")) {
-      const parts = value.__from__.split(".");
-      if (parts.length >= 2) refs.add(parts[1]);
-    }
-    Object.values(value).forEach((v) => collectRefsFromValue(v, refs));
-    return;
-  }
-  if (typeof value === "string" && value.startsWith("result_of.")) {
-    const parts = value.split(".");
-    if (parts.length >= 2) refs.add(parts[1]);
-  }
 }
 
 function rebuildEdgesFromBindings(workflow) {
@@ -938,7 +748,7 @@ function addNodeToCurrentGraph(options = {}) {
   const newNode = createDefaultNode(type, graph, {
     display_name: displayName,
     action_id: actionId,
-  });
+  }, actionCatalog);
 
   const updatedGraph = { ...graph, nodes: [...(graph.nodes || []), newNode] };
   context.saveGraph(updatedGraph);
@@ -1110,7 +920,7 @@ function openNodeDialog(node, context = getTabContext()) {
     inputsContainer.innerHTML = "";
     outputsContainer.innerHTML = "";
 
-    const paramDefs = extractParamDefs(paramsSchemaFor(actionId));
+    const paramDefs = extractParamDefs(paramsSchemaFor(actionId, actionCatalog));
     const refOptions = collectReferenceOptions(node.id, context.graph || currentWorkflow);
     paramDefs.forEach((param) => {
       const row = document.createElement("label");
@@ -1139,7 +949,7 @@ function openNodeDialog(node, context = getTabContext()) {
       inputsContainer.appendChild(row);
     });
 
-    const outputDefs = extractOutputDefs(outputSchemaFor(actionId, node));
+    const outputDefs = extractOutputDefs(outputSchemaFor(actionId, node, actionCatalog));
     outputDefs.forEach((out) => {
       const item = document.createElement("div");
       item.className = "modal__output";
@@ -1415,253 +1225,6 @@ function openConditionDialog(node, context = getTabContext()) {
   });
 }
 
-function wrapText(text, maxWidth, font = "15px Inter") {
-  if (!text) return [];
-  ctx.save();
-  ctx.font = font;
-  const words = String(text).split("");
-  const lines = [];
-  let line = "";
-  words.forEach((ch) => {
-    const candidate = line + ch;
-    if (ctx.measureText(candidate).width <= maxWidth) {
-      line = candidate;
-    } else {
-      if (line) lines.push(line);
-      line = ch;
-    }
-  });
-  if (line) lines.push(line);
-  ctx.restore();
-  return lines.length ? lines : [text];
-}
-
-function estimateNodeHeight(node) {
-  const { inputs, outputs, toolLabel, runtimeInputs, runtimeOutputs } = describeNode(node);
-  const contentLines = [];
-  if (toolLabel) contentLines.push(`工具: ${toolLabel}`);
-  contentLines.push(`入参: ${inputs.length ? inputs.join(", ") : "-"}`);
-  contentLines.push(`出参: ${outputs.length ? outputs.join(", ") : "-"}`);
-
-  if (runtimeInputs !== undefined) {
-    contentLines.push(`运行入参: ${summarizeValue(runtimeInputs)}`);
-  }
-  if (runtimeOutputs !== undefined && Object.keys(runtimeOutputs).length > 0) {
-    contentLines.push(`运行结果: ${summarizeValue(runtimeOutputs)}`);
-  }
-
-  const wrappedLines = contentLines.flatMap((line) => wrapText(line, NODE_WIDTH - 28, "15px Inter"));
-  const baseHeight = 90;
-  const dynamicHeight = wrappedLines.length * 18;
-  return baseHeight + dynamicHeight;
-}
-
-function estimateWorkflowHeight(workflow, widthHint = 1200, heightHint = 720) {
-  const nodes = workflow && Array.isArray(workflow.nodes) ? workflow.nodes : [];
-  if (!nodes.length) return Math.max(420, heightHint);
-
-  const { meta } = layoutNodes(workflow, { width: widthHint, heightHint });
-  if (meta && meta.height) return meta.height;
-
-  const columns = Math.max(2, Math.ceil(Math.sqrt(nodes.length)));
-  const rows = Math.ceil(nodes.length / columns);
-  const tallest = Math.max(...nodes.map(estimateNodeHeight), 120);
-  const verticalSpacing = 70;
-  const padding = 140;
-  return rows * (tallest + verticalSpacing) + padding;
-}
-
-function measureHiddenHeight(element) {
-  if (!element) return 0;
-  if (!element.classList.contains("tab-content--hidden")) {
-    return element.getBoundingClientRect().height;
-  }
-
-  const prevDisplay = element.style.display;
-  const prevVisibility = element.style.visibility;
-  const prevPosition = element.style.position;
-  element.style.display = "flex";
-  element.style.visibility = "hidden";
-  element.style.position = "absolute";
-  const height = element.getBoundingClientRect().height;
-  element.style.display = prevDisplay;
-  element.style.visibility = prevVisibility;
-  element.style.position = prevPosition;
-  return height;
-}
-
-function resizeCanvas(graph) {
-  const dpr = window.devicePixelRatio || 1;
-  const panelWidth = canvasPanel ? canvasPanel.getBoundingClientRect().width : workflowCanvas.clientWidth;
-  const targetWidth = Math.max(480, panelWidth - 16);
-
-  const viewportBase = Math.max(420, window.innerHeight - 260);
-  const contentHeight = estimateWorkflowHeight(graph || currentWorkflow, targetWidth, viewportBase);
-  const targetHeight = Math.max(viewportBase, contentHeight + 40);
-
-  workflowCanvas.style.width = "100%";
-  workflowCanvas.style.height = `${Math.round(targetHeight)}px`;
-  workflowCanvas.width = Math.floor(targetWidth * dpr);
-  workflowCanvas.height = Math.floor(targetHeight * dpr);
-}
-
-function applyViewTransform() {
-  const dpr = window.devicePixelRatio || 1;
-  const scale = viewState.scale || 1;
-  ctx.setTransform(dpr * scale, 0, 0, dpr * scale, viewState.offset.x * dpr, viewState.offset.y * dpr);
-}
-
-function layoutNodes(workflow, options = {}) {
-  const { nodes = [], edges = [] } = workflow;
-  if (!nodes.length) return { positions: {}, meta: { height: 0, width: 0 } };
-
-  const width = options.width || (workflowCanvas ? workflowCanvas.clientWidth : 1200);
-  const heightHint = options.heightHint || (workflowCanvas ? workflowCanvas.clientHeight : 720);
-
-  const nodeOrder = nodes.map((n) => n.id);
-  const indegree = {};
-  const level = {};
-  const outgoing = {};
-  const incoming = {};
-
-  nodeOrder.forEach((id) => {
-    indegree[id] = 0;
-    level[id] = 0;
-    outgoing[id] = [];
-    incoming[id] = [];
-  });
-
-  edges.forEach((edge) => {
-    const from = edge.from_node || edge.from;
-    const to = edge.to_node || edge.to;
-    if (!from || !to) return;
-    if (indegree[to] === undefined) indegree[to] = 0;
-    if (level[to] === undefined) level[to] = 0;
-    outgoing[from] = outgoing[from] || [];
-    outgoing[from].push(to);
-    incoming[to] = incoming[to] || [];
-    incoming[to].push(from);
-    indegree[to] += 1;
-  });
-
-  const queue = nodeOrder.filter((id) => indegree[id] === 0);
-  const visited = new Set(queue);
-
-  while (queue.length) {
-    const current = queue.shift();
-    const nextLevel = level[current] + 1;
-    (outgoing[current] || []).forEach((neighbor) => {
-      level[neighbor] = Math.max(level[neighbor] || 0, nextLevel);
-      indegree[neighbor] -= 1;
-      if (indegree[neighbor] === 0 && !visited.has(neighbor)) {
-        visited.add(neighbor);
-        queue.push(neighbor);
-      }
-    });
-  }
-
-  // Handle any remaining nodes (cycles or disconnected) by assigning them to the last level.
-  const maxKnownLevel = Math.max(0, ...Object.values(level));
-  nodeOrder.forEach((id) => {
-    if (!visited.has(id)) {
-      level[id] = maxKnownLevel + 1;
-    }
-  });
-
-  const layers = {};
-  nodeOrder.forEach((id) => {
-    const layerIndex = level[id] || 0;
-    if (!layers[layerIndex]) layers[layerIndex] = [];
-    layers[layerIndex].push(id);
-  });
-
-  const layerOrderIndex = {};
-  const sortedLayers = {};
-  const layerKeys = Object.keys(layers)
-    .map((n) => Number(n))
-    .sort((a, b) => a - b);
-
-  layerKeys.forEach((layerIndex, idx) => {
-    const row = layers[layerIndex];
-    const ranked = row
-      .map((id, rawIndex) => {
-        const parents = incoming[id] || [];
-        const parentRanks = parents.map((p) => layerOrderIndex[p]).filter((v) => v !== undefined);
-        const barycenter = parentRanks.length ? parentRanks.reduce((a, b) => a + b, 0) / parentRanks.length : rawIndex;
-        return { id, score: barycenter };
-      })
-      .sort((a, b) => a.score - b.score);
-
-    sortedLayers[layerIndex] = ranked.map((item, order) => {
-      layerOrderIndex[item.id] = order;
-      return item.id;
-    });
-
-    // Encourage continuity by re-evaluating based on outgoing neighbors after parents are placed.
-    if (idx > 0) {
-      const adjusted = sortedLayers[layerIndex]
-        .map((id, order) => {
-          const children = outgoing[id] || [];
-          const childRanks = children.map((c) => layerOrderIndex[c]).filter((v) => v !== undefined);
-          const childScore = childRanks.length
-            ? childRanks.reduce((a, b) => a + b, 0) / childRanks.length
-            : order;
-          return { id, score: (order + childScore) / 2 };
-        })
-        .sort((a, b) => a.score - b.score)
-        .map((item, order) => {
-          layerOrderIndex[item.id] = order;
-          return item.id;
-        });
-
-      sortedLayers[layerIndex] = adjusted;
-    }
-  });
-
-  const topPadding = 80;
-  const bottomPadding = 60;
-  const minGapX = 48;
-  const minGapY = 42;
-  const heightById = nodes.reduce((acc, node) => {
-    acc[node.id] = estimateNodeHeight(node);
-    return acc;
-  }, {});
-  const layerHeights = layerKeys.map((k) => Math.max(...(sortedLayers[k] || layers[k]).map((id) => heightById[id]), 120));
-  const safeHeight = Math.max(400, heightHint - topPadding - bottomPadding);
-  const gapY = Math.max(minGapY, Math.min(160, safeHeight / Math.max(1, layerKeys.length)));
-
-  const positions = {};
-  let currentY = topPadding;
-  layerKeys.forEach((layerIndex) => {
-    const row = sortedLayers[layerIndex] || layers[layerIndex];
-    const rowWidth = row.length * NODE_WIDTH;
-    const gapCount = Math.max(0, row.length - 1);
-    const gapX = Math.max(minGapX, Math.min(200, (width - rowWidth) / Math.max(1, gapCount) - 12));
-    const totalWidth = rowWidth + gapCount * gapX;
-    const startX = width / 2 - totalWidth / 2 + NODE_WIDTH / 2;
-    const rowHeight = layerHeights[layerKeys.indexOf(layerIndex)] || 140;
-    const y = currentY + rowHeight / 2;
-    row.forEach((id, idx) => {
-      positions[id] = {
-        x: startX + idx * (NODE_WIDTH + gapX),
-        y,
-      };
-    });
-    currentY += rowHeight + gapY;
-  });
-
-  const padding = 48;
-  const maxY = Math.max(...Object.entries(positions).map(([id, pos]) => pos.y + (heightById[id] || 0) / 2));
-  const minY = Math.min(...Object.entries(positions).map(([id, pos]) => pos.y - (heightById[id] || 0) / 2));
-  const meta = {
-    width,
-    height: maxY - minY + bottomPadding + padding,
-    bounds: { minY, maxY },
-  };
-
-  return { positions, meta };
-}
-
 function positionStoreFor(tabId) {
   if (!nodePositionsByTab[tabId]) {
     nodePositionsByTab[tabId] = {};
@@ -1673,6 +1236,10 @@ function syncPositions(workflow, tabId) {
   const { positions: auto } = layoutNodes(workflow, {
     width: workflowCanvas ? workflowCanvas.clientWidth : undefined,
     heightHint: workflowCanvas ? workflowCanvas.clientHeight : undefined,
+    ctx,
+    measureCtx: ctx,
+    actionCatalog,
+    lastRunResults,
   });
   const store = positionStoreFor(tabId);
   const nextPositions = {};
@@ -1684,159 +1251,6 @@ function syncPositions(workflow, tabId) {
   return nextPositions;
 }
 
-function drawNode(node, pos, mode) {
-  const radius = 16;
-  const width = NODE_WIDTH;
-  const { inputs, outputs, toolLabel, runtimeInputs, runtimeOutputs } = describeNode(node);
-  const runInfo = lastRunResults[node.id];
-  const executed = runInfo !== undefined;
-  const executionStyle = executed
-    ? { fill: "rgba(74, 222, 128, 0.14)", stroke: "rgba(34, 197, 94, 0.9)", badgeBg: "rgba(74, 222, 128, 0.16)", badgeText: "#4ade80", label: "已执行" }
-    : { fill: "rgba(255, 255, 255, 0.04)", stroke: "rgba(255, 255, 255, 0.12)", badgeBg: "rgba(148, 163, 184, 0.18)", badgeText: "#cbd5e1", label: "未执行" };
-  const contentLines = [];
-  if (toolLabel) contentLines.push(`工具: ${toolLabel}`);
-  contentLines.push(`入参: ${inputs.length ? inputs.join(", ") : "-"}`);
-  contentLines.push(`出参: ${outputs.length ? outputs.join(", ") : "-"}`);
-
-  if (runtimeInputs !== undefined) {
-    contentLines.push(`运行入参: ${summarizeValue(runtimeInputs)}`);
-  }
-  if (runtimeOutputs !== undefined && Object.keys(runtimeOutputs).length > 0) {
-    contentLines.push(`运行结果: ${summarizeValue(runtimeOutputs)}`);
-  }
-
-  const wrappedLines = contentLines.flatMap((line) => wrapText(line, width - 28, "15px Inter"));
-  const baseHeight = 90;
-  const dynamicHeight = wrappedLines.length * 18;
-  const height = baseHeight + dynamicHeight;
-
-  const typeColors = {
-    start: "#22d3ee",
-    end: "#34d399",
-    condition: "#fbbf24",
-    loop: "#a5b4fc",
-    switch: "#7dd3fc",
-    action: "#c084fc",
-  };
-  const fill = typeColors[node.type] || "#94a3b8";
-  ctx.save();
-  ctx.fillStyle = executionStyle.fill;
-  ctx.strokeStyle = executionStyle.stroke;
-  ctx.lineWidth = 1.2;
-  roundedRect(pos.x - width / 2, pos.y - height / 2, width, height, radius);
-  ctx.fill();
-  ctx.stroke();
-
-  ctx.fillStyle = executionStyle.badgeBg;
-  ctx.strokeStyle = executionStyle.stroke;
-  ctx.lineWidth = 1;
-  const badgeWidth = 64;
-  const badgeHeight = 22;
-  roundedRect(pos.x + width / 2 - badgeWidth - 12, pos.y - height / 2 + 12, badgeWidth, badgeHeight, 10);
-  ctx.fill();
-  ctx.stroke();
-  ctx.fillStyle = executionStyle.badgeText;
-  ctx.font = "13px Inter";
-  ctx.textAlign = "center";
-  ctx.fillText(executionStyle.label, pos.x + width / 2 - badgeWidth / 2 - 12, pos.y - height / 2 + 28);
-
-  ctx.fillStyle = fill;
-  ctx.font = "14px Inter";
-  ctx.textAlign = "center";
-  ctx.fillText(node.type.toUpperCase(), pos.x, pos.y - height / 2 + 20);
-
-  ctx.fillStyle = "#e5e7eb";
-  ctx.font = mode === "visual" ? "18px Inter" : "17px Inter";
-  const label = node.display_name || node.action_id || node.id;
-  ctx.fillText(label, pos.x, pos.y - height / 2 + 46);
-
-  ctx.textAlign = "left";
-  ctx.font = "15px Inter";
-  let offsetY = pos.y - height / 2 + 72;
-  wrappedLines.forEach((line) => {
-    ctx.fillStyle = "#cbd5e1";
-    ctx.fillText(line, pos.x - width / 2 + 14, offsetY);
-    offsetY += 18;
-  });
-  ctx.restore();
-
-  return {
-    id: node.id,
-    x: pos.x - width / 2,
-    y: pos.y - height / 2,
-    width,
-    height,
-  };
-}
-
-function drawArrow(from, to, label) {
-  const dx = to.x - from.x;
-  const dy = to.y - from.y;
-  const angle = Math.atan2(dy, dx);
-  const startX = from.x + Math.cos(angle) * 80;
-  const startY = from.y + Math.sin(angle) * 32;
-  const endX = to.x - Math.cos(angle) * 80;
-  const endY = to.y - Math.sin(angle) * 32;
-
-  ctx.save();
-  ctx.strokeStyle = "rgba(148, 163, 184, 0.8)";
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  ctx.moveTo(startX, startY);
-  ctx.lineTo(endX, endY);
-  ctx.stroke();
-
-  ctx.beginPath();
-  ctx.fillStyle = "rgba(148, 163, 184, 0.9)";
-  const arrowSize = 8;
-  ctx.translate(endX, endY);
-  ctx.rotate(angle);
-  ctx.moveTo(0, 0);
-  ctx.lineTo(-arrowSize, arrowSize / 1.6);
-  ctx.lineTo(-arrowSize, -arrowSize / 1.6);
-  ctx.closePath();
-  ctx.fill();
-
-  if (label) {
-    ctx.rotate(-angle);
-    ctx.fillStyle = "#94a3b8";
-    ctx.font = "12px Inter";
-    ctx.textAlign = "center";
-    ctx.fillText(String(label), 0, -6);
-  }
-  ctx.restore();
-}
-
-function buildDisplayEdges(graph) {
-  const normalized = normalizeWorkflow(graph || {});
-  const baseEdges = (normalized.edges || []).map(normalizeEdge);
-  const seen = new Set(baseEdges.map((e) => `${e.from_node}->${e.to_node}`));
-  const displayEdges = [...baseEdges];
-
-  const addEdge = (from, to, condition) => {
-    if (!from || !to) return;
-    const key = `${from}->${to}`;
-    if (seen.has(key)) return;
-    seen.add(key);
-    displayEdges.push({ from_node: from, to_node: to, condition });
-  };
-
-  (normalized.nodes || []).forEach((node) => {
-    if (!node) return;
-
-    if (node.type === "condition") {
-      addEdge(node.id, node.true_to_node, "true");
-      addEdge(node.id, node.false_to_node, "false");
-    }
-
-    const refs = new Set();
-    collectRefsFromValue(node.params, refs);
-    refs.forEach((fromId) => addEdge(fromId, node.id));
-  });
-
-  return displayEdges;
-}
-
 function render(mode = currentTab) {
   const context = getTabContext(mode);
   const graph = context.graph || currentWorkflow;
@@ -1846,30 +1260,59 @@ function render(mode = currentTab) {
     attachCanvasTo(mode);
   }
 
-  resizeCanvas(graph);
+  resizeCanvas(workflowCanvas, canvasPanel, graph, { viewState }, {
+    ctx,
+    measureCtx: ctx,
+    actionCatalog,
+    lastRunResults,
+  });
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.clearRect(0, 0, workflowCanvas.width, workflowCanvas.height);
-  applyViewTransform();
+  applyViewTransform(ctx, viewState);
   renderedNodes = [];
   if (!graph.nodes) return;
   lastPositions = syncPositions(graph, tabKey);
 
+  const nodeGeometries = {};
+  (graph.nodes || []).forEach((node) => {
+    const pos = lastPositions[node.id];
+    if (pos) {
+      nodeGeometries[node.id] = measureNode(node, pos, mode, ctx, actionCatalog, lastRunResults);
+    }
+  });
+
   const edges = buildDisplayEdges(graph);
+  const portUsage = { inputs: {}, outputs: {} };
   edges.forEach((edge) => {
     const from = lastPositions[edge.from_node];
     const to = lastPositions[edge.to_node];
     if (from && to) {
-      drawArrow(from, to, edge.condition);
+      const fromGeom = nodeGeometries[edge.from_node];
+      const toGeom = nodeGeometries[edge.to_node];
+      const fromPorts = fromGeom && fromGeom.portAnchors ? fromGeom.portAnchors.outputs : null;
+      const toPorts = toGeom && toGeom.portAnchors ? toGeom.portAnchors.inputs : null;
+      const fromAnchor =
+        findAnchorByLabel(fromPorts, edge.from_field) ||
+        pickPortAnchor(fromPorts, portUsage.outputs, edge.from_node, from);
+      const toAnchor =
+        findAnchorByLabel(toPorts, edge.to_field) || pickPortAnchor(toPorts, portUsage.inputs, edge.to_node, to);
+      drawArrow(ctx, fromAnchor, toAnchor, edge.condition);
     }
   });
 
   graph.nodes.forEach((node) => {
     const pos = lastPositions[node.id];
     if (pos) {
-      const box = drawNode(node, pos, mode);
+      const geometry = nodeGeometries[node.id];
+      const box = drawNode(node, pos, mode, geometry, ctx, lastRunResults);
       if (box) renderedNodes.push(box);
     }
   });
+
+  if (linkingEdge && linkingEdge.fromAnchor) {
+    const target = linkingEdge.toPoint || linkingEdge.fromAnchor;
+    drawArrow(ctx, linkingEdge.fromAnchor, target);
+  }
 
   drawWatermark();
 }
@@ -1881,21 +1324,6 @@ function drawWatermark() {
   ctx.fillText("VelvetFlow 可视化", 32, workflowCanvas.height - 32);
   ctx.restore();
 }
-
-function roundedRect(x, y, width, height, radius) {
-  ctx.beginPath();
-  ctx.moveTo(x + radius, y);
-  ctx.lineTo(x + width - radius, y);
-  ctx.quadraticCurveTo(x + width, y, x + width, y + radius);
-  ctx.lineTo(x + width, y + height - radius);
-  ctx.quadraticCurveTo(x + width, y + height, x + width - radius, y + height);
-  ctx.lineTo(x + radius, y + height);
-  ctx.quadraticCurveTo(x, y + height, x, y + height - radius);
-  ctx.lineTo(x, y + radius);
-  ctx.quadraticCurveTo(x, y, x + radius, y);
-  ctx.closePath();
-}
-
 function autoSizeEditor() {
   if (!workflowEditor) return;
   const isHidden =
@@ -2196,21 +1624,11 @@ function resetView() {
   render(currentTab);
 }
 
-function findNodeByPoint(point) {
-  return renderedNodes.find(
-    (node) =>
-      point.x >= node.x &&
-      point.x <= node.x + node.width &&
-      point.y >= node.y &&
-      point.y <= node.y + node.height,
-  );
-}
-
 function handleCanvasDoubleClick(event) {
   if (!isCanvasTab(currentTab) || isDragging) return;
   const context = getTabContext(currentTab);
   const point = canvasPointFromEvent(event);
-  const hit = findNodeByPoint(point);
+  const hit = findNodeByPoint(point, renderedNodes);
   if (!hit) return;
   const target = (context.graph.nodes || []).find((n) => n.id === hit.id);
   if (!target) return;
@@ -2226,7 +1644,7 @@ function handleCanvasDoubleClick(event) {
 function handleCanvasContextMenu(event) {
   if (!isCanvasTab(currentTab)) return;
   const point = canvasPointFromEvent(event);
-  const hit = findNodeByPoint(point);
+  const hit = findNodeByPoint(point, renderedNodes);
   event.preventDefault();
   if (hit) return;
   showAddNodeMenu(event);
@@ -2237,7 +1655,14 @@ function handleCanvasMouseDown(event) {
   hideAddNodeMenu();
   if (event.button !== 0) return;
   const point = canvasPointFromEvent(event);
-  const hit = findNodeByPoint(point);
+  const portHit = findPortHit(point, renderedNodes, "right");
+  if (portHit) {
+    linkingEdge = { fromNodeId: portHit.nodeId, fromAnchor: portHit, toPoint: portHit };
+    workflowCanvas.style.cursor = "crosshair";
+    render(currentTab);
+    return;
+  }
+  const hit = findNodeByPoint(point, renderedNodes);
   if (!hit) {
     isPanning = true;
     panStart = { x: event.clientX, y: event.clientY };
@@ -2256,6 +1681,11 @@ function handleCanvasMouseDown(event) {
 
 function handleCanvasMouseMove(event) {
   if (!isCanvasTab(currentTab)) return;
+  if (linkingEdge) {
+    linkingEdge.toPoint = canvasPointFromEvent(event);
+    render(currentTab);
+    return;
+  }
   if (isPanning) {
     const dx = event.clientX - panStart.x;
     const dy = event.clientY - panStart.y;
@@ -2278,6 +1708,109 @@ function handleCanvasMouseMove(event) {
   render(currentTab);
 }
 
+function connectNodes(fromId, toId, context = getTabContext(currentTab), fromAnchor, toAnchor) {
+  if (!fromId || !toId || fromId === toId) return false;
+  const graph = context.graph || currentWorkflow;
+  const normalized = normalizeWorkflow(graph);
+  const fromField = fromAnchor && (fromAnchor.portKey || fromAnchor.label);
+  const toField = toAnchor && (toAnchor.portKey || toAnchor.label);
+
+  const edges = normalized.edges || [];
+  const hasSameLink = edges.some((edge) => {
+    const from = edge.from_node || edge.from;
+    const to = edge.to_node || edge.to;
+    const edgeFromField = edge.from_field || edge.fromField;
+    const edgeToField = edge.to_field || edge.toField;
+    return from === fromId && to === toId && edgeFromField === fromField && edgeToField === toField;
+  });
+
+  const nextEdges = hasSameLink
+    ? edges
+    : [
+        ...edges,
+        {
+          from_node: fromId,
+          to_node: toId,
+          from_field: fromField,
+          to_field: toField,
+        },
+      ];
+
+  const graphWithEdges = { ...normalized, edges: nextEdges };
+  const graphWithBindings = autoBindEdgeParams(graphWithEdges, fromId, toId, { fromField, toField });
+  context.saveGraph(graphWithBindings);
+  const labelHint = fromField && toField ? ` (${fromField} → ${toField})` : "";
+  appendLog(`已连接 ${fromId} → ${toId}${labelHint}`);
+  return true;
+}
+
+function autoBindEdgeParams(graph, fromId, toId, options = {}) {
+  if (!graph || !Array.isArray(graph.nodes)) return graph;
+  const nodes = [...graph.nodes];
+  const fromIndex = nodes.findIndex((n) => n && n.id === fromId);
+  const toIndex = nodes.findIndex((n) => n && n.id === toId);
+  if (fromIndex === -1 || toIndex === -1) return graph;
+
+  const source = nodes[fromIndex];
+  const target = nodes[toIndex];
+  const paramDefs = extractParamDefs(paramsSchemaFor(target.action_id, actionCatalog));
+  if (!paramDefs.length) return graph;
+
+  const outputDefs = extractOutputDefs(outputSchemaFor(source.action_id, source, actionCatalog));
+  const availableOutputs = outputDefs.length
+    ? outputDefs
+    : (describeNode(source, actionCatalog, lastRunResults).outputs || []).map((name) => ({ name }));
+  if (!availableOutputs.length) return graph;
+
+  const nextParams = { ...(target.params || {}) };
+  const bindings = [];
+
+  const { fromField, toField } = options;
+  if (fromField && toField) {
+    const current = nextParams[toField];
+    const matchedExplicit =
+      availableOutputs.find((out) => out && out.name === fromField) ||
+      availableOutputs.find((out) => out && out.name === toField);
+    if ((current === undefined || current === "") && matchedExplicit && matchedExplicit.name) {
+      nextParams[toField] = { __from__: `result_of.${fromId}.${matchedExplicit.name}` };
+      bindings.push(`${toField}←${matchedExplicit.name}`);
+    }
+  }
+
+  paramDefs.forEach((param) => {
+    if (toField && param.name === toField && nextParams[toField] !== undefined && nextParams[toField] !== "") return;
+    const current = nextParams[param.name];
+    if (current !== undefined && current !== "") return;
+    const matched = availableOutputs.find((out) => out && out.name === param.name) || availableOutputs[0];
+    if (!matched || !matched.name) return;
+    nextParams[param.name] = { __from__: `result_of.${fromId}.${matched.name}` };
+    bindings.push(`${param.name}←${matched.name}`);
+  });
+
+  if (!bindings.length) return graph;
+
+  nodes[toIndex] = { ...target, params: nextParams };
+  appendLog(`已自动绑定 ${fromId} 输出到 ${toId} 输入：${bindings.join(", ")}`);
+  return { ...graph, nodes };
+}
+
+function handleCanvasMouseUp(event) {
+  if (!isCanvasTab(currentTab)) return;
+  if (linkingEdge) {
+    const point = canvasPointFromEvent(event);
+    const targetPort = findPortHit(point, renderedNodes, "left");
+    if (targetPort && targetPort.nodeId !== linkingEdge.fromNodeId) {
+      const context = getTabContext(currentTab);
+      connectNodes(linkingEdge.fromNodeId, targetPort.nodeId, context, linkingEdge.fromAnchor, targetPort);
+      if (context.kind === "loop") {
+        markTabDirty(context.tabKey, true);
+      }
+      render(currentTab);
+    }
+  }
+  stopDragging();
+}
+
 function handleCanvasWheel(event) {
   if (!isCanvasTab(currentTab)) return;
   event.preventDefault();
@@ -2288,12 +1821,13 @@ function handleCanvasWheel(event) {
 }
 
 function stopDragging() {
-  if (!isDragging && !isPanning) return;
+  if (!isDragging && !isPanning && !linkingEdge) return;
   isDragging = false;
   dragNodeId = null;
   dragBox = null;
   dragTabKey = null;
   isPanning = false;
+  linkingEdge = null;
   workflowCanvas.style.cursor = "grab";
 }
 
@@ -2332,7 +1866,7 @@ workflowCanvas.addEventListener("dblclick", handleCanvasDoubleClick);
 workflowCanvas.addEventListener("contextmenu", handleCanvasContextMenu);
 workflowCanvas.addEventListener("mousedown", handleCanvasMouseDown);
 workflowCanvas.addEventListener("mousemove", handleCanvasMouseMove);
-workflowCanvas.addEventListener("mouseup", stopDragging);
+workflowCanvas.addEventListener("mouseup", handleCanvasMouseUp);
 workflowCanvas.addEventListener("mouseleave", stopDragging);
 workflowCanvas.addEventListener("wheel", handleCanvasWheel, { passive: false });
 editHelpBtn.addEventListener("click", showEditHelp);
