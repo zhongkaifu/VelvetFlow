@@ -2,25 +2,11 @@
 # License: BSD 3-Clause License
 
 import sys
-import types
 from pathlib import Path
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
-
-crawl4ai = types.ModuleType("crawl4ai")
-crawl4ai.AsyncWebCrawler = None
-crawl4ai.BrowserConfig = None
-crawl4ai.CacheMode = None
-crawl4ai.CrawlerRunConfig = None
-crawl4ai.LLMConfig = None
-sys.modules.setdefault("crawl4ai", crawl4ai)
-sys.modules.setdefault(
-    "crawl4ai.extraction_strategy",
-    types.ModuleType("crawl4ai.extraction_strategy"),
-)
-sys.modules["crawl4ai.extraction_strategy"].LLMExtractionStrategy = None
 
 from velvetflow.action_registry import BUSINESS_ACTIONS
 from velvetflow.bindings import BindingContext
@@ -41,14 +27,14 @@ def _build_workflow_with_list_source():
             {
                 "id": "summarize_nvidia_news",
                 "type": "action",
-                "action_id": "productivity.compose_outlook_email.v1",
-                "params": {"email_content": "nvidia news"},
+                "action_id": "hr.get_today_temperatures.v1",
+                "params": {"date": "2024-01-01"},
             },
             {
                 "id": "summarize_google_news",
                 "type": "action",
-                "action_id": "productivity.compose_outlook_email.v1",
-                "params": {"email_content": "google news"},
+                "action_id": "hr.get_today_temperatures.v1",
+                "params": {"date": "2024-01-02"},
             },
             {
                 "id": "check_all_summarized",
@@ -56,8 +42,8 @@ def _build_workflow_with_list_source():
                 "params": {
                     "kind": "list_not_empty",
                     "source": [
-                        "result_of.summarize_nvidia_news.summary",
-                        "result_of.summarize_google_news.summary",
+                        "result_of.summarize_nvidia_news.data",
+                        "result_of.summarize_google_news.data",
                     ],
                 },
                 "true_to_node": "notify_summary",
@@ -92,8 +78,13 @@ def test_executor_resolves_multiple_condition_sources():
     executor = DynamicActionExecutor(
         workflow,
         simulations={
-            "productivity.compose_outlook_email.v1": {
-                "result": {"summary": "summary content", "status": "simulated"}
+            "hr.get_today_temperatures.v1": {
+                "result": {
+                    "status": "ok",
+                    "data": [
+                        {"employee_id": "a01", "temperature": 36.5},
+                    ],
+                }
             }
         },
     )
@@ -102,8 +93,8 @@ def test_executor_resolves_multiple_condition_sources():
 
     assert results["check_all_summarized"]["condition_result"] is True
     assert results["check_all_summarized"].get("resolved_value") == [
-        "summary content",
-        "summary content",
+        [{"employee_id": "a01", "temperature": 36.5}],
+        [{"employee_id": "a01", "temperature": 36.5}],
     ]
     assert "notify_summary" in results
 
@@ -118,8 +109,8 @@ def test_condition_source_allows_plain_node_id():
                 {
                     "id": "summarize_nvidia_news",
                     "type": "action",
-                    "action_id": "productivity.compose_outlook_email.v1",
-                    "params": {"email_content": "nvidia news"},
+                    "action_id": "hr.get_today_temperatures.v1",
+                    "params": {"date": "2024-01-01"},
                 },
                 {
                     "id": "cond_after_summarize_nvidia",
@@ -142,8 +133,13 @@ def test_condition_source_allows_plain_node_id():
     executor = DynamicActionExecutor(
         workflow,
         simulations={
-            "productivity.compose_outlook_email.v1": {
-                "result": {"summary": "hello", "status": "simulated"}
+            "hr.get_today_temperatures.v1": {
+                "result": {
+                    "status": "ok",
+                    "data": [
+                        {"employee_id": "a01", "temperature": 36.5},
+                    ],
+                }
             }
         },
     )
