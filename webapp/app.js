@@ -54,6 +54,7 @@ let isPanning = false;
 let panStart = { x: 0, y: 0 };
 let panOrigin = { x: 0, y: 0 };
 let viewState = { scale: 1, offset: { x: 0, y: 0 } };
+let linkingEdge = null;
 
 async function loadActionCatalog() {
   try {
@@ -1825,8 +1826,21 @@ function drawNode(node, pos, mode, geometry = measureNode(node, pos, mode)) {
     offsetY += 18;
   });
 
-  portAnchors.inputs.forEach(drawPort);
-  portAnchors.outputs.forEach(drawPort);
+  const annotatedInputs = portAnchors.inputs.map((anchor, index) => ({
+    ...anchor,
+    nodeId: node.id,
+    portIndex: index,
+    portKey: anchor.label || `in${index + 1}`,
+  }));
+  const annotatedOutputs = portAnchors.outputs.map((anchor, index) => ({
+    ...anchor,
+    nodeId: node.id,
+    portIndex: index,
+    portKey: anchor.label || `out${index + 1}`,
+  }));
+
+  annotatedInputs.forEach(drawPort);
+  annotatedOutputs.forEach(drawPort);
   ctx.restore();
 
   return {
@@ -1835,8 +1849,8 @@ function drawNode(node, pos, mode, geometry = measureNode(node, pos, mode)) {
     y: pos.y - height / 2,
     width,
     height,
-    inputs: portAnchors.inputs,
-    outputs: portAnchors.outputs,
+    inputs: annotatedInputs,
+    outputs: annotatedOutputs,
   };
 }
 
@@ -1972,6 +1986,11 @@ function render(mode = currentTab) {
       if (box) renderedNodes.push(box);
     }
   });
+
+  if (linkingEdge && linkingEdge.fromAnchor) {
+    const target = linkingEdge.toPoint || linkingEdge.fromAnchor;
+    drawArrow(linkingEdge.fromAnchor, target);
+  }
 
   drawWatermark();
 }
@@ -2308,6 +2327,26 @@ function findNodeByPoint(point) {
   );
 }
 
+function findPortHit(point, preferredSide) {
+  const radius = 10;
+  for (const node of renderedNodes) {
+    const candidates =
+      preferredSide === "left"
+        ? node.inputs || []
+        : preferredSide === "right"
+          ? node.outputs || []
+          : [...(node.inputs || []), ...(node.outputs || [])];
+    for (const anchor of candidates) {
+      const dx = point.x - anchor.x;
+      const dy = point.y - anchor.y;
+      if (Math.sqrt(dx * dx + dy * dy) <= radius) {
+        return anchor;
+      }
+    }
+  }
+  return null;
+}
+
 function handleCanvasDoubleClick(event) {
   if (!isCanvasTab(currentTab) || isDragging) return;
   const context = getTabContext(currentTab);
@@ -2339,6 +2378,13 @@ function handleCanvasMouseDown(event) {
   hideAddNodeMenu();
   if (event.button !== 0) return;
   const point = canvasPointFromEvent(event);
+  const portHit = findPortHit(point, "right");
+  if (portHit) {
+    linkingEdge = { fromNodeId: portHit.nodeId, fromAnchor: portHit, toPoint: portHit };
+    workflowCanvas.style.cursor = "crosshair";
+    render(currentTab);
+    return;
+  }
   const hit = findNodeByPoint(point);
   if (!hit) {
     isPanning = true;
@@ -2358,6 +2404,11 @@ function handleCanvasMouseDown(event) {
 
 function handleCanvasMouseMove(event) {
   if (!isCanvasTab(currentTab)) return;
+  if (linkingEdge) {
+    linkingEdge.toPoint = canvasPointFromEvent(event);
+    render(currentTab);
+    return;
+  }
   if (isPanning) {
     const dx = event.clientX - panStart.x;
     const dy = event.clientY - panStart.y;
@@ -2380,6 +2431,40 @@ function handleCanvasMouseMove(event) {
   render(currentTab);
 }
 
+function connectNodes(fromId, toId, context = getTabContext(currentTab)) {
+  if (!fromId || !toId || fromId === toId) return false;
+  const graph = context.graph || currentWorkflow;
+  const normalized = normalizeWorkflow(graph);
+  const exists = (normalized.edges || []).some((edge) => {
+    const from = edge.from_node || edge.from;
+    const to = edge.to_node || edge.to;
+    return from === fromId && to === toId;
+  });
+  if (exists) return false;
+
+  const updatedEdges = [...(normalized.edges || []), { from_node: fromId, to_node: toId }];
+  context.saveGraph({ ...normalized, edges: updatedEdges });
+  appendLog(`已连接 ${fromId} → ${toId}`);
+  return true;
+}
+
+function handleCanvasMouseUp(event) {
+  if (!isCanvasTab(currentTab)) return;
+  if (linkingEdge) {
+    const point = canvasPointFromEvent(event);
+    const targetPort = findPortHit(point, "left");
+    if (targetPort && targetPort.nodeId !== linkingEdge.fromNodeId) {
+      const context = getTabContext(currentTab);
+      connectNodes(linkingEdge.fromNodeId, targetPort.nodeId, context);
+      if (context.kind === "loop") {
+        markTabDirty(context.tabKey, true);
+      }
+      render(currentTab);
+    }
+  }
+  stopDragging();
+}
+
 function handleCanvasWheel(event) {
   if (!isCanvasTab(currentTab)) return;
   event.preventDefault();
@@ -2390,12 +2475,13 @@ function handleCanvasWheel(event) {
 }
 
 function stopDragging() {
-  if (!isDragging && !isPanning) return;
+  if (!isDragging && !isPanning && !linkingEdge) return;
   isDragging = false;
   dragNodeId = null;
   dragBox = null;
   dragTabKey = null;
   isPanning = false;
+  linkingEdge = null;
   workflowCanvas.style.cursor = "grab";
 }
 
@@ -2434,7 +2520,7 @@ workflowCanvas.addEventListener("dblclick", handleCanvasDoubleClick);
 workflowCanvas.addEventListener("contextmenu", handleCanvasContextMenu);
 workflowCanvas.addEventListener("mousedown", handleCanvasMouseDown);
 workflowCanvas.addEventListener("mousemove", handleCanvasMouseMove);
-workflowCanvas.addEventListener("mouseup", stopDragging);
+workflowCanvas.addEventListener("mouseup", handleCanvasMouseUp);
 workflowCanvas.addEventListener("mouseleave", stopDragging);
 workflowCanvas.addEventListener("wheel", handleCanvasWheel, { passive: false });
 editHelpBtn.addEventListener("click", showEditHelp);
