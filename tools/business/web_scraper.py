@@ -6,7 +6,7 @@ import os
 from typing import Any, Dict, List, Optional
 
 from tools.base import Tool
-from tools.registry import register_tool
+from tools.registry import call_registered_tool, get_registered_tool, register_tool
 
 
 def run_llm_web_scraper(
@@ -62,6 +62,74 @@ def run_llm_web_scraper(
     }
 
 
+def search_and_crawl_with_goal(
+    goal: str,
+    *,
+    search_limit: int = 5,
+    max_pages: int = 40,
+    same_domain_only: bool = True,
+    concurrency: int = 2,
+    politeness_delay: float = 0.8,
+    llm_model: str = "gpt-4o-mini",
+    openai_api_key: Optional[str] = None,
+    page_md_chars: int = 9000,
+    goal_check_interval: int = 10,
+    min_enqueue_score: int = 55,
+    timeout_ms: int = 20000,
+) -> Dict[str, Any]:
+    """Search the web for a goal, then crawl results with the LLM scraper."""
+
+    cleaned_goal = goal.strip()
+    if not cleaned_goal:
+        raise ValueError("goal must be a non-empty string")
+
+    search_tool = get_registered_tool("search_web")
+    if search_tool:
+        search_output = search_tool(query=cleaned_goal, limit=search_limit)
+    else:  # pragma: no cover - fallback when registry is not initialized
+        from tools.builtin import search_web as builtin_search_web
+
+        search_output = builtin_search_web(query=cleaned_goal, limit=search_limit)
+
+    search_results = search_output.get("results") if isinstance(search_output, dict) else None
+    if not isinstance(search_results, list):
+        raise RuntimeError("web search did not return a valid results list")
+
+    seed_urls: List[str] = []
+    seen: set[str] = set()
+    for item in search_results:
+        url_value = "" if not isinstance(item, dict) else str(item.get("url", "")).strip()
+        if url_value and url_value not in seen:
+            seed_urls.append(url_value)
+            seen.add(url_value)
+
+    if not seed_urls:
+        raise RuntimeError("web search did not yield any URLs to crawl")
+
+    crawl_result = call_registered_tool(
+        "web_scraper.llm_crawl",
+        urls=seed_urls,
+        goal=cleaned_goal,
+        max_pages=max_pages,
+        same_domain_only=same_domain_only,
+        concurrency=concurrency,
+        politeness_delay=politeness_delay,
+        llm_model=llm_model,
+        openai_api_key=openai_api_key,
+        page_md_chars=page_md_chars,
+        goal_check_interval=goal_check_interval,
+        min_enqueue_score=min_enqueue_score,
+        timeout_ms=timeout_ms,
+    )
+
+    return {
+        "query": cleaned_goal,
+        "seed_urls": seed_urls,
+        "search_results": search_results,
+        "crawl_result": crawl_result,
+    }
+
+
 def register_web_scraper_tools() -> None:
     register_tool(
         Tool(
@@ -96,8 +164,37 @@ def register_web_scraper_tools() -> None:
         )
     )
 
+    register_tool(
+        Tool(
+            name="web_scraper.search_and_crawl",
+            description=(
+                "根据自然语言需求先进行网页搜索，再把搜索得到的链接作为种子调用 LLM 爬虫返回最终答案。"
+            ),
+            function=search_and_crawl_with_goal,
+            args_schema={
+                "type": "object",
+                "properties": {
+                    "goal": {"type": "string"},
+                    "search_limit": {"type": "integer", "default": 5},
+                    "max_pages": {"type": "integer", "default": 40},
+                    "same_domain_only": {"type": "boolean", "default": True},
+                    "concurrency": {"type": "integer", "default": 2},
+                    "politeness_delay": {"type": "number", "default": 0.8},
+                    "llm_model": {"type": "string", "default": "gpt-4o-mini"},
+                    "openai_api_key": {"type": "string"},
+                    "page_md_chars": {"type": "integer", "default": 9000},
+                    "goal_check_interval": {"type": "integer", "default": 10},
+                    "min_enqueue_score": {"type": "integer", "default": 55},
+                    "timeout_ms": {"type": "integer", "default": 20000},
+                },
+                "required": ["goal"],
+            },
+        )
+    )
+
 
 __all__ = [
     "run_llm_web_scraper",
+    "search_and_crawl_with_goal",
     "register_web_scraper_tools",
 ]
