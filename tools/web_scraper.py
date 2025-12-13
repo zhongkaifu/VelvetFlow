@@ -13,7 +13,7 @@ Key design fixes:
 
 Run:
   set OPENAI_API_KEY=...
-  python crawler_llm_v4_fixed_stateful.py --seed "https://docs.python.org/" --goal "..." --same_domain --max_pages 30
+  python crawler_llm_v4_fixed_stateful.py --seeds "https://docs.python.org/" "https://pypi.org/" --goal "..." --same_domain --max_pages 30
 
 Notes:
 - Some sites (CSDN) may still block by IP/rate-limit. This code does best-effort browser-like fetch.
@@ -596,7 +596,7 @@ class PageRecord:
 class GoalDrivenCrawler:
     def __init__(
         self,
-        seed_url: str,
+        seed_urls: List[str],
         goal: str,
         max_pages: int,
         same_domain_only: bool,
@@ -610,7 +610,9 @@ class GoalDrivenCrawler:
         state_path: str = "summary_state.json",
         pages_path: str = "pages.jsonl",
     ):
-        self.seed_url = seed_url
+        if not seed_urls:
+            raise ValueError("seed_urls must contain at least one URL")
+        self.seed_urls = list(dict.fromkeys(seed_urls))
         self.goal = goal
         self.max_pages = max_pages
         self.same_domain_only = same_domain_only
@@ -647,8 +649,8 @@ class GoalDrivenCrawler:
     def allowed(self, url: str) -> bool:
         if looks_like_asset(url):
             return False
-        if self.same_domain_only and not same_domain(self.seed_url, url):
-            return False
+        if self.same_domain_only:
+            return any(same_domain(seed, url) for seed in self.seed_urls)
         return True
 
     async def _politeness(self, url: str):
@@ -672,8 +674,9 @@ class GoalDrivenCrawler:
         return None
 
     async def _seed(self):
-        await self._heap_push(self.seed_url, 100)
-        log(f"[SEED] {self.seed_url}")
+        for u in self.seed_urls:
+            await self._heap_push(u, 100)
+            log(f"[SEED] {u}")
 
     def _heuristic_shortlist(self, links: List[Dict[str, str]], limit: int = 60) -> List[Dict[str, str]]:
         # quick prefilter without LLM
@@ -836,7 +839,7 @@ class GoalDrivenCrawler:
 
 def build_argparser():
     ap = argparse.ArgumentParser(description="Stateful LLM crawler (fix summary state ownership + anti-WAF)")
-    ap.add_argument("--seed", required=True, help="Seed URL")
+    ap.add_argument("--seeds", required=True, nargs="+", help="One or more seed URLs")
     ap.add_argument("--goal", required=True, help="Goal in natural language")
     ap.add_argument("--max_pages", type=int, default=60)
     ap.add_argument("--concurrency", type=int, default=2)
@@ -852,48 +855,90 @@ def build_argparser():
     ap.add_argument("--answer_path", type=str, default="answer.md")
     return ap
 
+
+async def crawl_and_answer(
+    seed_urls: List[str],
+    goal: str,
+    *,
+    max_pages: int = 60,
+    concurrency: int = 2,
+    same_domain: bool = True,
+    politeness_delay: float = 0.8,
+    page_md_chars: int = 9000,
+    goal_check_interval: int = 10,
+    min_enqueue_score: int = 55,
+    llm_model: str = "gpt-4o-mini",
+    api_key: str,
+    state_path: str = "summary_state.json",
+    pages_path: str = "pages.jsonl",
+    timeout_ms: int = 20000,
+) -> Dict[str, object]:
+    crawler = GoalDrivenCrawler(
+        seed_urls=seed_urls,
+        goal=goal,
+        max_pages=max_pages,
+        same_domain_only=same_domain,
+        politeness_delay_s=politeness_delay,
+        page_md_chars=page_md_chars,
+        llm_model=llm_model,
+        api_key=api_key,
+        concurrency=concurrency,
+        goal_check_interval=goal_check_interval,
+        min_enqueue_score=min_enqueue_score,
+        state_path=state_path,
+        pages_path=pages_path,
+    )
+
+    async with PlaywrightFetcher(timeout_ms=timeout_ms, wait_until="domcontentloaded") as fetcher:
+        satisfied, answer_md = await crawler.run(fetcher)
+
+    return {
+        "satisfied": satisfied,
+        "answer": answer_md,
+        "pages_crawled": len(crawler.pages),
+        "state_path": state_path,
+        "pages_path": pages_path,
+    }
+
+
 async def main_async(args):
     api_key = args.openai_api_key or os.environ.get("OPENAI_API_KEY")
     if not api_key:
         raise SystemExit("Missing OpenAI API key. Provide --openai_api_key or set env OPENAI_API_KEY")
 
-    # Reset outputs if you want clean run
-    # (Keep summary_state.json if you want resume)
-    if not os.path.exists(args.pages_path):
-        pass
-
-    crawler = GoalDrivenCrawler(
-        seed_url=args.seed,
+    result = await crawl_and_answer(
+        seed_urls=args.seeds,
         goal=args.goal,
         max_pages=args.max_pages,
-        same_domain_only=args.same_domain,
-        politeness_delay_s=args.politeness_delay,
-        page_md_chars=args.page_md_chars,
-        llm_model=args.llm_model,
-        api_key=api_key,
         concurrency=args.concurrency,
+        same_domain=args.same_domain,
+        politeness_delay=args.politeness_delay,
+        page_md_chars=args.page_md_chars,
         goal_check_interval=args.goal_check_interval,
         min_enqueue_score=args.min_enqueue_score,
+        llm_model=args.llm_model,
+        api_key=api_key,
         state_path=args.state_path,
         pages_path=args.pages_path,
     )
 
-    async with PlaywrightFetcher(timeout_ms=20000, wait_until="domcontentloaded") as fetcher:
-        satisfied, answer_md = await crawler.run(fetcher)
-
-    with open(args.answer_path, "w", encoding="utf-8") as f:
-        f.write(answer_md)
+    answer_md = result["answer"]
+    if args.answer_path:
+        with open(args.answer_path, "w", encoding="utf-8") as f:
+            f.write(answer_md)
 
     log("========== RESULT ==========")
-    log(f"SATISFIED(by self-critic stop): {satisfied}")
-    log(f"PAGES CRAWLED: {len(crawler.pages)} / {args.max_pages}")
+    log(f"SATISFIED(by self-critic stop): {result['satisfied']}")
+    log(f"PAGES CRAWLED: {result['pages_crawled']} / {args.max_pages}")
     log(f"Saved: state={args.state_path} pages={args.pages_path} answer={args.answer_path}")
     print("\n----- ANSWER (Markdown) -----\n")
     print(answer_md)
 
+
 def main():
     args = build_argparser().parse_args()
     asyncio.run(main_async(args))
+
 
 if __name__ == "__main__":
     main()

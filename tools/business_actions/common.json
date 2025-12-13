@@ -165,6 +165,63 @@
     "enabled": true
   },
   {
+    "action_id": "common.web_scraper.llm_crawl.v1",
+    "name": "LLM-guided web scraper (multi-URL)",
+    "domain": "common",
+    "description": "从一个或多个起始链接出发，使用 LLM 逐步抓取站内页面并回答业务需求。",
+    "tool_name": "web_scraper.llm_crawl",
+    "tags": [
+      "web-scraping",
+      "crawler",
+      "llm",
+      "research"
+    ],
+    "arg_schema": {
+      "type": "object",
+      "properties": {
+        "urls": {
+          "type": "array",
+          "items": {"type": "string"},
+          "minItems": 1,
+          "description": "起始 URL 列表，工具会在这些站点内逐步爬取。"
+        },
+        "goal": {
+          "type": "string",
+          "description": "用户需要解决的自然语言需求或研究目标。"
+        },
+        "max_pages": {"type": "integer", "default": 40, "description": "最多抓取的页面数量上限。"},
+        "same_domain_only": {"type": "boolean", "default": true, "description": "是否只在起始站点域名内继续爬取。"},
+        "concurrency": {"type": "integer", "default": 2, "description": "并发抓取页面数量。"},
+        "politeness_delay": {"type": "number", "default": 0.8, "description": "相邻请求之间的延迟（秒）。"},
+        "llm_model": {"type": "string", "default": "gpt-4o-mini", "description": "用于决策与总结的 LLM 模型。"},
+        "openai_api_key": {"type": "string", "description": "可选的 OpenAI API Key（未提供时读取环境变量）。"},
+        "page_md_chars": {"type": "integer", "default": 9000, "description": "单页提取 Markdown 的最大字符数。"},
+        "goal_check_interval": {"type": "integer", "default": 10, "description": "每多少页让 LLM 判断是否已满足需求。"},
+        "min_enqueue_score": {"type": "integer", "default": 55, "description": "队列入选链接的最小打分阈值。"},
+        "timeout_ms": {"type": "integer", "default": 20000, "description": "单页抓取超时时间（毫秒）。"}
+      },
+      "required": [
+        "urls",
+        "goal"
+      ]
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "satisfied": {"type": "boolean", "description": "LLM 是否判定需求已满足。"},
+        "answer": {"type": "string", "description": "基于已抓取页面生成的 Markdown 答案。"},
+        "pages_crawled": {"type": "integer", "description": "实际抓取的页面数量。"},
+        "state_path": {"type": "string", "description": "持久化的抓取摘要状态文件路径。"},
+        "pages_path": {"type": "string", "description": "已抓取页面内容的 JSONL 文件路径。"}
+      },
+      "required": [
+        "satisfied",
+        "answer"
+      ]
+    },
+    "enabled": true
+  },
+  {
     "action_id": "common.join_list.v1",
     "name": "Join list of strings",
     "domain": "common",
