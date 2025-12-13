@@ -36,6 +36,22 @@ async function streamEvents(url, options, onEvent) {
   }
 }
 
+function maybeApplyWorkflowFromEvent(workflow, sourceLabel) {
+  if (!workflow) return false;
+  const normalized = normalizeWorkflow(workflow);
+  const previous = currentWorkflow ? JSON.stringify(currentWorkflow) : "";
+  const next = JSON.stringify(normalized);
+  if (previous === next) return false;
+
+  currentWorkflow = normalized;
+  updateEditor();
+  refreshWorkflowCanvases();
+  if (sourceLabel) {
+    appendLog(`${sourceLabel} 更新了 workflow，画布已刷新`);
+  }
+  return true;
+}
+
 async function requestPlan(requirement) {
   setStatus("规划中", "warning");
   appendLog(`收到需求：${requirement}`);
@@ -68,10 +84,11 @@ async function requestPlan(requirement) {
         if (event.type === "log" && event.message) {
           appendLog(event.message);
           addChatMessage(`流程更新：${event.message}`, "agent");
+          if (event.workflow) {
+            maybeApplyWorkflowFromEvent(event.workflow);
+          }
         } else if ((event.type === "snapshot" || event.type === "partial") && event.workflow) {
-          currentWorkflow = normalizeWorkflow(event.workflow);
-          updateEditor();
-          refreshWorkflowCanvases();
+          maybeApplyWorkflowFromEvent(event.workflow);
           if (typeof event.progress === "number") {
             const percent = Math.round(event.progress * 100);
             setStatus(`构建中 ${percent}%`, "warning");
@@ -126,9 +143,15 @@ async function requestRun() {
         if (!event || !event.type) return;
         if (event.type === "log" && event.message) {
           appendLog(event.message);
+          if (event.workflow) {
+            maybeApplyWorkflowFromEvent(event.workflow, "运行日志");
+          }
         } else if (event.type === "result") {
           finalResult = event.result || {};
           finalStatus = event.status || "completed";
+          if (event.workflow) {
+            maybeApplyWorkflowFromEvent(event.workflow, "运行结果");
+          }
         } else if (event.type === "error") {
           streamError = event.message || "未知错误";
         }
