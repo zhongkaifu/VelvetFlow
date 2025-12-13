@@ -9,22 +9,27 @@ function handleChatSubmit(event) {
   requestPlan(text);
 }
 
-function applyWorkflowFromEditor() {
+function applyWorkflowObject(payload, sourceLabel = "编辑器") {
   try {
-    const parsed = JSON.parse(workflowEditor.value);
-    if (!parsed.nodes) {
+    const parsed = typeof payload === "string" ? JSON.parse(payload) : payload;
+    if (!parsed || !parsed.nodes) {
       throw new Error("workflow 需要包含 nodes 数组");
     }
     currentWorkflow = normalizeWorkflow(parsed);
     lastRunResults = {};
     clearPositionCaches();
     closeAllLoopTabs(true);
+    updateEditor();
     render(currentTab);
-    appendLog("已应用手动修改并刷新画布");
-    addChatMessage("收到您的修改，Canvas 已同步更新。", "agent");
+    appendLog(`已应用${sourceLabel}修改并刷新画布`);
+    addChatMessage(`收到${sourceLabel}修改，Canvas 已同步更新。`, "agent");
   } catch (error) {
     appendLog(`解析失败：${error.message}`);
   }
+}
+
+function applyWorkflowFromEditor() {
+  applyWorkflowObject(workflowEditor.value, "编辑器");
 }
 
 function resetWorkflow() {
@@ -224,6 +229,34 @@ function showEditHelp() {
   );
 }
 
+function triggerLoadWorkflow() {
+  loadWorkflowInput?.click();
+}
+
+function handleWorkflowFileChange(event) {
+  const [file] = event.target.files || [];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    const content = e?.target?.result;
+    applyWorkflowObject(content, "文件");
+    if (loadWorkflowInput) loadWorkflowInput.value = "";
+  };
+  reader.readAsText(file, "utf-8");
+}
+
+function saveWorkflowToFile() {
+  const content = workflowEditor?.value || JSON.stringify(currentWorkflow, null, 2);
+  const blob = new Blob([content], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = `${currentWorkflow.workflow_name || "workflow"}.json`;
+  anchor.click();
+  URL.revokeObjectURL(url);
+  appendLog("已导出 workflow JSON 到文件");
+}
+
 chatForm.addEventListener("submit", handleChatSubmit);
 runWorkflowBtn.addEventListener("click", requestRun);
 applyWorkflowBtn.addEventListener("click", applyWorkflowFromEditor);
@@ -265,6 +298,15 @@ if (zoomOutBtn) {
 }
 if (resetViewBtn) {
   resetViewBtn.addEventListener("click", resetView);
+}
+if (loadWorkflowBtn) {
+  loadWorkflowBtn.addEventListener("click", triggerLoadWorkflow);
+}
+if (loadWorkflowInput) {
+  loadWorkflowInput.addEventListener("change", handleWorkflowFileChange);
+}
+if (saveWorkflowBtn) {
+  saveWorkflowBtn.addEventListener("click", saveWorkflowToFile);
 }
 
 const editorResizeObserver = new ResizeObserver(() => render(currentTab));

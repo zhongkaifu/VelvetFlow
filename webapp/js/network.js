@@ -68,6 +68,14 @@ async function requestPlan(requirement) {
         if (event.type === "log" && event.message) {
           appendLog(event.message);
           addChatMessage(`流程更新：${event.message}`, "agent");
+        } else if ((event.type === "snapshot" || event.type === "partial") && event.workflow) {
+          currentWorkflow = normalizeWorkflow(event.workflow);
+          updateEditor();
+          render(currentTab);
+          if (typeof event.progress === "number") {
+            const percent = Math.round(event.progress * 100);
+            setStatus(`构建中 ${percent}%`, "warning");
+          }
         } else if (event.type === "result" && event.workflow) {
           finalWorkflow = normalizeWorkflow(event.workflow);
         } else if (event.type === "error") {
@@ -103,28 +111,42 @@ async function requestRun() {
   addChatMessage("开始执行 workflow，实时同步运行日志。", "agent");
   appendLog("开始执行当前 workflow ...");
   try {
-    const response = await fetch("/api/run", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ workflow: currentWorkflow }),
-    });
+    let streamError = null;
+    let finalResult = null;
+    let finalStatus = "completed";
 
-    if (!response.ok) {
-      const detail = await response.json().catch(() => ({}));
-      const hint =
-        [404, 405, 501].includes(response.status)
-          ? "后端 API 未启动，请运行 `python webapp/server.py` 后再试。"
-          : "";
-      throw new Error(detail.detail || detail.message || hint || response.statusText);
+    await streamEvents(
+      "/api/run/stream",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ workflow: currentWorkflow }),
+      },
+      (event) => {
+        if (!event || !event.type) return;
+        if (event.type === "log" && event.message) {
+          appendLog(event.message);
+        } else if (event.type === "result") {
+          finalResult = event.result || {};
+          finalStatus = event.status || "completed";
+        } else if (event.type === "error") {
+          streamError = event.message || "未知错误";
+        }
+      },
+    );
+
+    if (streamError) {
+      throw new Error(streamError);
+    }
+    if (!finalResult) {
+      throw new Error("未收到运行结果");
     }
 
-    const payload = await response.json();
-    renderLogs(payload.logs, true);
-    setStatus(payload.status === "completed" ? "运行完成" : "挂起等待回调", "success");
-    lastRunResults = payload.result || {};
+    setStatus(finalStatus === "completed" ? "运行完成" : "挂起等待回调", "success");
+    lastRunResults = finalResult;
     render(currentTab);
-    appendLog(`运行结果: ${payload.status}`);
-    addChatMessage(`执行状态：${payload.status}。结果：${JSON.stringify(payload.result, null, 2)}`, "agent");
+    appendLog(`运行结果: ${finalStatus}`);
+    addChatMessage(`执行状态：${finalStatus}。结果：${JSON.stringify(finalResult, null, 2)}`, "agent");
   } catch (error) {
     setStatus("运行失败", "danger");
     appendLog(`运行失败: ${error.message}`);

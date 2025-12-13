@@ -147,6 +147,37 @@ def _serialize_workflow(workflow: Workflow) -> Dict[str, Any]:
     return normalized
 
 
+def _iter_workflow_snapshots(workflow: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Generate incremental workflow snapshots that reveal nodes step by step."""
+
+    nodes = workflow.get("nodes") or []
+    edges = workflow.get("edges") or []
+    workflow_name = workflow.get("workflow_name", "")
+    description = workflow.get("description", "")
+
+    snapshots: List[Dict[str, Any]] = []
+    partial_nodes: List[Dict[str, Any]] = []
+
+    for node in nodes:
+        partial_nodes.append(node)
+        visible_ids = {item.get("id") for item in partial_nodes if item}
+        partial_edges = [
+            edge
+            for edge in edges
+            if edge.get("from_node") in visible_ids and edge.get("to_node") in visible_ids
+        ]
+        snapshots.append(
+            {
+                "workflow_name": workflow_name,
+                "description": description,
+                "nodes": list(partial_nodes),
+                "edges": partial_edges,
+            }
+        )
+
+    return snapshots
+
+
 @app.post("/api/plan", response_model=PlanResponse)
 def plan_workflow(req: PlanRequest) -> PlanResponse:
     if not req.requirement.strip():
@@ -225,7 +256,16 @@ async def plan_workflow_stream(req: PlanRequest) -> StreamingResponse:
                         max_repair_rounds=3,
                     )
 
-            await queue.put({"type": "result", "workflow": _serialize_workflow(workflow)})
+            workflow_dict = _serialize_workflow(workflow)
+            for idx, snapshot in enumerate(_iter_workflow_snapshots(workflow_dict), start=1):
+                await queue.put(
+                    {
+                        "type": "snapshot",
+                        "workflow": snapshot,
+                        "progress": idx / max(len(workflow_dict.get("nodes", [])) or 1, 1),
+                    }
+                )
+            await queue.put({"type": "result", "workflow": workflow_dict})
         except Exception as exc:  # noqa: BLE001 - keep API message concise
             await queue.put(
                 {
@@ -273,6 +313,55 @@ def run_workflow(req: RunRequest) -> RunResponse:
     payload: Dict[str, Any] = jsonable_encoder(result)
     status = "suspended" if isinstance(result, WorkflowSuspension) else "completed"
     return RunResponse(status=status, result=payload, logs=logs)
+
+
+def _execute_workflow(workflow: Workflow, simulation_data: Dict[str, Any]) -> Any:
+    executor = DynamicActionExecutor(workflow, simulations=simulation_data)
+    return executor.run()
+
+
+@app.post("/api/run/stream")
+async def run_workflow_stream(req: RunRequest) -> StreamingResponse:
+    try:
+        workflow = Workflow.model_validate(req.workflow)
+    except ValidationError as exc:
+        raise HTTPException(status_code=400, detail={"message": "workflow 校验失败", "errors": exc.errors()})
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    simulation_data = req.simulation_data or load_simulation_data(str(SIMULATION_PATH))
+    loop = asyncio.get_running_loop()
+    queue: asyncio.Queue[Dict[str, Any]] = asyncio.Queue()
+
+    async def run_executor() -> None:
+        try:
+            with _capture_logs_stream(queue, loop):
+                result = await asyncio.to_thread(_execute_workflow, workflow, simulation_data)
+            payload: Dict[str, Any] = jsonable_encoder(result)
+            status = "suspended" if isinstance(result, WorkflowSuspension) else "completed"
+            await queue.put({"type": "result", "status": status, "result": payload})
+        except Exception as exc:  # noqa: BLE001 - runtime failures should surface to the UI
+            await queue.put({"type": "error", "message": str(exc)})
+        finally:
+            await queue.put({"type": "end"})
+
+    async def event_stream():
+        task = asyncio.create_task(run_executor())
+        try:
+            while True:
+                event = await queue.get()
+                if event.get("type") == "end":
+                    break
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+        finally:
+            task.cancel()
+            with anyio.CancelScope(shield=True):
+                try:
+                    await task
+                except Exception:
+                    pass
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
 @app.get("/api/actions", response_model=List[ActionInfo])
