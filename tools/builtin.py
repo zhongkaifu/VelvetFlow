@@ -28,6 +28,7 @@ from tools.business import (
     register_it_tools,
     register_marketing_tools,
     register_sales_tools,
+    register_web_scraper_tools,
 )
 from tools.registry import get_registered_tool, register_tool
 
@@ -1022,6 +1023,7 @@ def register_builtin_tools() -> None:
     register_finance_tools()
     register_hr_tools()
     register_it_tools()
+    register_web_scraper_tools()
 
 
 __all__ = [
