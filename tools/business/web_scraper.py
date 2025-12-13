@@ -7,7 +7,6 @@ from typing import Any, Dict, List, Optional
 
 from tools.base import Tool
 from tools.registry import register_tool
-from tools.web_scraper import crawl_and_answer
 
 
 def run_llm_web_scraper(
@@ -26,6 +25,8 @@ def run_llm_web_scraper(
     timeout_ms: int = 20000,
 ) -> Dict[str, Any]:
     """Run the LLM-guided crawler starting from a list of URLs and return the answer."""
+
+    from tools.web_scraper import crawl_and_answer
 
     cleaned_urls = [u.strip() for u in urls if u.strip()]
     if not cleaned_urls:
