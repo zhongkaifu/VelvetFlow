@@ -177,6 +177,56 @@ def test_collect_composio_tool_specs_loads_via_provider(tmp_path):
         sys.modules.update(original_modules)
 
 
+def test_collect_composio_tool_specs_uses_provider_as_toolset(tmp_path):
+    package_root = tmp_path / "composio_openai"
+    package_root.mkdir()
+
+    (package_root / "__init__.py").write_text(
+        "\n".join(
+            [
+                "class OpenAIProvider:",
+                "    def __init__(self):",
+                "        self.created = True",
+                "",
+                "    def get_openai_tools(self, actions=None):",
+                "        return [{",
+                "            'type': 'function',",
+                "            'function': {",
+                "                'name': 'provider_direct',",
+                "                'description': 'Provided directly',",
+                "                'parameters': {",
+                "                    'type': 'object',",
+                "                    'properties': {},",
+                "                    'required': [],",
+                "                },",
+                "            },",
+                "        }]",
+                "",
+                "    def execute_action(self, action, params):",
+                "        return {'action': action, 'params': params}",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    original_path = list(sys.path)
+    original_modules = {k: v for k, v in sys.modules.items() if k.startswith("composio_openai")}
+    try:
+        sys.path.insert(0, str(tmp_path))
+        for key in list(sys.modules):
+            if key.startswith("composio_openai"):
+                sys.modules.pop(key)
+
+        specs = collect_composio_tool_specs()
+        assert specs[0]["function"]["name"] == "provider_direct"
+    finally:
+        sys.path[:] = original_path
+        for key in list(sys.modules):
+            if key.startswith("composio_openai"):
+                sys.modules.pop(key)
+        sys.modules.update(original_modules)
+
+
 def test_collect_composio_tool_specs_discovers_toolset_in_submodule(tmp_path):
     package_root = tmp_path / "composio_openai"
     package_root.mkdir()

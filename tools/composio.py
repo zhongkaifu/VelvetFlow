@@ -22,6 +22,27 @@ def _load_default_toolset() -> Any:
             "composio_openai is required to auto-load Composio tools. Install via 'pip install composio-openai'."
         ) from exc
 
+    def _maybe_toolset(obj: Any) -> Any | None:
+        """Return an object that looks like a toolset (or wraps one)."""
+
+        if obj is None:
+            return None
+
+        if hasattr(obj, "get_openai_tools"):
+            return obj
+
+        for attr in ("toolset", "tool_set"):
+            nested = getattr(obj, attr, None)
+            if hasattr(nested, "get_openai_tools"):
+                return nested
+
+        if hasattr(obj, "get_toolset"):
+            nested = obj.get_toolset()
+            if hasattr(nested, "get_openai_tools"):
+                return nested
+
+        return None
+
     candidates: list[Any] = []
 
     # Prefer top-level export first (works for most package versions).
@@ -60,29 +81,39 @@ def _load_default_toolset() -> Any:
 
     for candidate in candidates:
         if callable(candidate):
-            return candidate()
+            maybe_instance = None
+            try:
+                maybe_instance = candidate()
+            except Exception:
+                continue
 
-    # Some packages expose a provider() factory that can vend the toolset
-    # without exporting the class directly. Use soft probing to avoid
-    # breaking when the provider requires runtime configuration.
-    provider = getattr(composio_openai, "provider", None)
-    if callable(provider):  # pragma: no cover - exercised by integration tests with fake modules
+            toolset = _maybe_toolset(maybe_instance)
+            if toolset is not None:
+                return toolset
+
+    # Some packages expose a provider() factory or a provider class that can vend the
+    # toolset without exporting the class directly. Use soft probing to avoid breaking
+    # when the provider requires runtime configuration.
+    provider_factory = getattr(composio_openai, "provider", None)
+    if callable(provider_factory):  # pragma: no cover - exercised by integration tests with fake modules
         try:
-            provider_instance = provider()
-
-            if provider_instance is not None:
-                if hasattr(provider_instance, "get_toolset"):
-                    toolset = provider_instance.get_toolset()
-                    if toolset:
-                        return toolset
-
-                for attr in ("toolset", "tool_set"):
-                    if hasattr(provider_instance, attr):
-                        toolset = getattr(provider_instance, attr)
-                        if toolset:
-                            return toolset
+            provider_instance = provider_factory()
+            toolset = _maybe_toolset(provider_instance)
+            if toolset is not None:
+                return toolset
         except Exception:
             pass
+
+    for provider_name in ("OpenAIProvider", "OpenAIResponsesProvider"):
+        provider_cls = getattr(composio_openai, provider_name, None)
+        if provider_cls and callable(provider_cls):  # pragma: no cover - exercised by integration tests with fake modules
+            try:
+                provider_instance = provider_cls()
+                toolset = _maybe_toolset(provider_instance)
+                if toolset is not None:
+                    return toolset
+            except Exception:
+                continue
 
     raise ImportError(
         "Unable to locate composio_openai.ComposioToolSet. Available attributes: "
