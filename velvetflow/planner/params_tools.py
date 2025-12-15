@@ -14,24 +14,13 @@ from __future__ import annotations
 import copy
 from typing import Any, Dict, List, Mapping
 
-from velvetflow.models import ALLOWED_PARAM_AGGREGATORS, Node
+from velvetflow.models import Node
 
-
-def _binding_schema() -> Dict[str, Any]:
-    """Schema for binding expressions in params (__from__/__agg__)."""
-
-    return {
-        "type": "object",
-        "properties": {
-            "__from__": {"type": "string"},
-            "__agg__": {
-                "type": "string",
-                "enum": list(ALLOWED_PARAM_AGGREGATORS),
-            },
-        },
-        "required": ["__from__"],
-        "additionalProperties": True,
-    }
+JINJA_EXPRESSION_NOTE = (
+    "所有 params 都会作为 Jinja2 模板解析，"
+    "必须使用 {{ ... }} 或 {% ... %} 的合法语法引用上游结果、输入或常量。"
+    "严禁使用 __from__/__agg__ 等旧式绑定格式。"
+)
 
 
 def _normalize_object_schema(schema: Any) -> Dict[str, Any]:
@@ -66,11 +55,21 @@ def _condition_params_schema() -> Dict[str, Any]:
         "properties": {
             "kind": {"type": "string", "enum": allowed_kinds},
             "source": {
-                "description": "必须是可被 Jinja 解析的字符串表达式，例如 {{ result_of.node.field }}。",
+                "description": (
+                    "必须是可被 Jinja 解析的字符串表达式，例如 {{ result_of.node.field }}。"
+                    f"{JINJA_EXPRESSION_NOTE}"
+                ),
                 "type": "string",
             },
             "field": {"type": "string"},
-            "value": {},
+            "value": {
+                "description": (
+                    "用于比较的值，建议直接给出 Jinja 模板字符串，"
+                    "例如 {{ input.expected_temp }} 或 {{ 36.5 }}。"
+                    f"{JINJA_EXPRESSION_NOTE}"
+                ),
+                "type": "string",
+            },
             "threshold": {"type": "number"},
             "min": {"type": "number"},
             "max": {"type": "number"},
@@ -98,18 +97,20 @@ def _loop_params_schema() -> Dict[str, Any]:
         "properties": {
             "loop_kind": {"type": "string", "enum": ["for_each", "while"]},
             "source": {
-                "description": "for_each 迭代来源，支持绑定或 result_of 路径。",
-                "anyOf": [
-                    {"type": "string"},
-                    _binding_schema(),
-                ],
+                "description": (
+                    "for_each 迭代来源，必须是合法的 Jinja 模板字符串，"
+                    "例如 {{ result_of.users.items }} 或 {{ input.items }}。"
+                    f"{JINJA_EXPRESSION_NOTE}"
+                ),
+                "type": "string",
             },
             "condition": {
-                "description": "loop_kind=while 时的退出条件。",
-                "anyOf": [
-                    {"type": "string"},
-                    _binding_schema(),
-                ],
+                "description": (
+                    "loop_kind=while 时的退出条件，必须是返回布尔值的 Jinja 表达式，"
+                    "例如 {{ result_of.check.flag }}。"
+                    f"{JINJA_EXPRESSION_NOTE}"
+                ),
+                "type": "string",
             },
             "item_alias": {
                 "type": "string",
@@ -219,6 +220,8 @@ def build_param_completion_tool(
     description = (
         f"{description_prefix}{action_desc}"
         f" allowed_node_ids={','.join(allowed_node_ids) or '无上游'}。"
+        "必须使用符合 Jinja2 语法的模板填入 params，"
+        "不可使用 __from__/__agg__ 旧式绑定。"
         "填完后调用该工具提交 params。"
     )
 
