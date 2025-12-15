@@ -62,6 +62,28 @@ def _load_default_toolset() -> Any:
         if callable(candidate):
             return candidate()
 
+    # Some packages expose a provider() factory that can vend the toolset
+    # without exporting the class directly. Use soft probing to avoid
+    # breaking when the provider requires runtime configuration.
+    provider = getattr(composio_openai, "provider", None)
+    if callable(provider):  # pragma: no cover - exercised by integration tests with fake modules
+        try:
+            provider_instance = provider()
+
+            if provider_instance is not None:
+                if hasattr(provider_instance, "get_toolset"):
+                    toolset = provider_instance.get_toolset()
+                    if toolset:
+                        return toolset
+
+                for attr in ("toolset", "tool_set"):
+                    if hasattr(provider_instance, attr):
+                        toolset = getattr(provider_instance, attr)
+                        if toolset:
+                            return toolset
+        except Exception:
+            pass
+
     raise ImportError(
         "Unable to locate composio_openai.ComposioToolSet. Available attributes: "
         f"{', '.join(sorted(attr for attr in dir(composio_openai) if not attr.startswith('_')))}"

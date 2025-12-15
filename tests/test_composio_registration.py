@@ -124,6 +124,59 @@ def test_collect_composio_tool_specs_loads_from_toolset_module(tmp_path):
         sys.modules.update(original_modules)
 
 
+def test_collect_composio_tool_specs_loads_via_provider(tmp_path):
+    package_root = tmp_path / "composio_openai"
+    package_root.mkdir()
+
+    (package_root / "__init__.py").write_text(
+        "\n".join(
+            [
+                "class _Provider:",
+                "    def __init__(self):",
+                "        self.toolset = self.get_toolset()",
+                "",
+                "    def get_toolset(self):",
+                "        class _Toolset:",
+                "            def get_openai_tools(self, actions=None):",
+                "                return [{",
+                "                    'type': 'function',",
+                "                    'function': {",
+                "                        'name': 'provider_ping',",
+                "                        'description': 'Ping from provider',",
+                "                        'parameters': {",
+                "                            'type': 'object',",
+                "                            'properties': {},",
+                "                            'required': [],",
+                "                        },",
+                "                    },",
+                "                }]",
+                "        return _Toolset()",
+                "",
+                "def provider():",
+                "    return _Provider()",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    original_path = list(sys.path)
+    original_modules = {k: v for k, v in sys.modules.items() if k.startswith("composio_openai")}
+    try:
+        sys.path.insert(0, str(tmp_path))
+        for key in list(sys.modules):
+            if key.startswith("composio_openai"):
+                sys.modules.pop(key)
+
+        specs = collect_composio_tool_specs()
+        assert specs[0]["function"]["name"] == "provider_ping"
+    finally:
+        sys.path[:] = original_path
+        for key in list(sys.modules):
+            if key.startswith("composio_openai"):
+                sys.modules.pop(key)
+        sys.modules.update(original_modules)
+
+
 def test_collect_composio_tool_specs_discovers_toolset_in_submodule(tmp_path):
     package_root = tmp_path / "composio_openai"
     package_root.mkdir()
