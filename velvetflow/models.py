@@ -91,6 +91,7 @@ class ValidationError:
         "SELF_REFERENCE",
         "SYNTAX_ERROR",
         "GRAMMAR_VIOLATION",
+        "INVALID_JINJA_EXPRESSION",
     ]
     node_id: Optional[str]
     field: Optional[str]

@@ -10,10 +10,45 @@ from velvetflow.aggregation import (
 )
 from velvetflow.bindings import BindingContext
 from velvetflow.logging_utils import log_json, log_warn
-from velvetflow.reference_utils import parse_field_path
+from velvetflow.reference_utils import normalize_reference_path, parse_field_path
+from velvetflow.jinja_utils import render_jinja_template
 
 
 class ConditionEvaluationMixin:
+    def _condition_jinja_context(self, ctx: BindingContext) -> Dict[str, Any]:
+        def _jinja_get(path: str) -> Any:
+            normalized = normalize_reference_path(path)
+            qualified = ctx._qualify_context_path(normalized)
+            return ctx.get_value(qualified)
+
+        return {
+            "result_of": ctx.results,
+            "loop": ctx.loop_ctx,
+            "loop_ctx": ctx.loop_ctx,
+            "loop_id": ctx.loop_id,
+            "get": _jinja_get,
+        }
+
+    def _render_condition_value(self, value: Any, ctx: BindingContext) -> Any:
+        if isinstance(value, dict):
+            return {k: self._render_condition_value(v, ctx) for k, v in value.items()}
+
+        if isinstance(value, list):
+            return [self._render_condition_value(v, ctx) for v in value]
+
+        if isinstance(value, str):
+            context = self._condition_jinja_context(ctx)
+            text = value.strip()
+            try:
+                if "{{" in text or "{%" in text:
+                    return render_jinja_template(text, context)
+                validate_jinja_expression(text, path="condition.expression")
+                return eval_jinja_expression(text, context)
+            except Exception:
+                return value
+
+        return value
+
     def _resolve_condition_source(self, source: Any, ctx: BindingContext) -> Any:
         """Resolve condition source which may be a binding dict or a path string."""
 
@@ -24,6 +59,9 @@ class ConditionEvaluationMixin:
             return ctx.resolve_binding(source)
 
         if isinstance(source, str):
+            rendered = self._render_condition_value(source, ctx)
+            if rendered is not source:
+                return rendered
             if source in ctx.results:
                 return ctx.results[source]
 
@@ -138,7 +176,12 @@ class ConditionEvaluationMixin:
     ) -> Any:
         import re
 
-        params = node.get("params") or {}
+        raw_params = node.get("params") or {}
+        params = (
+            self._render_condition_value(raw_params, ctx)
+            if isinstance(raw_params, Mapping)
+            else raw_params
+        ) or {}
         kind = params.get("kind")
         if not kind:
             log_warn("[condition] 未指定 kind，默认 False")

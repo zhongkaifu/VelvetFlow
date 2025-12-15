@@ -59,6 +59,7 @@ from velvetflow.verification import (
     run_lightweight_static_rules,
     validate_completed_workflow,
 )
+from velvetflow.verification.jinja_validation import normalize_condition_params_to_jinja
 from velvetflow.verification.validation import (
     _get_array_item_schema_from_output,
     _get_field_schema_from_item,
@@ -1115,6 +1116,17 @@ def _validate_and_repair_workflow(
         log_section(f"校验 + 自修复轮次 {repair_round}")
         log_json("当前 workflow", current_workflow.model_dump(by_alias=True))
 
+        jinja_checked_workflow, jinja_summary, jinja_errors = normalize_condition_params_to_jinja(
+            current_workflow.model_dump(by_alias=True)
+        )
+        if jinja_summary.get("applied"):
+            log_info(
+                "[JinjaGuard] 已将 condition.params 中的引用规范化为 Jinja 字符串。",
+                f"replacements={jinja_summary.get('replacements')}",
+            )
+            current_workflow = Workflow.model_validate(jinja_checked_workflow)
+            last_good_workflow = current_workflow
+
         current_workflow, coercion_errors = _coerce_condition_param_types(
             current_workflow, action_registry=action_registry
         )
@@ -1168,6 +1180,7 @@ def _validate_and_repair_workflow(
         )
 
         errors: List[ValidationError] = []
+        errors.extend(jinja_errors)
         errors.extend(coercion_errors)
         errors.extend(binding_type_errors)
         errors.extend(reference_errors)

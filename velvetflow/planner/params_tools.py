@@ -66,11 +66,8 @@ def _condition_params_schema() -> Dict[str, Any]:
         "properties": {
             "kind": {"type": "string", "enum": allowed_kinds},
             "source": {
-                "description": "可以是 result_of 路径或绑定对象。",
-                "anyOf": [
-                    {"type": "string"},
-                    _binding_schema(),
-                ],
+                "description": "必须是可被 Jinja 解析的字符串表达式，例如 {{ result_of.node.field }}。",
+                "type": "string",
             },
             "field": {"type": "string"},
             "value": {},
