@@ -120,8 +120,36 @@ def validate_actions(raw_actions: List[Any]) -> List[Dict[str, Any]]:
 BUSINESS_ACTIONS: List[Dict[str, Any]] = validate_actions(load_actions_from_path())
 
 
+def register_dynamic_actions(raw_actions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Validate and append additional actions at runtime.
+
+    Existing ``action_id`` entries are preserved to keep registration idempotent.
+    """
+
+    validated = validate_actions(raw_actions)
+
+    existing_ids = {action.get("action_id") for action in BUSINESS_ACTIONS}
+    for action in validated:
+        action_id = action.get("action_id")
+        if action_id in existing_ids:
+            continue
+        BUSINESS_ACTIONS.append(action)
+        existing_ids.add(action_id)
+
+    return validated
+
+
 def get_action_by_id(action_id: str) -> Optional[Dict[str, Any]]:
     for a in BUSINESS_ACTIONS:
         if a["action_id"] == action_id:
             return a
     return None
+
+
+__all__ = [
+    "load_actions_from_path",
+    "validate_actions",
+    "BUSINESS_ACTIONS",
+    "get_action_by_id",
+    "register_dynamic_actions",
+]
