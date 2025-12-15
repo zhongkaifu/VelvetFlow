@@ -40,8 +40,18 @@ class ConditionEvaluationMixin:
             context = self._condition_jinja_context(ctx)
             text = value.strip()
             try:
+                if text.startswith("{{") and text.endswith("}}"):  # pure expression, preserve type
+                    inner = text[2:-2].strip()
+                    return eval_jinja_expression(inner, context)
+
                 if "{{" in text or "{%" in text:
-                    return render_jinja_template(text, context)
+                    rendered = render_jinja_template(text, context)
+                    # If render returns the original string, fall back to eval for expression-only
+                    if isinstance(rendered, str) and rendered != value and rendered.strip() != text:
+                        return rendered
+                    validate_jinja_expression(text, path="condition.expression")
+                    return eval_jinja_expression(text, context)
+
                 validate_jinja_expression(text, path="condition.expression")
                 return eval_jinja_expression(text, context)
             except Exception:

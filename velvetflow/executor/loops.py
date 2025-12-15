@@ -270,8 +270,14 @@ class LoopExecutionMixin:
             source = params.get("source")
             data = self._resolve_condition_source(source, binding_ctx)
             if not isinstance(data, list):
-                log_warn("[loop] for_each 的 source 不是 list，跳过执行")
-                return {"status": "skipped", "reason": "source_not_list"}
+                log_warn(
+                    f"[loop] for_each 的 source 不是 list (实际类型: {type(data).__name__}), 跳过执行"
+                )
+                return {
+                    "status": "skipped",
+                    "reason": "source_not_list",
+                    "actual_type": type(data).__name__,
+                }
 
             size = len(data)
             for idx, item in enumerate(data):
