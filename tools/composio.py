@@ -25,14 +25,36 @@ def _load_default_toolset() -> Any:
     candidates: list[Any] = []
 
     # Prefer top-level export first (works for most package versions).
-    if hasattr(composio_openai, "ComposioToolSet"):
-        candidates.append(getattr(composio_openai, "ComposioToolSet"))
+    for name in ("ComposioToolSet", "ComposioToolset"):
+        if hasattr(composio_openai, name):
+            candidates.append(getattr(composio_openai, name))
 
     # Some releases expose the class from the toolset module instead of __init__.
     try:  # pragma: no cover - exercised by integration tests with fake modules
         from composio_openai.toolset import ComposioToolSet as ToolSetFromModule  # type: ignore
 
         candidates.append(ToolSetFromModule)
+    except Exception:
+        pass
+
+    # Newer releases may tuck the class behind other submodules; scan lazily to avoid
+    # hard failures when the class is present but unexported.
+    try:  # pragma: no cover - exercised by integration tests with fake modules
+        import importlib
+        import pkgutil
+
+        if hasattr(composio_openai, "__path__"):
+            for module_info in pkgutil.walk_packages(composio_openai.__path__, composio_openai.__name__ + "."):
+                try:
+                    module = importlib.import_module(module_info.name)
+                except Exception:
+                    continue
+
+                for name in ("ComposioToolSet", "ComposioToolset"):
+                    if hasattr(module, name):
+                        candidates.append(getattr(module, name))
+                if candidates:
+                    break
     except Exception:
         pass
 

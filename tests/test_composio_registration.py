@@ -124,6 +124,54 @@ def test_collect_composio_tool_specs_loads_from_toolset_module(tmp_path):
         sys.modules.update(original_modules)
 
 
+def test_collect_composio_tool_specs_discovers_toolset_in_submodule(tmp_path):
+    package_root = tmp_path / "composio_openai"
+    package_root.mkdir()
+
+    (package_root / "__init__.py").write_text("AVAILABLE = True\n", encoding="utf-8")
+    (package_root / "provider.py").write_text(
+        "\n".join(
+            [
+                "class ComposioToolSet:",
+                "    def __init__(self):",
+                "        self.created = True",
+                "",
+                "    def get_openai_tools(self, actions=None):",
+                "        return [{",
+                "            'type': 'function',",
+                "            'function': {",
+                "                'name': 'pong',",
+                "                'description': 'Pong action',",
+                "                'parameters': {",
+                "                    'type': 'object',",
+                "                    'properties': {},",
+                "                    'required': [],",
+                "                },",
+                "            },",
+                "        }]",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    original_path = list(sys.path)
+    original_modules = {k: v for k, v in sys.modules.items() if k.startswith("composio_openai")}
+    try:
+        sys.path.insert(0, str(tmp_path))
+        for key in list(sys.modules):
+            if key.startswith("composio_openai"):
+                sys.modules.pop(key)
+
+        specs = collect_composio_tool_specs()
+        assert specs[0]["function"]["name"] == "pong"
+    finally:
+        sys.path[:] = original_path
+        for key in list(sys.modules):
+            if key.startswith("composio_openai"):
+                sys.modules.pop(key)
+        sys.modules.update(original_modules)
+
+
 def test_register_composio_tools_registers_tools_and_actions():
     original_actions = list(action_registry.BUSINESS_ACTIONS)
     original_tools = dict(GLOBAL_TOOL_REGISTRY._tools)
