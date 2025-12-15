@@ -16,13 +16,34 @@ def _load_default_toolset() -> Any:
     """
 
     try:
-        from composio_openai import ComposioToolSet  # type: ignore
+        import composio_openai  # type: ignore
     except Exception as exc:  # pragma: no cover - import-time dependency
         raise ImportError(
             "composio_openai is required to auto-load Composio tools. Install via 'pip install composio-openai'."
         ) from exc
 
-    return ComposioToolSet()
+    candidates: list[Any] = []
+
+    # Prefer top-level export first (works for most package versions).
+    if hasattr(composio_openai, "ComposioToolSet"):
+        candidates.append(getattr(composio_openai, "ComposioToolSet"))
+
+    # Some releases expose the class from the toolset module instead of __init__.
+    try:  # pragma: no cover - exercised by integration tests with fake modules
+        from composio_openai.toolset import ComposioToolSet as ToolSetFromModule  # type: ignore
+
+        candidates.append(ToolSetFromModule)
+    except Exception:
+        pass
+
+    for candidate in candidates:
+        if callable(candidate):
+            return candidate()
+
+    raise ImportError(
+        "Unable to locate composio_openai.ComposioToolSet. Available attributes: "
+        f"{', '.join(sorted(attr for attr in dir(composio_openai) if not attr.startswith('_')))}"
+    )
 
 
 def collect_composio_tool_specs(
