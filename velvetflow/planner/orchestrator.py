@@ -59,7 +59,10 @@ from velvetflow.verification import (
     run_lightweight_static_rules,
     validate_completed_workflow,
 )
-from velvetflow.verification.jinja_validation import normalize_condition_params_to_jinja
+from velvetflow.verification.jinja_validation import (
+    normalize_condition_params_to_jinja,
+    normalize_params_to_jinja,
+)
 from velvetflow.verification.validation import (
     _get_array_item_schema_from_output,
     _get_field_schema_from_item,
@@ -1122,6 +1125,17 @@ def _validate_and_repair_workflow(
         log_section(f"校验 + 自修复轮次 {repair_round}")
         log_json("当前 workflow", current_workflow.model_dump(by_alias=True))
 
+        jinja_params_workflow, jinja_params_summary, jinja_params_errors = normalize_params_to_jinja(
+            current_workflow.model_dump(by_alias=True)
+        )
+        if jinja_params_summary.get("applied") or jinja_params_summary.get("forbidden_paths"):
+            log_info(
+                "[JinjaGuard] 已规范化 workflow params 并标记非 Jinja DSL。",
+                f"summary={jinja_params_summary}",
+            )
+            current_workflow = Workflow.model_validate(jinja_params_workflow)
+            last_good_workflow = current_workflow
+
         jinja_checked_workflow, jinja_summary, jinja_errors = normalize_condition_params_to_jinja(
             current_workflow.model_dump(by_alias=True)
         )
@@ -1186,6 +1200,7 @@ def _validate_and_repair_workflow(
         )
 
         errors: List[ValidationError] = []
+        errors.extend(jinja_params_errors)
         errors.extend(jinja_errors)
         errors.extend(coercion_errors)
         errors.extend(binding_type_errors)
