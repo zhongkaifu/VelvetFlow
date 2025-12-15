@@ -581,7 +581,7 @@ def plan_workflow_structure_with_llm(
         "  loop 节点包含 loop_kind/iter/source/body_subgraph/exports，循环外部只能引用 exports.items 或 exports.aggregates。\n"
         "  loop.body_subgraph 内不需要也不允许显式声明 edges、entry 或 exit 节点，如发现请直接删除。\n"
         "  parallel 节点的 branches 为非空数组，每个元素包含 id/entry_node/sub_graph_nodes。\n"
-        "- params 内部可使用绑定 DSL：{\"__from__\": \"result_of.<node_id>.<field_path>\", \"__agg__\": <identity/count/...>}，"
+        "- params 内部必须直接使用 Jinja 表达式引用上游结果（如 {{ result_of.<node_id>.<field_path> }} 或 {{ loop.item.xxx }}），不再允许旧的 __from__/__agg__ DSL。"
         "  其中 <node_id> 必须存在且字段需与上游 output_schema 或 loop.exports 对齐。\n"
         "系统中有一个 Action Registry，包含大量业务动作，你只能通过 search_business_actions 查询。\n"
         "构建方式：\n"

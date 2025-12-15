@@ -384,30 +384,13 @@ def fill_params_with_llm(
     system_prompt = (
         "你是一个工作流参数补全助手。一次只处理一个节点，请根据给定的 arg_schema 补齐当前节点的 params。\n"
         "请务必调用 submit_node_params 工具提交结果，禁止返回自然语言。每次提交后必须调用 validate_node_params 工具进行校验，收到校验错误要重新分析并再次提交。\n"
-        "在补参前先阅读 global_context：理解 workflow 场景、节点之间的上下游关系，以及 entity_binding_hints 中记录的关键实体字段（如 *_id/*_code 等）来源。补参时必须保持同名实体字段的来源一致，如发现冲突请主动调整当前节点的绑定。\n"
-        "当某个字段需要引用其他节点的输出时，必须使用数据绑定 DSL，并且只能引用提供的 allowed_node_ids 中的节点。\n"
-        "你只能从以下节点中读取上下游结果：result_of.<node_id>.<field>...，其中 node_id 必须来自 allowed_node_ids，field 必须存在于该节点的 output_schema。\n"
-        "当引用循环节点时，只能使用 loop 节点的 exports（如 result_of.<loop_id>.items、result_of.<loop_id>.exports.items 或 result_of.<loop_id>.aggregates.xxx），禁止直接引用 loop body 的节点。\n"
+        "当某个字段需要引用其他节点的输出时，必须直接写成 Jinja 表达式或模板字符串，例如 {{ result_of.<node_id>.<field> }}，"
+        "node_id 只能来自 allowed_node_ids，field 必须存在于该节点的 output_schema。禁止再使用旧的 __from__/__agg__ 绑定 DSL。\n"
+        "循环场景下可使用 loop.item/loop.index 以及 loop.exports.* 暴露的字段，依然通过 Jinja 表达式引用，禁止直接引用 loop body 的节点。\n"
         "引用 loop.exports 结构时必须指向 exports 内部的具体字段或子结构，不能只写 result_of.<loop_id>.exports。\n"
         "若 loop.exports.items.fields 仅包含用来包裹完整输出的字段（如 data/record 等），需要通过 <字段>.<子字段> 的形式访问内部属性，不能直接写子字段名。\n"
         "所有节点的 params 不得为空；如无 obvious 默认值，需要分析上下游语义后调用工具补全。\n"
-        "绑定 DSL 说明：\n"
-        "- __from__：指向上游结果或循环上下文，形如 result_of.<node_id>.<path>，loop 内可写 loop.item 或 loop.index。\n"
-        "- __agg__：聚合/变换方式，默认 identity。可选值：identity/count/count_if/join/format_join/filter_map/pipeline，"
-        "仅允许使用这些枚举值，其他取值会被视为非法并在校验后返回错误，需要根据错误提示修正。\n"
-        "  count_if/filter_map/pipeline 支持使用 __agg__.condition 或 steps[].condition 编写 Jinja 表达式，"
-        "  表达式请直接使用 item/value/field 上下文，例如 item.score > 80 and item.id。\n"
-        "  count_if 需结合 field+op+value 条件；join 用 separator/sep 将字符串列表拼接；\n"
-        "  format_join 按 format 模板渲染后用 sep 拼接（format 请使用 Jinja 模板，如 {{ name }}/{{ score }}，不要使用 {value}）；\n"
-        "  filter_map 先过滤再映射/格式化；pipeline 允许 steps 串联 filter/format_join 等多步变换。\n"
-        "【重要说明：示例仅为模式，不代表具体业务】\n"
-        "示例（字段名仅示意）：\n"
-        '- 直接引用：{"__from__": "result_of.some_node.items", "__agg__": "identity"}\n'
-        '- 列表计数：{"__from__": "result_of.some_node.items", "__agg__": "count"}\n'
-        '- 条件计数：{"__from__": "result_of.some_node.items", "__agg__": "count_if", "field": "value", "op": ">", "value": 10}\n'
-        '- 直接格式化并拼接：{"__from__": "result_of.some_node.items", "__agg__": "format_join", "format": "{name}: {score}", "sep": "\\n"}\n'
-        '- pipeline：{"__from__": "result_of.list_node.items", "__agg__": "pipeline", "steps": [{"op": "filter", "field": "score", "cmp": ">", "value": 0.8}, {"op": "format_join", "field": "id", "format": "ID={id} 异常", "sep": "\\n"}]}\n'
-        "示例中的节点名/字段名只是格式说明，实际必须使用 payload 中的节点信息和 output_schema。"
+        "聚合/筛选/格式化也请用 Jinja 过滤器或表达式完成（例如 {{ result_of.a.items | selectattr('score', '>', 80) | list | length }} 或 {{ result_of.a.items | map(attribute='name') | join(', ') }}），不要再输出带 __agg__ 的对象。"
     )
 
     workflow = Workflow.model_validate(workflow_skeleton)

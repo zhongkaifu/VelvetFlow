@@ -1430,6 +1430,17 @@ def plan_workflow_with_two_pass(
                     search_service=search_service,
                     reason="结构规划阶段校验失败",
                 )
+            except Exception as e:  # noqa: BLE001
+                log_warn(
+                    "[plan_workflow_with_two_pass] 结构规划阶段遇到致命错误，交给 LLM 修复后继续。"
+                )
+                skeleton = _repair_with_llm_and_fallback(
+                    broken_workflow=skeleton_raw if isinstance(skeleton_raw, dict) else {},
+                    validation_errors=[_make_failure_validation_error(str(e))],
+                    action_registry=action_registry,
+                    search_service=search_service,
+                    reason="结构规划阶段校验失败",
+                )
         log_event("plan_structure_done", {"workflow": skeleton.model_dump()})
         skeleton = _ensure_actions_registered_or_repair(
             skeleton,
@@ -1518,6 +1529,25 @@ def plan_workflow_with_two_pass(
                         last_good_workflow = current_workflow
                     else:
                         current_workflow = last_good_workflow
+
+                except Exception as e:  # noqa: BLE001
+                    log_warn(
+                        f"[plan_workflow_with_two_pass] 参数补全阶段遇到致命错误，交给 LLM 修复：{e}"
+                    )
+                    current_workflow = _repair_with_llm_and_fallback(
+                        broken_workflow=completed_workflow_raw if isinstance(completed_workflow_raw, dict) else {},
+                        validation_errors=[_make_failure_validation_error(str(e))],
+                        action_registry=action_registry,
+                        search_service=search_service,
+                        reason="补参结果校验失败",
+                    )
+                    current_workflow = _ensure_actions_registered_or_repair(
+                        current_workflow,
+                        action_registry=action_registry,
+                        search_service=search_service,
+                        reason="补参结果修复后校验 action_id",
+                    )
+                    last_good_workflow = current_workflow
 
         return _validate_and_repair_workflow(
             current_workflow,

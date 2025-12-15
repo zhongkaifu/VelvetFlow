@@ -581,52 +581,57 @@ def repair_workflow_with_llm(
   condition 节点需包含 kind/source/field/op/value 以及 true_to_node/false_to_node（字符串或 null）。
   loop 节点包含 loop_kind/iter/source/body_subgraph/exports，循环外部只能引用 exports.items 或 exports.aggregates。
   loop.body_subgraph 内不需要也不允许显式声明 edges、entry 或 exit 节点，如发现请直接删除。
-  parallel 节点的 branches 为非空数组，每个元素包含 id/entry_node/sub_graph_nodes。
-- params 内部可使用绑定 DSL：{"__from__": "result_of.<node_id>.<field_path>", "__agg__": <identity/count/...>}，
-  其中 <node_id> 必须存在且字段需与上游 output_schema 或 loop.exports 对齐。
-当前有一个 workflow JSON 和一组结构化校验错误 validation_errors。
-validation_errors 是 JSON 数组，元素包含 code/node_id/field/message。
-这些错误来自：
-- action 参数缺失或不符合 arg_schema
-- condition 条件不完整
-- source/__from__ 路径引用了不存在的节点
-- source/__from__ 路径与上游 action 的 output_schema 不匹配
-- source/__from__ 指向的数组元素 schema 中不存在某个字段
+  - params 必须直接使用 Jinja 表达式引用上游结果（如 {{ result_of.<node_id>.<field_path> }} 或 {{ loop.item.xxx }}），不再允许 __from__/__agg__ DSL。
+    <node_id> 必须存在且字段需与上游 output_schema 或 loop.exports 对齐。
+  当前有一个 workflow JSON 和一组结构化校验错误 validation_errors。
+  validation_errors 是 JSON 数组，元素包含 code/node_id/field/message。
+  这些错误来自：
+  - action 参数缺失或不符合 arg_schema
+  - condition 条件不完整
+  - source 路径引用了不存在的节点
+  - source 路径与上游 action 的 output_schema 不匹配
+  - source 指向的数组元素 schema 中不存在某个字段
 
-- previous_failed_attempts 会记录同一错误的历史修复尝试，请避免重复失败的方法，尝试不同的修复路径。
+  - previous_failed_attempts 会记录同一错误的历史修复尝试，请避免重复失败的方法，尝试不同的修复路径。
 
-- workflow 结构不符合 DSL schema（例如节点 type 非法）
+  - workflow 结构不符合 DSL schema（例如节点 type 非法）
 
-总体目标：在“尽量不改变工作流整体结构”的前提下，修复这些错误，使 workflow 通过静态校验。
+  总体目标：在“尽量不改变工作流整体结构”的前提下，修复这些错误，使 workflow 通过静态校验。
 
-具体要求（很重要，请严格遵守）：
+  具体要求（很重要，请严格遵守）：
  1. 结构保持稳定：
     - 不要增加或删除节点；
     - edges 会由系统根据节点引用自动推导，不需要手动增删或调整 condition。
 
-2. action 节点修复优先级：
-   - 首先根据 action_schemas[action_id].arg_schema 补齐 params 里缺失的必填字段，或修正错误类型；
-   - 如果 action_id 本身是合的（存在于 action_schemas 中），优先“修 params”，不要改 action_id；
-   - 只有当 validation_errors 明确指出 action_id 不存在时，才考虑把 action_id 改成一个更合理的候选，
-     并同步更新该节点的 params 使之符合新的 arg_schema。
+ 2. action 节点修复优先级：
+    - 首先根据 action_schemas[action_id].arg_schema 补齐 params 里缺失的必填字段，或修正错误类型；
+    - 如果 action_id 本身是合法的（存在于 action_schemas 中），优先“修 params”，不要改 action_id；
+    - 只有当 validation_errors 明确指出 action_id 不存在时，才考虑把 action_id 改成一个更合理的候选，
+      并同步更新该节点的 params 使之符合新的 arg_schema。
 
-3. condition 节点修复：
-   - 确保 kind/source/field/value 等必填字段齐全且类型正确；
-   - source 可以是字符串路径，也可以是 {"__from__": ...} 对象；
-   - 当 source 指向数组输出时，field 需要存在于元素 schema 中。
+ 3. condition 节点修复：
+    - 确保 kind/source/field/value 等必填字段齐全且类型正确；
+    - source 应该是 result_of.<node>... 或 loop.item 等路径的 Jinja 字符串引用；
+    - 当 source 指向数组输出时，field 需要存在于元素 schema 中。
 
-4. loop 节点：确保 loop_kind（for_each/while）和 source 字段合法，并使用 exports 暴露 body 结果，下游只能引用 result_of.<loop_id>.items / aggregates。
-5. parallel 节点：branches 必须是非空数组。
+ 4. loop 节点：确保 loop_kind（for_each/while）和 source 字段合法，并使用 exports 暴露 body 结果，下游只能引用 result_of.<loop_id>.items / aggregates。
+ 5. parallel 节点：branches 必须是非空数组。
 
-6. 参数绑定 DSL 修复（__from__ 及其聚合逻辑）：
-   - 对于 {"__from__": "result_of.xxx.data", "__agg__": "...", ...}：
-       - 检查 __from__ 路径是否合法、与 output_schema 对齐；
-       - __agg__ 必须是 identity/count/count_if/join/format_join/filter_map/pipeline 之一，非法取值需要改成最接近语义的枚举值；
-       - 检查 count_if/filter_map/pipeline 中的 field/filter_field/map_field 是否存在于数组元素 schema 中；
-       - 当需要条件过滤时，请把 __agg__.condition 或 pipeline.steps[].condition 写成 Jinja 表达式，直接引用 item/value/field 等上下文变量（如 item.score > 80 and item.id），不要再使用自然语言条件；
-   - 当错误涉及这些字段时，优先只改字段名（根据元素 schema 的 properties），保持聚合逻辑不变。
+ 6. 参数绑定修复：
+    - 仅输出 Jinja 表达式或字面量，禁止回退到 __from__/__agg__ 对象；
+    - 聚合/过滤/拼接逻辑请直接写在 Jinja 表达式或过滤器里，并确保字段路径与上游 schema 对齐；
+    - 常见错误：loop.exports.items.fields 只有包装字段，但条件需要访问内部子字段，请将路径写成 <字段>.<子字段>。
 
-   - 常见错误：loop.exports.items.fields 只有包装字段，但条件需要访问内部子字段，请将 field 改成 <字段>.<子字段>。
+ 7. 修改范围尽量最小化：
+    - 当有多种修复方式时，优先选择改动最小、语义最接近原意的方案（如只改一个字段名，而不是重写整个 params）。
+    - 当 validation_error_summary 提供 Schema 提示或路径信息时，优先按提示矫正字段类型/结构，避免多轮重复犯错。
+
+ 8. 修复回合有限且必须闭环：
+    - 系统会在有限轮次内重新校验；如果你忽略任何一条 validation_error，流程将直接进入下一轮甚至终止。
+    - 请逐条对照 validation_errors，把所有问题修到为 0 再输出结果，避免留存隐患。
+
+ 9. 输出要求：
+    - 保持顶层结构：workflow_name/description/nodes 不变（仅节点内部内容可调整，edges 由系统推导）；
 
 7. 修改范围尽量最小化：
    - 当有多种修复方式时，优先选择改动最小、语义最接近原意的方案（如只改一个字段名，而不是重写整个 params）。

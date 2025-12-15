@@ -69,6 +69,24 @@ def precheck_loop_body_graphs(workflow_raw: Mapping[str, Any] | Any) -> List[Val
             )
             continue
 
+        seen_ids: set[str] = set()
+        for nested in body_nodes:
+            nid = nested.get("id") if isinstance(nested.get("id"), str) else None
+            if not nid:
+                continue
+            if nid in seen_ids:
+                errors.append(
+                    ValidationError(
+                        code="INVALID_LOOP_BODY",
+                        node_id=loop_id,
+                        field="body_subgraph.nodes",
+                        message=(
+                            f"loop 节点 '{loop_id}' 的 body_subgraph.nodes 中存在重复的节点 id: {nid}"
+                        ),
+                    )
+                )
+                break
+            seen_ids.add(nid)
         if not loop_body_has_action(body):
             errors.append(
                 ValidationError(
