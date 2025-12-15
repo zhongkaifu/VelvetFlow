@@ -3,6 +3,11 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Mapping, Optional, Union
 
+from velvetflow.aggregation import (
+    JinjaExprValidationError,
+    eval_jinja_expression,
+    validate_jinja_expression,
+)
 from velvetflow.bindings import BindingContext
 from velvetflow.logging_utils import log_json, log_warn
 from velvetflow.reference_utils import parse_field_path
@@ -373,25 +378,32 @@ class ConditionEvaluationMixin:
             return _return(False, data)
 
         if kind == "compare":
-            expr = params.get("expression") if isinstance(params.get("expression"), dict) else None
-            op = params.get("op") or params.get("operator")
-            if op is None and expr:
-                op = expr.get("op")
-            op = op or "=="
+            expr_raw = params.get("expression")
+            compiled_expr = None
+            if expr_raw is not None:
+                if isinstance(expr_raw, str):
+                    try:
+                        validate_jinja_expression(expr_raw, path="condition.expression")
+                        compiled_expr = expr_raw
+                    except JinjaExprValidationError as exc:
+                        log_warn(f"[condition:compare] expression 无效：{exc}")
+                else:
+                    log_warn("[condition:compare] expression 需要字符串 Jinja 表达式，已忽略")
 
+            op = params.get("op") or params.get("operator") or "=="
             target = params.get("value")
-            if target is None and expr:
-                right = expr.get("right")
-                if isinstance(right, Mapping):
-                    if "const" in right:
-                        target = right.get("const")
-                    elif "value" in right:
-                        target = right.get("value")
             field = params.get("field")
             values = _extract_values(data, field)
 
             def _do_compare(v: Any) -> bool:
                 try:
+                    if compiled_expr:
+                        return bool(
+                            eval_jinja_expression(
+                                compiled_expr,
+                                {"value": v, "target": target, "data": data, "field": field},
+                            )
+                        )
                     if op == ">":
                         return v is not None and v > target
                     if op == ">=":
@@ -430,33 +442,28 @@ class ConditionEvaluationMixin:
 
         if kind == "expression":
             expr = params.get("expression")
-            if expr is None:
+            if not isinstance(expr, str) or not expr.strip():
                 log_warn("[condition:expression] 未提供 expression，返回 False")
                 condition = {"check": "expression is None"}
                 _log_condition_debug(params.get("field"), data, condition, params)
                 return _return(False, data)
 
-            expr_str = str(expr)
+            try:
+                validate_jinja_expression(expr, path="condition.expression")
+            except JinjaExprValidationError as exc:
+                log_warn(f"[condition:expression] 表达式无效: {exc}")
+                condition = {"check": "invalid expression", "reason": str(exc)}
+                _log_condition_debug(params.get("field"), data, condition, params)
+                return _return(False, data)
+
             field = params.get("field")
             values = _extract_values(data, field)
-            safe_globals = {
-                "__builtins__": {},
-                "len": len,
-                "sum": sum,
-                "min": min,
-                "max": max,
-                "any": any,
-                "all": all,
-                "abs": abs,
-            }
 
             def _eval_expr(v: Any) -> bool:
                 try:
                     return bool(
-                        eval(
-                            expr_str,
-                            safe_globals,
-                            {"value": v, "values": values, "data": data},
+                        eval_jinja_expression(
+                            expr, {"value": v, "values": values, "data": data}
                         )
                     )
                 except Exception as exc:
@@ -466,7 +473,7 @@ class ConditionEvaluationMixin:
             targets = values if field else [data]
             result = any(_eval_expr(v) for v in targets)
             condition = {
-                "check": expr_str,
+                "check": expr,
                 "values": values,
                 "data": data,
             }

@@ -11,10 +11,10 @@ from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional
 
 from velvetflow.aggregation import (
-    MiniExprValidationError,
+    JinjaExprValidationError,
     _is_instance_of_type,
-    eval_mini_expr,
-    validate_mini_expr,
+    eval_jinja_expression,
+    validate_jinja_expression,
 )
 from velvetflow.action_registry import get_action_by_id
 from velvetflow.loop_dsl import build_loop_output_schema
@@ -25,6 +25,7 @@ from velvetflow.reference_utils import (
     normalize_reference_path,
     parse_field_path,
 )
+from velvetflow.jinja_utils import render_jinja_template
 
 
 class BindingContext:
@@ -236,24 +237,38 @@ class BindingContext:
         """解析 __from__, __agg__, pipeline 等绑定 DSL。"""
 
         def _render(val: Any, fmt: Optional[str], field: Optional[str] = None) -> str:
+            template_str = fmt or "{{ value }}"
+            normalized = canonicalize_template_placeholders(template_str)
+            if "{{" not in normalized and "}}" not in normalized and "{" in normalized:
+                normalized = re.sub(r"\{([^{}]+)\}", r"{{ \1 }}", normalized)
+
+            context: Dict[str, Any] = {"value": val, "item": val, "field": field}
             if isinstance(val, Mapping):
-                selected = val.get(field) if field else val
-                data: Mapping[str, Any] = _SafeDict(val)
+                context.update(val)
+
+            try:
+                return render_jinja_template(normalized, context)
+            except Exception as exc:  # pragma: no cover - fallback path
+                log_warn(
+                    f"[binding] 模板 {normalized!r} 渲染失败: {exc}，回退到 str.format"
+                )
+                if isinstance(val, Mapping):
+                    selected = val.get(field) if field else val
+                    data: Mapping[str, Any] = _SafeDict(val)
+                    if fmt:
+                        try:
+                            return fmt.format_map(data)
+                        except Exception:
+                            pass
+                    return "" if selected is None else str(selected)
+
+                selected = val
                 if fmt:
                     try:
-                        return fmt.format_map(data)
+                        return fmt.format_map(_SafeDict({}))
                     except Exception:
                         pass
                 return "" if selected is None else str(selected)
-
-            # 非字典元素：直接字符串化或用默认字段选择
-            selected = val
-            if fmt:
-                try:
-                    return fmt.format_map(_SafeDict({}))
-                except Exception:
-                    pass
-            return "" if selected is None else str(selected)
 
         if not isinstance(binding, dict) or "__from__" not in binding:
             return binding
@@ -283,11 +298,11 @@ class BindingContext:
         input_type = agg_spec.get("input_type") if isinstance(agg_spec, Mapping) else None
         output_type = agg_spec.get("output_type") if isinstance(agg_spec, Mapping) else None
         on_empty = agg_spec.get("on_empty") if isinstance(agg_spec, Mapping) else None
-        condition_ast = agg_spec.get("condition") if isinstance(agg_spec, Mapping) else None
-        if condition_ast is not None:
+        condition_expr = agg_spec.get("condition") if isinstance(agg_spec, Mapping) else None
+        if condition_expr is not None:
             try:
-                validate_mini_expr(condition_ast)
-            except MiniExprValidationError as exc:
+                validate_jinja_expression(condition_expr, path="__agg__.condition")
+            except JinjaExprValidationError as exc:
                 raise ValueError(f"__agg__.condition 非法: {exc}") from exc
 
         def _apply_on_empty(result: Any) -> Any:
@@ -341,13 +356,16 @@ class BindingContext:
             count = 0
 
             def _match(item: Any) -> bool:
-                if condition_ast is not None:
-                    return bool(
-                        eval_mini_expr(
-                            condition_ast,
-                            {"item": item, "value": item, "field": field},
+                if condition_expr is not None:
+                    try:
+                        return bool(
+                            eval_jinja_expression(
+                                condition_expr,
+                                {"item": item, "value": item, "field": field},
+                            )
                         )
-                    )
+                    except Exception:
+                        return False
                 v = item.get(field) if isinstance(item, Mapping) else item
                 try:
                     if op == ">" and v is not None and v > target:
@@ -413,13 +431,16 @@ class BindingContext:
                     continue
                 v = item.get(filter_field)
                 passed = False
-                if condition_ast is not None:
-                    passed = bool(
-                        eval_mini_expr(
-                            condition_ast,
-                            {"item": item, "value": v, "field": filter_field},
+                if condition_expr is not None:
+                    try:
+                        passed = bool(
+                            eval_jinja_expression(
+                                condition_expr,
+                                {"item": item, "value": v, "field": filter_field},
+                            )
                         )
-                    )
+                    except Exception:
+                        passed = False
                 elif filter_op == ">" and v is not None and v > filter_value:
                     passed = True
                 elif filter_op == ">=" and v is not None and v >= filter_value:
@@ -459,12 +480,12 @@ class BindingContext:
                         or "=="
                     )
                     cmp_val = step.get("value") or step.get("filter_value")
-                    cond_ast = step.get("condition")
-                    if cond_ast is not None:
+                    cond_expr = step.get("condition")
+                    if cond_expr is not None:
                         try:
-                            validate_mini_expr(cond_ast)
-                        except MiniExprValidationError:
-                            cond_ast = None
+                            validate_jinja_expression(cond_expr, path="pipeline.steps[].condition")
+                        except JinjaExprValidationError:
+                            cond_expr = None
 
                     filtered = []
                     for item in current:
@@ -472,13 +493,16 @@ class BindingContext:
                             continue
                         v = item.get(field)
                         passed = False
-                        if cond_ast is not None:
-                            passed = bool(
-                                eval_mini_expr(
-                                    cond_ast,
-                                    {"item": item, "value": v, "field": field},
+                        if cond_expr is not None:
+                            try:
+                                passed = bool(
+                                    eval_jinja_expression(
+                                        cond_expr,
+                                        {"item": item, "value": v, "field": field},
+                                    )
                                 )
-                            )
+                            except Exception:
+                                passed = False
                         elif cmp_op == ">" and v is not None and v > cmp_val:
                             passed = True
                         elif cmp_op == ">=" and v is not None and v >= cmp_val:
@@ -974,6 +998,24 @@ def eval_node_params(node: Node, ctx: BindingContext) -> Dict[str, Any]:
             normalized_templates = canonicalize_template_placeholders(value)
             rendered_inline = _render_json_bindings(normalized_templates)
             rendered_with_each = _render_each_templates(rendered_inline)
+            jinja_context: Dict[str, Any] = {
+                "result_of": ctx.results,
+                "loop": ctx.loop_ctx,
+                "loop_ctx": ctx.loop_ctx,
+                "loop_id": ctx.loop_id,
+                **ctx.loop_ctx,
+            }
+
+            def _jinja_get(path: str) -> Any:
+                normalized = normalize_reference_path(path)
+                qualified = ctx._qualify_context_path(normalized)
+                return ctx.get_value(qualified)
+
+            jinja_context["get"] = _jinja_get
+            try:
+                rendered_with_each = render_jinja_template(rendered_with_each, jinja_context)
+            except Exception:
+                pass
             str_val = rendered_with_each.strip()
             # 允许 text 等字段以字符串形式携带绑定表达式（常见于外部序列化后传入）
             if str_val.startswith("{") and str_val.endswith("}") and "__from__" in str_val:

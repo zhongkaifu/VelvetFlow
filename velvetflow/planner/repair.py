@@ -623,7 +623,7 @@ validation_errors 是 JSON 数组，元素包含 code/node_id/field/message。
        - 检查 __from__ 路径是否合法、与 output_schema 对齐；
        - __agg__ 必须是 identity/count/count_if/join/format_join/filter_map/pipeline 之一，非法取值需要改成最接近语义的枚举值；
        - 检查 count_if/filter_map/pipeline 中的 field/filter_field/map_field 是否存在于数组元素 schema 中；
-       - 当需要条件过滤时，请把 __agg__.condition 或 pipeline.steps[].condition 写成 Mini-Expression AST（JSON），支持 const/var、op=and/or/not/exists/==/!=/>/>=/</<=/in 等形式，例如 {"op": "and", "args": [ {"op": ">", "left": {"var": "item.score"}, "right": {"const": 80}}, {"op": "exists", "arg": {"var": "item.id"}} ]}，不要再使用自然语言条件；
+       - 当需要条件过滤时，请把 __agg__.condition 或 pipeline.steps[].condition 写成 Jinja 表达式，直接引用 item/value/field 等上下文变量（如 item.score > 80 and item.id），不要再使用自然语言条件；
    - 当错误涉及这些字段时，优先只改字段名（根据元素 schema 的 properties），保持聚合逻辑不变。
 
    - 常见错误：loop.exports.items.fields 只有包装字段，但条件需要访问内部子字段，请将 field 改成 <字段>.<子字段>。

@@ -165,11 +165,7 @@ def test_condition_compare_supports_expression_operator_and_target():
             "kind": "compare",
             "source": {"employee": {"temperature": 37}},
             "field": "employee.temperature",
-            "expression": {
-                "op": ">",
-                "left": {"var": "employee.temperature"},
-                "right": {"const": 38},
-            },
+            "expression": "value > 38",
         }
     )
 

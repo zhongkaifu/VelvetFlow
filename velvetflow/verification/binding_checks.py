@@ -7,7 +7,7 @@ import json
 import re
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence
 
-from velvetflow.aggregation import MiniExprValidationError, validate_mini_expr
+from velvetflow.aggregation import JinjaExprValidationError, validate_jinja_expression
 from velvetflow.loop_dsl import build_loop_output_schema
 from velvetflow.models import ALLOWED_PARAM_AGGREGATORS, ValidationError
 from velvetflow.reference_utils import (
@@ -180,8 +180,8 @@ def validate_param_binding(binding: Any) -> Optional[str]:
         condition_ast = agg_spec.get("condition")
         if condition_ast is not None:
             try:
-                validate_mini_expr(condition_ast)
-            except MiniExprValidationError as exc:
+                validate_jinja_expression(condition_ast, path="__agg__.condition")
+            except JinjaExprValidationError as exc:
                 return f"__agg__.condition 无效：{exc}"
         for type_field in ("input_type", "output_type"):
             if type_field in agg_spec and not isinstance(agg_spec.get(type_field), str):
