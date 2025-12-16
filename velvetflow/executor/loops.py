@@ -11,6 +11,19 @@ from velvetflow.models import Node, Workflow
 
 
 class LoopExecutionMixin:
+    def _extract_export_values(self, raw_source: Any, field: Optional[str]) -> List[Any]:
+        """Extract values from a loop export source for aggregate calculations."""
+
+        # Normalize a single mapping/list/scalar into a flat list for aggregation.
+        if isinstance(raw_source, list):
+            values = [self._get_field_value(item, field) for item in raw_source]
+        elif isinstance(raw_source, Mapping):
+            values = [self._get_field_value(raw_source, field)]
+        else:
+            values = [raw_source]
+
+        return [v for v in values if v is not None]
+
     def _apply_loop_exports(
         self,
         items_spec: Optional[Mapping[str, Any]],
