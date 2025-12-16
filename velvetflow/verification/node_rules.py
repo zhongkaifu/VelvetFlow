@@ -4,6 +4,7 @@
 """Node-level validation logic for workflows."""
 from typing import Any, Dict, List, Mapping, Optional
 
+from velvetflow.jinja_utils import get_jinja_env
 from velvetflow.models import ValidationError
 from velvetflow.reference_utils import normalize_reference_path, parse_field_path
 from velvetflow.loop_dsl import loop_body_has_action
@@ -26,6 +27,47 @@ from .binding_checks import (
     _walk_schema_with_tokens,
     validate_param_binding,
 )
+
+
+def _strip_jinja_filters(expr: str) -> str:
+    """Return the reference path before any top-level Jinja filter pipeline."""
+
+    in_single = False
+    in_double = False
+    paren_depth = 0
+
+    for idx, ch in enumerate(expr):
+        if ch == "'" and not in_double and (idx == 0 or expr[idx - 1] != "\\"):
+            in_single = not in_single
+            continue
+        if ch == '"' and not in_single and (idx == 0 or expr[idx - 1] != "\\"):
+            in_double = not in_double
+            continue
+        if ch == "(" and not in_single and not in_double:
+            paren_depth += 1
+            continue
+        if ch == ")" and not in_single and not in_double and paren_depth > 0:
+            paren_depth -= 1
+            continue
+        if ch == "|" and not in_single and not in_double and paren_depth == 0:
+            return expr[:idx].strip()
+
+    return expr.strip()
+
+
+def _validate_jinja_expression(expr: str, *, node_id: str | None, field: str, errors: List[ValidationError]) -> None:
+    env = get_jinja_env()
+    try:
+        env.compile_expression(expr)
+    except Exception as exc:  # pragma: no cover - defensive for unexpected parser errors
+        errors.append(
+            ValidationError(
+                code="INVALID_JINJA_EXPRESSION",
+                node_id=node_id,
+                field=field,
+                message=f"Jinja 表达式无法解析: {exc}",
+            )
+        )
 
 CONDITION_PARAM_FIELDS = {"expression"}
 
@@ -406,7 +448,12 @@ def _validate_nodes_recursive(
             def _walk_params_for_templates(obj: Any, path_prefix: str = "") -> None:
                 if isinstance(obj, str):
                     for ref in _iter_template_references(obj):
-                        ref_path = normalize_reference_path(ref)
+                        _validate_jinja_expression(ref, node_id=nid, field=path_prefix or "params", errors=errors)
+
+                        ref_head = _strip_jinja_filters(ref)
+                        if not ref_head:
+                            continue
+                        ref_path = normalize_reference_path(ref_head)
                         try:
                             ref_parts = parse_field_path(ref_path)
                         except Exception:
