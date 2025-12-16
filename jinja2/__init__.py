@@ -66,6 +66,33 @@ class Template:
                 context.update(maybe_mapping)
         context.update(kwargs)
 
+        def _eval_if_blocks(text: str) -> str:
+            pattern = re.compile(
+                r"\{%\s*if\s+(.*?)\s*%\}(.*?)((?:\{%\s*else\s*%\}(.*?))?)\{%\s*endif\s*%\}",
+                re.S,
+            )
+
+            def _replace(match: re.Match[str]) -> str:
+                expr = match.group(1).strip()
+                truthy_block = match.group(2) or ""
+                else_block = match.group(4) or ""
+                compiled = self.env.compile_expression(expr)
+                try:
+                    cond_value = compiled(**context)
+                except Exception as exc:
+                    raise TemplateError(f"条件表达式执行失败: {exc}") from exc
+
+                chosen = truthy_block if cond_value else else_block
+                # 支持嵌套 if：递归处理选中的文本
+                return _eval_if_blocks(chosen)
+
+            prev = None
+            cur = text
+            while prev != cur:
+                prev = cur
+                cur = pattern.sub(_replace, cur)
+            return cur
+
         def _replace(match: re.Match[str]) -> str:
             expr = match.group(1).strip()
             compiled = self.env.compile_expression(expr)
@@ -73,7 +100,8 @@ class Template:
             return "" if result is None else str(result)
 
         try:
-            return re.sub(r"\{\{\s*(.*?)\s*\}\}", _replace, self.template)
+            rendered = _eval_if_blocks(self.template)
+            return re.sub(r"\{\{\s*(.*?)\s*\}\}", _replace, rendered)
         except TemplateError:
             raise
         except Exception as exc:  # pragma: no cover - fallback

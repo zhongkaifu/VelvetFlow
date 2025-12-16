@@ -135,6 +135,39 @@ class BindingContext:
 
         return f"result_of.{normalized}"
 
+    def build_jinja_context(self) -> Dict[str, Any]:
+        """Return a runtime context for rendering Jinja templates.
+
+        This includes loop state, workflow execution state (if provided by the
+        caller), and the accumulated node results so params can freely refer to
+        ``workflow.*``, ``loop.*`` and ``result_of.*`` inside templates.
+        """
+
+        workflow_ctx: Any = None
+        # Prefer a dedicated ``context`` field if the workflow carries one;
+        # otherwise expose the serialized workflow object for callers that
+        # inject execution_date or other metadata via the workflow payload.
+        if hasattr(self.workflow, "context"):
+            workflow_ctx = getattr(self.workflow, "context")
+        else:  # pragma: no cover - fallback for custom workflow payloads
+            try:
+                workflow_ctx = self.workflow.model_dump(by_alias=True)
+            except Exception:
+                workflow_ctx = None
+
+        ctx: Dict[str, Any] = {
+            "result_of": self.results,
+            "loop": self.loop_ctx,
+            "loop_ctx": self.loop_ctx,
+            "loop_id": self.loop_id,
+            **self.loop_ctx,
+        }
+
+        if workflow_ctx:
+            ctx["workflow"] = workflow_ctx
+
+        return ctx
+
     def _infer_loop_reference_path(self, src_path: str) -> str:
         """Try to recover missing loop exports/items/aggregates segments.
 
@@ -1088,5 +1121,22 @@ def eval_node_params(node: Node, ctx: BindingContext) -> Dict[str, Any]:
 
         return value
 
-    return {k: _resolve(v, k) for k, v in (node.params or {}).items()}
+    def _render_runtime_templates(val: Any) -> Any:
+        if isinstance(val, str):
+            try:
+                return render_jinja_template(val, ctx.build_jinja_context())
+            except Exception as exc:  # pragma: no cover - runtime log only
+                log_warn(f"[param-resolver] Jinja 渲染失败，保留原值: {exc}")
+                return val
+
+        if isinstance(val, list):
+            return [_render_runtime_templates(v) for v in val]
+
+        if isinstance(val, dict):
+            return {k: _render_runtime_templates(v) for k, v in val.items()}
+
+        return val
+
+    resolved = {k: _resolve(v, k) for k, v in (node.params or {}).items()}
+    return _render_runtime_templates(resolved)
 
