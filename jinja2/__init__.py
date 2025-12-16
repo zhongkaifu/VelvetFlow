@@ -35,7 +35,15 @@ for _path in sys.path:
         break
 
 if _real_module:
-    # Re-export the real implementation for full Jinja support.
+    # Expose the real implementation as the active ``jinja2`` package so
+    # its submodules (e.g., ``jinja2.runtime``) resolve correctly. We load the
+    # module under a temporary name to avoid recursive imports, then alias it
+    # back to ``jinja2`` and mirror its ``__path__`` so relative imports work
+    # during template compilation.
+    sys.modules[__name__] = _real_module
+    sys.modules.setdefault("jinja2", _real_module)
+    __path__ = getattr(_real_module, "__path__", [])
+
     Environment = _real_module.Environment
     StrictUndefined = _real_module.StrictUndefined
     TemplateError = _real_module.TemplateError
