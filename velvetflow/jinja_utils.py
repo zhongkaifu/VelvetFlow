@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import datetime, date as date_cls
 from functools import lru_cache
 from typing import Any, Mapping
 
@@ -27,6 +28,39 @@ def get_jinja_env() -> Environment:
         lstrip_blocks=True,
     )
     env.filters.setdefault("tojson", lambda obj: json.dumps(obj, ensure_ascii=False))
+    env.filters.setdefault("length", lambda obj: len(obj) if obj is not None else 0)
+
+    def _format_date(value: Any, fmt: str = "yyyy-MM-dd") -> str:
+        """A lightweight date filter compatible with the templated inputs we receive."""
+
+        dt: datetime
+
+        if isinstance(value, datetime):
+            dt = value
+        elif isinstance(value, date_cls):
+            dt = datetime.combine(value, datetime.min.time())
+        elif isinstance(value, str) and value.strip().lower() in {"now", "today"}:
+            dt = datetime.now()
+        elif isinstance(value, str):
+            try:
+                dt = datetime.fromisoformat(value)
+            except Exception:
+                dt = datetime.now()
+        else:
+            dt = datetime.now()
+
+        # Support common "yyyy-MM-dd" style patterns by mapping to strftime tokens.
+        format_str = (
+            fmt.replace("yyyy", "%Y")
+            .replace("MM", "%m")
+            .replace("dd", "%d")
+            .replace("HH", "%H")
+            .replace("mm", "%M")
+            .replace("ss", "%S")
+        )
+        return dt.strftime(format_str)
+
+    env.filters.setdefault("date", _format_date)
     return env
 
 

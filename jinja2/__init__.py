@@ -97,7 +97,27 @@ else:
                         lambda m: f"len({m.group('target').strip()})",
                         translated,
                     )
-                    return eval(translated, {"__builtins__": {}, "len": len}, context)
+                    # Translate registered filters into function calls so custom filters
+                    # (e.g., date) work in the offline shim.
+                    for fname in list(self.filters.keys()):
+                        pattern_with_args = rf"(?P<target>[^|]+?)\|\s*{re.escape(fname)}\s*\((?P<args>[^)]*)\)"
+                        translated = re.sub(
+                            pattern_with_args,
+                            lambda m: f"__filters__['{fname}']({m.group('target').strip()}, {m.group('args').strip()})",
+                            translated,
+                        )
+                        pattern_no_args = rf"(?P<target>[^|]+?)\|\s*{re.escape(fname)}\b"
+                        translated = re.sub(
+                            pattern_no_args,
+                            lambda m: f"__filters__['{fname}']({m.group('target').strip()})",
+                            translated,
+                        )
+
+                    return eval(
+                        translated,
+                        {"__builtins__": {}, "len": len, "__filters__": self.filters},
+                        context,
+                    )
                 except NameError as exc:  # pragma: no cover - rare
                     raise TemplateError(f"表达式缺少变量: {exc}") from exc
                 except Exception as exc:  # pragma: no cover - fallback

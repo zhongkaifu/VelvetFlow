@@ -18,11 +18,21 @@ class LoopExecutionMixin:
         items_output: List[Dict[str, Any]],
         aggregates_output: Dict[str, Any],
         avg_state: Dict[str, Dict[str, float]],
+        default_from_node: Optional[str],
     ) -> None:
-        if isinstance(items_spec, Mapping):
-            from_node = items_spec.get("from_node")
-            fields = items_spec.get("fields") if isinstance(items_spec.get("fields"), list) else []
-            list_field = items_spec.get("list_field") if isinstance(items_spec.get("list_field"), str) else None
+        normalized_items_spec: Optional[Mapping[str, Any]] = None
+
+        if isinstance(items_spec, list):
+            normalized_items_spec = {"fields": [f for f in items_spec if isinstance(f, str)]}
+        elif isinstance(items_spec, Mapping):
+            normalized_items_spec = dict(items_spec)
+
+        if isinstance(normalized_items_spec, Mapping):
+            from_node = normalized_items_spec.get("from_node") or default_from_node
+            fields = normalized_items_spec.get("fields") if isinstance(normalized_items_spec.get("fields"), list) else []
+            list_field = (
+                normalized_items_spec.get("list_field") if isinstance(normalized_items_spec.get("list_field"), str) else None
+            )
 
             def _build_record(obj: Any) -> Dict[str, Any]:
                 if isinstance(obj, Mapping):
@@ -217,6 +227,22 @@ class LoopExecutionMixin:
         for nid in body_node_ids:
             results.pop(nid, None)
 
+    def _infer_default_export_source(self, body_nodes: List[Any], node_models: Mapping[str, Node]) -> Optional[str]:
+        """Pick the last action node in the loop body as the default export source."""
+
+        last_action: Optional[str] = None
+        for n in body_nodes:
+            if not isinstance(n, Mapping):
+                continue
+            nid = n.get("id")
+            if not isinstance(nid, str):
+                continue
+            model = node_models.get(nid)
+            ntype = model.type if model else n.get("type")
+            if isinstance(ntype, str) and ntype == "action":
+                last_action = nid
+        return last_action
+
     def _execute_loop_node(self, node: Dict[str, Any], binding_ctx: BindingContext) -> Dict[str, Any]:
         params = node.get("params") or {}
         loop_kind = params.get("loop_kind", "for_each")
@@ -253,6 +279,8 @@ class LoopExecutionMixin:
             extra_node_models = {n.id: n for n in sub_wf.nodes}
         except Exception:
             extra_node_models = {}
+
+        default_export_from_node = self._infer_default_export_source(body_nodes, extra_node_models)
 
         accumulator = params.get("accumulator") or {}
         max_iterations = params.get("max_iterations") or 100
@@ -324,6 +352,7 @@ class LoopExecutionMixin:
                     export_items,
                     aggregates_output,
                     avg_state,
+                    default_export_from_node,
                 )
                 self._clear_loop_body_results(binding_ctx.results, body_node_ids)
 
@@ -384,6 +413,7 @@ class LoopExecutionMixin:
                     export_items,
                     aggregates_output,
                     avg_state,
+                    default_export_from_node,
                 )
                 self._clear_loop_body_results(binding_ctx.results, body_node_ids)
 
