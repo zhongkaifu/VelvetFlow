@@ -61,7 +61,13 @@ def _condition_params_schema() -> Dict[str, Any]:
                 ),
                 "type": "string",
             },
-            "field": {"type": "string"},
+            "field": {
+                "type": "string",
+                "description": (
+                    "用于取值或比较的字段名，请以 Jinja 模板形式提供，例如 {{ 'employee_id' }}。"
+                    f"{JINJA_EXPRESSION_NOTE}"
+                ),
+            },
             "value": {
                 "description": (
                     "用于比较的值，建议直接给出 Jinja 模板字符串，"

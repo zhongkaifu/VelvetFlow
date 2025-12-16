@@ -31,6 +31,9 @@ def _normalize_jinja_expr(value: Any) -> Tuple[Any, bool]:
         if stripped and "{{" not in stripped and "{%" not in stripped:
             if _SIMPLE_PATH_RE.match(stripped):
                 return f"{{{{ {stripped} }}}}", True
+            # Fallback: wrap raw literals as Jinja templates so every param
+            # remains Jinja-compatible (e.g., condition.field="employee_id").
+            return f"{{{{ {repr(value)} }}}}", True
 
     return value, False
 
