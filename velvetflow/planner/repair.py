@@ -356,11 +356,11 @@ _ERROR_TYPE_PROMPTS: Dict[str, str] = {
     "MISSING_REQUIRED_PARAM": "补齐 params.<field>，优先绑定上游符合 arg_schema 的输出或使用 schema 默认值。示例：如果 action 需要 params.prompt 且缺失，可绑定上游文案生成节点的 result.output。",
     "UNKNOWN_ACTION_ID": "替换为 Action Registry 中存在的 action_id，保持节点含义最接近并同步校正 params。示例：将未知的 action_id 改为 registry 中的 text.generate，并保留 prompt/temperature 等参数。",
     "UNKNOWN_PARAM": "移除或重命名 params 中未在 arg_schema 声明的字段，使其与 schema 对齐。示例：action schema 仅接受 prompt/temperature，应删除意外出现的 max_token 字段。",
-    "DISCONNECTED_GRAPH": "连接无入度/出度节点，确保从 start 或入参到每个节点都有可达路径。示例：为孤立的 summary 节点添加来自前置生成节点的边，并把结果导向 end。",
+    "DISCONNECTED_GRAPH": "连接无入度/出度节点，确保每个节点都位于可达路径上。示例：为孤立的 summary 节点添加来自前置生成节点的边，并把结果导向下游汇总节点。",
     "INVALID_EDGE": "修复边的 from/to 以引用存在的节点，并保持条件字段合法。示例：若 edge.to 指向不存在的 node-3，可改为实际存在的 reviewer 节点。",
     "SCHEMA_MISMATCH": "调整绑定字段或聚合方式，使类型与上游 output_schema/arg_schema 兼容。示例：如果上游输出是 list 而当前节点期望 string，可改为 join 列表或选择单个元素。",
     "INVALID_SCHEMA": "按 DSL 结构补齐/修正字段类型（nodes/edges/params），避免 JSON 结构缺失。示例：在 workflow 缺少 edges 字段时补空数组，并确保 nodes 为列表。",
-    "INVALID_LOOP_BODY": "补齐 loop.body_subgraph 的 entry/exit/nodes/edges，并确保 exports.items 字段匹配 body 输出。示例：为 body_subgraph 增加 start/exit 节点和必要边，exports.items.fields 仅保留 body 输出中存在的字段。",
+    "INVALID_LOOP_BODY": "补齐 loop.body_subgraph.nodes（至少一个 action），并确保 exports.items 字段匹配 body 输出。示例：为 body_subgraph 增加默认 action 节点，exports.items.fields 仅保留 body 输出中存在的字段。",
     "STATIC_RULES_SUMMARY": "遵循静态规则摘要中的提示逐项修复，优先处理连通性和 schema 不匹配。示例：按摘要要求先修复未连接的边，再补齐缺失的必填参数。",
     "EMPTY_PARAM_VALUE": "为空的参数应填入非空值或绑定，避免空字符串/空对象。示例：将空的 params.prompt 改为具体提示词或绑定上游结果。",
     "EMPTY_PARAMS": "params 不能是空对象，为必填字段提供值或引用，并使用工具完成不确定的填充。示例：若节点类型为 action 但 params 为 {}，根据 arg_schema 填入 prompt/template 等必填字段。",
@@ -401,9 +401,7 @@ def apply_rule_based_repairs(
 def _safe_repair_invalid_loop_body(workflow_raw: Mapping[str, Any]) -> Workflow:
     """Best-effort patch for loop body graphs with missing nodes.
 
-    当 loop.body_subgraph 的 edges/entry/exit 引用缺失节点时，校验会抛出
-    异常并导致 AutoRepair 的回退逻辑失败。这里先补齐缺失节点（默认使用
-    ``end`` 类型）后再做校验，确保至少可以返回结构化的 fallback workflow。
+    当 loop.body_subgraph 缺失节点时，自动补一个占位 action，避免后续校验直接失败。
     """
 
     workflow_dict: Dict[str, Any] = dict(workflow_raw)
@@ -423,51 +421,10 @@ def _safe_repair_invalid_loop_body(workflow_raw: Mapping[str, Any]) -> Workflow:
         body_nodes = body.get("nodes") if isinstance(body.get("nodes"), list) else []
 
         if not body_nodes:
-            start_id = f"{node.get('id')}_body_entry"
-            end_id = f"{node.get('id')}_body_exit"
             action_id = f"{node.get('id')}_body_action"
             body_nodes = [
-                {"id": start_id, "type": "start"},
                 {"id": action_id, "type": "action"},
-                {"id": end_id, "type": "end"},
             ]
-            edges = body.get("edges") if isinstance(body.get("edges"), list) else []
-            edges.extend(
-                [
-                    {"from": start_id, "to": action_id},
-                    {"from": action_id, "to": end_id},
-                ]
-            )
-            body["entry"] = body.get("entry") or start_id
-            body["exit"] = body.get("exit") or end_id
-            body["edges"] = edges
-
-        body_ids = {bn.get("id") for bn in body_nodes if isinstance(bn, Mapping)}
-
-        def _append_missing(node_id: str):
-            if node_id in body_ids:
-                return
-            placeholder = {"id": node_id, "type": "end"}
-            body_nodes.append(placeholder)
-            body_ids.add(node_id)
-
-        entry = body.get("entry")
-        if isinstance(entry, str):
-            _append_missing(entry)
-
-        exit_node = body.get("exit")
-        if isinstance(exit_node, str):
-            _append_missing(exit_node)
-
-        for edge in body.get("edges") or []:
-            if not isinstance(edge, Mapping):
-                continue
-            frm = edge.get("from")
-            to = edge.get("to")
-            if isinstance(frm, str):
-                _append_missing(frm)
-            if isinstance(to, str):
-                _append_missing(to)
 
         body["nodes"] = body_nodes
         params["body_subgraph"] = body
@@ -576,10 +533,10 @@ def repair_workflow_with_llm(
 【Workflow DSL 语法与语义（务必遵守）】
 - workflow = {workflow_name, description, nodes: []}，只能返回合法 JSON（edges 会由系统基于节点绑定自动推导，不需要生成）。
 - node 基本结构：{id, type, display_name, params, action_id?, out_params_schema?, loop/subgraph/branches?}。
-  type 仅允许 start/action/condition/loop/parallel/end/exit。start/exit/end 不需要 params/out_params_schema。
+  type 仅允许 action/condition/loop/parallel。无需 start/end/exit 节点。
   action 节点必须填写 action_id（来自动作库）与 params；只有 action 节点允许 out_params_schema。
   condition 节点需包含返回布尔值的 params.expression（合法 Jinja 表达式），以及 true_to_node/false_to_node（字符串或 null）。
-  loop 节点包含 loop_kind/iter/source/body_subgraph/exports，循环外部只能引用 exports.items 或 exports.aggregates。
+  loop 节点包含 loop_kind/iter/source/body_subgraph/exports，循环外部只能引用 exports.items 或 exports.aggregates，body_subgraph 仅包含 nodes 数组。
   loop.body_subgraph 内不需要也不允许显式声明 edges、entry 或 exit 节点，如发现请直接删除。
   - params 必须直接使用 Jinja 表达式引用上游结果（如 {{ result_of.<node_id>.<field_path> }} 或 {{ loop.item.xxx }}），不再允许 __from__/__agg__ DSL。
     <node_id> 必须存在且字段需与上游 output_schema 或 loop.exports 对齐。

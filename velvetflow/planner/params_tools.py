@@ -79,8 +79,6 @@ def _loop_params_schema() -> Dict[str, Any]:
                 "type": "object",
                 "properties": {
                     "nodes": {"type": "array", "items": {"type": "object"}},
-                    "entry": {"type": "string"},
-                    "exit": {"type": "string"},
                 },
                 "required": ["nodes"],
                 "additionalProperties": True,

@@ -697,7 +697,7 @@ def drop_invalid_references(
 
 
 def repair_loop_body_references(
-    workflow: Mapping[str, Any], node_id: str, *, prefer_first_node: bool = True
+    workflow: Mapping[str, Any], node_id: str
 ) -> Tuple[Mapping[str, Any], Dict[str, Any]]:
     patched = copy.deepcopy(workflow)
     target = next(
@@ -718,32 +718,13 @@ def repair_loop_body_references(
     nodes: List[Mapping[str, Any]] = [
         bn for bn in body.get("nodes", []) if isinstance(bn, Mapping) and bn.get("id")
     ]
-    node_ids = [bn.get("id") for bn in nodes]
-    node_id_set = set(node_ids)
     changed = False
 
-    if node_ids:
-        if body.get("entry") not in node_id_set and prefer_first_node:
-            body["entry"] = node_ids[0]
+    # 移除无效的 entry/exit/edges 字段，loop.body_subgraph 只需要 nodes
+    for key in ["entry", "exit", "edges"]:
+        if key in body:
+            body.pop(key, None)
             changed = True
-        if body.get("exit") not in node_id_set and prefer_first_node:
-            body["exit"] = node_ids[-1]
-            changed = True
-    for key in ["entry", "exit"]:
-        if body.get(key) not in node_id_set and key in body:
-            body.pop(key)
-            changed = True
-
-    cleaned_edges = []
-    for edge in body.get("edges", []) or []:
-        if not isinstance(edge, Mapping):
-            continue
-        if edge.get("from") not in node_id_set or edge.get("to") not in node_id_set:
-            changed = True
-            continue
-        cleaned_edges.append(edge)
-    if cleaned_edges or "edges" in body:
-        body["edges"] = cleaned_edges
 
     return patched, {"applied": changed, "reason": None if changed else "无可修复项"}
 
@@ -833,7 +814,7 @@ def apply_repair_tool(
 
     if tool_name == "fix_loop_body_references":
         patched, summary = repair_loop_body_references(
-            workflow, node_id=node_id, prefer_first_node=bool(args.get("prefer_first_node", True))
+            workflow, node_id=node_id or ""
         )
     elif tool_name == "fill_action_required_params":
         patched, summary = fill_action_required_params(
@@ -901,16 +882,11 @@ REPAIR_TOOLS = [
         "type": "function",
         "function": {
             "name": "fix_loop_body_references",
-            "description": "清理 loop.body_subgraph 中指向缺失节点的 entry/exit/edges，可选用首尾节点兜底。",
+            "description": "清理 loop.body_subgraph 中的冗余 entry/exit/edges 字段，仅保留 nodes。",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "node_id": {"type": "string", "description": "loop 节点 ID"},
-                    "prefer_first_node": {
-                        "type": "boolean",
-                        "description": "若 entry/exit 缺失，是否使用 body 节点的首/尾节点兜底。",
-                        "default": True,
-                    },
                 },
                 "required": ["node_id"],
             },

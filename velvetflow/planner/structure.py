@@ -485,9 +485,6 @@ def _find_nodes_without_upstream(workflow: Mapping[str, Any]) -> List[Dict[str, 
         if not isinstance(node_id, str) or not isinstance(node_type, str):
             continue
 
-        if node_type in {"start", "end", "exit"}:
-            continue
-
         if indegree.get(node_id, 0) == 0:
             dangling.append(
                 {
@@ -550,7 +547,7 @@ def _build_dependency_feedback_message(
     *, workflow: Mapping[str, Any], nodes_without_upstream: List[Mapping[str, Any]]
 ) -> str:
     return (
-        "检测到以下节点没有任何上游依赖（不包含 start/end/exit），"
+        "检测到以下节点没有任何上游依赖，"
         "请检查是否遗漏了对相关节点结果的引用或绑定。如果需要，请继续使用规划工具补充；"
         "如果确认这些节点应该独立存在，请在 finalize_workflow.notes 中简单说明原因。\n"
         f"- nodes_without_upstream: {json.dumps(nodes_without_upstream, ensure_ascii=False)}\n"
@@ -575,11 +572,10 @@ def plan_workflow_structure_with_llm(
         "【Workflow DSL 语法与语义（务必遵守）】\n"
         "- workflow = {workflow_name, description, nodes: []}，只能返回合法 JSON（edges 会由系统基于节点绑定自动推导，不需要生成）。\n"
         "- node 基本结构：{id, type, display_name, params, depends_on, action_id?, out_params_schema?, loop/subgraph/branches?}。\n"
-        "  type 仅允许 start/action/condition/loop/parallel/end/exit。start/exit/end 不需要 params/out_params_schema。\n"
+        "  type 仅允许 action/condition/loop/parallel。无需 start/end/exit 节点。\n"
         "  action 节点必须填写 action_id（来自动作库）与 params；只有 action 节点允许 out_params_schema。\n"
-        "  condition 节点需包含 kind/source/field/op/value 以及 true_to_node/false_to_node（字符串或 null）。\n"
-        "  loop 节点包含 loop_kind/iter/source/body_subgraph/exports，循环外部只能引用 exports.items 或 exports.aggregates。\n"
-        "  loop.body_subgraph 内不需要也不允许显式声明 edges、entry 或 exit 节点，如发现请直接删除。\n"
+        "  condition 节点的 params 必须只有 expression（单个返回布尔值的 Jinja 表达式）以及 true_to_node/false_to_node（字符串或 null）。\n"
+        "  loop 节点包含 loop_kind/iter/source/body_subgraph/exports，循环外部只能引用 exports.items 或 exports.aggregates，body_subgraph 仅需 nodes 数组，不需要 entry/exit/edges。\n"
         "  parallel 节点的 branches 为非空数组，每个元素包含 id/entry_node/sub_graph_nodes。\n"
         "- params 内部必须直接使用 Jinja 表达式引用上游结果（如 {{ result_of.<node_id>.<field_path> }} 或 {{ loop.item.xxx }}），不再允许旧的 __from__/__agg__ DSL。"
         "  你在规划阶段输出的每一个 params 值（包含 condition/switch/loop 节点）都会被 Jinja 引擎解析，任何非 Jinja2 语法的引用会被视为错误并触发自动修复，请严格遵循 Jinja 模板写法。"
@@ -604,7 +600,7 @@ def plan_workflow_structure_with_llm(
         "   - 通知 / 写入 / 落库 / 调用下游系统\n"
         "3. 不允许为了模仿示例，而在与当前任务无关的情况下引入“健康/体温/新闻/Nvidia/员工/HR”等具体词汇。\n\n"
         "4. 循环节点的内部数据只能通过 loop.exports 暴露给外部，下游引用循环结果时必须使用 result_of.<loop_id>.items（或 result_of.<loop_id>.exports.items）/ result_of.<loop_id>.aggregates.*，禁止直接引用 body 子图的节点。\n"
-        "5. loop.exports 应定义在 params.exports 下，请勿写在 body_subgraph 内。\n"
+        "5. loop.exports 应定义在 params.exports 下，请勿写在 body_subgraph 内；body_subgraph 仅包含 nodes 数组，无需 entry/exit/edges。\n"
         "6. 允许嵌套循环，但需要通过 parent_node_id 或 sub_graph_nodes 明确将子循环纳入父循环的 body_subgraph；"
         "   外部节点引用循环内部数据时仍需通过 loop.exports，而不是直接指向子图节点。\n\n"
         "【覆盖度要求】\n"
