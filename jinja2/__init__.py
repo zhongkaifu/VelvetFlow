@@ -23,11 +23,14 @@ for _path in sys.path:
         continue
     if os.path.abspath(candidate) == _CURRENT_FILE:
         continue
-    spec = importlib.util.spec_from_loader(
-        "_velvetflow_real_jinja2", importlib.machinery.SourceFileLoader("_velvetflow_real_jinja2", candidate)
+    spec = importlib.util.spec_from_file_location(
+        "_velvetflow_real_jinja2",
+        candidate,
+        submodule_search_locations=[os.path.dirname(candidate)],
     )
     if spec and spec.loader:
         _real_module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = _real_module
         spec.loader.exec_module(_real_module)
         break
 
