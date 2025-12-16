@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 from functools import lru_cache
 from typing import Any, Mapping
 
@@ -27,6 +28,32 @@ def get_jinja_env() -> Environment:
     )
     env.filters.setdefault("tojson", lambda obj: json.dumps(obj, ensure_ascii=False))
     return env
+
+
+_CONST_STR_TMPL = re.compile(r"^\s*\{\{\s*(['\"])(.*)\1\s*\}\}\s*$", re.DOTALL)
+
+
+def render_jinja_string_constants(value: Any) -> Any:
+    """Recursively render Jinja templates that are pure string literals.
+
+    This collapses values like ``"{{ 'action' }}"`` into ``"action"`` so
+    structural fields (e.g., ``type``) and params that are written as
+    Jinja-wrapped literals are normalized before validation/execution.
+    """
+
+    def _render(val: Any) -> Any:
+        if isinstance(val, str):
+            match = _CONST_STR_TMPL.match(val)
+            if match:
+                return match.group(2)
+            return val
+        if isinstance(val, MappingABC):
+            return {k: _render(v) for k, v in val.items()}
+        if isinstance(val, list):
+            return [_render(v) for v in val]
+        return val
+
+    return _render(value)
 
 
 def validate_jinja_expr(expr: Any, *, path: str = "expression") -> None:

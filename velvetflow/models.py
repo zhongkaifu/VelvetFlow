@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 import re
 from typing import Any, Dict, Iterable, List, Literal, Mapping, Optional, Set
 
+from velvetflow.jinja_utils import render_jinja_string_constants
 from velvetflow.loop_dsl import loop_body_has_action
 from velvetflow.reference_utils import normalize_reference_path
 
@@ -354,6 +355,8 @@ class Node:
                 {"loc": ("node",), "msg": "节点必须是对象"},
             ])
 
+        data = render_jinja_string_constants(data)
+
         errors: List[Dict[str, Any]] = []
         node_id = data.get("id")
         node_type = data.get("type")
@@ -553,6 +556,8 @@ class Edge:
                 {"loc": ("edge",), "msg": "边必须是对象"},
             ])
 
+        data = render_jinja_string_constants(data)
+
         errors: List[Dict[str, Any]] = []
         from_node = data.get("from") if "from" in data else data.get("from_node")
         to_node = data.get("to") if "to" in data else data.get("to_node")
@@ -611,6 +616,8 @@ class Workflow:
             raise PydanticValidationError([
                 {"loc": ("workflow",), "msg": "workflow 必须是对象"},
             ])
+
+        data = render_jinja_string_constants(data)
 
         errors: List[Dict[str, Any]] = []
         raw_nodes = data.get("nodes")
