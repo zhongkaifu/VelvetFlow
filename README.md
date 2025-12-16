@@ -50,12 +50,20 @@ VelvetFlow (repo root)
 - **演进方向**：未来可在 Action Registry 接入实时企业数据源、在检索阶段加入权限/成本信号，或将模拟执行器替换为真实后端服务以验证端到端的产出质量。
 
 ## 使用方法
-1. **安装依赖**
-   ```bash
-   python -m venv .venv
-   source .venv/bin/activate
-   pip install -r requirements.txt
-   ```
+1. **安装依赖（支持 pip 或 uv）**
+   - 使用 pip + venv：
+     ```bash
+     python -m venv .venv
+     source .venv/bin/activate
+     pip install -r requirements.txt
+     ```
+   - 使用 [uv](https://github.com/astral-sh/uv)（依赖由 `pyproject.toml` 描述，默认创建 `.venv`）：
+     ```bash
+     uv venv --python 3.10
+     source .venv/bin/activate
+     uv sync
+     ```
+     uv 会自动读取 `pyproject.toml` 同步依赖；后续可以用 `uv run python build_workflow.py` 等方式直接运行脚本。
 2. **设置凭证**
    ```bash
    export OPENAI_API_KEY="<your_api_key>"
