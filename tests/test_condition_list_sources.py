@@ -182,3 +182,36 @@ def test_list_not_empty_handles_field_over_list_items():
 
     assert cond_result is True
     assert debug.get("resolved_value") == ["a01", "a02"]
+
+
+def test_list_not_empty_warns_actual_type(capsys):
+    workflow = Workflow.model_validate(
+        {
+            "workflow_name": "list_type_warning",
+            "description": "",
+            "nodes": [
+                {
+                    "id": "cond_list_type",
+                    "type": "condition",
+                    "params": {
+                        "kind": "list_not_empty",
+                        "source": {"employee_id": "a01"},
+                    },
+                    "true_to_node": None,
+                    "false_to_node": None,
+                }
+            ],
+        }
+    )
+
+    executor = DynamicActionExecutor(workflow)
+    binding_ctx = BindingContext(workflow, results={})
+
+    cond_result, _ = executor._eval_condition(
+        workflow.nodes[0].model_dump(), binding_ctx, include_debug=True
+    )
+
+    out = capsys.readouterr().out
+    assert cond_result is False
+    assert "source 不是 list" in out
+    assert "dict" in out

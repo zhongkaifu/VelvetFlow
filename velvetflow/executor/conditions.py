@@ -233,7 +233,11 @@ class ConditionEvaluationMixin:
             condition = {"check": "len(value) > 0", "type": "list"}
             if not isinstance(target_data, list):
                 condition["reason"] = "source_not_list"
-                log_warn("[condition:list_not_empty] source 不是 list，返回 False")
+                actual_type = type(target_data).__name__ if target_data is not None else "NoneType"
+                condition["actual_type"] = actual_type
+                log_warn(
+                    f"[condition:list_not_empty] source 不是 list (实际类型: {actual_type})，返回 False"
+                )
                 result = False
             else:
                 result = len(target_data) > 0
