@@ -327,6 +327,24 @@ def _summarize_validation_errors_for_llm(
                 f"- [{err.code}] 暂无固定修复模板{scope_hint}，建议沿以下方向探索：{' '.join(directions)}"
             )
 
+        if (
+            err.code == "SCHEMA_MISMATCH"
+            and err.message
+            and re.search(r"loop[^']*\.item\.\w+", err.message)
+        ):
+            loop_ref = err.node_id or "loop 节点"
+            match = re.search(r"([\w-]+)\.item\.\w+", err.message)
+            if match:
+                loop_ref = match.group(1)
+            repair_prompts.append(
+                "- [SCHEMA_MISMATCH] loop item 引用修复：如果在 loop 体内使用，请改为"
+                " `loop.item.<字段>` 并确保 params.source 的元素 schema 含该字段；"
+                "如果在 loop 外部引用，请改为 `result_of.<loop_id>.exports.items.<字段>`，"
+                "并在 loop.params.exports.items.fields 中声明该字段以供校验。".replace(
+                    "<loop_id>", str(loop_ref)
+                )
+            )
+
         history = previous_attempts.get(_make_error_key(err))
         if history:
             lines.append("    历史修复尝试：")
@@ -356,11 +374,11 @@ _ERROR_TYPE_PROMPTS: Dict[str, str] = {
     "MISSING_REQUIRED_PARAM": "补齐 params.<field>，优先绑定上游符合 arg_schema 的输出或使用 schema 默认值。示例：如果 action 需要 params.prompt 且缺失，可绑定上游文案生成节点的 result.output。",
     "UNKNOWN_ACTION_ID": "替换为 Action Registry 中存在的 action_id，保持节点含义最接近并同步校正 params。示例：将未知的 action_id 改为 registry 中的 text.generate，并保留 prompt/temperature 等参数。",
     "UNKNOWN_PARAM": "移除或重命名 params 中未在 arg_schema 声明的字段，使其与 schema 对齐。示例：action schema 仅接受 prompt/temperature，应删除意外出现的 max_token 字段。",
-    "DISCONNECTED_GRAPH": "连接无入度/出度节点，确保从 start 或入参到每个节点都有可达路径。示例：为孤立的 summary 节点添加来自前置生成节点的边，并把结果导向 end。",
+    "DISCONNECTED_GRAPH": "连接无入度/出度节点，确保每个节点都位于可达路径上。示例：为孤立的 summary 节点添加来自前置生成节点的边，并把结果导向下游汇总节点。",
     "INVALID_EDGE": "修复边的 from/to 以引用存在的节点，并保持条件字段合法。示例：若 edge.to 指向不存在的 node-3，可改为实际存在的 reviewer 节点。",
     "SCHEMA_MISMATCH": "调整绑定字段或聚合方式，使类型与上游 output_schema/arg_schema 兼容。示例：如果上游输出是 list 而当前节点期望 string，可改为 join 列表或选择单个元素。",
     "INVALID_SCHEMA": "按 DSL 结构补齐/修正字段类型（nodes/edges/params），避免 JSON 结构缺失。示例：在 workflow 缺少 edges 字段时补空数组，并确保 nodes 为列表。",
-    "INVALID_LOOP_BODY": "补齐 loop.body_subgraph 的 entry/exit/nodes/edges，并确保 exports.items 字段匹配 body 输出。示例：为 body_subgraph 增加 start/exit 节点和必要边，exports.items.fields 仅保留 body 输出中存在的字段。",
+    "INVALID_LOOP_BODY": "补齐 loop.body_subgraph.nodes（至少一个 action），并确保 exports.items 字段匹配 body 输出。示例：为 body_subgraph 增加默认 action 节点，exports.items.fields 仅保留 body 输出中存在的字段。",
     "STATIC_RULES_SUMMARY": "遵循静态规则摘要中的提示逐项修复，优先处理连通性和 schema 不匹配。示例：按摘要要求先修复未连接的边，再补齐缺失的必填参数。",
     "EMPTY_PARAM_VALUE": "为空的参数应填入非空值或绑定，避免空字符串/空对象。示例：将空的 params.prompt 改为具体提示词或绑定上游结果。",
     "EMPTY_PARAMS": "params 不能是空对象，为必填字段提供值或引用，并使用工具完成不确定的填充。示例：若节点类型为 action 但 params 为 {}，根据 arg_schema 填入 prompt/template 等必填字段。",
@@ -401,9 +419,7 @@ def apply_rule_based_repairs(
 def _safe_repair_invalid_loop_body(workflow_raw: Mapping[str, Any]) -> Workflow:
     """Best-effort patch for loop body graphs with missing nodes.
 
-    当 loop.body_subgraph 的 edges/entry/exit 引用缺失节点时，校验会抛出
-    异常并导致 AutoRepair 的回退逻辑失败。这里先补齐缺失节点（默认使用
-    ``end`` 类型）后再做校验，确保至少可以返回结构化的 fallback workflow。
+    当 loop.body_subgraph 缺失节点时，自动补一个占位 action，避免后续校验直接失败。
     """
 
     workflow_dict: Dict[str, Any] = dict(workflow_raw)
@@ -423,51 +439,10 @@ def _safe_repair_invalid_loop_body(workflow_raw: Mapping[str, Any]) -> Workflow:
         body_nodes = body.get("nodes") if isinstance(body.get("nodes"), list) else []
 
         if not body_nodes:
-            start_id = f"{node.get('id')}_body_entry"
-            end_id = f"{node.get('id')}_body_exit"
             action_id = f"{node.get('id')}_body_action"
             body_nodes = [
-                {"id": start_id, "type": "start"},
                 {"id": action_id, "type": "action"},
-                {"id": end_id, "type": "end"},
             ]
-            edges = body.get("edges") if isinstance(body.get("edges"), list) else []
-            edges.extend(
-                [
-                    {"from": start_id, "to": action_id},
-                    {"from": action_id, "to": end_id},
-                ]
-            )
-            body["entry"] = body.get("entry") or start_id
-            body["exit"] = body.get("exit") or end_id
-            body["edges"] = edges
-
-        body_ids = {bn.get("id") for bn in body_nodes if isinstance(bn, Mapping)}
-
-        def _append_missing(node_id: str):
-            if node_id in body_ids:
-                return
-            placeholder = {"id": node_id, "type": "end"}
-            body_nodes.append(placeholder)
-            body_ids.add(node_id)
-
-        entry = body.get("entry")
-        if isinstance(entry, str):
-            _append_missing(entry)
-
-        exit_node = body.get("exit")
-        if isinstance(exit_node, str):
-            _append_missing(exit_node)
-
-        for edge in body.get("edges") or []:
-            if not isinstance(edge, Mapping):
-                continue
-            frm = edge.get("from")
-            to = edge.get("to")
-            if isinstance(frm, str):
-                _append_missing(frm)
-            if isinstance(to, str):
-                _append_missing(to)
 
         body["nodes"] = body_nodes
         params["body_subgraph"] = body
@@ -543,11 +518,26 @@ def _repair_with_llm_and_fallback(
             return fallback
         except Exception as inner_err:  # noqa: BLE001
             log_error(
-                f"[AutoRepair] 回退到原始结构失败，将返回空的 fallback workflow：{inner_err}"
+                "[AutoRepair] 回退到原始结构失败，保留失败的结构以便继续修复："
+                f"{inner_err}"
             )
-            return Workflow(
-                workflow_name="fallback_workflow", nodes=[]
-            )
+            # Preserve the last broken structure so the outer planner loop can keep
+            # attempting repairs instead of returning a synthetic empty workflow.
+            if isinstance(broken_workflow, Workflow):
+                return broken_workflow
+
+            if isinstance(broken_workflow, Mapping):
+                return Workflow(
+                    workflow_name=str(
+                        broken_workflow.get("workflow_name", "unfixed_workflow")
+                    ),
+                    description=str(broken_workflow.get("description", "")),
+                    nodes=broken_workflow.get("nodes") or [],
+                )
+
+            # If we cannot introspect the broken payload, fall back to a minimal
+            # structure with the original data attached for future repairs.
+            return Workflow(workflow_name="unfixed_workflow", nodes=[broken_workflow])
 
 
 def repair_workflow_with_llm(
@@ -576,57 +566,62 @@ def repair_workflow_with_llm(
 【Workflow DSL 语法与语义（务必遵守）】
 - workflow = {workflow_name, description, nodes: []}，只能返回合法 JSON（edges 会由系统基于节点绑定自动推导，不需要生成）。
 - node 基本结构：{id, type, display_name, params, action_id?, out_params_schema?, loop/subgraph/branches?}。
-  type 仅允许 start/action/condition/loop/parallel/end/exit。start/exit/end 不需要 params/out_params_schema。
+  type 仅允许 action/condition/loop/parallel。无需 start/end/exit 节点。
   action 节点必须填写 action_id（来自动作库）与 params；只有 action 节点允许 out_params_schema。
-  condition 节点需包含 kind/source/field/op/value 以及 true_to_node/false_to_node（字符串或 null）。
-  loop 节点包含 loop_kind/iter/source/body_subgraph/exports，循环外部只能引用 exports.items 或 exports.aggregates。
+  condition 节点需包含返回布尔值的 params.expression（合法 Jinja 表达式），以及 true_to_node/false_to_node（字符串或 null）。
+  loop 节点包含 loop_kind/iter/source/body_subgraph/exports，循环外部只能引用 exports.items 或 exports.aggregates，body_subgraph 仅包含 nodes 数组。
   loop.body_subgraph 内不需要也不允许显式声明 edges、entry 或 exit 节点，如发现请直接删除。
-  parallel 节点的 branches 为非空数组，每个元素包含 id/entry_node/sub_graph_nodes。
-- params 内部可使用绑定 DSL：{"__from__": "result_of.<node_id>.<field_path>", "__agg__": <identity/count/...>}，
-  其中 <node_id> 必须存在且字段需与上游 output_schema 或 loop.exports 对齐。
-当前有一个 workflow JSON 和一组结构化校验错误 validation_errors。
-validation_errors 是 JSON 数组，元素包含 code/node_id/field/message。
-这些错误来自：
-- action 参数缺失或不符合 arg_schema
-- condition 条件不完整
-- source/__from__ 路径引用了不存在的节点
-- source/__from__ 路径与上游 action 的 output_schema 不匹配
-- source/__from__ 指向的数组元素 schema 中不存在某个字段
+  - params 必须直接使用 Jinja 表达式引用上游结果（如 {{ result_of.<node_id>.<field_path> }} 或 {{ loop.item.xxx }}），不再允许 __from__/__agg__ DSL。
+    <node_id> 必须存在且字段需与上游 output_schema 或 loop.exports 对齐。
+  当前有一个 workflow JSON 和一组结构化校验错误 validation_errors。
+  validation_errors 是 JSON 数组，元素包含 code/node_id/field/message。
+  这些错误来自：
+  - action 参数缺失或不符合 arg_schema
+  - condition 条件不完整
+  - source 路径引用了不存在的节点
+  - source 路径与上游 action 的 output_schema 不匹配
+  - source 指向的数组元素 schema 中不存在某个字段
 
-- previous_failed_attempts 会记录同一错误的历史修复尝试，请避免重复失败的方法，尝试不同的修复路径。
+  - previous_failed_attempts 会记录同一错误的历史修复尝试，请避免重复失败的方法，尝试不同的修复路径。
 
-- workflow 结构不符合 DSL schema（例如节点 type 非法）
+  - workflow 结构不符合 DSL schema（例如节点 type 非法）
 
-总体目标：在“尽量不改变工作流整体结构”的前提下，修复这些错误，使 workflow 通过静态校验。
+  总体目标：在“尽量不改变工作流整体结构”的前提下，修复这些错误，使 workflow 通过静态校验。
 
-具体要求（很重要，请严格遵守）：
+  具体要求（很重要，请严格遵守）：
  1. 结构保持稳定：
     - 不要增加或删除节点；
     - edges 会由系统根据节点引用自动推导，不需要手动增删或调整 condition。
 
-2. action 节点修复优先级：
-   - 首先根据 action_schemas[action_id].arg_schema 补齐 params 里缺失的必填字段，或修正错误类型；
-   - 如果 action_id 本身是合的（存在于 action_schemas 中），优先“修 params”，不要改 action_id；
-   - 只有当 validation_errors 明确指出 action_id 不存在时，才考虑把 action_id 改成一个更合理的候选，
-     并同步更新该节点的 params 使之符合新的 arg_schema。
+ 2. action 节点修复优先级：
+    - 首先根据 action_schemas[action_id].arg_schema 补齐 params 里缺失的必填字段，或修正错误类型；
+    - 如果 action_id 本身是合法的（存在于 action_schemas 中），优先“修 params”，不要改 action_id；
+    - 只有当 validation_errors 明确指出 action_id 不存在时，才考虑把 action_id 改成一个更合理的候选，
+      并同步更新该节点的 params 使之符合新的 arg_schema。
 
-3. condition 节点修复：
-   - 确保 kind/source/field/value 等必填字段齐全且类型正确；
-   - source 可以是字符串路径，也可以是 {"__from__": ...} 对象；
-   - 当 source 指向数组输出时，field 需要存在于元素 schema 中。
+ 3. condition 节点修复：
+    - 确保 params.expression 存在且是合法的 Jinja 布尔表达式；
+    - expression 应直接编写判断逻辑，引用上游结果请使用 {{ result_of.<node>.<field_path> }} 或 {{ loop.item.xxx }}；
+    - 不要生成 kind/field/op/value 等字段，所有条件均需融入 expression。
 
-4. loop 节点：确保 loop_kind（for_each/while）和 source 字段合法，并使用 exports 暴露 body 结果，下游只能引用 result_of.<loop_id>.items / aggregates。
-5. parallel 节点：branches 必须是非空数组。
+ 4. loop 节点：确保 loop_kind（for_each/while）和 source 字段合法，并使用 exports 暴露 body 结果，下游只能引用 result_of.<loop_id>.items / aggregates。
+ 5. parallel 节点：branches 必须是非空数组。
 
-6. 参数绑定 DSL 修复（__from__ 及其聚合逻辑）：
-   - 对于 {"__from__": "result_of.xxx.data", "__agg__": "...", ...}：
-       - 检查 __from__ 路径是否合法、与 output_schema 对齐；
-       - __agg__ 必须是 identity/count/count_if/join/format_join/filter_map/pipeline 之一，非法取值需要改成最接近语义的枚举值；
-       - 检查 count_if/filter_map/pipeline 中的 field/filter_field/map_field 是否存在于数组元素 schema 中；
-       - 当需要条件过滤时，请把 __agg__.condition 或 pipeline.steps[].condition 写成 Mini-Expression AST（JSON），支持 const/var、op=and/or/not/exists/==/!=/>/>=/</<=/in 等形式，例如 {"op": "and", "args": [ {"op": ">", "left": {"var": "item.score"}, "right": {"const": 80}}, {"op": "exists", "arg": {"var": "item.id"}} ]}，不要再使用自然语言条件；
-   - 当错误涉及这些字段时，优先只改字段名（根据元素 schema 的 properties），保持聚合逻辑不变。
+ 6. 参数绑定修复：
+    - 仅输出 Jinja 表达式或字面量，禁止回退到 __from__/__agg__ 对象；
+    - 聚合/过滤/拼接逻辑请直接写在 Jinja 表达式或过滤器里，并确保字段路径与上游 schema 对齐；
+    - 常见错误：loop.exports.items.fields 只有包装字段，但条件需要访问内部子字段，请将路径写成 <字段>.<子字段>。
 
-   - 常见错误：loop.exports.items.fields 只有包装字段，但条件需要访问内部子字段，请将 field 改成 <字段>.<子字段>。
+ 7. 修改范围尽量最小化：
+    - 当有多种修复方式时，优先选择改动最小、语义最接近原意的方案（如只改一个字段名，而不是重写整个 params）。
+    - 当 validation_error_summary 提供 Schema 提示或路径信息时，优先按提示矫正字段类型/结构，避免多轮重复犯错。
+
+ 8. 修复回合有限且必须闭环：
+    - 系统会在有限轮次内重新校验；如果你忽略任何一条 validation_error，流程将直接进入下一轮甚至终止。
+    - 请逐条对照 validation_errors，把所有问题修到为 0 再输出结果，避免留存隐患。
+
+ 9. 输出要求：
+    - 保持顶层结构：workflow_name/description/nodes 不变（仅节点内部内容可调整，edges 由系统推导）；
 
 7. 修改范围尽量最小化：
    - 当有多种修复方式时，优先选择改动最小、语义最接近原意的方案（如只改一个字段名，而不是重写整个 params）。

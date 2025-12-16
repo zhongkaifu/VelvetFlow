@@ -1,14 +1,29 @@
 """Loop execution helpers used by the executor."""
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any, Dict, List, Mapping, Optional
 
 from velvetflow.bindings import BindingContext
+from velvetflow.jinja_utils import render_jinja_string_constants
 from velvetflow.logging_utils import log_json, log_warn
 from velvetflow.models import Node, Workflow
 
 
 class LoopExecutionMixin:
+    def _extract_export_values(self, raw_source: Any, field: Optional[str]) -> List[Any]:
+        """Extract values from a loop export source for aggregate calculations."""
+
+        # Normalize a single mapping/list/scalar into a flat list for aggregation.
+        if isinstance(raw_source, list):
+            values = [self._get_field_value(item, field) for item in raw_source]
+        elif isinstance(raw_source, Mapping):
+            values = [self._get_field_value(raw_source, field)]
+        else:
+            values = [raw_source]
+
+        return [v for v in values if v is not None]
+
     def _apply_loop_exports(
         self,
         items_spec: Optional[Mapping[str, Any]],
@@ -17,11 +32,21 @@ class LoopExecutionMixin:
         items_output: List[Dict[str, Any]],
         aggregates_output: Dict[str, Any],
         avg_state: Dict[str, Dict[str, float]],
+        default_from_node: Optional[str],
     ) -> None:
-        if isinstance(items_spec, Mapping):
-            from_node = items_spec.get("from_node")
-            fields = items_spec.get("fields") if isinstance(items_spec.get("fields"), list) else []
-            list_field = items_spec.get("list_field") if isinstance(items_spec.get("list_field"), str) else None
+        normalized_items_spec: Optional[Mapping[str, Any]] = None
+
+        if isinstance(items_spec, list):
+            normalized_items_spec = {"fields": [f for f in items_spec if isinstance(f, str)]}
+        elif isinstance(items_spec, Mapping):
+            normalized_items_spec = dict(items_spec)
+
+        if isinstance(normalized_items_spec, Mapping):
+            from_node = normalized_items_spec.get("from_node") or default_from_node
+            fields = normalized_items_spec.get("fields") if isinstance(normalized_items_spec.get("fields"), list) else []
+            list_field = (
+                normalized_items_spec.get("list_field") if isinstance(normalized_items_spec.get("list_field"), str) else None
+            )
 
             def _build_record(obj: Any) -> Dict[str, Any]:
                 if isinstance(obj, Mapping):
@@ -216,10 +241,29 @@ class LoopExecutionMixin:
         for nid in body_node_ids:
             results.pop(nid, None)
 
+    def _infer_default_export_source(
+        self, body_nodes: List[Any], node_models: Mapping[str, Node]
+    ) -> Optional[str]:
+        """Pick the last action node in the loop body as the default export source."""
+
+        body_nodes = render_jinja_string_constants(body_nodes)
+        last_action: Optional[str] = None
+        for n in body_nodes:
+            if not isinstance(n, Mapping):
+                continue
+            nid = n.get("id")
+            if not isinstance(nid, str):
+                continue
+            model = node_models.get(nid)
+            ntype = model.type if model else n.get("type")
+            if isinstance(ntype, str) and ntype == "action":
+                last_action = nid
+        return last_action
+
     def _execute_loop_node(self, node: Dict[str, Any], binding_ctx: BindingContext) -> Dict[str, Any]:
-        params = node.get("params") or {}
+        params = render_jinja_string_constants(node.get("params") or {})
         loop_kind = params.get("loop_kind", "for_each")
-        body_graph = params.get("body_subgraph") or {}
+        body_graph = render_jinja_string_constants(params.get("body_subgraph") or {})
         body_nodes = body_graph.get("nodes") or []
         entry = body_graph.get("entry")
         exit_node = body_graph.get("exit")
@@ -253,6 +297,8 @@ class LoopExecutionMixin:
         except Exception:
             extra_node_models = {}
 
+        default_export_from_node = self._infer_default_export_source(body_nodes, extra_node_models)
+
         accumulator = params.get("accumulator") or {}
         max_iterations = params.get("max_iterations") or 100
         iterations: List[Dict[str, Any]] = []
@@ -269,9 +315,19 @@ class LoopExecutionMixin:
         if loop_kind == "for_each":
             source = params.get("source")
             data = self._resolve_condition_source(source, binding_ctx)
-            if not isinstance(data, list):
-                log_warn("[loop] for_each 的 source 不是 list，跳过执行")
-                return {"status": "skipped", "reason": "source_not_list"}
+            is_sequence = isinstance(data, Sequence) and not isinstance(
+                data, (str, bytes, bytearray)
+            )
+            if not is_sequence:
+                log_warn(
+                    "[loop] for_each 的 source 不是 list/sequence "
+                    f"(实际类型: {type(data).__name__}), 跳过执行"
+                )
+                return {
+                    "status": "skipped",
+                    "reason": "source_not_list",
+                    "actual_type": type(data).__name__,
+                }
 
             size = len(data)
             for idx, item in enumerate(data):
@@ -313,6 +369,7 @@ class LoopExecutionMixin:
                     export_items,
                     aggregates_output,
                     avg_state,
+                    default_export_from_node,
                 )
                 self._clear_loop_body_results(binding_ctx.results, body_node_ids)
 
@@ -373,6 +430,7 @@ class LoopExecutionMixin:
                     export_items,
                     aggregates_output,
                     avg_state,
+                    default_export_from_node,
                 )
                 self._clear_loop_body_results(binding_ctx.results, body_node_ids)
 

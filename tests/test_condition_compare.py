@@ -2,20 +2,21 @@
 # License: BSD 3-Clause License
 
 from velvetflow.executor import DynamicActionExecutor
+from velvetflow.executor.conditions import ConditionEvaluationMixin
 from velvetflow.models import Workflow
+from velvetflow.bindings import BindingContext
 
 
-def _build_workflow(condition_params, true_node_id="t_branch", false_node_id="f_branch"):
+def _build_workflow(expression, true_node_id="t_branch", false_node_id="f_branch"):
     return Workflow.model_validate(
         {
-            "workflow_name": "condition_kind_extensions",
+            "workflow_name": "condition_expression_eval",
             "description": "",
             "nodes": [
-                {"id": "start", "type": "start"},
                 {
                     "id": "check",
                     "type": "condition",
-                    "params": condition_params,
+                    "params": {"expression": expression},
                     "true_to_node": true_node_id,
                     "false_to_node": false_node_id,
                 },
@@ -36,22 +37,37 @@ def _build_workflow(condition_params, true_node_id="t_branch", false_node_id="f_
     )
 
 
-def test_condition_compare_executes_true_branch():
-    workflow = _build_workflow(
-        {
-            "kind": "compare",
-            "source": {"score": 8},
-            "field": "score",
-            "op": ">=",
-            "value": 5,
-        }
+class _ConditionHarness(ConditionEvaluationMixin):
+    """Lightweight harness to call condition evaluation helpers directly."""
+
+
+def test_condition_alias_is_exposed_at_top_level():
+    workflow = Workflow.model_validate({"workflow_name": "alias_ctx", "nodes": []})
+    ctx = BindingContext(
+        workflow,
+        results={},
+        loop_ctx={
+            "item": {"temperature": 39},
+            "employee": {"temperature": 39},
+            "index": 0,
+        },
+        loop_id="loop_check_temperature",
     )
+    harness = _ConditionHarness()
+    node = {"params": {"expression": "{{ employee.temperature > 38 }}"}}
+
+    result, debug = harness._eval_condition(node, ctx, include_debug=True)
+
+    assert result is True
+    assert debug["resolved_value"] is True
+
+
+def test_condition_compare_executes_true_branch():
+    workflow = _build_workflow("{{ 8 >= 5 }}")
 
     executor = DynamicActionExecutor(
         workflow,
-        simulations={
-            "productivity.compose_outlook_email.v1": {"result": {"status": "simulated"}}
-        },
+        simulations={"productivity.compose_outlook_email.v1": {"result": {"status": "simulated"}}},
     )
 
     results = executor.run()
@@ -60,47 +76,12 @@ def test_condition_compare_executes_true_branch():
     assert "f_branch" not in results
 
 
-def test_condition_compare_supports_custom_operator():
-    workflow = _build_workflow(
-        {
-            "kind": "compare",
-            "source": {"score": 2},
-            "field": "score",
-            "op": ">=",
-            "value": 5,
-        }
-    )
-
-    executor = DynamicActionExecutor(
-        workflow,
-        simulations={
-            "productivity.compose_outlook_email.v1": {"result": {"status": "simulated"}}
-        },
-    )
-
-    results = executor.run()
-
-    assert "f_branch" in results
-    assert "t_branch" not in results
-
-
 def test_condition_greater_than_executes_true_branch():
-    workflow = _build_workflow(
-        {
-            "kind": "greater_than",
-            "source": {"temperature": 39},
-            "field": "temperature",
-            "threshold": 38,
-        },
-        true_node_id="add_to_warning_list",
-        false_node_id="log_normal",
-    )
+    workflow = _build_workflow("{{ 39 > 38 }}", true_node_id="add_to_warning_list", false_node_id="log_normal")
 
     executor = DynamicActionExecutor(
         workflow,
-        simulations={
-            "productivity.compose_outlook_email.v1": {"result": {"status": "simulated"}}
-        },
+        simulations={"productivity.compose_outlook_email.v1": {"result": {"status": "simulated"}}},
     )
 
     results = executor.run()
@@ -110,22 +91,11 @@ def test_condition_greater_than_executes_true_branch():
 
 
 def test_condition_greater_than_executes_false_branch_when_below_threshold():
-    workflow = _build_workflow(
-        {
-            "kind": "greater_than",
-            "source": {"temperature": 36.5},
-            "field": "temperature",
-            "threshold": 38,
-        },
-        true_node_id="add_to_warning_list",
-        false_node_id="log_normal",
-    )
+    workflow = _build_workflow("{{ 36.5 > 38 }}", true_node_id="add_to_warning_list", false_node_id="log_normal")
 
     executor = DynamicActionExecutor(
         workflow,
-        simulations={
-            "productivity.compose_outlook_email.v1": {"result": {"status": "simulated"}}
-        },
+        simulations={"productivity.compose_outlook_email.v1": {"result": {"status": "simulated"}}},
     )
 
     results = executor.run()
@@ -134,53 +104,3 @@ def test_condition_greater_than_executes_false_branch_when_below_threshold():
     assert "log_normal" in results
 
 
-def test_condition_greater_than_accepts_value_field():
-    workflow = _build_workflow(
-        {
-            "kind": "greater_than",
-            "source": {"temperature": 39},
-            "field": "temperature",
-            "value": 38,
-        },
-        true_node_id="add_to_warning_list",
-        false_node_id="log_normal",
-    )
-
-    executor = DynamicActionExecutor(
-        workflow,
-        simulations={
-            "productivity.compose_outlook_email.v1": {"result": {"status": "simulated"}}
-        },
-    )
-
-    results = executor.run()
-
-    assert "add_to_warning_list" in results
-    assert "log_normal" not in results
-
-
-def test_condition_compare_supports_expression_operator_and_target():
-    workflow = _build_workflow(
-        {
-            "kind": "compare",
-            "source": {"employee": {"temperature": 37}},
-            "field": "employee.temperature",
-            "expression": {
-                "op": ">",
-                "left": {"var": "employee.temperature"},
-                "right": {"const": 38},
-            },
-        }
-    )
-
-    executor = DynamicActionExecutor(
-        workflow,
-        simulations={
-            "productivity.compose_outlook_email.v1": {"result": {"status": "simulated"}}
-        },
-    )
-
-    results = executor.run()
-
-    assert "f_branch" in results
-    assert "t_branch" not in results

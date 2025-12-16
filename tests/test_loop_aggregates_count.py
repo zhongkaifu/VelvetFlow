@@ -29,10 +29,7 @@ def test_loop_aggregates_count_accumulates_from_executed_body_nodes():
                                 "id": "condition_high_temp",
                                 "type": "condition",
                                 "params": {
-                                    "source": "employee",
-                                    "field": "temperature",
-                                    "value": 38,
-                                    "kind": "greater_than",
+                                    "expression": "{{ employee.temperature > 38 }}",
                                 },
                                 "true_to_node": "add_to_warning_list",
                                 "false_to_node": None,

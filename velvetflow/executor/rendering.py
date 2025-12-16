@@ -1,9 +1,11 @@
 """Template rendering helpers used by the executor."""
 from __future__ import annotations
 
-import re
 from typing import Any, Mapping
 
+from jinja2 import TemplateError
+
+from velvetflow.jinja_utils import render_jinja_template
 from velvetflow.reference_utils import canonicalize_template_placeholders
 
 
@@ -11,13 +13,10 @@ class TemplateRendererMixin:
     def _render_template(self, value: Any, params: Mapping[str, Any]) -> Any:
         if isinstance(value, str):
             normalized_value = canonicalize_template_placeholders(value)
-            pattern = r"\{\{\s*([^{}]+)\s*\}\}"
-
-            def _replace(match: re.Match[str]) -> str:
-                key = match.group(1)
-                return str(params.get(key, match.group(0)))
-
-            return re.sub(pattern, _replace, normalized_value)
+            try:
+                return render_jinja_template(normalized_value, params)
+            except TemplateError:
+                return value
 
         if isinstance(value, list):
             return [self._render_template(v, params) for v in value]

@@ -58,7 +58,7 @@ def test_executor_respects_condition_branch_targets():
             {
                 "id": "check",
                 "type": "condition",
-                "params": {"kind": "equals", "source": True, "value": True},
+                "params": {"expression": "{{ true }}"},
                 "true_to_node": "notify_yes",
                 "false_to_node": "notify_no",
             },
@@ -106,7 +106,7 @@ def test_condition_blocks_inactive_branch_even_if_preseeded():
             {
                 "id": "check",
                 "type": "condition",
-                "params": {"kind": "equals", "source": True, "value": True},
+                "params": {"expression": "{{ true }}"},
                 "true_to_node": "notify_yes",
                 "false_to_node": "notify_no",
             },
@@ -156,7 +156,7 @@ def test_builder_preserves_explicit_condition_targets():
         node_type="condition",
         action_id=None,
         display_name=None,
-        params={"kind": "equals", "source": True, "value": True},
+        params={"expression": "{{ true }}"},
         true_to_node="yes",
         false_to_node="no",
     )
@@ -191,7 +191,7 @@ def test_condition_branch_allows_null_exit():
             {
                 "id": "check",
                 "type": "condition",
-                "params": {"kind": "equals", "source": True, "value": True},
+                "params": {"expression": "{{ true }}"},
                 "true_to_node": None,
                 "false_to_node": "end",
             },
@@ -228,7 +228,7 @@ def test_condition_requires_branch_targets():
             {
                 "id": "check",
                 "type": "condition",
-                "params": {"kind": "equals", "source": True, "value": True},
+                "params": {"expression": "{{ true }}"},
             },
         ],
     }
@@ -250,7 +250,7 @@ def test_executor_prefers_explicit_branch_over_edges_for_null_target():
             {
                 "id": "check",
                 "type": "condition",
-                "params": {"kind": "equals", "source": True, "value": True},
+                "params": {"expression": "{{ true }}"},
                 "true_to_node": None,
                 "false_to_node": "f_branch",
             },
@@ -298,7 +298,7 @@ def test_string_null_target_stops_branch():
             {
                 "id": "check",
                 "type": "condition",
-                "params": {"kind": "equals", "source": True, "value": True},
+                "params": {"expression": "{{ true }}"},
                 "true_to_node": "null",
                 "false_to_node": "notify",
             },

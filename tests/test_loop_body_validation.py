@@ -74,6 +74,42 @@ def test_model_validation_rejects_missing_body_subgraph():
         Workflow.model_validate(workflow)
 
 
+def test_model_validation_migrates_top_level_body_subgraph():
+    """Loop body_subgraph 放错位置时应自动迁移到 params 下继续校验。"""
+
+    workflow = {
+        "workflow_name": "top_level_body_subgraph",
+        "nodes": [
+            {
+                "id": "loop_with_top_level_body",
+                "type": "loop",
+                "params": {
+                    "loop_kind": "for_each",
+                    "source": "{{ result_of.fetch_temperatures.data }}",
+                    "item_alias": "employee",
+                },
+                "body_subgraph": {
+                    "nodes": [
+                        {
+                            "id": "collect",
+                            "type": "action",
+                            "action_id": "hr.update_employee_health_profile.v1",
+                            "params": {"employee_id": "{{ loop.employee.id }}"},
+                        }
+                    ]
+                },
+            }
+        ],
+    }
+
+    workflow_obj = Workflow.model_validate(workflow)
+    loop_node = workflow_obj.nodes[0]
+
+    assert isinstance(loop_node.params, dict)
+    assert "body_subgraph" in loop_node.params
+    assert loop_node.params["body_subgraph"].get("nodes", [])[0].get("id") == "collect"
+
+
 def test_loop_body_exports_must_target_existing_nodes():
     """Exports referencing missing body nodes should surface a clear error."""
 
@@ -444,7 +480,7 @@ def test_loop_body_requires_action_node_for_planning():
                             {
                                 "id": "guard_branch",
                                 "type": "condition",
-                                "params": {"kind": "list_not_empty", "source": "loop.item"},
+                                "params": {"expression": "{{ (loop.item or []) | length > 0 }}"},
                             },
                             {"id": "exit", "type": "end"},
                         ],
@@ -700,73 +736,6 @@ def test_loop_body_nodes_should_not_reference_loop_exports():
     )
 
 
-def test_condition_cannot_reference_missing_loop_export_field():
-    """条件节点引用 loop exports 下不存在的字段时应报错。"""
-
-    workflow = {
-        "workflow_name": "体温检测",
-        "nodes": [
-            {
-                "id": "fetch_news",
-                "type": "action",
-                "action_id": "common.search_news.v1",
-                "params": {"query": "health"},
-            },
-            {
-                "id": "loop_check_temperatures",
-                "type": "loop",
-                "params": {
-                    "loop_kind": "for_each",
-                    "source": "result_of.fetch_news.results",
-                    "item_alias": "news_item",
-                    "body_subgraph": {
-                        "nodes": [
-                            {
-                                "id": "summarize_news",
-                                "type": "action",
-                                "action_id": "common.summarize.v1",
-                                "params": {"text": "stable"},
-                            },
-                            {"id": "exit", "type": "end"},
-                        ],
-                        "edges": [{"from": "summarize_news", "to": "exit"}],
-                        "entry": "summarize_news",
-                        "exit": "exit",
-                    },
-                    "exports": {
-                        "items": {"from_node": "summarize_news", "fields": ["summary"]},
-                    },
-                },
-            },
-            {
-                "id": "condition_any_warning",
-                "type": "condition",
-                "true_to_node": None,
-                "false_to_node": None,
-                "params": {
-                    "kind": "any_greater_than",
-                    "source": "result_of.loop_check_temperatures.exports",
-                    "field": "status",
-                    "threshold": 1,
-                },
-            },
-        ],
-        "edges": [
-            {"from": "fetch_news", "to": "loop_check_temperatures"},
-            {"from": "loop_check_temperatures", "to": "condition_any_warning"},
-        ],
-    }
-
-    errors = validate_workflow_data(workflow, ACTION_REGISTRY)
-
-    assert any(
-        e.code == "SCHEMA_MISMATCH"
-        and e.node_id == "condition_any_warning"
-        and e.field == "field"
-        for e in errors
-    )
-
-
 def test_condition_field_on_loop_item_alias_should_be_allowed():
     """Loop body aliases represent single objects and should allow field access."""
 
@@ -793,10 +762,7 @@ def test_condition_field_on_loop_item_alias_should_be_allowed():
                                 "type": "condition",
                                 "display_name": "体温是否超过38度",
                                 "params": {
-                                    "kind": "any_greater_than",
-                                    "source": "employee_temp",
-                                    "field": "temperature",
-                                    "threshold": 38,
+                                    "expression": "{{ employee_temp.temperature > 38 }}",
                                 },
                                 "true_to_node": "add_to_warning_list",
                                 "false_to_node": None,

@@ -11,7 +11,11 @@ from velvetflow.models import (
     infer_depends_on_from_edges,
     infer_edges_from_bindings,
 )
-from velvetflow.loop_dsl import index_loop_body_nodes, loop_body_has_action
+from velvetflow.loop_dsl import (
+    index_loop_body_nodes,
+    iter_workflow_and_loop_body_nodes,
+    loop_body_has_action,
+)
 
 from .binding_checks import (
     _check_output_path_against_schema,
@@ -69,6 +73,24 @@ def precheck_loop_body_graphs(workflow_raw: Mapping[str, Any] | Any) -> List[Val
             )
             continue
 
+        seen_ids: set[str] = set()
+        for nested in body_nodes:
+            nid = nested.get("id") if isinstance(nested.get("id"), str) else None
+            if not nid:
+                continue
+            if nid in seen_ids:
+                errors.append(
+                    ValidationError(
+                        code="INVALID_LOOP_BODY",
+                        node_id=loop_id,
+                        field="body_subgraph.nodes",
+                        message=(
+                            f"loop 节点 '{loop_id}' 的 body_subgraph.nodes 中存在重复的节点 id: {nid}"
+                        ),
+                    )
+                )
+                break
+            seen_ids.add(nid)
         if not loop_body_has_action(body):
             errors.append(
                 ValidationError(
@@ -140,6 +162,17 @@ def validate_completed_workflow(
 ) -> List[ValidationError]:
     errors: List[ValidationError] = _RepairingErrorList(workflow)
 
+    actions_by_id = _index_actions_by_id(action_registry)
+    if actions_by_id:
+        for node in iter_workflow_and_loop_body_nodes(workflow):
+            if not isinstance(node, Mapping) or node.get("type") != "action":
+                continue
+
+            action_def = actions_by_id.get(node.get("action_id"))
+            schema = action_def.get("output_schema") if isinstance(action_def, Mapping) else None
+            if isinstance(schema, Mapping) and node.get("out_params_schema") != schema:
+                node["out_params_schema"] = schema
+
     nodes = workflow.get("nodes", [])
     # 拓扑与连通性基于最新的绑定推导，避免依赖可能过期的显式快照。
     inferred_edges = infer_edges_from_bindings(nodes)
@@ -148,7 +181,6 @@ def validate_completed_workflow(
     nodes_by_id = _index_nodes_by_id(workflow)
     loop_body_parents = index_loop_body_nodes(workflow)
     node_ids = set(nodes_by_id.keys())
-    actions_by_id = _index_actions_by_id(action_registry)
 
     for node in nodes:
         if not isinstance(node, Mapping):

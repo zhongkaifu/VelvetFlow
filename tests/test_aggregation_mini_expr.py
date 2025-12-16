@@ -8,7 +8,7 @@ def _workflow_with_node(node_id: str = "source") -> Workflow:
     return Workflow.model_validate({"nodes": [{"id": node_id, "type": "start", "params": {}}]})
 
 
-def test_count_if_with_expression_ast_and_defaults():
+def test_count_if_with_jinja_expression_and_defaults():
     workflow = _workflow_with_node()
     ctx = BindingContext(
         workflow,
@@ -19,7 +19,7 @@ def test_count_if_with_expression_ast_and_defaults():
         "__from__": "result_of.source.items",
         "__agg__": {
             "op": "count_if",
-            "condition": {"op": ">", "left": {"var": "item.score"}, "right": {"const": 0.5}},
+            "condition": "item.score > 0.5",
             "input_type": "array",
             "output_type": "integer",
             "on_empty": {"default": 0},
@@ -37,12 +37,12 @@ def test_filter_map_uses_on_empty_and_type_guard():
         "__from__": "result_of.source.items",
         "__agg__": {
             "op": "filter_map",
-            "condition": {"op": "==", "left": {"var": "item.name"}, "right": {"const": "z"}},
+            "condition": "item.name == 'z'",
             "input_type": "array",
             "output_type": "string",
             "on_empty": {"default": "no-match"},
         },
-        "format": "{name}",
+        "format": "{{ name }}",
     }
 
     assert ctx.resolve_binding(binding) == "no-match"

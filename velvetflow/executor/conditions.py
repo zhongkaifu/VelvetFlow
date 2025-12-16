@@ -3,14 +3,71 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Mapping, Optional, Union
 
+from velvetflow.aggregation import (
+    JinjaExprValidationError,
+    eval_jinja_expression,
+    validate_jinja_expression,
+)
 from velvetflow.bindings import BindingContext
 from velvetflow.logging_utils import log_json, log_warn
-from velvetflow.reference_utils import parse_field_path
+from velvetflow.reference_utils import normalize_reference_path, parse_field_path
+from velvetflow.jinja_utils import render_jinja_template
 
 
 class ConditionEvaluationMixin:
+    def _condition_jinja_context(self, ctx: BindingContext) -> Dict[str, Any]:
+        def _jinja_get(path: str) -> Any:
+            normalized = normalize_reference_path(path)
+            qualified = ctx._qualify_context_path(normalized)
+            return ctx.get_value(qualified)
+
+        base_ctx: Dict[str, Any] = {
+            "result_of": ctx.results,
+            "loop": ctx.loop_ctx,
+            "loop_ctx": ctx.loop_ctx,
+            "loop_id": ctx.loop_id,
+            "get": _jinja_get,
+        }
+
+        if isinstance(ctx.loop_ctx, Mapping):
+            for key, value in ctx.loop_ctx.items():
+                if key not in base_ctx:
+                    base_ctx[key] = value
+
+        return base_ctx
+
+    def _render_condition_value(self, value: Any, ctx: BindingContext) -> Any:
+        if isinstance(value, dict):
+            return {k: self._render_condition_value(v, ctx) for k, v in value.items()}
+
+        if isinstance(value, list):
+            return [self._render_condition_value(v, ctx) for v in value]
+
+        if isinstance(value, str):
+            context = self._condition_jinja_context(ctx)
+            text = value.strip()
+            try:
+                if text.startswith("{{") and text.endswith("}}"):  # pure expression, preserve type
+                    inner = text[2:-2].strip()
+                    return eval_jinja_expression(inner, context)
+
+                if "{{" in text or "{%" in text:
+                    rendered = render_jinja_template(text, context)
+                    # If render returns the original string, fall back to eval for expression-only
+                    if isinstance(rendered, str) and rendered != value and rendered.strip() != text:
+                        return rendered
+                    validate_jinja_expression(text, path="condition.expression")
+                    return eval_jinja_expression(text, context)
+
+                validate_jinja_expression(text, path="condition.expression")
+                return eval_jinja_expression(text, context)
+            except Exception:
+                return value
+
+        return value
+
     def _resolve_condition_source(self, source: Any, ctx: BindingContext) -> Any:
-        """Resolve condition source which may be a binding dict or a path string."""
+        """Resolve condition/switch sources which may be bindings or paths."""
 
         if isinstance(source, list):
             return [self._resolve_condition_source(item, ctx) for item in source]
@@ -19,6 +76,9 @@ class ConditionEvaluationMixin:
             return ctx.resolve_binding(source)
 
         if isinstance(source, str):
+            rendered = self._render_condition_value(source, ctx)
+            if rendered is not source:
+                return rendered
             if source in ctx.results:
                 return ctx.results[source]
 
@@ -31,34 +91,6 @@ class ConditionEvaluationMixin:
                 return ctx.get_value(source)
 
         return source
-
-    def _collect_exit_results(
-        self, exit_node_def: Any, binding_ctx: BindingContext
-    ) -> Optional[Union[Any, Dict[str, Any]]]:
-        """Normalize exit node definitions and collect available results."""
-
-        if not exit_node_def:
-            return None
-
-        if isinstance(exit_node_def, str):
-            node_ids = [exit_node_def]
-        elif isinstance(exit_node_def, list):
-            node_ids = [nid for nid in exit_node_def if isinstance(nid, str)]
-            if not node_ids:
-                return None
-        else:
-            log_warn(f"[loop] exit 节点定义类型不支持: {type(exit_node_def)}")
-            return None
-
-        collected = {
-            nid: binding_ctx.results.get(nid) for nid in node_ids if nid in binding_ctx.results
-        }
-        if not collected:
-            return None
-
-        if len(collected) == 1 and isinstance(exit_node_def, str):
-            return next(iter(collected.values()))
-        return collected
 
     def _get_field_value(self, obj: Any, field: Optional[str]) -> Any:
         if field is None or field == "":
@@ -112,451 +144,86 @@ class ConditionEvaluationMixin:
             return None
         return current
 
-    def _extract_export_values(self, source: Any, field: Optional[str]) -> List[Any]:
-        if field in {"length", "count"}:
-            value = self._get_field_value(source, field)
-            return [value]
+    def _collect_exit_results(
+        self, exit_node_def: Any, binding_ctx: BindingContext
+    ) -> Optional[Union[Any, Dict[str, Any]]]:
+        """Normalize exit node definitions and collect available results."""
 
-        if isinstance(source, list):
-            values: List[Any] = []
-            for item in source:
-                values.append(self._get_field_value(item, field) if field else item)
-            return values
+        if not exit_node_def:
+            return None
 
-        if isinstance(source, Mapping):
-            return [self._get_field_value(source, field)] if field else [source]
+        if isinstance(exit_node_def, str):
+            node_ids = [exit_node_def]
+        elif isinstance(exit_node_def, list):
+            node_ids = [nid for nid in exit_node_def if isinstance(nid, str)]
+            if not node_ids:
+                return None
+        else:
+            log_warn(f"[loop] exit 节点定义类型不支持: {type(exit_node_def)}")
+            return None
 
-        return [self._get_field_value(source, field)] if field else [source]
+        collected = {
+            nid: binding_ctx.results.get(nid) for nid in node_ids if nid in binding_ctx.results
+        }
+        if not collected:
+            return None
+
+        if len(collected) == 1 and isinstance(exit_node_def, str):
+            return next(iter(collected.values()))
+        return collected
+
+    def _normalize_to_jinja_expr(self, raw: Any) -> str:
+        if isinstance(raw, str):
+            text = raw.strip()
+            if text.startswith("{{") and text.endswith("}}"):  # already pure Jinja expression
+                return text[2:-2].strip()
+            if text.startswith("{%") and text.endswith("%}"):
+                return text[2:-2].strip()
+            return text
+
+        return repr(raw)
+
+    def _strip_wrapped_expression(self, expr: Optional[str]) -> Optional[str]:
+        if not isinstance(expr, str):
+            return None
+        text = expr.strip()
+        if text.startswith("{{") and text.endswith("}}"):  # unwrap template delimiters
+            return text[2:-2].strip()
+        return text if text else None
 
     def _eval_condition(
         self, node: Dict[str, Any], ctx: BindingContext, *, include_debug: bool = False
     ) -> Any:
-        import re
+        raw_params = node.get("params") or {}
+        params = raw_params if isinstance(raw_params, Mapping) else {"expression": raw_params}
+        expr_raw = params.get("expression") if isinstance(params, Mapping) else None
+        expression = self._strip_wrapped_expression(expr_raw) if expr_raw is not None else None
+        if not expression or not isinstance(expression, str):
+            log_warn("[condition] 缺少可执行的 Jinja 表达式，返回 False")
+            return (False, {"resolved_value": None, "values": None}) if include_debug else False
 
-        params = node.get("params") or {}
-        kind = params.get("kind")
-        if not kind:
-            log_warn("[condition] 未指定 kind，默认 False")
-            return False if not include_debug else (False, {"resolved_value": None, "values": None})
+        ctx_vars = self._condition_jinja_context(ctx)
+        try:
+            validate_jinja_expression(expression, path="condition.expression")
+            raw_result = eval_jinja_expression(expression, ctx_vars)
+            result = bool(raw_result)
+        except Exception as exc:
+            log_warn(f"[condition] 表达式执行失败: {exc}")
+            return (False, {"resolved_value": None, "values": None}) if include_debug else False
 
-        def _return(result: Any, resolved_value: Any, values: Optional[list] = None) -> Any:
-            if include_debug:
-                return result, {"resolved_value": resolved_value, "values": values}
-            return result
-
-        def _log_condition_debug(
-            field: Optional[str], resolved_value: Any, condition: Any, structure: Any
-        ) -> None:
+        if include_debug:
             log_json(
-                f"[condition:{kind}] 调试信息",
+                "[condition] 调试信息",
                 {
-                    "field": field,
-                    "resolved_value": resolved_value,
-                    "condition": condition,
-                    "structure": structure,
+                    "expression": expression,
+                    "result": result,
+                    "expression_value": raw_result,
+                    "context_keys": list(ctx_vars.keys()),
                 },
             )
+            return result, {"resolved_value": result, "values": None}
 
-        def _safe_get_source() -> Any:
-            source = params.get("source")
-            try:
-                return self._resolve_condition_source(source, ctx)
-            except Exception as e:
-                log_warn(
-                    f"[condition:{kind}] source 路径 '{source}' 无法从 context 读取: {e}，返回 False"
-                )
-                return None
-
-        data = _safe_get_source()
-        field_path = params.get("field") if isinstance(params.get("field"), str) else None
-        target_data = self._get_field_value(data, field_path) if field_path else data
-
-        if kind == "list_not_empty":
-            condition = {"check": "len(value) > 0", "type": "list"}
-            if not isinstance(target_data, list):
-                condition["reason"] = "source_not_list"
-                log_warn("[condition:list_not_empty] source 不是 list，返回 False")
-                result = False
-            else:
-                result = len(target_data) > 0
-            _log_condition_debug(field_path, target_data, condition, params)
-            return _return(result, target_data)
-
-        if kind in {"equals", "eq", "=="}:
-            expected = params.get("value")
-            condition = {"check": "value == expected", "expected": expected}
-            result = target_data == expected
-            _log_condition_debug(field_path, target_data, condition, params)
-            return _return(result, target_data)
-
-        if kind == "is_empty":
-            condition = {"check": "value is None or len(value) == 0"}
-            if data is None:
-                result = True
-            elif isinstance(data, (list, dict, str)):
-                result = len(data) == 0
-            else:
-                result = False
-            _log_condition_debug(None, data, condition, params)
-            return _return(result, data)
-
-        if kind in {"not_empty", "is_not_empty"}:
-            condition = {"check": "value is not None and (len(value) > 0 if sized else True)"}
-            if data is None:
-                result = False
-            elif isinstance(data, (list, dict, str)):
-                result = len(data) > 0
-            else:
-                result = True
-            _log_condition_debug(None, data, condition, params)
-            return _return(result, data)
-
-        def _extract_values(val: Any, field: Optional[str]) -> List[Any]:
-            if val is None:
-                return []
-
-            if field in {"length", "count"}:
-                extracted = self._get_field_value(val, field)
-                return [] if extracted is None else [extracted]
-
-            if isinstance(val, list):
-                extracted: List[Any] = []
-                for item in val:
-                    extracted.append(self._get_field_value(item, field) if field else item)
-                return extracted
-
-            if isinstance(val, dict):
-                return [self._get_field_value(val, field)] if field else [val]
-
-            return [self._get_field_value(val, field)] if field else [val]
-
-        if kind == "greater_than":
-            field = params.get("field") if isinstance(params.get("field"), str) else None
-            threshold_field = "threshold"
-            threshold = params.get("threshold")
-            if threshold is None and "value" in params:
-                threshold = params.get("value")
-                threshold_field = "value"
-
-            if threshold is None:
-                log_warn("[condition:greater_than] 未提供 threshold/value，返回 False")
-                condition = {"check": ">", "reason": "missing_threshold_or_value"}
-                _log_condition_debug(field, data, condition, params)
-                return _return(False, data, [])
-
-            values = _extract_values(data, field)
-
-            def _is_gt(v: Any) -> bool:
-                if v is None:
-                    return False
-                try:
-                    return v > threshold
-                except Exception as exc:
-                    raise TypeError(
-                        f"[condition:greater_than] 值 {v!r} 无法与阈值 {threshold!r} 比较"
-                    ) from exc
-
-            result = any(_is_gt(v) for v in values)
-            condition = {
-                "check": ">",
-                "threshold": threshold,
-                "threshold_field": threshold_field,
-                "values": values,
-            }
-            _log_condition_debug(field, data, condition, params)
-            return _return(result, data, values)
-
-        if kind == "any_greater_than":
-            field = params.get("field")
-            threshold = params.get("threshold")
-            values = _extract_values(data, field)
-
-            def _is_gt(v: Any) -> bool:
-                if v is None:
-                    return False
-                try:
-                    return v > threshold
-                except Exception as exc:
-                    raise TypeError(
-                        f"[condition:any_greater_than] 值 {v!r} 无法与阈值 {threshold!r} 比较"
-                    ) from exc
-
-            result = any(_is_gt(v) for v in values)
-            condition = {"check": ">", "threshold": threshold, "values": values}
-            _log_condition_debug(field, data, condition, params)
-            return _return(result, data, values)
-
-        if kind == "any_less_than":
-            field = params.get("field")
-            threshold = params.get("threshold")
-            values = _extract_values(data, field)
-
-            def _is_lt(v: Any) -> bool:
-                if v is None:
-                    return False
-                try:
-                    return v < threshold
-                except Exception as exc:
-                    raise TypeError(
-                        f"[condition:any_less_than] 值 {v!r} 无法与阈值 {threshold!r} 比较"
-                    ) from exc
-
-            result = any(_is_lt(v) for v in values)
-            condition = {"check": "<", "threshold": threshold, "values": values}
-            _log_condition_debug(field, data, condition, params)
-            return _return(result, data, values)
-
-        if kind == "contains":
-            target = params.get("target")
-            if target is None:
-                log_warn("[condition:contains] 未提供 target，返回 False")
-                condition = {"check": "target in value", "reason": "missing_target"}
-                _log_condition_debug(params.get("field"), data, condition, params)
-                return _return(False, data)
-
-            if isinstance(data, list):
-                result = target in data
-                condition = {"check": "target in list", "target": target}
-                _log_condition_debug(None, data, condition, params)
-                return _return(result, data)
-
-            if data is None:
-                condition = {"check": "target in None", "target": target, "reason": "data_none"}
-                _log_condition_debug(None, data, condition, params)
-                return _return(False, data)
-
-            field = params.get("field")
-            if isinstance(data, dict) and field:
-                try:
-                    v = self._get_field_value(data, field)
-                    result = target in v if isinstance(v, (list, str)) else False
-                    condition = {
-                        "check": "target in dict[field]",
-                        "target": target,
-                        "value": v,
-                    }
-                    _log_condition_debug(field, data, condition, params)
-                    return _return(result, data)
-                except Exception:
-                    log_warn("[condition:contains] 从字典提取 field 失败，返回 False")
-                    condition = {
-                        "check": "target in dict[field]",
-                        "target": target,
-                        "reason": "field_extraction_failed",
-                    }
-                    _log_condition_debug(field, data, condition, params)
-                    return _return(False, data)
-
-            if isinstance(data, dict):
-                log_warn("[condition:contains] 未提供 field，且 source 是字典，返回 False")
-                condition = {
-                    "check": "target in dict (no field)",
-                    "target": target,
-                    "reason": "missing_field",
-                }
-                _log_condition_debug(field, data, condition, params)
-                return _return(False, data)
-
-            if isinstance(data, str):
-                result = target in data
-                condition = {"check": "target in string", "target": target}
-                _log_condition_debug(None, data, condition, params)
-                return _return(result, data)
-
-            log_warn("[condition:contains] source 不是列表/字典/字符串，返回 False")
-            condition = {
-                "check": "unsupported source type",
-                "target": target,
-                "reason": f"source_type_{type(data)}",
-            }
-            _log_condition_debug(field, data, condition, params)
-            return _return(False, data)
-
-        if kind == "compare":
-            expr = params.get("expression") if isinstance(params.get("expression"), dict) else None
-            op = params.get("op") or params.get("operator")
-            if op is None and expr:
-                op = expr.get("op")
-            op = op or "=="
-
-            target = params.get("value")
-            if target is None and expr:
-                right = expr.get("right")
-                if isinstance(right, Mapping):
-                    if "const" in right:
-                        target = right.get("const")
-                    elif "value" in right:
-                        target = right.get("value")
-            field = params.get("field")
-            values = _extract_values(data, field)
-
-            def _do_compare(v: Any) -> bool:
-                try:
-                    if op == ">":
-                        return v is not None and v > target
-                    if op == ">=":
-                        return v is not None and v >= target
-                    if op == "<":
-                        return v is not None and v < target
-                    if op == "<=":
-                        return v is not None and v <= target
-                    if op == "!=":
-                        return v != target
-                    if op == "in":
-                        try:
-                            return v in target  # type: ignore[operator]
-                        except Exception:
-                            return False
-                    if op == "not_in":
-                        try:
-                            return v not in target  # type: ignore[operator]
-                        except Exception:
-                            return False
-                    return v == target
-                except Exception as exc:
-                    raise TypeError(
-                        f"[condition:compare] 值 {v!r} 无法使用 op '{op}' 与目标 {target!r} 比较"
-                    ) from exc
-
-            result = any(_do_compare(v) for v in values)
-            condition = {
-                "check": f"any(value {op} target)",
-                "operator": op,
-                "target": target,
-                "values": values,
-            }
-            _log_condition_debug(field, data, condition, params)
-            return _return(result, data, values)
-
-        if kind == "expression":
-            expr = params.get("expression")
-            if expr is None:
-                log_warn("[condition:expression] 未提供 expression，返回 False")
-                condition = {"check": "expression is None"}
-                _log_condition_debug(params.get("field"), data, condition, params)
-                return _return(False, data)
-
-            expr_str = str(expr)
-            field = params.get("field")
-            values = _extract_values(data, field)
-            safe_globals = {
-                "__builtins__": {},
-                "len": len,
-                "sum": sum,
-                "min": min,
-                "max": max,
-                "any": any,
-                "all": all,
-                "abs": abs,
-            }
-
-            def _eval_expr(v: Any) -> bool:
-                try:
-                    return bool(
-                        eval(
-                            expr_str,
-                            safe_globals,
-                            {"value": v, "values": values, "data": data},
-                        )
-                    )
-                except Exception as exc:
-                    log_warn(f"[condition:expression] 执行表达式失败: {exc}")
-                    return False
-
-            targets = values if field else [data]
-            result = any(_eval_expr(v) for v in targets)
-            condition = {
-                "check": expr_str,
-                "values": values,
-                "data": data,
-            }
-            _log_condition_debug(field, data, condition, params)
-            return _return(result, data, values)
-
-        if kind == "regex_match":
-            pattern = params.get("pattern")
-            if pattern is None:
-                log_warn("[condition:regex_match] 未提供 pattern，返回 False")
-                condition = {"check": "regex match", "reason": "missing_pattern"}
-                _log_condition_debug(None, data, condition, params)
-                return _return(False, data)
-            try:
-                matched = False
-                if isinstance(data, str):
-                    matched = re.search(pattern, data) is not None
-                elif isinstance(data, list):
-                    matched = any(isinstance(v, str) and re.search(pattern, v) for v in data)
-                condition = {"check": "regex match", "pattern": pattern, "matched": matched}
-                _log_condition_debug(None, data, condition, params)
-                return _return(matched, data)
-            except Exception:
-                condition = {
-                    "check": "regex match",
-                    "pattern": pattern,
-                    "reason": "exception",
-                }
-                _log_condition_debug(None, data, condition, params)
-                log_warn(f"[condition:regex_match] 处理正则 '{pattern}' 时发生异常")
-                return _return(False, data)
-
-        if kind == "max_in_range":
-            field = params.get("field")
-            min_v = params.get("min")
-            max_v = params.get("max")
-            values = _extract_values(data, field)
-            matched_bands: List[Any] = []
-            try:
-                bands = sorted(
-                    [b for b in params.get("bands", []) if isinstance(b, dict)],
-                    key=lambda x: x.get("max"),
-                )
-            except Exception:
-                bands = []
-            for band in bands:
-                try:
-                    if all(k in band for k in ("label", "min", "max")):
-                        in_range = any(band["min"] <= v <= band["max"] for v in values)
-                        matched_bands.append((band, in_range))
-                except Exception:
-                    continue
-
-            if matched_bands:
-                for band, in_range in matched_bands:
-                    if in_range:
-                        result = band.get("label")
-                        condition = {
-                            "check": "value <= band.max",
-                            "bands": bands,
-                            "matched_band": band,
-                        }
-                        _log_condition_debug(None, data, condition, params)
-                        return _return(result, data, values)
-                try:
-                    result = bands[-1].get("label") if isinstance(bands[-1], dict) else None
-                except Exception:
-                    result = None
-                condition = {
-                    "check": "fallback_last_band",
-                    "bands": bands,
-                }
-                _log_condition_debug(None, data, condition, params)
-                return _return(result, data, values)
-
-            log_warn("[condition:max_in_range] 未提供合法的 bands，返回 False")
-            condition = {
-                "check": "value in range",
-                "field": field,
-                "min": min_v,
-                "max": max_v,
-                "values": values,
-                "reason": "invalid_bands",
-            }
-            _log_condition_debug(field, data, condition, params)
-            return _return(False, data, values)
-
-        log_warn(f"[condition] 未知 kind={kind}，默认 False")
-        return _return(False, data)
-
+        return result
     def _eval_switch(
         self, node: Mapping[str, Any], ctx: BindingContext, *, include_debug: bool = False
     ) -> tuple[Optional[str], Dict[str, Any]]:
