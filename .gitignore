@@ -4,3 +4,4 @@ logs/
 .pytest_cache/
 *.log
 metrics_*.txt
+.venv/
