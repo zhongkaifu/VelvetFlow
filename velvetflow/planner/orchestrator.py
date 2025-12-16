@@ -1138,8 +1138,7 @@ def _validate_and_repair_workflow(
                 last_good_workflow = current_workflow
             except PydanticValidationError as exc:
                 log_warn(
-                    "[AutoRepair] Jinja 规范化后校验失败，交给 LLM 修复。",
-                    f"error={exc}",
+                    f"[AutoRepair] Jinja 规范化后校验失败，交给 LLM 修复。 error={exc}"
                 )
                 validation_errors = _convert_pydantic_errors(jinja_params_workflow, exc) or [
                     _make_failure_validation_error(str(exc))
