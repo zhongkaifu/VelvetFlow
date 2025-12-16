@@ -51,3 +51,25 @@ def test_items_mapping_without_from_node_uses_default():
     )
 
     assert items_out == [{"employee_id": "e2"}]
+
+
+def test_items_default_from_node_with_jinja_literal_type():
+    dummy = _DummyLoopExecutor()
+    body_nodes = [
+        {"id": "check", "type": "{{ 'condition' }}"},
+        {"id": "collect_high_temp", "type": "{{ 'action' }}"},
+    ]
+    default_source = dummy._infer_default_export_source(body_nodes, {})
+
+    items_out = []
+    dummy._apply_loop_exports(
+        ["employee_id"],
+        None,
+        {"collect_high_temp": {"employee_id": "e3", "temperature": 40}},
+        items_out,
+        {},
+        {},
+        default_source,
+    )
+
+    assert items_out == [{"employee_id": "e3"}]

@@ -5,6 +5,7 @@ from collections.abc import Sequence
 from typing import Any, Dict, List, Mapping, Optional
 
 from velvetflow.bindings import BindingContext
+from velvetflow.jinja_utils import render_jinja_string_constants
 from velvetflow.logging_utils import log_json, log_warn
 from velvetflow.models import Node, Workflow
 
@@ -227,9 +228,12 @@ class LoopExecutionMixin:
         for nid in body_node_ids:
             results.pop(nid, None)
 
-    def _infer_default_export_source(self, body_nodes: List[Any], node_models: Mapping[str, Node]) -> Optional[str]:
+    def _infer_default_export_source(
+        self, body_nodes: List[Any], node_models: Mapping[str, Node]
+    ) -> Optional[str]:
         """Pick the last action node in the loop body as the default export source."""
 
+        body_nodes = render_jinja_string_constants(body_nodes)
         last_action: Optional[str] = None
         for n in body_nodes:
             if not isinstance(n, Mapping):
@@ -244,9 +248,9 @@ class LoopExecutionMixin:
         return last_action
 
     def _execute_loop_node(self, node: Dict[str, Any], binding_ctx: BindingContext) -> Dict[str, Any]:
-        params = node.get("params") or {}
+        params = render_jinja_string_constants(node.get("params") or {})
         loop_kind = params.get("loop_kind", "for_each")
-        body_graph = params.get("body_subgraph") or {}
+        body_graph = render_jinja_string_constants(params.get("body_subgraph") or {})
         body_nodes = body_graph.get("nodes") or []
         entry = body_graph.get("entry")
         exit_node = body_graph.get("exit")
