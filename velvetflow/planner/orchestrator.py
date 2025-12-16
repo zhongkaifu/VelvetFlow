@@ -1330,6 +1330,13 @@ def plan_workflow_with_two_pass(
                         search_service=search_service,
                         reason="结构规划阶段校验失败",
                     )
+            if not isinstance(skeleton, Workflow) or any(
+                isinstance(n, dict) for n in getattr(skeleton, "nodes", [])
+            ):
+                skeleton = Workflow.model_validate(
+                    skeleton if isinstance(skeleton, dict) else skeleton.model_dump(by_alias=True)
+                )
+
             log_event("plan_structure_done", {"workflow": skeleton.model_dump()})
             skeleton = _ensure_actions_registered_or_repair(
                 skeleton,
