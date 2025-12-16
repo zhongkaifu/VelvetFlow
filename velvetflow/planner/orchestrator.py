@@ -1239,6 +1239,14 @@ def _validate_and_repair_workflow(
                 )
             )
 
+        if _is_empty_fallback_workflow(current_workflow):
+            log_warn("检测到空的 fallback workflow，自动触发重新规划")
+            errors.append(
+                _make_failure_validation_error(
+                    "workflow 回退为空的 fallback_workflow，需要重新规划"
+                )
+            )
+
         fixed_workflow, fix_summary = fix_missing_loop_exports_items(
             current_workflow.model_dump(by_alias=True), errors
         )
