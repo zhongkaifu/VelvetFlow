@@ -5,6 +5,54 @@ VelvetFlow 是一个可复用的 LLM 驱动工作流规划与执行演示项目�
 
 开篇先交代业务与交付价值：更少人工即可把文字需求变成可执行流程，内置安全审计、防御式修复与回滚路径，缩短 PoC 周期并提高交付确定性。随后的章节概述核心架构（混合检索、两阶段规划、Action Guard、本地/LLM 修复、可视化与模拟执行器），再逐步下钻到项目结构、运行方式、规划与执行细节及 DSL 参考，既便于决策判断落地性，也方便工程师按步骤复刻实现。
 
+## 文档与导航
+- [docs/quickstart.md](docs/quickstart.md)：三分钟完成安装、索引构建与示例运行。
+- [docs/core_concepts.md](docs/core_concepts.md)：Workflow/Node/Edge/Binding 的数据模型与引用规则。
+- [docs/advanced_guide.md](docs/advanced_guide.md)：检索调优、模型替换、异步节点恢复等进阶玩法。
+- [docs/internal_design.md](docs/internal_design.md)：执行引擎与状态机示意、设计模式与模块分层。
+- [docs/troubleshooting.md](docs/troubleshooting.md)：常见错误、自查步骤与定位日志。
+
+## 架构总览（执行引擎与状态流转）
+下面的引擎示意突出混合检索、两阶段规划与动态执行的衔接：
+
+```mermaid
+flowchart LR
+    subgraph intake[需求解析]
+        U[用户需求] -->|工具检索| S[HybridActionSearchService]
+    end
+    subgraph plan[规划阶段]
+        S --> P1[结构规划 + 覆盖度检查]
+        P1 --> G[Action Guard\n未注册动作替换]
+        G --> P2[参数补全]
+        P2 --> R[本地/LLM 修复 + 校验]
+    end
+    subgraph exec[执行阶段]
+        R --> V[可视化/持久化]
+        V --> E[DynamicActionExecutor]
+        E -->|拓扑执行| N[节点调度\ncondition/loop/switch]
+        N -->|同步完成| C[结果聚合]
+        N -->|async_pending| X[WorkflowSuspension]
+        X -->|resume| E
+    end
+    C --> O[输出/指标]
+```
+
+执行器在运行过程中会经历“就绪 → 运行 → 挂起 → 恢复 → 完成”的闭环，并允许任意数量的异步节点挂起与恢复：
+
+```mermaid
+stateDiagram-v2
+    [*] --> Ready
+    Ready --> Running: 选择 start 节点
+    Running --> Suspended: 节点返回 async_pending
+    Suspended --> Running: resume_from_suspension()
+    Running --> Completed: pending 为空
+    Suspended --> Aborted: 查无回调结果/校验失败
+    Aborted --> [*]
+    Completed --> [*]
+```
+
+核心状态数据包括已访问节点 `visited`、可达集合 `reachable`、阻断分支 `blocked` 与绑定上下文快照，均封装在 `ExecutionCheckpoint`，以便序列化后恢复。
+
 ## 项目结构
 ```
 VelvetFlow (repo root)
@@ -14,7 +62,7 @@ VelvetFlow (repo root)
 │   ├── action_registry.py       # 从 tools/business_actions/ 读取动作，附加安全元数据
 │   ├── bindings.py              # 参数绑定 DSL 解析/校验
 │   ├── config.py                # 默认 OpenAI 模型配置
-│   ├── executor.py              # 动态执行器，支持条件/循环/聚合导出
+│   ├── executor/                # 动态执行器与节点 mixin，支持条件/循环/异步挂起
 │   ├── logging_utils.py         # 终端友好日志 & 事件日志
 │   ├── loop_dsl.py              # loop 节点 exports 输出 Schema 辅助
 │   ├── models.py                # Workflow/Node/Edge 强类型模型与校验
@@ -40,7 +88,7 @@ VelvetFlow (repo root)
   - 本地自动修复（缺字段默认值、移除 schema 未定义字段、匹配输出/输入的类型转换、填充 `loop.exports`）完成后，再由 `verification/validation.py` 做最终静态校验并按需多轮 LLM 修复。
 - **DSL 模型与校验**：`models.py` 定义 Node/Edge/Workflow，边由参数绑定与条件分支自动推导并在可视化/执行前归一化；校验涵盖节点类型、隐式连线合法性、loop 子图 Schema 等，并通过 `ValidationError` 统一描述错误。
 - **参数绑定 DSL**：`bindings.py` 支持 `__from__` 引用上游结果，`__agg__` 支持 `identity/count/count_if/format_join/filter_map/pipeline`，并校验引用路径是否存在于动作输出/输入或 loop exports。
-- **执行器**：`executor.py` 的 `DynamicActionExecutor` 会先校验 action_id 是否在注册表中，再执行拓扑排序确保连通；支持 condition 节点（如 list_not_empty/equals/contains/greater_than/between 等）与 loop 节点（body_subgraph + exports.items/aggregates 收集迭代与聚合结果），并结合 repo 根目录的 `simulation_data.json` 模拟动作返回。日志输出使用 `logging_utils.py`。
+- **执行器**：`executor/` 包中的 `DynamicActionExecutor` 会先校验 action_id 是否在注册表中，再执行拓扑排序确保连通；支持 condition 节点（如 list_not_empty/equals/contains/greater_than/between 等）与 loop 节点（body_subgraph + exports.items/aggregates 收集迭代与聚合结果），并结合 repo 根目录的 `simulation_data.json` 模拟动作返回。日志输出使用 `logging_utils.py`。
 - **可视化**：`visualization.py` 提供 `render_workflow_dag`，支持 Unicode 字体回退，将 Workflow 渲染为 JPEG DAG。
 - **Jinja 表达式支持**：`jinja_utils.py` 构建严格模式的 Jinja 环境并在校验/执行前把包裹在 `{{ }}` 的纯字面量折叠为常量，静态检查会提前阻止语法错误的模板，运行时也可以在条件/聚合里直接求值表达式。【F:velvetflow/jinja_utils.py†L8-L114】【F:velvetflow/verification/jinja_validation.py†L50-L189】【F:velvetflow/executor/conditions.py†L14-L114】
 
