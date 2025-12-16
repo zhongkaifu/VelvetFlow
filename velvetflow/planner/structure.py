@@ -873,13 +873,13 @@ def plan_workflow_structure_with_llm(
                         parent_node_id=parent_node_id if isinstance(parent_node_id, str) else None,
                     )
                     removed_node_fields = _sanitize_builder_node_fields(builder, args["id"])
-                        if removed_fields or removed_node_fields:
-                            tool_result = {
-                                "status": "error",
-                                "message": "condition 节点的 params 仅支持 expression，已移除不支持的字段。",
-                                "removed_fields": removed_fields,
-                                "removed_node_fields": removed_node_fields,
-                                "node_id": args["id"],
+                    if removed_fields or removed_node_fields:
+                        tool_result = {
+                            "status": "error",
+                            "message": "condition 节点的 params 仅支持 expression，已移除不支持的字段。",
+                            "removed_fields": removed_fields,
+                            "removed_node_fields": removed_node_fields,
+                            "node_id": args["id"],
                         }
                     else:
                         tool_result = {"status": "ok", "type": "node_added", "node_id": args["id"]}
