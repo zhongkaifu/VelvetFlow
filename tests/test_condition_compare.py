@@ -2,7 +2,9 @@
 # License: BSD 3-Clause License
 
 from velvetflow.executor import DynamicActionExecutor
+from velvetflow.executor.conditions import ConditionEvaluationMixin
 from velvetflow.models import Workflow
+from velvetflow.bindings import BindingContext
 
 
 def _build_workflow(expression, true_node_id="t_branch", false_node_id="f_branch"):
@@ -33,6 +35,31 @@ def _build_workflow(expression, true_node_id="t_branch", false_node_id="f_branch
             ],
         }
     )
+
+
+class _ConditionHarness(ConditionEvaluationMixin):
+    """Lightweight harness to call condition evaluation helpers directly."""
+
+
+def test_condition_alias_is_exposed_at_top_level():
+    workflow = Workflow.model_validate({"workflow_name": "alias_ctx", "nodes": []})
+    ctx = BindingContext(
+        workflow,
+        results={},
+        loop_ctx={
+            "item": {"temperature": 39},
+            "employee": {"temperature": 39},
+            "index": 0,
+        },
+        loop_id="loop_check_temperature",
+    )
+    harness = _ConditionHarness()
+    node = {"params": {"expression": "{{ employee.temperature > 38 }}"}}
+
+    result, debug = harness._eval_condition(node, ctx, include_debug=True)
+
+    assert result is True
+    assert debug["resolved_value"] is True
 
 
 def test_condition_compare_executes_true_branch():

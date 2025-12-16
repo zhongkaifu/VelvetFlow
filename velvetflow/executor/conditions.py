@@ -21,13 +21,20 @@ class ConditionEvaluationMixin:
             qualified = ctx._qualify_context_path(normalized)
             return ctx.get_value(qualified)
 
-        return {
+        base_ctx: Dict[str, Any] = {
             "result_of": ctx.results,
             "loop": ctx.loop_ctx,
             "loop_ctx": ctx.loop_ctx,
             "loop_id": ctx.loop_id,
             "get": _jinja_get,
         }
+
+        if isinstance(ctx.loop_ctx, Mapping):
+            for key, value in ctx.loop_ctx.items():
+                if key not in base_ctx:
+                    base_ctx[key] = value
+
+        return base_ctx
 
     def _render_condition_value(self, value: Any, ctx: BindingContext) -> Any:
         if isinstance(value, dict):
