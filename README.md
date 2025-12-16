@@ -42,6 +42,7 @@ VelvetFlow (repo root)
 - **参数绑定 DSL**：`bindings.py` 支持 `__from__` 引用上游结果，`__agg__` 支持 `identity/count/count_if/format_join/filter_map/pipeline`，并校验引用路径是否存在于动作输出/输入或 loop exports。
 - **执行器**：`executor.py` 的 `DynamicActionExecutor` 会先校验 action_id 是否在注册表中，再执行拓扑排序确保连通；支持 condition 节点（如 list_not_empty/equals/contains/greater_than/between 等）与 loop 节点（body_subgraph + exports.items/aggregates 收集迭代与聚合结果），并结合 repo 根目录的 `simulation_data.json` 模拟动作返回。日志输出使用 `logging_utils.py`。
 - **可视化**：`visualization.py` 提供 `render_workflow_dag`，支持 Unicode 字体回退，将 Workflow 渲染为 JPEG DAG。
+- **Jinja 表达式支持**：`jinja_utils.py` 构建严格模式的 Jinja 环境并在校验/执行前把包裹在 `{{ }}` 的纯字面量折叠为常量，静态检查会提前阻止语法错误的模板，运行时也可以在条件/聚合里直接求值表达式。【F:velvetflow/jinja_utils.py†L8-L114】【F:velvetflow/verification/jinja_validation.py†L50-L189】【F:velvetflow/executor/conditions.py†L14-L114】
 
 ## 业务价值与演进方向
 - **投入产出**：将需求解读、动作匹配、参数落地和校验自动化，避免人工对接和回滚，适合快速验证跨 HR/OPS/CRM 等场景的流程自动化可行性。
@@ -93,14 +94,15 @@ VelvetFlow (repo root)
    - 将自然语言需求与现有 workflow 作为输入，调用 LLM 自动更新节点、参数与边；若校验失败会将错误列表反馈给 LLM 自动修复（最多 3 轮），最终写入通过校验的结果到 `--output` 指定的文件。
 
 ### Web 可视化界面（带 Planner/Executor 的实时交互）
-- `webapp/` 目录提供了基于 Canvas 的前端页面，包含 VelvetFlow Agent 对话框、DAG/流程图双 Tab 视图、可编辑的 workflow JSON 与 Run 执行按钮。
+- `webapp/` 目录提供了基于 Canvas 的前端页面，默认包含可缩放/拖拽的 DAG 画布、JSON 编辑器双 Tab，以及“添加节点/保存/加载”对话框，方便直接在浏览器调整 workflow。`core.js` 里内置节点生成、画布缩放/拖拽、多 Tab 独立布局等逻辑。【F:webapp/js/core.js†L1-L157】【F:webapp/js/core.js†L191-L329】【F:webapp/js/dialogs.js†L1-L148】
+- 后端使用 FastAPI 暴露 `/api/plan`、`/api/run` 以及对应的 `/stream` SSE 端点，能在计划/执行时实时推送日志与渐进式节点快照；`/api/actions` 则返回动作清单供前端下拉选择。【F:webapp/server.py†L52-L120】【F:webapp/server.py†L214-L365】
 - **请使用 `python webapp/server.py` 直接启动内置 API 服务**（不要用 `python -m http.server` 之类的纯静态服务器，否则 `/api/plan`/`/api/run` 会返回 `Unsupported method ('POST')`）：
   ```bash
   export OPENAI_API_KEY="<your_api_key>"
   pip install -r requirements.txt
   python webapp/server.py
   ```
-  然后访问 <http://localhost:8000> 即可。对话框会把自然语言发送到 `/api/plan`，由 planner 自动构建/修复 workflow 并返回拓扑，Run 按钮会调用 `/api/run` 触发执行并输出运行日志/结果。
+  然后访问 <http://localhost:8000> 即可。对话框会把自然语言发送到 `/api/plan` 或 `/api/plan/stream`，由 planner 自动构建/修复 workflow 并返回拓扑，Run 按钮会调用 `/api/run` 或 `/api/run/stream` 触发执行并输出运行日志/结果。
 
 ## 异步工具调用、挂起与恢复
 - **触发异步**：在 action/loop 子图节点的 `params` 中加入 `"__invoke_mode": "async"`（或布尔 `"__async__": true`）即可请求异步调用。业务工具若直接返回 `AsyncToolHandle` 会被识别为异步；否则执行器会自动将同步输出包装为异步请求句柄。异步调用会写入 `GLOBAL_ASYNC_RESULT_STORE`，并返回 `{"status": "async_pending", ...}`。
@@ -239,6 +241,10 @@ LLM 相关节点说明：
   - `pipeline`: 以 `steps` 数组串联多个 `filter`/`format_join` 变换，便于描述更复杂的处理链条。
 - 直接字符串路径：`"params": {"threshold": "loop.index"}` 这类纯字符串也会尝试解析为上下文路径；解析失败会保留原值并在日志给出警告。
 - 绑定路径的有效性：`__from__` 引用动作输出时会根据动作的 `output_schema`/`arg_schema` 或 loop 的 `exports` 做静态校验，字段不存在会在执行前抛错，方便手动调试。【F:velvetflow/bindings.py†L18-L205】【F:velvetflow/bindings.py†L206-L341】
+- **Jinja 表达式与常量折叠**：
+  - 参数、条件及聚合中的字符串可以写成 Jinja 表达式（如 `"{{ get('result_of.node.score') > 80 }}"`），校验阶段会先用严格模式 Jinja 解析语法并提示错误路径。
+  - 对于 `"{{ 'action' }}"` 这类包裹字面量的模板，会在模型校验前折叠成普通字符串，避免字段类型被模板包裹后误判。【F:velvetflow/jinja_utils.py†L8-L114】【F:velvetflow/verification/jinja_validation.py†L50-L189】
+  - 执行器解析 condition 或绑定聚合时，会在运行时填充上下文后求值，并复用相同的语法校验逻辑，异常会带上参数路径便于追踪。【F:velvetflow/executor/conditions.py†L14-L208】【F:velvetflow/bindings.py†L334-L532】
 
 ### 手动调试与排错建议
 1. **先跑校验**：使用 `python validate_workflow.py your_workflow.json --print-normalized`，可以立刻发现重复节点、边引用不存在、loop 子图 schema 不合法等问题。【F:validate_workflow.py†L1-L58】
