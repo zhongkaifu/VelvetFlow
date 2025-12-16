@@ -327,6 +327,24 @@ def _summarize_validation_errors_for_llm(
                 f"- [{err.code}] 暂无固定修复模板{scope_hint}，建议沿以下方向探索：{' '.join(directions)}"
             )
 
+        if (
+            err.code == "SCHEMA_MISMATCH"
+            and err.message
+            and re.search(r"loop[^']*\.item\.\w+", err.message)
+        ):
+            loop_ref = err.node_id or "loop 节点"
+            match = re.search(r"([\w-]+)\.item\.\w+", err.message)
+            if match:
+                loop_ref = match.group(1)
+            repair_prompts.append(
+                "- [SCHEMA_MISMATCH] loop item 引用修复：如果在 loop 体内使用，请改为"
+                " `loop.item.<字段>` 并确保 params.source 的元素 schema 含该字段；"
+                "如果在 loop 外部引用，请改为 `result_of.<loop_id>.exports.items.<字段>`，"
+                "并在 loop.params.exports.items.fields 中声明该字段以供校验。".replace(
+                    "<loop_id>", str(loop_ref)
+                )
+            )
+
         history = previous_attempts.get(_make_error_key(err))
         if history:
             lines.append("    历史修复尝试：")

@@ -2,6 +2,7 @@
 # License: BSD 3-Clause License
 
 from velvetflow.models import ValidationError
+from velvetflow.planner.repair import _summarize_validation_errors_for_llm
 from velvetflow.planner.repair_tools import (
     align_loop_body_alias_references,
     fill_loop_exports_defaults,
@@ -232,3 +233,20 @@ def test_align_loop_body_alias_references_rewrites_stale_alias():
         add_action["params"]["last_temperature"]["__from__"]
         == "warning_item.temperature"
     )
+
+
+def test_summarize_validation_errors_adds_loop_item_guidance():
+    err = ValidationError(
+        code="SCHEMA_MISMATCH",
+        node_id="condition_high_temp",
+        field="field",
+        message=(
+            "condition 节点 'condition_high_temp' 的引用 "
+            "'loop_employees.item.temperature' 无法在 schema 中找到或缺少类型信息。"
+        ),
+    )
+
+    summary = _summarize_validation_errors_for_llm([err])
+
+    assert "loop item 引用修复" in summary
+    assert "result_of.loop_employees.exports.items" in summary
