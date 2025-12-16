@@ -1133,8 +1133,32 @@ def _validate_and_repair_workflow(
                 "[JinjaGuard] 已规范化 workflow params 并标记非 Jinja DSL。",
                 f"summary={jinja_params_summary}",
             )
-            current_workflow = Workflow.model_validate(jinja_params_workflow)
-            last_good_workflow = current_workflow
+            try:
+                current_workflow = Workflow.model_validate(jinja_params_workflow)
+                last_good_workflow = current_workflow
+            except PydanticValidationError as exc:
+                log_warn(
+                    "[AutoRepair] Jinja 规范化后校验失败，交给 LLM 修复。",
+                    f"error={exc}",
+                )
+                validation_errors = _convert_pydantic_errors(jinja_params_workflow, exc) or [
+                    _make_failure_validation_error(str(exc))
+                ]
+                current_workflow = _repair_with_llm_and_fallback(
+                    broken_workflow=jinja_params_workflow if isinstance(jinja_params_workflow, dict) else {},
+                    validation_errors=validation_errors,
+                    action_registry=action_registry,
+                    search_service=search_service,
+                    reason="Jinja 规范化后校验失败",
+                )
+                current_workflow = _ensure_actions_registered_or_repair(
+                    current_workflow,
+                    action_registry=action_registry,
+                    search_service=search_service,
+                    reason="Jinja 规范化修复后校验 action_id",
+                )
+                last_good_workflow = current_workflow
+                continue
 
         jinja_checked_workflow, jinja_summary, jinja_errors = normalize_condition_params_to_jinja(
             current_workflow.model_dump(by_alias=True)
