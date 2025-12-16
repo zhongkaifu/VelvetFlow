@@ -1,6 +1,7 @@
 """Loop execution helpers used by the executor."""
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any, Dict, List, Mapping, Optional
 
 from velvetflow.bindings import BindingContext
@@ -269,9 +270,13 @@ class LoopExecutionMixin:
         if loop_kind == "for_each":
             source = params.get("source")
             data = self._resolve_condition_source(source, binding_ctx)
-            if not isinstance(data, list):
+            is_sequence = isinstance(data, Sequence) and not isinstance(
+                data, (str, bytes, bytearray)
+            )
+            if not is_sequence:
                 log_warn(
-                    f"[loop] for_each 的 source 不是 list (实际类型: {type(data).__name__}), 跳过执行"
+                    "[loop] for_each 的 source 不是 list/sequence "
+                    f"(实际类型: {type(data).__name__}), 跳过执行"
                 )
                 return {
                     "status": "skipped",

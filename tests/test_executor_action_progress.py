@@ -28,7 +28,7 @@ def test_executor_advances_from_action_to_loop():
                     "type": "loop",
                     "params": {
                         "loop_kind": "for_each",
-                        "source": "result_of.get_temperatures.data",
+                        "source": "{{ result_of.get_temperatures.data }}",
                         "item_alias": "employee",
                         "body_subgraph": {
                             "nodes": [
