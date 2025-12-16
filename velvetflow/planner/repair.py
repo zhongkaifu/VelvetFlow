@@ -518,11 +518,26 @@ def _repair_with_llm_and_fallback(
             return fallback
         except Exception as inner_err:  # noqa: BLE001
             log_error(
-                f"[AutoRepair] 回退到原始结构失败，将返回空的 fallback workflow：{inner_err}"
+                "[AutoRepair] 回退到原始结构失败，保留失败的结构以便继续修复："
+                f"{inner_err}"
             )
-            return Workflow(
-                workflow_name="fallback_workflow", nodes=[]
-            )
+            # Preserve the last broken structure so the outer planner loop can keep
+            # attempting repairs instead of returning a synthetic empty workflow.
+            if isinstance(broken_workflow, Workflow):
+                return broken_workflow
+
+            if isinstance(broken_workflow, Mapping):
+                return Workflow(
+                    workflow_name=str(
+                        broken_workflow.get("workflow_name", "unfixed_workflow")
+                    ),
+                    description=str(broken_workflow.get("description", "")),
+                    nodes=broken_workflow.get("nodes") or [],
+                )
+
+            # If we cannot introspect the broken payload, fall back to a minimal
+            # structure with the original data attached for future repairs.
+            return Workflow(workflow_name="unfixed_workflow", nodes=[broken_workflow])
 
 
 def repair_workflow_with_llm(
