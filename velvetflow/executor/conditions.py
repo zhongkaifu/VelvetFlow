@@ -260,7 +260,8 @@ class ConditionEvaluationMixin:
         ctx_vars = self._condition_jinja_context(ctx)
         try:
             validate_jinja_expression(expression, path="condition.expression")
-            result = bool(eval_jinja_expression(expression, ctx_vars))
+            raw_result = eval_jinja_expression(expression, ctx_vars)
+            result = bool(raw_result)
         except Exception as exc:
             log_warn(f"[condition] 表达式执行失败: {exc}")
             return (False, {"resolved_value": None, "values": None}) if include_debug else False
@@ -268,7 +269,12 @@ class ConditionEvaluationMixin:
         if include_debug:
             log_json(
                 "[condition] 调试信息",
-                {"expression": expression, "result": result, "context_keys": list(ctx_vars.keys())},
+                {
+                    "expression": expression,
+                    "result": result,
+                    "expression_value": raw_result,
+                    "context_keys": list(ctx_vars.keys()),
+                },
             )
             return result, {"resolved_value": result, "values": None}
 
