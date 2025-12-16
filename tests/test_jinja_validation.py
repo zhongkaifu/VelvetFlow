@@ -36,9 +36,7 @@ def test_condition_field_literal_wrapped_as_jinja():
                 "id": "c1",
                 "type": "condition",
                 "params": {
-                    "kind": "list_not_empty",
-                    "source": {"__from__": "result_of.some_loop.exports.items"},
-                    "field": "employee_id",
+                    "expression": "{{ result_of.some_loop.exports.items | length > 0 }}",
                 },
             }
         ],
@@ -47,5 +45,5 @@ def test_condition_field_literal_wrapped_as_jinja():
     normalized, summary, errors = normalize_condition_params_to_jinja(workflow)
 
     assert errors == []
-    assert summary["applied"] is True
-    assert normalized["nodes"][0]["params"]["field"] == "{{ 'employee_id' }}"
+    assert summary.get("applied") in {False, None}
+    assert normalized["nodes"][0]["params"]["expression"] == "{{ result_of.some_loop.exports.items | length > 0 }}"

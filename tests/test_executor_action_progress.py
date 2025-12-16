@@ -36,10 +36,7 @@ def test_executor_advances_from_action_to_loop():
                                     "id": "check_temperature_condition",
                                     "type": "condition",
                                     "params": {
-                                        "kind": "any_greater_than",
-                                        "source": "employee",
-                                        "field": "temperature",
-                                        "threshold": 38,
+                                        "expression": "{{ employee.temperature > 38 }}",
                                     },
                                     "true_to_node": "add_to_warning_list",
                                 },

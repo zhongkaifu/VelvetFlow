@@ -107,9 +107,7 @@ def test_fix_missing_loop_exports_items_inserts_segment():
                 "id": "check_warning_list_empty",
                 "type": "condition",
                 "params": {
-                    "source": "result_of.loop_employees.exports.employee_id",
-                    "field": "employee_id",
-                    "kind": "list_not_empty",
+                    "expression": "{{ result_of.loop_employees.exports.employee_id | length > 0 }}",
                 },
             },
         ],
@@ -133,8 +131,8 @@ def test_fix_missing_loop_exports_items_inserts_segment():
     assert summary["applied"] is True
     condition = next(n for n in patched["nodes"] if n.get("id") == "check_warning_list_empty")
     assert (
-        condition["params"]["source"]
-        == "result_of.loop_employees.exports.items.employee_id"
+        condition["params"]["expression"]
+        == "{{ result_of.loop_employees.exports.items.employee_id | length > 0 }}"
     )
 
 

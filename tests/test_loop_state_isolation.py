@@ -153,7 +153,7 @@ def test_condition_branch_inside_loop_body_uses_true_target():
                             {
                                 "id": "check_flag",
                                 "type": "condition",
-                                "params": {"kind": "equals", "source": {"__from__": "loop.item"}, "value": True},
+                                "params": {"expression": "{{ loop.item == true }}"},
                                 "true_to_node": "t_branch",
                                 "false_to_node": None,
                             },
@@ -208,10 +208,7 @@ def test_condition_false_branch_inside_loop_body_skips_true_target():
                                 "id": "check_temperature_condition",
                                 "type": "condition",
                                 "params": {
-                                    "kind": "any_greater_than",
-                                    "source": {"__from__": "loop.employee"},
-                                    "field": "temperature",
-                                    "threshold": 38,
+                                    "expression": "{{ loop.employee.temperature > 38 }}",
                                 },
                                 "true_to_node": "add_to_warning_list",
                                 "false_to_node": None,

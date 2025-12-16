@@ -37,33 +37,7 @@ from velvetflow.search import HybridActionSearchService
 from velvetflow.models import infer_edges_from_bindings
 
 
-CONDITION_ALLOWED_KINDS = {
-    "list_not_empty",
-    "any_greater_than",
-    "equals",
-    "contains",
-    "not_equals",
-    "greater_than",
-    "less_than",
-    "between",
-    "all_less_than",
-    "is_empty",
-    "not_empty",
-    "is_not_empty",
-    "multi_band",
-    "compare",
-}
-
-CONDITION_PARAM_FIELDS = {
-    "kind",
-    "source",
-    "field",
-    "value",
-    "threshold",
-    "min",
-    "max",
-    "bands",
-}
+CONDITION_PARAM_FIELDS = {"expression"}
 
 SWITCH_PARAM_FIELDS = {
     "source",
@@ -821,18 +795,16 @@ def plan_workflow_structure_with_llm(
                 true_to_node = args.get("true_to_node")
                 false_to_node = args.get("false_to_node")
                 parent_node_id = args.get("parent_node_id")
-                condition_kind = args.get("kind")
                 params = args.get("params")
 
                 missing_fields = [
                     name
-                    for name in ("kind", "true_to_node", "false_to_node")
+                    for name in ("true_to_node", "false_to_node")
                     if name not in args
                 ]
                 non_str_fields = [
                     name
                     for name, value in (
-                        ("kind", condition_kind),
                         ("true_to_node", true_to_node),
                         ("false_to_node", false_to_node),
                     )
@@ -843,14 +815,6 @@ def plan_workflow_structure_with_llm(
                 normalized_params: Dict[str, Any] = {}
                 if isinstance(params, Mapping):
                     normalized_params = dict(params)
-                    params_kind = params.get("kind")
-                    if params_kind is not None and params_kind != condition_kind:
-                        params_error = {
-                            "status": "error",
-                            "message": "params.kind 与 kind 参数不一致，请确保两者相同。",
-                            "params_kind": params_kind,
-                            "kind": condition_kind,
-                        }
                 elif params is not None:
                     params_error = {
                         "status": "error",
@@ -860,13 +824,13 @@ def plan_workflow_structure_with_llm(
                 if missing_fields or non_str_fields:
                     tool_result = {
                         "status": "error",
-                        "message": (
-                            "condition 节点需要提供 kind 以及 true_to_node/false_to_node 字段，分支跳转可为节点 id（继续执行）"
-                            "或 null（表示该分支结束），非字符串/未提供会被拒绝。"
-                        ),
-                        "missing_fields": missing_fields,
-                        "invalid_fields": non_str_fields,
-                    }
+                            "message": (
+                                "condition 节点需要提供 true_to_node/false_to_node 字段，分支跳转可为节点 id（继续执行）"
+                                "或 null（表示该分支结束），非字符串/未提供会被拒绝。"
+                            ),
+                            "missing_fields": missing_fields,
+                            "invalid_fields": non_str_fields,
+                        }
                     messages.append(
                         {
                             "role": "tool",
@@ -876,22 +840,22 @@ def plan_workflow_structure_with_llm(
                     )
                     continue
 
-                if not isinstance(condition_kind, str) or condition_kind not in CONDITION_ALLOWED_KINDS:
+                expr_val = normalized_params.get("expression") if isinstance(normalized_params, Mapping) else None
+
+                if params_error:
+                    tool_result = params_error
+                elif not isinstance(expr_val, str) or not expr_val.strip():
                     tool_result = {
                         "status": "error",
-                        "message": "condition 节点需要提供合法的 kind。",
-                        "invalid_fields": ["kind"],
-                        "allowed_kinds": sorted(CONDITION_ALLOWED_KINDS),
+                        "message": "condition 节点的 params.expression 必须是返回布尔值的 Jinja 表达式。",
+                        "invalid_fields": ["expression"],
                     }
-                elif params_error:
-                    tool_result = params_error
                 elif parent_node_id is not None and not isinstance(parent_node_id, str):
                     tool_result = {
                         "status": "error",
                         "message": "parent_node_id 需要是字符串或 null。",
                     }
                 else:
-                    normalized_params["kind"] = condition_kind
                     cleaned_params, removed_fields = _filter_supported_params(
                         node_type="condition",
                         params=normalized_params,
@@ -909,13 +873,13 @@ def plan_workflow_structure_with_llm(
                         parent_node_id=parent_node_id if isinstance(parent_node_id, str) else None,
                     )
                     removed_node_fields = _sanitize_builder_node_fields(builder, args["id"])
-                    if removed_fields or removed_node_fields:
-                        tool_result = {
-                            "status": "error",
-                            "message": "condition 节点的 params 仅支持 kind/source/field/value/threshold/min/max/bands。",
-                            "removed_fields": removed_fields,
-                            "removed_node_fields": removed_node_fields,
-                            "node_id": args["id"],
+                        if removed_fields or removed_node_fields:
+                            tool_result = {
+                                "status": "error",
+                                "message": "condition 节点的 params 仅支持 expression，已移除不支持的字段。",
+                                "removed_fields": removed_fields,
+                                "removed_node_fields": removed_node_fields,
+                                "node_id": args["id"],
                         }
                     else:
                         tool_result = {"status": "ok", "type": "node_added", "node_id": args["id"]}
@@ -1164,14 +1128,12 @@ def plan_workflow_structure_with_llm(
                             updates["parent_node_id"] = parent_node_id
                         if "params" in args:
                             normalized_params = dict(new_params or {})
-                            existing_kind = builder.nodes.get(node_id, {}).get("params", {}).get("kind")
-                            params_kind = normalized_params.get("kind", existing_kind)
-                            if params_kind and params_kind not in CONDITION_ALLOWED_KINDS:
+                            expr_val = normalized_params.get("expression")
+                            if not isinstance(expr_val, str) or not expr_val.strip():
                                 tool_result = {
                                     "status": "error",
-                                    "message": "condition 节点需要提供合法的 kind。",
-                                    "invalid_fields": ["kind"],
-                                    "allowed_kinds": sorted(CONDITION_ALLOWED_KINDS),
+                                    "message": "condition 节点的 params.expression 必须是返回布尔值的 Jinja 表达式。",
+                                    "invalid_fields": ["expression"],
                                 }
                                 messages.append(
                                     {
@@ -1183,7 +1145,7 @@ def plan_workflow_structure_with_llm(
                                 continue
                             cleaned_params, removed_param_fields = _filter_supported_params(
                                 node_type="condition",
-                                params={**normalized_params, "kind": params_kind} if params_kind else normalized_params,
+                                params=normalized_params,
                                 action_schemas=action_schemas,
                             )
                             updates["params"] = cleaned_params
@@ -1195,7 +1157,7 @@ def plan_workflow_structure_with_llm(
                         if removed_param_fields or removed_node_fields:
                             tool_result = {
                                 "status": "error",
-                                "message": "condition 节点仅支持 id/type/display_name/params/true_to_node/false_to_node 字段，params 仅支持 kind/source/field/value/threshold/min/max/bands，已移除不支持的字段。",
+                                "message": "condition 节点仅支持 id/type/display_name/params/true_to_node/false_to_node 字段，params 仅支持 expression，已移除不支持的字段。",
                                 "removed_fields": removed_param_fields,
                                 "removed_node_fields": removed_node_fields,
                                 "node_id": node_id,

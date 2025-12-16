@@ -60,7 +60,7 @@ class ConditionEvaluationMixin:
         return value
 
     def _resolve_condition_source(self, source: Any, ctx: BindingContext) -> Any:
-        """Resolve condition source which may be a binding dict or a path string."""
+        """Resolve condition/switch sources which may be bindings or paths."""
 
         if isinstance(source, list):
             return [self._resolve_condition_source(item, ctx) for item in source]
@@ -84,34 +84,6 @@ class ConditionEvaluationMixin:
                 return ctx.get_value(source)
 
         return source
-
-    def _collect_exit_results(
-        self, exit_node_def: Any, binding_ctx: BindingContext
-    ) -> Optional[Union[Any, Dict[str, Any]]]:
-        """Normalize exit node definitions and collect available results."""
-
-        if not exit_node_def:
-            return None
-
-        if isinstance(exit_node_def, str):
-            node_ids = [exit_node_def]
-        elif isinstance(exit_node_def, list):
-            node_ids = [nid for nid in exit_node_def if isinstance(nid, str)]
-            if not node_ids:
-                return None
-        else:
-            log_warn(f"[loop] exit 节点定义类型不支持: {type(exit_node_def)}")
-            return None
-
-        collected = {
-            nid: binding_ctx.results.get(nid) for nid in node_ids if nid in binding_ctx.results
-        }
-        if not collected:
-            return None
-
-        if len(collected) == 1 and isinstance(exit_node_def, str):
-            return next(iter(collected.values()))
-        return collected
 
     def _get_field_value(self, obj: Any, field: Optional[str]) -> Any:
         if field is None or field == "":
@@ -165,6 +137,34 @@ class ConditionEvaluationMixin:
             return None
         return current
 
+    def _collect_exit_results(
+        self, exit_node_def: Any, binding_ctx: BindingContext
+    ) -> Optional[Union[Any, Dict[str, Any]]]:
+        """Normalize exit node definitions and collect available results."""
+
+        if not exit_node_def:
+            return None
+
+        if isinstance(exit_node_def, str):
+            node_ids = [exit_node_def]
+        elif isinstance(exit_node_def, list):
+            node_ids = [nid for nid in exit_node_def if isinstance(nid, str)]
+            if not node_ids:
+                return None
+        else:
+            log_warn(f"[loop] exit 节点定义类型不支持: {type(exit_node_def)}")
+            return None
+
+        collected = {
+            nid: binding_ctx.results.get(nid) for nid in node_ids if nid in binding_ctx.results
+        }
+        if not collected:
+            return None
+
+        if len(collected) == 1 and isinstance(exit_node_def, str):
+            return next(iter(collected.values()))
+        return collected
+
     def _normalize_to_jinja_expr(self, raw: Any) -> str:
         if isinstance(raw, str):
             text = raw.strip()
@@ -184,76 +184,14 @@ class ConditionEvaluationMixin:
             return text[2:-2].strip()
         return text if text else None
 
-    def _build_expression_from_legacy_params(self, params: Mapping[str, Any]) -> Optional[str]:
-        expr_raw = params.get("expression")
-        unwrapped = self._strip_wrapped_expression(expr_raw)
-        if isinstance(unwrapped, str) and unwrapped:
-            return unwrapped
-
-        kind = params.get("kind")
-        if not isinstance(kind, str):
-            return None
-
-        kind = kind.lower()
-        source_expr = self._normalize_to_jinja_expr(params.get("source"))
-        field_expr = params.get("field")
-        field_str = self._normalize_to_jinja_expr(field_expr) if field_expr is not None else None
-        value_expr = params.get("value") if "value" in params else params.get("threshold")
-        value_str = self._normalize_to_jinja_expr(value_expr) if value_expr is not None else None
-
-        if kind == "list_not_empty":
-            target_expr = source_expr
-            if field_str:
-                target_expr = f"({target_expr} | map(attribute='{field_str}'))"
-            return f"({target_expr} or []) | length > 0"
-
-        if kind in {"equals", "eq", "=="} and value_str is not None:
-            target_expr = source_expr if not field_str else f"({source_expr})['{field_str}']"
-            return f"{target_expr} == {value_str}"
-
-        if kind in {"greater_than", "any_greater_than"} and value_str is not None:
-            target_expr = source_expr if not field_str else f"({source_expr})['{field_str}']"
-            return f"{target_expr} > {value_str}"
-
-        if kind in {"less_than", "any_less_than", "all_less_than"} and value_str is not None:
-            target_expr = source_expr if not field_str else f"({source_expr})['{field_str}']"
-            if kind == "all_less_than":
-                return f"({target_expr} or []) and ({target_expr} | select('lt', {value_str}) | list | length == ({target_expr} | list | length))"
-            return f"{target_expr} < {value_str}"
-
-        if kind in {"not_equals", "!=", "ne"} and value_str is not None:
-            target_expr = source_expr if not field_str else f"({source_expr})['{field_str}']"
-            return f"{target_expr} != {value_str}"
-
-        if kind == "contains" and value_str is not None:
-            target_expr = source_expr if not field_str else f"({source_expr})['{field_str}']"
-            return f"{value_str} in {target_expr}"
-
-        return None
-
     def _eval_condition(
         self, node: Dict[str, Any], ctx: BindingContext, *, include_debug: bool = False
     ) -> Any:
         raw_params = node.get("params") or {}
         params = raw_params if isinstance(raw_params, Mapping) else {"expression": raw_params}
-
-        # Legacy safeguard: if the original contract declared a list check, validate type early
-        if isinstance(params, Mapping) and params.get("kind") == "list_not_empty":
-            resolved_source = self._resolve_condition_source(params.get("source"), ctx)
-            if not isinstance(resolved_source, list):
-                log_warn(
-                    f"[condition:list_not_empty] source 不是 list，实际类型: {type(resolved_source)}"
-                )
-                return (False, {"resolved_value": None, "values": None}) if include_debug else False
-
-        expression = None
-        if isinstance(params, Mapping):
-            expression = self._build_expression_from_legacy_params(params)
-
-        if isinstance(expression, str) and expression.strip():
-            if isinstance(node.get("params"), Mapping):
-                node["params"] = {"expression": expression}
-        else:
+        expr_raw = params.get("expression") if isinstance(params, Mapping) else None
+        expression = self._strip_wrapped_expression(expr_raw) if expr_raw is not None else None
+        if not expression or not isinstance(expression, str):
             log_warn("[condition] 缺少可执行的 Jinja 表达式，返回 False")
             return (False, {"resolved_value": None, "values": None}) if include_debug else False
 
