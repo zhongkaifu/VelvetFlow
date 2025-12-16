@@ -27,16 +27,7 @@ from .binding_checks import (
     validate_param_binding,
 )
 
-CONDITION_PARAM_FIELDS = {
-    "kind",
-    "source",
-    "field",
-    "value",
-    "threshold",
-    "min",
-    "max",
-    "bands",
-}
+CONDITION_PARAM_FIELDS = {"expression"}
 
 LOOP_PARAM_FIELDS = {
     "loop_kind",
