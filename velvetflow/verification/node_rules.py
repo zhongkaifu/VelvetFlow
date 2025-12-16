@@ -611,19 +611,46 @@ def _validate_nodes_recursive(
                             message=f"loop 节点 '{nid}' 的 source 无效：{src_err}",
                         )
                     )
-                elif isinstance(item_alias, str):
-                    nested_schema = _get_array_item_schema_from_output(
-                        normalize_reference_path(source),
+                else:
+                    normalized_source = normalize_reference_path(source)
+                    container_schema = _get_output_schema_at_path(
+                        normalized_source,
                         nodes_by_id,
                         actions_by_id,
                         loop_body_parents,
-                        context_node_id=nid,
                     )
-                    if nested_schema:
-                        alias_schemas = dict(alias_schemas or {})
-                        alias_schemas[normalize_reference_path(item_alias)] = (
-                            nested_schema
+                    actual_type = (
+                        container_schema.get("type")
+                        if isinstance(container_schema, Mapping)
+                        else None
+                    )
+                    if actual_type not in {"array"}:
+                        errors.append(
+                            ValidationError(
+                                code="SCHEMA_MISMATCH",
+                                node_id=nid,
+                                field="source",
+                                message=(
+                                    f"loop 节点 '{nid}' 的 source 应该引用数组/序列"
+                                    f"，但解析到的类型为 {actual_type or '未知'}，路径: {normalized_source}"
+                                ),
+                            )
                         )
+
+                    if isinstance(item_alias, str):
+                        nested_schema = _get_array_item_schema_from_output(
+                            normalized_source,
+                            nodes_by_id,
+                            actions_by_id,
+                            loop_body_parents,
+                            context_node_id=nid,
+                        )
+
+                        if nested_schema:
+                            alias_schemas = dict(alias_schemas or {})
+                            alias_schemas[normalize_reference_path(item_alias)] = (
+                                nested_schema
+                            )
             elif isinstance(source, Mapping):
                 src_err = validate_param_binding(source)
                 if src_err:
@@ -656,6 +683,30 @@ def _validate_nodes_recursive(
                             )
                         )
                     else:
+                        container_schema = _get_output_schema_at_path(
+                            normalized_source,
+                            nodes_by_id,
+                            actions_by_id,
+                            loop_body_parents,
+                        )
+                        actual_type = (
+                            container_schema.get("type")
+                            if isinstance(container_schema, Mapping)
+                            else None
+                        )
+                        if actual_type not in {"array"}:
+                            errors.append(
+                                ValidationError(
+                                    code="SCHEMA_MISMATCH",
+                                    node_id=nid,
+                                    field="source",
+                                    message=(
+                                        f"loop 节点 '{nid}' 的 source 应该引用数组/序列"
+                                        f"，但解析到的类型为 {actual_type or '未知'}，路径: {normalized_source}"
+                                    ),
+                                )
+                            )
+
                         nested_schema = _get_array_item_schema_from_output(
                             normalized_source,
                             nodes_by_id,

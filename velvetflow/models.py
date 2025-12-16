@@ -10,7 +10,7 @@ import re
 from typing import Any, Dict, Iterable, List, Literal, Mapping, Optional, Set
 
 from velvetflow.jinja_utils import render_jinja_string_constants
-from velvetflow.loop_dsl import loop_body_has_action
+from velvetflow.loop_dsl import index_loop_body_nodes, loop_body_has_action
 from velvetflow.reference_utils import normalize_reference_path
 
 
@@ -668,6 +668,31 @@ class Workflow:
 
         errors: List[Dict[str, Any]] = []
 
+        # Build a lightweight index of all nodes for schema checks.
+        raw_nodes: List[Dict[str, Any]] = []
+        for node in self.nodes:
+            node_map: Dict[str, Any] = {
+                "id": node.id,
+                "type": node.type,
+                "params": node.params,
+                "depends_on": getattr(node, "depends_on", []) or [],
+            }
+            if getattr(node, "action_id", None) is not None:
+                node_map["action_id"] = node.action_id
+            if getattr(node, "display_name", None) is not None:
+                node_map["display_name"] = node.display_name
+            if getattr(node, "out_params_schema", None) is not None:
+                node_map["out_params_schema"] = node.out_params_schema
+            if getattr(node, "true_to_node", None) is not None:
+                node_map["true_to_node"] = node.true_to_node
+            if getattr(node, "false_to_node", None) is not None:
+                node_map["false_to_node"] = node.false_to_node
+            raw_nodes.append(node_map)
+
+        nodes_by_id = {n.get("id"): n for n in raw_nodes if isinstance(n.get("id"), str)}
+        loop_body_parents = index_loop_body_nodes({"nodes": raw_nodes})
+        actions_by_id: Dict[str, Dict[str, Any]] = {}
+
         for idx, node in enumerate(self.nodes):
             if node.type != "loop":
                 continue
@@ -720,6 +745,34 @@ class Workflow:
                     }
                 )
                 continue
+
+            # Validate source shape early so non-array sources are repaired during planning.
+            source = params.get("source") if isinstance(params, Mapping) else None
+            normalized_source = (
+                normalize_reference_path(source) if isinstance(source, str) else None
+            )
+            if isinstance(normalized_source, str):
+                from velvetflow.verification.binding_checks import (
+                    _get_output_schema_at_path,
+                )
+
+                schema = _get_output_schema_at_path(
+                    normalized_source,
+                    nodes_by_id,
+                    actions_by_id,
+                    loop_body_parents,
+                )
+                actual_type = schema.get("type") if isinstance(schema, Mapping) else None
+                if actual_type not in {"array"}:
+                    errors.append(
+                        {
+                            "loc": ("nodes", idx, "params", "source"),
+                            "msg": (
+                                "loop 节点的 source 应该引用数组/序列"
+                                f"，但解析到的类型为 {actual_type or '未知'}，路径: {normalized_source}"
+                            ),
+                        }
+                    )
 
             try:
                 Workflow.model_validate(
