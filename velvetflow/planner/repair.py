@@ -578,7 +578,7 @@ def repair_workflow_with_llm(
 - node 基本结构：{id, type, display_name, params, action_id?, out_params_schema?, loop/subgraph/branches?}。
   type 仅允许 start/action/condition/loop/parallel/end/exit。start/exit/end 不需要 params/out_params_schema。
   action 节点必须填写 action_id（来自动作库）与 params；只有 action 节点允许 out_params_schema。
-  condition 节点需包含 kind/source/field/op/value 以及 true_to_node/false_to_node（字符串或 null）。
+  condition 节点需包含返回布尔值的 params.expression（合法 Jinja 表达式），以及 true_to_node/false_to_node（字符串或 null）。
   loop 节点包含 loop_kind/iter/source/body_subgraph/exports，循环外部只能引用 exports.items 或 exports.aggregates。
   loop.body_subgraph 内不需要也不允许显式声明 edges、entry 或 exit 节点，如发现请直接删除。
   - params 必须直接使用 Jinja 表达式引用上游结果（如 {{ result_of.<node_id>.<field_path> }} 或 {{ loop.item.xxx }}），不再允许 __from__/__agg__ DSL。
@@ -610,9 +610,9 @@ def repair_workflow_with_llm(
       并同步更新该节点的 params 使之符合新的 arg_schema。
 
  3. condition 节点修复：
-    - 确保 kind/source/field/value 等必填字段齐全且类型正确；
-    - source 应该是 result_of.<node>... 或 loop.item 等路径的 Jinja 字符串引用；
-    - 当 source 指向数组输出时，field 需要存在于元素 schema 中。
+    - 确保 params.expression 存在且是合法的 Jinja 布尔表达式；
+    - expression 应直接编写判断逻辑，引用上游结果请使用 {{ result_of.<node>.<field_path> }} 或 {{ loop.item.xxx }}；
+    - 不要生成 kind/field/op/value 等字段，所有条件均需融入 expression。
 
  4. loop 节点：确保 loop_kind（for_each/while）和 source 字段合法，并使用 exports 暴露 body 结果，下游只能引用 result_of.<loop_id>.items / aggregates。
  5. parallel 节点：branches 必须是非空数组。

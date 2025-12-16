@@ -33,66 +33,19 @@ def _normalize_object_schema(schema: Any) -> Dict[str, Any]:
 
 
 def _condition_params_schema() -> Dict[str, Any]:
-    allowed_kinds = [
-        "list_not_empty",
-        "any_greater_than",
-        "equals",
-        "contains",
-        "not_equals",
-        "greater_than",
-        "less_than",
-        "between",
-        "all_less_than",
-        "is_empty",
-        "not_empty",
-        "is_not_empty",
-        "multi_band",
-        "compare",
-    ]
-
     return {
         "type": "object",
         "properties": {
-            "kind": {"type": "string", "enum": allowed_kinds},
-            "source": {
-                "description": (
-                    "必须是可被 Jinja 解析的字符串表达式，例如 {{ result_of.node.field }}。"
-                    f"{JINJA_EXPRESSION_NOTE}"
-                ),
-                "type": "string",
-            },
-            "field": {
+            "expression": {
                 "type": "string",
                 "description": (
-                    "用于取值或比较的字段名，请以 Jinja 模板形式提供，例如 {{ 'employee_id' }}。"
+                    "必须是返回布尔值的 Jinja 表达式，"
+                    "直接写出判断逻辑，例如 {{ result_of.fetch.status == 'ok' }} 或 {{ (loop.item.values | length) > 0 }}。"
                     f"{JINJA_EXPRESSION_NOTE}"
                 ),
-            },
-            "value": {
-                "description": (
-                    "用于比较的值，建议直接给出 Jinja 模板字符串，"
-                    "例如 {{ input.expected_temp }} 或 {{ 36.5 }}。"
-                    f"{JINJA_EXPRESSION_NOTE}"
-                ),
-                "type": "string",
-            },
-            "threshold": {"type": "number"},
-            "min": {"type": "number"},
-            "max": {"type": "number"},
-            "bands": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "min": {"type": "number"},
-                        "max": {"type": "number"},
-                        "label": {"type": "string"},
-                    },
-                    "required": ["min", "max"],
-                },
-            },
+            }
         },
-        "required": ["kind"],
+        "required": ["expression"],
         "additionalProperties": True,
     }
 
