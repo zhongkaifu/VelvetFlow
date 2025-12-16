@@ -1032,6 +1032,11 @@ def _validate_and_repair_workflow(
             action_registry=action_registry,
         )
 
+        # Some validation passes (e.g., legacy type coercion) may be skipped; ensure the
+        # error accumulator is initialized even when those phases are absent to avoid
+        # NameError crashes.
+        coercion_errors: List[ValidationError] = []
+
         errors: List[ValidationError] = []
         errors.extend(jinja_params_errors)
         errors.extend(jinja_errors)
