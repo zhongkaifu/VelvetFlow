@@ -621,6 +621,16 @@ class Workflow:
 
         if isinstance(raw_nodes, list):
             for idx, node in enumerate(raw_nodes):
+                if isinstance(node, Mapping) and node.get("type") == "loop":
+                    # 某些上游输出会错误地把 body_subgraph 放在节点顶层而非 params 内，
+                    # 这里在校验前进行一次宽松迁移，避免因字段位置差异导致整体校验失败。
+                    params = node.get("params") if isinstance(node.get("params"), Mapping) else {}
+                    if "body_subgraph" not in params and "body_subgraph" in node:
+                        migrated = dict(node)
+                        migrated_params = dict(params)
+                        migrated_params["body_subgraph"] = node.get("body_subgraph")
+                        migrated["params"] = migrated_params
+                        node = migrated
                 try:
                     parsed_nodes.append(Node.model_validate(node))
                 except PydanticValidationError as exc:

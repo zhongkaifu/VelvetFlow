@@ -74,6 +74,42 @@ def test_model_validation_rejects_missing_body_subgraph():
         Workflow.model_validate(workflow)
 
 
+def test_model_validation_migrates_top_level_body_subgraph():
+    """Loop body_subgraph 放错位置时应自动迁移到 params 下继续校验。"""
+
+    workflow = {
+        "workflow_name": "top_level_body_subgraph",
+        "nodes": [
+            {
+                "id": "loop_with_top_level_body",
+                "type": "loop",
+                "params": {
+                    "loop_kind": "for_each",
+                    "source": "{{ result_of.fetch_temperatures.data }}",
+                    "item_alias": "employee",
+                },
+                "body_subgraph": {
+                    "nodes": [
+                        {
+                            "id": "collect",
+                            "type": "action",
+                            "action_id": "hr.update_employee_health_profile.v1",
+                            "params": {"employee_id": "{{ loop.employee.id }}"},
+                        }
+                    ]
+                },
+            }
+        ],
+    }
+
+    workflow_obj = Workflow.model_validate(workflow)
+    loop_node = workflow_obj.nodes[0]
+
+    assert isinstance(loop_node.params, dict)
+    assert "body_subgraph" in loop_node.params
+    assert loop_node.params["body_subgraph"].get("nodes", [])[0].get("id") == "collect"
+
+
 def test_loop_body_exports_must_target_existing_nodes():
     """Exports referencing missing body nodes should surface a clear error."""
 
