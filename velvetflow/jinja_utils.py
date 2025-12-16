@@ -56,6 +56,13 @@ def render_jinja_template(template: str, context: Mapping[str, Any]) -> str:
     env = get_jinja_env()
     return env.from_string(template).render(_prepare_context(context))
 class _AttrDict(dict):
+    def __getattribute__(self, item: str) -> Any:  # pragma: no cover - small wrapper
+        if item in ("__class__", "__iter__", "__len__", "__getitem__", "__setitem__"):
+            return super().__getattribute__(item)
+        if item in self:
+            return self[item]
+        return super().__getattribute__(item)
+
     def __getattr__(self, item: str) -> Any:  # pragma: no cover - trivial
         try:
             return self[item]

@@ -176,10 +176,19 @@ class ConditionEvaluationMixin:
 
         return repr(raw)
 
+    def _strip_wrapped_expression(self, expr: Optional[str]) -> Optional[str]:
+        if not isinstance(expr, str):
+            return None
+        text = expr.strip()
+        if text.startswith("{{") and text.endswith("}}"):  # unwrap template delimiters
+            return text[2:-2].strip()
+        return text if text else None
+
     def _build_expression_from_legacy_params(self, params: Mapping[str, Any]) -> Optional[str]:
         expr_raw = params.get("expression")
-        if isinstance(expr_raw, str) and expr_raw.strip():
-            return expr_raw
+        unwrapped = self._strip_wrapped_expression(expr_raw)
+        if isinstance(unwrapped, str) and unwrapped:
+            return unwrapped
 
         kind = params.get("kind")
         if not isinstance(kind, str):
@@ -196,29 +205,29 @@ class ConditionEvaluationMixin:
             target_expr = source_expr
             if field_str:
                 target_expr = f"({target_expr} | map(attribute='{field_str}'))"
-            return f"{{{{ ({target_expr} | default([])) | length > 0 }}}}"
+            return f"({target_expr} or []) | length > 0"
 
         if kind in {"equals", "eq", "=="} and value_str is not None:
             target_expr = source_expr if not field_str else f"({source_expr})['{field_str}']"
-            return f"{{{{ {target_expr} == {value_str} }}}}"
+            return f"{target_expr} == {value_str}"
 
         if kind in {"greater_than", "any_greater_than"} and value_str is not None:
             target_expr = source_expr if not field_str else f"({source_expr})['{field_str}']"
-            return f"{{{{ {target_expr} > {value_str} }}}}"
+            return f"{target_expr} > {value_str}"
 
         if kind in {"less_than", "any_less_than", "all_less_than"} and value_str is not None:
             target_expr = source_expr if not field_str else f"({source_expr})['{field_str}']"
             if kind == "all_less_than":
-                return f"{{{{ ({target_expr} or []) and ({target_expr} | select('lt', {value_str}) | list | length == ({target_expr} | list | length)) }}}}"
-            return f"{{{{ {target_expr} < {value_str} }}}}"
+                return f"({target_expr} or []) and ({target_expr} | select('lt', {value_str}) | list | length == ({target_expr} | list | length))"
+            return f"{target_expr} < {value_str}"
 
         if kind in {"not_equals", "!=", "ne"} and value_str is not None:
             target_expr = source_expr if not field_str else f"({source_expr})['{field_str}']"
-            return f"{{{{ {target_expr} != {value_str} }}}}"
+            return f"{target_expr} != {value_str}"
 
         if kind == "contains" and value_str is not None:
             target_expr = source_expr if not field_str else f"({source_expr})['{field_str}']"
-            return f"{{{{ {value_str} in {target_expr} }}}}"
+            return f"{value_str} in {target_expr}"
 
         return None
 
@@ -227,6 +236,15 @@ class ConditionEvaluationMixin:
     ) -> Any:
         raw_params = node.get("params") or {}
         params = raw_params if isinstance(raw_params, Mapping) else {"expression": raw_params}
+
+        # Legacy safeguard: if the original contract declared a list check, validate type early
+        if isinstance(params, Mapping) and params.get("kind") == "list_not_empty":
+            resolved_source = self._resolve_condition_source(params.get("source"), ctx)
+            if not isinstance(resolved_source, list):
+                log_warn(
+                    f"[condition:list_not_empty] source 不是 list，实际类型: {type(resolved_source)}"
+                )
+                return (False, {"resolved_value": None, "values": None}) if include_debug else False
 
         expression = None
         if isinstance(params, Mapping):
