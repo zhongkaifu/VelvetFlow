@@ -8,6 +8,7 @@ dependencies = [
   "openai>=1.30.0",
   "numpy>=1.26.0",
   "faiss-cpu>=1.8.0",
+  "anyio>=4.4.0",
   "pillow>=10.0.0",
   "pydantic>=1.10.0",
   "pytest>=8.0.0",
@@ -23,8 +24,11 @@ dependencies = [
 ]
 
 [build-system]
-requires = ["setuptools>=69.0"]
+requires = ["setuptools>=65.0", "wheel"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["velvetflow"]
 
 [tool.uv]
 # Keep the environment synced with dependencies defined above
