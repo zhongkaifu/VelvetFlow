@@ -247,6 +247,23 @@ async def plan_workflow_stream(req: PlanRequest) -> StreamingResponse:
             await queue.put({"type": "end"})
             return
 
+        def emit_progress(label: str, workflow_state: Dict[str, Any]) -> None:
+            if not workflow_state:
+                return
+            try:
+                normalized = (
+                    workflow_state
+                    if isinstance(workflow_state, dict)
+                    else _serialize_workflow(Workflow.model_validate(workflow_state))
+                )
+                loop.call_soon_threadsafe(
+                    queue.put_nowait,
+                    {"type": "snapshot", "stage": label, "workflow": normalized},
+                )
+            except Exception:
+                # Avoid interrupting the planner when progress reporting fails.
+                pass
+
         try:
             with _capture_logs_stream(queue, loop):
                 if req.existing_workflow:
@@ -257,6 +274,7 @@ async def plan_workflow_stream(req: PlanRequest) -> StreamingResponse:
                         search_service=search_service,
                         action_registry=BUSINESS_ACTIONS,
                         max_repair_rounds=3,
+                        progress_callback=emit_progress,
                     )
                 else:
                     workflow = await asyncio.to_thread(
@@ -266,6 +284,7 @@ async def plan_workflow_stream(req: PlanRequest) -> StreamingResponse:
                         action_registry=BUSINESS_ACTIONS,
                         max_rounds=100,
                         max_repair_rounds=3,
+                        progress_callback=emit_progress,
                     )
 
             workflow_dict = _serialize_workflow(workflow)

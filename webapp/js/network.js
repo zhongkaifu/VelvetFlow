@@ -102,7 +102,8 @@ async function requestPlan(requirement) {
           }
         } else if (event.type === "snapshot" || event.type === "partial") {
           if (latestWorkflow) {
-            maybeApplyWorkflowFromEvent(latestWorkflow, "规划快照", true);
+            const sourceLabel = event.stage ? `规划阶段：${event.stage}` : "规划快照";
+            maybeApplyWorkflowFromEvent(latestWorkflow, sourceLabel, true);
           }
           if (typeof event.progress === "number") {
             const percent = Math.round(event.progress * 100);
