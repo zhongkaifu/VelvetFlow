@@ -318,7 +318,8 @@ LLM 相关节点说明：
 - **交互式 GIF**
   - [![Health Check Demo](examples/demo_health_check.gif)](examples/demo_health_check.gif)：展示以“系统健康检查”为需求的端到端流程，从需求输入、规划到 DAG 渲染的实时画面。
   - [![Top Stock Mover Demo](examples/demo_find_top_stock_mover.gif)](examples/demo_find_top_stock_mover.gif)：展示检索热点股票并生成总结的流程，包含检索/补参/校验的完整记录。
-  - [Canvas 画布交互演示（MP4）](examples/demo_canvas.MP4)：展示 Web 端 Canvas 画布拖拽、缩放与节点编辑的交互效果。
+  - Canvas 画布交互演示（可直接播放）：
+    <video src="examples/demo_canvas.MP4" controls width="640"></video>
 
 - **可下载的工作流产物**
   - `examples/health_check/`：包含 `workflow_output.json`（可直接用 `execute_workflow.py` 复现）与 `workflow_dag.jpg`（渲染后的拓扑图）。
