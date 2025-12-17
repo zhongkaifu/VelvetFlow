@@ -7,6 +7,7 @@ import ast
 import copy
 import json
 import re
+import os
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional
 
@@ -161,6 +162,7 @@ class BindingContext:
             "loop_ctx": self.loop_ctx,
             "loop_id": self.loop_id,
             **self.loop_ctx,
+            "env": dict(os.environ),
         }
 
         if workflow_ctx:
@@ -1139,4 +1141,3 @@ def eval_node_params(node: Node, ctx: BindingContext) -> Dict[str, Any]:
 
     resolved = {k: _resolve(v, k) for k, v in (node.params or {}).items()}
     return _render_runtime_templates(resolved)
-

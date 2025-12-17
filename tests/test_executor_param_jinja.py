@@ -44,3 +44,31 @@ def test_loop_body_jinja_templates_are_rendered(temperature, expected):
 
     assert resolved["status"] == expected
     assert resolved["employee_id"] == "emp-1"
+
+
+def test_env_variables_are_rendered(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-key")
+
+    workflow = Workflow.model_validate(
+        {
+            "workflow_name": "jinja_runtime_env",
+            "nodes": [
+                {
+                    "id": "use_env",
+                    "type": "action",
+                    "action_id": "common.web_scraper.search_and_crawl.v1",
+                    "display_name": "使用环境变量",
+                    "params": {
+                        "openai_api_key": "{{env.OPENAI_API_KEY}}",
+                    },
+                }
+            ],
+        }
+    )
+
+    ctx = BindingContext(workflow, results={})
+    node = workflow.nodes[0]
+
+    resolved = eval_node_params(node, ctx)
+
+    assert resolved["openai_api_key"] == "sk-test-key"
