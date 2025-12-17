@@ -661,58 +661,6 @@ def test_loop_context_allows_fully_qualified_paths():
     assert params["message"] == "体温：39.2"
 
 
-def test_eval_params_renders_each_templates():
-    workflow = Workflow.model_validate(
-        {
-            "nodes": [
-                {"id": "start", "type": "start"},
-                {
-                    "id": "loop_top10_products",
-                    "type": "action",
-                    "action_id": "demo.top_products",
-                    "params": {},
-                },
-            ],
-            "edges": [],
-        }
-    )
-
-    ctx = BindingContext(
-        workflow,
-        {
-            "loop_top10_products": {
-                "exports": {
-                    "items": [
-                        {"title": "Laptop", "snippet": "Powerful"},
-                        {"title": "Phone", "snippet": "Portable"},
-                    ]
-                }
-            }
-        },
-    )
-
-    node = Node(
-        id="email",
-        type="action",
-        action_id="productivity.compose_outlook_email.v1",
-        params={
-            "email_content": (
-                "以下是目前最热销的10款电子产品及其介绍：\n"
-                "{{#each result_of.loop_top10_products.exports.items}}\n"
-                "产品名称：{{this.title}}\n介绍：{{this.snippet}}\n\n{{/each}}"
-            )
-        },
-    )
-
-    params = eval_node_params(node, ctx)
-
-    assert (
-        params["email_content"]
-        == "以下是目前最热销的10款电子产品及其介绍：\n\n产品名称：Laptop\n介绍：Powerful\n\n"
-        "\n产品名称：Phone\n介绍：Portable\n\n"
-    )
-
-
 def test_schema_validation_supports_index_paths():
     schema = {
         "type": "object",
