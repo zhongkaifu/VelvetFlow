@@ -488,6 +488,45 @@ def _validate_nodes_recursive(
                                 field_label = f"params.{path_prefix}"
                             _flag_self_reference(field_label, ref_path)
 
+                        if ref_parts and isinstance(ref_parts[0], str):
+                            loop_ctx_root = ref_parts[0]
+                            loop_node = nodes_by_id.get(loop_ctx_root)
+                            if isinstance(loop_node, Mapping) and loop_node.get("type") == "loop":
+                                loop_params = loop_node.get("params") if isinstance(loop_node.get("params"), Mapping) else {}
+                                loop_item_alias = loop_params.get("item_alias") if isinstance(loop_params.get("item_alias"), str) else None
+                                if len(ref_parts) >= 2 and isinstance(ref_parts[1], str):
+                                    root_field = ref_parts[1]
+                                    allowed_loop_fields = {"index", "size", "accumulator"}
+                                    if loop_item_alias:
+                                        allowed_loop_fields.add(loop_item_alias)
+                                    # 允许 item 仅在 item_alias 缺失或等于 item 时直接使用
+                                    if root_field == "item" and loop_item_alias and loop_item_alias != "item":
+                                        errors.append(
+                                            ValidationError(
+                                                code="SCHEMA_MISMATCH",
+                                                node_id=nid,
+                                                field=path_prefix,
+                                                message=(
+                                                    f"节点 '{nid}' 的模板引用 '{ref}' 无效：loop 节点 '{loop_ctx_root}' 当前 item_alias 为 '{loop_item_alias}'，"
+                                                    "请使用该别名而非 '.item' 访问循环元素。"
+                                                ),
+                                            )
+                                        )
+                                        continue
+                                    if isinstance(root_field, str) and root_field not in allowed_loop_fields and not (root_field == "item" and loop_item_alias in {None, "item"}):
+                                        errors.append(
+                                            ValidationError(
+                                                code="SCHEMA_MISMATCH",
+                                                node_id=nid,
+                                                field=path_prefix,
+                                                message=(
+                                                    f"节点 '{nid}' 的模板引用 '{ref}' 无效：loop 节点 '{loop_ctx_root}' 上下文仅暴露 {', '.join(sorted(allowed_loop_fields | {'item'}))}，"
+                                                    f"找不到字段 '{root_field}'。"
+                                                ),
+                                            )
+                                        )
+                                        continue
+
                         schema_err = None
                         if ref_parts:
                             alias = ref_parts[0]
