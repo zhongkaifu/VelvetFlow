@@ -16,6 +16,35 @@ from velvetflow.action_registry import BUSINESS_ACTIONS
 
 
 DEFAULT_OFFLINE_EMBEDDING_MODEL = "text-embedding-3-large"
+STOPWORDS = {
+    "a", "an", "the", "and", "or", "of", "to", "in", "on", "for", "with",
+    "by", "is", "are", "be", "this", "that", "these", "those", "it", "its",
+    "as", "at", "from", "we", "you", "your", "our", "their", "they", "via",
+    "through", "per", "using", "use", "using", "then", "than", "into",
+    "的", "了", "和", "或", "与", "及", "在", "对", "为", "是", "有", "并", "且", "到",
+}
+
+
+def filter_tokens(tokens: Iterable[str]) -> List[str]:
+    filtered = []
+    for tok in tokens:
+        t = tok.strip().lower()
+        if not t or len(t) <= 1 or t in STOPWORDS or t.isdigit():
+            continue
+        filtered.append(t)
+    return filtered
+
+
+def expand_tokens_with_phrases(tokens: List[str]) -> List[str]:
+    """Add adjacent short-token phrases to enrich semantics for indexing/matching."""
+    phrases: List[str] = []
+    for i in range(len(tokens) - 1):
+        a, b = tokens[i], tokens[i + 1]
+        if len(a) <= 3 and len(b) <= 3:
+            phrase = f"{a} {b}"
+            phrases.append(phrase)
+    combined = list(dict.fromkeys(tokens + phrases))
+    return combined
 
 
 @dataclass
@@ -26,6 +55,9 @@ class ActionIndex:
     embeddings: Dict[str, List[float]]
     feature_embeddings: Dict[str, Dict[str, List[float]]] = field(default_factory=dict)
     feature_keywords: Dict[str, Dict[str, List[str]]] = field(default_factory=dict)
+    feature_keyword_embeddings: Dict[str, Dict[str, Dict[str, List[float]]]] = field(
+        default_factory=dict
+    )
     vocab: List[str] = field(default_factory=list)
     embedding_model: str = DEFAULT_OFFLINE_EMBEDDING_MODEL
     created_ts: float = field(default_factory=lambda: time.time())
@@ -43,6 +75,7 @@ class ActionIndex:
             "embeddings": self.embeddings,
             "feature_embeddings": self.feature_embeddings,
             "feature_keywords": self.feature_keywords,
+            "feature_keyword_embeddings": self.feature_keyword_embeddings,
             "vocab": self.vocab,
             "embedding_model": self.embedding_model,
             "created_ts": self.created_ts,
@@ -63,6 +96,7 @@ class ActionIndex:
             embeddings=data.get("embeddings", {}),
             feature_embeddings=data.get("feature_embeddings", {}),
             feature_keywords=data.get("feature_keywords", {}),
+            feature_keyword_embeddings=data.get("feature_keyword_embeddings", {}),
             vocab=data.get("vocab", []),
             embedding_model=data.get(
                 "embedding_model", DEFAULT_OFFLINE_EMBEDDING_MODEL
@@ -83,7 +117,7 @@ def build_vocab_from_actions(actions: Iterable[Dict[str, Any]]) -> List[str]:
             + " "
             + " ".join(a.get("tags", []) or [])
         ).lower()
-        tokens = text.split()
+        tokens = expand_tokens_with_phrases(filter_tokens(text.split()))
         vocab.update(tokens)
     return sorted(vocab)
 
@@ -138,6 +172,7 @@ def build_action_index(
     embeddings: Dict[str, List[float]] = {}
     feature_embeddings: Dict[str, Dict[str, List[float]]] = {}
     feature_keywords: Dict[str, Dict[str, List[str]]] = {}
+    feature_keyword_embeddings: Dict[str, Dict[str, Dict[str, List[float]]]] = {}
     for action in actions:
         text = (
             (action.get("name", "") or "")
@@ -157,16 +192,23 @@ def build_action_index(
             if ftext
         }
         feature_keywords[action["action_id"]] = {
-            fname: ftext.lower().split()
+            fname: expand_tokens_with_phrases(filter_tokens(ftext.lower().split()))
             for fname, ftext in features.items()
             if ftext
         }
+        kw_embeds: Dict[str, Dict[str, List[float]]] = {}
+        for fname, tokens in feature_keywords[action["action_id"]].items():
+            if not tokens:
+                continue
+            kw_embeds[fname] = {tok: embed_fn(tok) for tok in set(tokens)}
+        feature_keyword_embeddings[action["action_id"]] = kw_embeds
 
     return ActionIndex(
         actions=actions,
         embeddings=embeddings,
         feature_embeddings=feature_embeddings,
         feature_keywords=feature_keywords,
+        feature_keyword_embeddings=feature_keyword_embeddings,
         vocab=vocab_list,
         embedding_model=embedding_model,
     )
