@@ -246,15 +246,62 @@ function syncPositions(workflow, tabId) {
   return nextPositions;
 }
 
+function deriveExecutionStyle(runInfo) {
+  if (!runInfo) {
+    return {
+      label: "未执行",
+      fill: "rgba(255, 255, 255, 0.04)",
+      stroke: "rgba(255, 255, 255, 0.12)",
+      badgeBg: "rgba(148, 163, 184, 0.18)",
+      badgeText: "#cbd5e1",
+      hasError: false,
+      executed: false,
+    };
+  }
+
+  const status = typeof runInfo.status === "string" ? runInfo.status.toLowerCase() : "";
+  const errorStatuses = new Set([
+    "tool_error",
+    "tool_not_registered",
+    "no_action_impl",
+    "no_tool_mapping",
+    "forbidden",
+    "role_not_allowed",
+  ]);
+  const statusIndicatesError = status
+    ? status.includes("error") || status.includes("fail") || errorStatuses.has(status)
+    : false;
+  const hasError = Boolean(runInfo.error) || statusIndicatesError;
+
+  if (hasError) {
+    return {
+      label: "执行错误",
+      fill: "rgba(248, 113, 113, 0.12)",
+      stroke: "rgba(248, 113, 113, 0.9)",
+      badgeBg: "rgba(248, 113, 113, 0.2)",
+      badgeText: "#fecdd3",
+      hasError: true,
+      executed: true,
+    };
+  }
+
+  return {
+    label: "已执行",
+    fill: "rgba(74, 222, 128, 0.14)",
+    stroke: "rgba(34, 197, 94, 0.9)",
+    badgeBg: "rgba(74, 222, 128, 0.16)",
+    badgeText: "#4ade80",
+    hasError: false,
+    executed: true,
+  };
+}
+
 function drawNode(node, pos, mode) {
   const radius = 16;
   const width = NODE_WIDTH;
   const { inputs, outputs, toolLabel, runtimeInputs, runtimeOutputs } = describeNode(node);
   const runInfo = lastRunResults[node.id];
-  const executed = runInfo !== undefined;
-  const executionStyle = executed
-    ? { fill: "rgba(74, 222, 128, 0.14)", stroke: "rgba(34, 197, 94, 0.9)", badgeBg: "rgba(74, 222, 128, 0.16)", badgeText: "#4ade80", label: "已执行" }
-    : { fill: "rgba(255, 255, 255, 0.04)", stroke: "rgba(255, 255, 255, 0.12)", badgeBg: "rgba(148, 163, 184, 0.18)", badgeText: "#cbd5e1", label: "未执行" };
+  const executionStyle = deriveExecutionStyle(runInfo);
   const contentLines = [];
   if (toolLabel) contentLines.push(`工具: ${toolLabel}`);
   contentLines.push(`入参: ${inputs.length ? inputs.join(", ") : "-"}`);
@@ -506,4 +553,3 @@ function updateEditor() {
   workflowEditor.value = JSON.stringify(currentWorkflow, null, 2);
   autoSizeEditor();
 }
-
