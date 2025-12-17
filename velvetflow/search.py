@@ -22,6 +22,8 @@ from velvetflow.search_index import (
     ActionIndex,
     build_action_index,
     build_vocab_from_actions,
+    filter_tokens,
+    expand_tokens_with_phrases,
     load_default_actions,
 )
 
@@ -97,13 +99,16 @@ class FeatureRanker:
         self,
         feature_keywords: Dict[str, Dict[str, List[str]]],
         feature_embeddings: Dict[str, Dict[str, List[float]]],
+        feature_keyword_embeddings: Optional[Dict[str, Dict[str, Dict[str, List[float]]]]] = None,
         *,
         feature_weights: Optional[Dict[str, float]] = None,
         keyword_weight: float = 0.45,
         embedding_weight: float = 0.55,
+        keyword_embedding_weight: float = 0.35,
     ) -> None:
         self.feature_keywords = feature_keywords
         self.feature_embeddings = feature_embeddings
+        self.feature_keyword_embeddings = feature_keyword_embeddings or {}
         self.feature_weights = feature_weights or {
             "namespace": 0.8,
             "category": 1.0,
@@ -115,6 +120,7 @@ class FeatureRanker:
         }
         self.keyword_weight = keyword_weight
         self.embedding_weight = embedding_weight
+        self.keyword_embedding_weight = keyword_embedding_weight
 
     @staticmethod
     def _cosine(a: np.ndarray, b: np.ndarray) -> float:
@@ -151,10 +157,44 @@ class FeatureRanker:
             score += weight * self._cosine(q, feature_vec)
         return score
 
-    def score(self, action_id: str, query_tokens: List[str], query_emb: List[float]) -> float:
+    def _keyword_embedding_score(
+        self, action_id: str, query_keyword_embeds: Dict[str, List[float]]
+    ) -> float:
+        if not query_keyword_embeds:
+            return 0.0
+        per_feature = self.feature_keyword_embeddings.get(action_id, {})
+        if not per_feature:
+            return 0.0
+
+        score = 0.0
+        for fname, kw_embeds in per_feature.items():
+            if not kw_embeds:
+                continue
+            weight = self.feature_weights.get(fname, 1.0)
+            best = 0.0
+            for q_emb in query_keyword_embeds.values():
+                q_vec = np.array(q_emb, dtype=np.float32)
+                for f_emb in kw_embeds.values():
+                    f_vec = np.array(f_emb, dtype=np.float32)
+                    best = max(best, self._cosine(q_vec, f_vec))
+            score += weight * best
+        return score
+
+    def score(
+        self,
+        action_id: str,
+        query_tokens: List[str],
+        query_emb: List[float],
+        query_keyword_embeds: Dict[str, List[float]],
+    ) -> float:
         kw = self._keyword_score(action_id, query_tokens)
         emb = self._embedding_score(action_id, query_emb)
-        return self.keyword_weight * kw + self.embedding_weight * emb
+        kw_emb = self._keyword_embedding_score(action_id, query_keyword_embeds)
+        return (
+            self.keyword_weight * kw
+            + self.embedding_weight * emb
+            + self.keyword_embedding_weight * kw_emb
+        )
 
 
 class FaissVectorIndex:
@@ -273,7 +313,8 @@ class HybridActionSearchService:
         start = time.perf_counter()
         with child_span("action_search") as span_ctx:
             q_emb = self.embed_fn(query)
-            query_tokens = query.lower().split()
+            query_tokens = expand_tokens_with_phrases(filter_tokens(query.lower().split()))
+            query_keyword_embeds = {tok: self.embed_fn(tok) for tok in set(query_tokens)}
 
             must_clauses = [
                 {
@@ -332,7 +373,9 @@ class HybridActionSearchService:
             feature_scores: Dict[str, float] = {}
             if self.feature_ranker:
                 for aid in all_ids:
-                    feature_scores[aid] = self.feature_ranker.score(aid, query_tokens, q_emb)
+                    feature_scores[aid] = self.feature_ranker.score(
+                        aid, query_tokens, q_emb, query_keyword_embeds
+                    )
             feature_norm = normalize(feature_scores)
 
             hybrid: List[Tuple[str, float]] = []
@@ -394,6 +437,7 @@ def build_search_service_from_index(
     feature_ranker = FeatureRanker(
         feature_keywords=index.feature_keywords,
         feature_embeddings=index.feature_embeddings,
+        feature_keyword_embeddings=index.feature_keyword_embeddings,
     )
 
     return HybridActionSearchService(
