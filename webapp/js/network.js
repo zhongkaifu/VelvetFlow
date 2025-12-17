@@ -36,7 +36,16 @@ async function streamEvents(url, options, onEvent) {
   }
 }
 
-function maybeApplyWorkflowFromEvent(workflow, sourceLabel) {
+function extractWorkflowFromEvent(event) {
+  if (!event) return null;
+  if (event.workflow) return event.workflow;
+  if (event.full_workflow) return event.full_workflow;
+  if (event.visible_subgraph && event.visible_subgraph.workflow) return event.visible_subgraph.workflow;
+  if (event.visible_subgraph) return event.visible_subgraph;
+  return null;
+}
+
+function maybeApplyWorkflowFromEvent(workflow, sourceLabel, logSnapshot = false) {
   if (!workflow) return false;
   const normalized = normalizeWorkflow(workflow);
   const previous = currentWorkflow ? JSON.stringify(currentWorkflow) : "";
@@ -48,6 +57,9 @@ function maybeApplyWorkflowFromEvent(workflow, sourceLabel) {
   refreshWorkflowCanvases();
   if (sourceLabel) {
     appendLog(`${sourceLabel} 更新了 workflow，画布已刷新`);
+  }
+  if (logSnapshot) {
+    logWorkflowSnapshot(currentWorkflow, `${sourceLabel || "实时"} workflow DAG`);
   }
   return true;
 }
@@ -81,20 +93,23 @@ async function requestPlan(requirement) {
       },
       (event) => {
         if (!event || !event.type) return;
+        const latestWorkflow = extractWorkflowFromEvent(event);
         if (event.type === "log" && event.message) {
           appendLog(event.message);
           addChatMessage(`流程更新：${event.message}`, "agent");
-          if (event.workflow) {
-            maybeApplyWorkflowFromEvent(event.workflow);
+          if (latestWorkflow) {
+            maybeApplyWorkflowFromEvent(latestWorkflow, "规划日志", true);
           }
-        } else if ((event.type === "snapshot" || event.type === "partial") && event.workflow) {
-          maybeApplyWorkflowFromEvent(event.workflow);
+        } else if (event.type === "snapshot" || event.type === "partial") {
+          if (latestWorkflow) {
+            maybeApplyWorkflowFromEvent(latestWorkflow, "规划快照", true);
+          }
           if (typeof event.progress === "number") {
             const percent = Math.round(event.progress * 100);
             setStatus(`构建中 ${percent}%`, "warning");
           }
-        } else if (event.type === "result" && event.workflow) {
-          finalWorkflow = normalizeWorkflow(event.workflow);
+        } else if (event.type === "result" && latestWorkflow) {
+          finalWorkflow = normalizeWorkflow(latestWorkflow);
         } else if (event.type === "error") {
           streamError = event.message || "未知错误";
         }
@@ -141,16 +156,17 @@ async function requestRun() {
       },
       (event) => {
         if (!event || !event.type) return;
+        const latestWorkflow = extractWorkflowFromEvent(event);
         if (event.type === "log" && event.message) {
           appendLog(event.message);
-          if (event.workflow) {
-            maybeApplyWorkflowFromEvent(event.workflow, "运行日志");
+          if (latestWorkflow) {
+            maybeApplyWorkflowFromEvent(latestWorkflow, "运行日志");
           }
         } else if (event.type === "result") {
           finalResult = event.result || {};
           finalStatus = event.status || "completed";
-          if (event.workflow) {
-            maybeApplyWorkflowFromEvent(event.workflow, "运行结果");
+          if (latestWorkflow) {
+            maybeApplyWorkflowFromEvent(latestWorkflow, "运行结果");
           }
         } else if (event.type === "error") {
           streamError = event.message || "未知错误";

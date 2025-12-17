@@ -14,6 +14,7 @@ import sys
 import traceback
 import asyncio
 import json
+import copy
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -150,13 +151,22 @@ def _serialize_workflow(workflow: Workflow) -> Dict[str, Any]:
 def _iter_workflow_snapshots(workflow: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Generate incremental workflow snapshots that reveal nodes step by step."""
 
-    nodes = workflow.get("nodes") or []
-    edges = workflow.get("edges") or []
-    workflow_name = workflow.get("workflow_name", "")
-    description = workflow.get("description", "")
+    full_workflow = copy.deepcopy(workflow) or {}
+    nodes = full_workflow.get("nodes") or []
+    edges = full_workflow.get("edges") or []
+    base_meta = {
+        "workflow_name": full_workflow.get("workflow_name", ""),
+        "description": full_workflow.get("description", ""),
+    }
 
     snapshots: List[Dict[str, Any]] = []
     partial_nodes: List[Dict[str, Any]] = []
+
+    if not nodes:
+        snapshots.append(
+            {"workflow": full_workflow, "visible_subgraph": {**base_meta, "nodes": [], "edges": []}}
+        )
+        return snapshots
 
     for node in nodes:
         partial_nodes.append(node)
@@ -168,10 +178,12 @@ def _iter_workflow_snapshots(workflow: Dict[str, Any]) -> List[Dict[str, Any]]:
         ]
         snapshots.append(
             {
-                "workflow_name": workflow_name,
-                "description": description,
-                "nodes": list(partial_nodes),
-                "edges": partial_edges,
+                "workflow": full_workflow,
+                "visible_subgraph": {
+                    **base_meta,
+                    "nodes": copy.deepcopy(partial_nodes),
+                    "edges": copy.deepcopy(partial_edges),
+                },
             }
         )
 
@@ -257,13 +269,18 @@ async def plan_workflow_stream(req: PlanRequest) -> StreamingResponse:
                     )
 
             workflow_dict = _serialize_workflow(workflow)
-            for idx, snapshot in enumerate(_iter_workflow_snapshots(workflow_dict), start=1):
+            snapshots = _iter_workflow_snapshots(workflow_dict)
+            total_nodes = max(len(workflow_dict.get("nodes", [])) or 1, 1)
+            for idx, snapshot in enumerate(snapshots, start=1):
+                payload = {
+                    "type": "snapshot",
+                    "workflow": snapshot.get("workflow") or workflow_dict,
+                    "progress": idx / total_nodes,
+                }
+                if snapshot.get("visible_subgraph") is not None:
+                    payload["visible_subgraph"] = snapshot["visible_subgraph"]
                 await queue.put(
-                    {
-                        "type": "snapshot",
-                        "workflow": snapshot,
-                        "progress": idx / max(len(workflow_dict.get("nodes", [])) or 1, 1),
-                    }
+                    payload
                 )
             await queue.put({"type": "result", "workflow": workflow_dict})
         except Exception as exc:  # noqa: BLE001 - keep API message concise
