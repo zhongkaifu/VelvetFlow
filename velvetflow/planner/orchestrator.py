@@ -19,6 +19,7 @@ workflow 结构和参数的两阶段推理，然后在必要时向 LLM 提供错
 返回值统一为 `Workflow` 对象，调用方无需关心 LLM 返回的原始 JSON 格式。
 """
 
+import json
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence
 
 from velvetflow.config import OPENAI_MODEL
@@ -54,6 +55,7 @@ from velvetflow.planner.repair_tools import (
 )
 from velvetflow.planner.structure import plan_workflow_structure_with_llm
 from velvetflow.planner.update import update_workflow_with_llm
+from velvetflow.planner.workflow_audit import assess_requirement_alignment, summarize_workflow_execution
 from velvetflow.reference_utils import parse_field_path
 from velvetflow.verification import (
     precheck_loop_body_graphs,
@@ -1232,6 +1234,117 @@ def _validate_and_repair_workflow(
     return last_good_workflow
 
 
+def _enforce_requirement_alignment(
+    *,
+    workflow: Workflow,
+    nl_requirement: str,
+    action_registry: List[Dict[str, Any]],
+    search_service: HybridActionSearchService,
+    max_repair_rounds: int,
+    max_alignment_rounds: int = 2,
+    trace_event_prefix: str = "planner",
+    progress_callback: Callable[[str, Mapping[str, Any]], None] | None = None,
+) -> Workflow:
+    """Summarize workflow execution and align it with the original requirement if needed."""
+
+    current_workflow = workflow
+    for align_round in range(max_alignment_rounds):
+        log_section(f"需求对齐校验 Round {align_round + 1}")
+        try:
+            execution_summary = summarize_workflow_execution(
+                current_workflow.model_dump(by_alias=True),
+                action_registry=action_registry,
+            )
+        except Exception as exc:  # noqa: BLE001
+            log_warn(f"[Alignment] 执行摘要生成失败，跳过对齐流程：{exc}")
+            break
+
+        log_event(
+            f"{trace_event_prefix}_execution_summary",
+            {"round": align_round, "summary": execution_summary},
+        )
+        log_json("执行摘要", execution_summary)
+
+        try:
+            alignment = assess_requirement_alignment(
+                nl_requirement, execution_summary, model=OPENAI_MODEL
+            )
+        except Exception as exc:  # noqa: BLE001
+            log_warn(f"[Alignment] 需求对齐评估失败，跳过后续对齐：{exc}")
+            break
+
+        log_event(
+            f"{trace_event_prefix}_alignment",
+            {"round": align_round, "alignment": alignment},
+        )
+        log_json("需求对齐结果", alignment)
+
+        if progress_callback:
+            try:
+                progress_callback(
+                    f"{trace_event_prefix}_alignment_round_{align_round}",
+                    {
+                        "execution_summary": execution_summary,
+                        "alignment": alignment,
+                    },
+                )
+            except Exception:
+                log_debug("[Alignment] progress_callback 触发失败，已忽略。")
+
+        if alignment.get("is_aligned"):
+            log_success("[Alignment] 工作流执行摘要与需求一致，无需修复。")
+            return current_workflow
+
+        missing_points = alignment.get("missing_points", []) or []
+        analysis = alignment.get("analysis", "")
+        requirement_with_gap = (
+            f"{nl_requirement}\n\n需要补齐的缺口: {json.dumps(missing_points, ensure_ascii=False)}。\n"
+            f"当前执行摘要: {execution_summary.get('overall_description', '')}\n"
+            f"差异分析: {analysis}\n"
+            "请在保持已满足需求的前提下，更新 workflow 以覆盖缺口，并返回完整 JSON。"
+        )
+
+        with child_span("alignment_update_with_llm"):
+            updated_raw = update_workflow_with_llm(
+                workflow_raw=current_workflow.model_dump(by_alias=True),
+                requirement=requirement_with_gap,
+                action_registry=action_registry,
+                model=OPENAI_MODEL,
+            )
+
+        try:
+            updated_workflow = Workflow.model_validate(updated_raw)
+        except PydanticValidationError as exc:
+            validation_errors = _convert_pydantic_errors(updated_raw, exc) or [
+                _make_failure_validation_error(str(exc))
+            ]
+            updated_workflow = _repair_with_llm_and_fallback(
+                broken_workflow=updated_raw if isinstance(updated_raw, dict) else {},
+                validation_errors=validation_errors,
+                action_registry=action_registry,
+                search_service=search_service,
+                reason="需求对齐返回的 workflow 校验失败",
+            )
+
+        updated_workflow = _ensure_actions_registered_or_repair(
+            updated_workflow,
+            action_registry=action_registry,
+            search_service=search_service,
+            reason="需求对齐修复后校验 action_id",
+        )
+        current_workflow = _validate_and_repair_workflow(
+            updated_workflow,
+            action_registry=action_registry,
+            search_service=search_service,
+            max_repair_rounds=max_repair_rounds,
+            last_good_workflow=current_workflow,
+            trace_event_prefix=f"{trace_event_prefix}_align",
+            progress_callback=progress_callback,
+        )
+
+    return current_workflow
+
+
 def plan_workflow_with_two_pass(
     nl_requirement: str,
     search_service: HybridActionSearchService,
@@ -1497,6 +1610,15 @@ def plan_workflow_with_two_pass(
                 trace_event_prefix="planner",
                 progress_callback=progress_callback,
             )
+            planned_workflow = _enforce_requirement_alignment(
+                workflow=planned_workflow,
+                nl_requirement=nl_requirement,
+                action_registry=action_registry,
+                search_service=search_service,
+                max_repair_rounds=max_repair_rounds,
+                trace_event_prefix="planner",
+                progress_callback=progress_callback,
+            )
 
         if not _is_empty_fallback_workflow(planned_workflow):
             return planned_workflow
@@ -1615,12 +1737,21 @@ def update_workflow_with_two_pass(
             except Exception:
                 log_debug("[update_workflow_with_two_pass] progress_callback 更新阶段调用失败，已忽略。")
 
-        return _validate_and_repair_workflow(
+        validated_workflow = _validate_and_repair_workflow(
             updated_workflow,
             action_registry=action_registry,
             search_service=search_service,
             max_repair_rounds=max_repair_rounds,
             last_good_workflow=last_good_workflow,
+            trace_event_prefix="update",
+            progress_callback=progress_callback,
+        )
+        return _enforce_requirement_alignment(
+            workflow=validated_workflow,
+            nl_requirement=requirement,
+            action_registry=action_registry,
+            search_service=search_service,
+            max_repair_rounds=max_repair_rounds,
             trace_event_prefix="update",
             progress_callback=progress_callback,
         )
