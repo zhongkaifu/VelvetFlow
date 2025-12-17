@@ -6,13 +6,14 @@
 import copy
 import json
 import os
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Any, Callable, Dict, List, Mapping, Optional
 
 from openai import OpenAI
 
 from velvetflow.config import OPENAI_MODEL
 from velvetflow.logging_utils import (
     child_span,
+    log_debug,
     log_info,
     log_error,
     log_event,
@@ -535,11 +536,20 @@ def plan_workflow_structure_with_llm(
     max_rounds: int = 10,
     max_coverage_refine_rounds: int = 2,
     max_dependency_refine_rounds: int = 1,
+    progress_callback: Callable[[str, Mapping[str, Any]], None] | None = None,
 ) -> Dict[str, Any]:
     client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
     builder = WorkflowBuilder()
     action_schemas = _build_action_schema_map(action_registry)
     last_action_candidates: List[str] = []
+
+    def _emit_progress(label: str, workflow_obj: Mapping[str, Any]) -> None:
+        if not progress_callback:
+            return
+        try:
+            progress_callback(label, workflow_obj)
+        except Exception:
+            log_debug(f"[StructurePlanner] progress_callback {label} 调用失败，已忽略。")
 
     system_prompt = (
         "你是一个通用业务工作流编排助手。\n"
@@ -1395,6 +1405,11 @@ def plan_workflow_structure_with_llm(
                     "content": json.dumps(tool_result, ensure_ascii=False),
                 }
             )
+
+        workflow_snapshot = _attach_inferred_edges(builder.to_workflow())
+        _emit_progress(f"structure_round_{round_idx + 1}", workflow_snapshot)
+        if workflow_snapshot:
+            latest_skeleton = workflow_snapshot
 
         if finalized:
             break

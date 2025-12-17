@@ -173,6 +173,7 @@ function openNodeDialog(node, context = getTabContext()) {
     context.saveGraph(updatedGraph);
     render(currentTab);
     appendLog(`节点 ${node.id} 已更新并重新绘制`);
+    logWorkflowSnapshot(currentWorkflow, "节点参数更新后的 DAG");
     close();
   });
 
@@ -375,6 +376,7 @@ function openConditionDialog(node, context = getTabContext()) {
     context.saveGraph(updatedGraph);
     render(currentTab);
     appendLog(`条件节点 ${node.id} 已更新`);
+    logWorkflowSnapshot(currentWorkflow, "条件节点更新后的 DAG");
     close();
   });
 
@@ -406,4 +408,3 @@ function wrapText(text, maxWidth, font = "15px Inter") {
   ctx.restore();
   return lines.length ? lines : [text];
 }
-

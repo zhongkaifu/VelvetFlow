@@ -238,6 +238,16 @@ function appendLog(text) {
   scrollChatToBottom();
 }
 
+function logWorkflowSnapshot(workflow = currentWorkflow, reason = "最新") {
+  if (!workflow) return;
+  try {
+    const payload = JSON.stringify(normalizeWorkflow(workflow), null, 2);
+    appendLog(`${reason} workflow DAG：\n${payload}`);
+  } catch (error) {
+    appendLog(`workflow 序列化失败：${error.message}`);
+  }
+}
+
 function renderLogs(logs = [], echoToChat = false) {
   logs.forEach((line) => {
     appendLog(line);
@@ -949,6 +959,7 @@ function addNodeToCurrentGraph(options = {}) {
   render(currentTab);
   if (addNodeNameInput) addNodeNameInput.value = "";
   appendLog(`已添加 ${type} 节点：${newNode.id}`);
+  logWorkflowSnapshot(currentWorkflow, "新增节点后");
 }
 
 function positionAddMenu(event) {
@@ -1008,6 +1019,7 @@ function removeNodeFromGraph(nodeId, context = getTabContext(currentTab)) {
   }
   render(currentTab);
   appendLog(`已删除节点：${nodeId}`);
+  logWorkflowSnapshot(currentWorkflow, "删除节点后");
 }
 
 function deleteLoopNode(loopId) {
@@ -1028,5 +1040,5 @@ function deleteLoopNode(loopId) {
   updateEditor();
   render(currentTab);
   appendLog(`已删除循环节点：${loopId}`);
+  logWorkflowSnapshot(currentWorkflow, "删除循环节点后");
 }
-

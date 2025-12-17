@@ -34,6 +34,7 @@ function applyWorkflowObject(payload, sourceLabel = "编辑器") {
     updateEditor();
     refreshWorkflowCanvases();
     appendLog(`已应用${sourceLabel}修改并刷新画布`);
+    logWorkflowSnapshot(currentWorkflow, `${sourceLabel}提供的最新 DAG`);
     addChatMessage(`收到${sourceLabel}修改，Canvas 已同步更新。`, "agent");
   } catch (error) {
     appendLog(`解析失败：${error.message}`);
@@ -52,6 +53,7 @@ function resetWorkflow() {
   updateEditor();
   refreshWorkflowCanvases();
   appendLog("已重置为空 workflow");
+  logWorkflowSnapshot(currentWorkflow, "重置后的 DAG");
 }
 
 function switchToTab(tabId) {

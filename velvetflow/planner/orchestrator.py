@@ -19,12 +19,13 @@ workflow 结构和参数的两阶段推理，然后在必要时向 LLM 提供错
 返回值统一为 `Workflow` 对象，调用方无需关心 LLM 返回的原始 JSON 格式。
 """
 
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence
 
 from velvetflow.config import OPENAI_MODEL
 from velvetflow.logging_utils import (
     TraceContext,
     child_span,
+    log_debug,
     log_error,
     log_event,
     log_info,
@@ -926,6 +927,7 @@ def _validate_and_repair_workflow(
     max_repair_rounds: int,
     last_good_workflow: Workflow | None = None,
     trace_event_prefix: str = "planner",
+    progress_callback: Callable[[str, Mapping[str, Any]], None] | None = None,
 ) -> Workflow:
     failed_repair_history: Dict[str, List[str]] = {}
     pending_attempts: Dict[str, Dict[str, Any]] = {}
@@ -934,6 +936,15 @@ def _validate_and_repair_workflow(
         return f"{err.code}:{err.node_id or 'global'}:{err.field or 'global'}"
 
     last_good_workflow = last_good_workflow or current_workflow
+
+    def _emit_progress(label: str, workflow_obj: Workflow | Mapping[str, Any]) -> None:
+        if not progress_callback:
+            return
+        try:
+            payload = workflow_obj.model_dump(by_alias=True) if isinstance(workflow_obj, Workflow) else workflow_obj
+            progress_callback(label, payload)
+        except Exception:
+            log_debug(f"[validate_and_repair] progress_callback {label} 触发失败，已忽略。")
 
     for repair_round in range(max_repair_rounds + 1):
         log_section(f"校验 + 自修复轮次 {repair_round}")
@@ -971,6 +982,7 @@ def _validate_and_repair_workflow(
                     reason="Jinja 规范化修复后校验 action_id",
                 )
                 last_good_workflow = current_workflow
+                _emit_progress(f"{trace_event_prefix}_repair_round_{repair_round}", current_workflow)
                 continue
 
         jinja_checked_workflow, jinja_summary, jinja_errors = normalize_condition_params_to_jinja(
@@ -1003,6 +1015,7 @@ def _validate_and_repair_workflow(
             )
             current_workflow = Workflow.model_validate(loop_exports_workflow)
             last_good_workflow = current_workflow
+            _emit_progress(f"{trace_event_prefix}_repair_round_{repair_round}", current_workflow)
 
         aligned_alias_workflow, alias_summary = align_loop_body_alias_references(
             current_workflow.model_dump(by_alias=True),
@@ -1072,6 +1085,7 @@ def _validate_and_repair_workflow(
             )
             current_workflow = Workflow.model_validate(fixed_workflow)
             last_good_workflow = current_workflow
+            _emit_progress(f"{trace_event_prefix}_repair_round_{repair_round}", current_workflow)
             continue
 
         current_errors_by_key = {_error_key(e): e for e in errors}
@@ -1088,6 +1102,7 @@ def _validate_and_repair_workflow(
         if not errors:
             log_success("校验通过，无需进一步修复")
             last_good_workflow = current_workflow
+            _emit_progress(f"{trace_event_prefix}_repair_round_{repair_round}", current_workflow)
             log_event(
                 f"{trace_event_prefix}_completed",
                 {
@@ -1145,6 +1160,7 @@ def _validate_and_repair_workflow(
 
             if not errors:
                 log_success("本地修正后校验通过，无需调用 LLM 继续修复。")
+                _emit_progress(f"{trace_event_prefix}_repair_round_{repair_round}", current_workflow)
                 log_event(
                     f"{trace_event_prefix}_completed",
                     {
@@ -1171,6 +1187,7 @@ def _validate_and_repair_workflow(
                     "last_good_returned": True,
                 },
             )
+            _emit_progress(f"{trace_event_prefix}_repair_round_{repair_round}", last_good_workflow)
             return last_good_workflow
 
         current_errors_by_key = {_error_key(e): e for e in errors}
@@ -1201,6 +1218,7 @@ def _validate_and_repair_workflow(
             reason=f"修复轮次 {repair_round + 1} 后校验 action_id",
         )
         last_good_workflow = current_workflow
+        _emit_progress(f"{trace_event_prefix}_repair_round_{repair_round}", current_workflow)
 
     log_event(
         f"{trace_event_prefix}_completed",
@@ -1210,6 +1228,7 @@ def _validate_and_repair_workflow(
             "last_good_returned": True,
         },
     )
+    _emit_progress(f"{trace_event_prefix}_repair_round_{max_repair_rounds}", last_good_workflow)
     return last_good_workflow
 
 
@@ -1217,10 +1236,12 @@ def plan_workflow_with_two_pass(
     nl_requirement: str,
     search_service: HybridActionSearchService,
     action_registry: List[Dict[str, Any]],
+    *,
     max_rounds: int = 10,
     max_repair_rounds: int = 3,
     trace_context: TraceContext | None = None,
     trace_id: str | None = None,
+    progress_callback: Callable[[str, Mapping[str, Any]], None] | None = None,
 ) -> Workflow:
     """Plan a workflow in two passes with structured validation and LLM repair.
 
@@ -1286,9 +1307,15 @@ def plan_workflow_with_two_pass(
                     action_registry=action_registry,
                     max_rounds=max_rounds,
                     max_coverage_refine_rounds=2,
+                    progress_callback=progress_callback,
                 )
             log_section("第一阶段结果：Workflow Skeleton")
             log_json("Workflow Skeleton", skeleton_raw)
+            if progress_callback:
+                try:
+                    progress_callback("structure_completed", skeleton_raw)
+                except Exception:
+                    log_debug("[plan_workflow_with_two_pass] progress_callback 结构阶段调用失败，已忽略。")
 
             precheck_errors = precheck_loop_body_graphs(skeleton_raw)
             if precheck_errors:
@@ -1444,6 +1471,11 @@ def plan_workflow_with_two_pass(
                             reason="补参结果修复后校验 action_id",
                         )
                         last_good_workflow = current_workflow
+            if progress_callback:
+                try:
+                    progress_callback("params_completed", current_workflow.model_dump(by_alias=True))
+                except Exception:
+                    log_debug("[plan_workflow_with_two_pass] progress_callback 参数阶段调用失败，已忽略。")
 
             planned_workflow = _validate_and_repair_workflow(
                 current_workflow,
@@ -1452,6 +1484,7 @@ def plan_workflow_with_two_pass(
                 max_repair_rounds=max_repair_rounds,
                 last_good_workflow=last_good_workflow,
                 trace_event_prefix="planner",
+                progress_callback=progress_callback,
             )
 
         if not _is_empty_fallback_workflow(planned_workflow):
@@ -1479,6 +1512,7 @@ def update_workflow_with_two_pass(
     model: str = OPENAI_MODEL,
     trace_context: TraceContext | None = None,
     trace_id: str | None = None,
+    progress_callback: Callable[[str, Mapping[str, Any]], None] | None = None,
 ) -> Workflow:
     """Update an existing workflow using the same validation/repair pipeline as planning.
 
@@ -1564,6 +1598,12 @@ def update_workflow_with_two_pass(
         )
         last_good_workflow = updated_workflow
 
+        if progress_callback:
+            try:
+                progress_callback("update_completed", updated_workflow.model_dump(by_alias=True))
+            except Exception:
+                log_debug("[update_workflow_with_two_pass] progress_callback 更新阶段调用失败，已忽略。")
+
         return _validate_and_repair_workflow(
             updated_workflow,
             action_registry=action_registry,
@@ -1571,6 +1611,7 @@ def update_workflow_with_two_pass(
             max_repair_rounds=max_repair_rounds,
             last_good_workflow=last_good_workflow,
             trace_event_prefix="update",
+            progress_callback=progress_callback,
         )
 
 
