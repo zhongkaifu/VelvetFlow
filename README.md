@@ -318,6 +318,7 @@ LLM 相关节点说明：
 - **交互式 GIF**
   - [![Health Check Demo](examples/demo_health_check.gif)](examples/demo_health_check.gif)：展示以“系统健康检查”为需求的端到端流程，从需求输入、规划到 DAG 渲染的实时画面。
   - [![Top Stock Mover Demo](examples/demo_find_top_stock_mover.gif)](examples/demo_find_top_stock_mover.gif)：展示检索热点股票并生成总结的流程，包含检索/补参/校验的完整记录。
+  - [![VelvetFlow Canvas Demo](examples/demo_velvetflow_canvas.gif)](examples/demo_velvetflow_canvas.gif)：展示 VelvetFlow Canvas 的实时交互画面。
 
 - **可下载的工作流产物**
   - `examples/health_check/`：包含 `workflow_output.json`（可直接用 `execute_workflow.py` 复现）与 `workflow_dag.jpg`（渲染后的拓扑图）。
