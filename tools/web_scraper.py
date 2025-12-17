@@ -359,8 +359,8 @@ class DeltaSummarizer:
         self.model = model
         self.state = SummarizerState()
 
-    def load_state_if_exists(self, path: str):
-        if os.path.exists(path):
+    def load_state_if_exists(self, path: Optional[str]):
+        if path and os.path.exists(path):
             try:
                 data = json.load(open(path, "r", encoding="utf-8"))
                 self.state = SummarizerState(**data)
@@ -368,7 +368,9 @@ class DeltaSummarizer:
             except Exception as e:
                 log(f"[STATE] failed to load {path}: {e}")
 
-    def save_state(self, path: str):
+    def save_state(self, path: Optional[str]):
+        if not path:
+            return
         try:
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(self.state.model_dump(), f, ensure_ascii=False, indent=2)
@@ -607,7 +609,7 @@ class GoalDrivenCrawler:
         concurrency: int = 2,
         goal_check_interval: int = 10,
         min_enqueue_score: int = 55,
-        state_path: str = "summary_state.json",
+        state_path: Optional[str] = "summary_state.json",
         pages_path: str = "pages.jsonl",
     ):
         if not seed_urls:
@@ -869,7 +871,7 @@ async def crawl_and_answer(
     min_enqueue_score: int = 55,
     llm_model: str = "gpt-4o-mini",
     api_key: str,
-    state_path: str = "summary_state.json",
+    state_path: Optional[str] = "summary_state.json",
     pages_path: str = "pages.jsonl",
     timeout_ms: int = 20000,
 ) -> Dict[str, object]:

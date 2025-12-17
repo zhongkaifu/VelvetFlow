@@ -23,6 +23,7 @@ def run_llm_web_scraper(
     goal_check_interval: int = 10,
     min_enqueue_score: int = 55,
     timeout_ms: int = 20000,
+    state_path: Optional[str] = "summary_state.json",
 ) -> Dict[str, Any]:
     """Run the LLM-guided crawler starting from a list of URLs and return the answer."""
 
@@ -50,6 +51,7 @@ def run_llm_web_scraper(
             llm_model=llm_model,
             api_key=api_key,
             timeout_ms=timeout_ms,
+            state_path=state_path,
         )
     )
 
@@ -120,6 +122,7 @@ def search_and_crawl_with_goal(
         goal_check_interval=goal_check_interval,
         min_enqueue_score=min_enqueue_score,
         timeout_ms=timeout_ms,
+        state_path="",
     )
 
     return {
@@ -158,6 +161,7 @@ def register_web_scraper_tools() -> None:
                     "goal_check_interval": {"type": "integer", "default": 10},
                     "min_enqueue_score": {"type": "integer", "default": 55},
                     "timeout_ms": {"type": "integer", "default": 20000},
+                    "state_path": {"type": "string", "default": "summary_state.json"},
                 },
                 "required": ["urls", "goal"],
             },
