@@ -800,10 +800,19 @@ class Workflow:
         return self
 
     def model_dump(self, *, by_alias: bool = False) -> Dict[str, Any]:
+        dumped_nodes: List[Any] = []
+        for n in self.nodes:
+            if hasattr(n, "model_dump"):
+                dumped_nodes.append(n.model_dump(by_alias=by_alias))
+            elif isinstance(n, Mapping):
+                dumped_nodes.append(dict(n))
+            else:
+                dumped_nodes.append(n)
+
         return {
             "workflow_name": self.workflow_name,
             "description": self.description,
-            "nodes": [n.model_dump(by_alias=by_alias) for n in self.nodes],
+            "nodes": dumped_nodes,
         }
 
 

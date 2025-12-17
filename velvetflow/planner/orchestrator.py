@@ -1357,11 +1357,22 @@ def plan_workflow_with_two_pass(
                         search_service=search_service,
                         reason="结构规划阶段校验失败",
                     )
-            if not isinstance(skeleton, Workflow) or any(
-                isinstance(n, dict) for n in getattr(skeleton, "nodes", [])
-            ):
+            if not isinstance(skeleton, Workflow):
+                payload = (
+                    skeleton
+                    if isinstance(skeleton, Mapping)
+                    else skeleton.model_dump(by_alias=True)
+                    if hasattr(skeleton, "model_dump")
+                    else {}
+                )
+                skeleton = Workflow.model_validate(payload)
+            elif any(isinstance(n, dict) for n in getattr(skeleton, "nodes", [])):
                 skeleton = Workflow.model_validate(
-                    skeleton if isinstance(skeleton, dict) else skeleton.model_dump(by_alias=True)
+                    {
+                        "workflow_name": getattr(skeleton, "workflow_name", "unnamed_workflow"),
+                        "description": getattr(skeleton, "description", ""),
+                        "nodes": getattr(skeleton, "nodes", []),
+                    }
                 )
 
             log_event("plan_structure_done", {"workflow": skeleton.model_dump()})
