@@ -62,9 +62,8 @@ def plan_workflow(user_nl: str, search_service: Optional[HybridActionSearchServi
 
 
 def _is_empty_workflow(workflow) -> bool:
-    return getattr(workflow, "workflow_name", None) == "fallback_workflow" and not getattr(
-        workflow, "nodes", None
-    )
+    nodes = getattr(workflow, "nodes", None)
+    return not nodes
 
 
 def _suggest_requirement_additions(user_requirement: str, *, model: str = OPENAI_MODEL) -> List[str]:
