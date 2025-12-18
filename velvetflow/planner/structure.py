@@ -17,7 +17,7 @@ from velvetflow.logging_utils import (
     log_section,
     log_warn,
 )
-from velvetflow.planner.agent_runtime import Agent, Runner, function_tool
+from velvetflow.planner.agent_runtime import Agent, FunctionTool, Runner
 from velvetflow.planner.action_guard import ensure_registered_actions
 from velvetflow.planner.approval import detect_missing_approval_nodes
 from velvetflow.planner.coverage import check_requirement_coverage_with_llm
@@ -581,7 +581,6 @@ def plan_workflow_structure_with_llm(
         payload.update(extra)
         return payload
 
-    @function_tool
     def search_business_actions(query: str, top_k: int = 5) -> Mapping[str, Any]:
         actions_raw = search_service.search(query=query, top_k=int(top_k))
         candidates = [
@@ -597,13 +596,11 @@ def plan_workflow_structure_with_llm(
         last_action_candidates[:] = [c["id"] for c in candidates]
         return {"status": "ok", "query": query, "actions": actions_raw, "candidates": candidates}
 
-    @function_tool
     def set_workflow_meta(workflow_name: str, description: Optional[str] = None) -> Mapping[str, Any]:
         builder.set_meta(workflow_name, description)
         _snapshot("meta_updated")
         return {"status": "ok", "type": "meta_set"}
 
-    @function_tool
     def add_action_node(
         id: str,
         action_id: str,
@@ -650,7 +647,6 @@ def plan_workflow_structure_with_llm(
             )
         return {"status": "ok", "type": "node_added", "node_id": id}
 
-    @function_tool
     def add_loop_node(
         id: str,
         loop_kind: str,
@@ -708,7 +704,6 @@ def plan_workflow_structure_with_llm(
             )
         return {"status": "ok", "type": "node_added", "node_id": id}
 
-    @function_tool
     def add_condition_node(
         id: str,
         true_to_node: Optional[str],
@@ -753,7 +748,6 @@ def plan_workflow_structure_with_llm(
             )
         return {"status": "ok", "type": "node_added", "node_id": id}
 
-    @function_tool
     def add_switch_node(
         id: str,
         cases: List[Dict[str, Any]],
@@ -818,7 +812,6 @@ def plan_workflow_structure_with_llm(
             return _build_validation_error(f"节点 {node_id} 类型不是 {expected_type}。")
         return None
 
-    @function_tool
     def update_action_node(
         id: str,
         display_name: Optional[str] = None,
@@ -880,7 +873,6 @@ def plan_workflow_structure_with_llm(
             )
         return {"status": "ok", "type": "node_updated", "node_id": id}
 
-    @function_tool
     def update_condition_node(
         id: str,
         display_name: Optional[str] = None,
@@ -941,7 +933,6 @@ def plan_workflow_structure_with_llm(
             )
         return {"status": "ok", "type": "node_updated", "node_id": id}
 
-    @function_tool
     def update_switch_node(
         id: str,
         display_name: Optional[str] = None,
@@ -1010,7 +1001,6 @@ def plan_workflow_structure_with_llm(
             )
         return {"status": "ok", "type": "node_updated", "node_id": id}
 
-    @function_tool
     def update_loop_node(
         id: str,
         display_name: Optional[str] = None,
@@ -1060,7 +1050,6 @@ def plan_workflow_structure_with_llm(
             )
         return {"status": "ok", "type": "node_updated", "node_id": id}
 
-    @function_tool
     def finalize_workflow(ready: bool = True, notes: Optional[str] = None) -> Mapping[str, Any]:
         nonlocal latest_skeleton, latest_coverage
         skeleton, coverage = _run_coverage_check(
@@ -1099,7 +1088,6 @@ def plan_workflow_structure_with_llm(
             "workflow": skeleton,
         }
 
-    @function_tool
     def dump_model() -> Mapping[str, Any]:
         snapshot = _snapshot("dump_model")
         return {
@@ -1112,22 +1100,35 @@ def plan_workflow_structure_with_llm(
             "workflow": snapshot,
         }
 
+    search_business_actions_tool = FunctionTool(search_business_actions, strict=False)
+    set_workflow_meta_tool = FunctionTool(set_workflow_meta, strict=False)
+    add_action_node_tool = FunctionTool(add_action_node, strict=False)
+    add_loop_node_tool = FunctionTool(add_loop_node, strict=False)
+    add_condition_node_tool = FunctionTool(add_condition_node, strict=False)
+    add_switch_node_tool = FunctionTool(add_switch_node, strict=False)
+    update_action_node_tool = FunctionTool(update_action_node, strict=False)
+    update_condition_node_tool = FunctionTool(update_condition_node, strict=False)
+    update_switch_node_tool = FunctionTool(update_switch_node, strict=False)
+    update_loop_node_tool = FunctionTool(update_loop_node, strict=False)
+    finalize_workflow_tool = FunctionTool(finalize_workflow, strict=False)
+    dump_model_tool = FunctionTool(dump_model, strict=False)
+
     agent = Agent(
         name="WorkflowStructurePlanner",
         instructions=system_prompt,
         tools=[
-            search_business_actions,
-            set_workflow_meta,
-            add_action_node,
-            add_loop_node,
-            add_condition_node,
-            add_switch_node,
-            update_action_node,
-            update_condition_node,
-            update_switch_node,
-            update_loop_node,
-            finalize_workflow,
-            dump_model,
+            search_business_actions_tool,
+            set_workflow_meta_tool,
+            add_action_node_tool,
+            add_loop_node_tool,
+            add_condition_node_tool,
+            add_switch_node_tool,
+            update_action_node_tool,
+            update_condition_node_tool,
+            update_switch_node_tool,
+            update_loop_node_tool,
+            finalize_workflow_tool,
+            dump_model_tool,
         ],
         model=OPENAI_MODEL,
     )
