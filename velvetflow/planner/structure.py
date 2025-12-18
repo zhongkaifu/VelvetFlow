@@ -1100,18 +1100,27 @@ def plan_workflow_structure_with_llm(
             "workflow": snapshot,
         }
 
-    search_business_actions_tool = FunctionTool(search_business_actions, strict=False)
-    set_workflow_meta_tool = FunctionTool(set_workflow_meta, strict=False)
-    add_action_node_tool = FunctionTool(add_action_node, strict=False)
-    add_loop_node_tool = FunctionTool(add_loop_node, strict=False)
-    add_condition_node_tool = FunctionTool(add_condition_node, strict=False)
-    add_switch_node_tool = FunctionTool(add_switch_node, strict=False)
-    update_action_node_tool = FunctionTool(update_action_node, strict=False)
-    update_condition_node_tool = FunctionTool(update_condition_node, strict=False)
-    update_switch_node_tool = FunctionTool(update_switch_node, strict=False)
-    update_loop_node_tool = FunctionTool(update_loop_node, strict=False)
-    finalize_workflow_tool = FunctionTool(finalize_workflow, strict=False)
-    dump_model_tool = FunctionTool(dump_model, strict=False)
+    def _build_function_tool(func: Callable[..., Any]):
+        try:
+            return FunctionTool(func, strict=False)  # type: ignore[call-arg]
+        except TypeError:
+            tool = FunctionTool(func)
+            if not getattr(tool, "strict", None):
+                setattr(tool, "strict", False)
+            return tool
+
+    search_business_actions_tool = _build_function_tool(search_business_actions)
+    set_workflow_meta_tool = _build_function_tool(set_workflow_meta)
+    add_action_node_tool = _build_function_tool(add_action_node)
+    add_loop_node_tool = _build_function_tool(add_loop_node)
+    add_condition_node_tool = _build_function_tool(add_condition_node)
+    add_switch_node_tool = _build_function_tool(add_switch_node)
+    update_action_node_tool = _build_function_tool(update_action_node)
+    update_condition_node_tool = _build_function_tool(update_condition_node)
+    update_switch_node_tool = _build_function_tool(update_switch_node)
+    update_loop_node_tool = _build_function_tool(update_loop_node)
+    finalize_workflow_tool = _build_function_tool(finalize_workflow)
+    dump_model_tool = _build_function_tool(dump_model)
 
     agent = Agent(
         name="WorkflowStructurePlanner",
