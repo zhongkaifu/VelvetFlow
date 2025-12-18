@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
   "openai>=1.30.0",
+  "openai-agents",
   "numpy>=1.26.0",
   "faiss-cpu>=1.8.0",
   "anyio>=4.4.0",
