@@ -245,12 +245,10 @@ class _WorkflowAgentRuntime:
         self.max_repair_rounds = max_repair_rounds
         self._agent_cls = agent_cls
         self._tool_wrapper = tool_wrapper
-        self._internal_agent = self._build_internal_agent()
         self.uses_fallback_agent = getattr(agent_cls, "_is_fallback", False)
         self._runner_cls = runner_cls
         self._uses_agents_pkg = uses_agents_pkg
-        self._runner_cls = runner_cls
-        self._uses_agents_pkg = uses_agents_pkg
+        self._internal_agent = self._build_internal_agent()
 
     # --- 原子工具：直接调用规划/校验/修复/更新流水线（不经过 Agent 推理） ---
     def _plan_workflow_direct(self, requirement: str) -> dict[str, Any]:
