@@ -57,12 +57,10 @@ PLANNER_TOOLS = [
                     "out_params_schema": {
                         "type": "object",
                         "description": "action 节点的输出参数 Schema，格式为 {\"参数名\": \"类型\"}。",
-                        "additionalProperties": {"type": "string"},
                     },
                     "params": {
                         "type": "object",
                         "description": "节点参数，可为空，但稍后会在第二阶段补全。",
-                        "additionalProperties": True,
                     },
                     "depends_on": {
                         "type": "array",
@@ -119,7 +117,6 @@ PLANNER_TOOLS = [
                                 "description": "可使用 result_of 路径或绑定对象。",
                                 "anyOf": [
                                     {"type": "string"},
-                                    {"type": "object", "additionalProperties": True},
                                 ],
                             },
                             "field": {"type": "string"},
@@ -137,11 +134,9 @@ PLANNER_TOOLS = [
                                         "label": {"type": "string"},
                                     },
                                     "required": ["min", "max"],
-                                    "additionalProperties": False,
                                 },
                             },
                         },
-                        "additionalProperties": False,
                     },
                     "true_to_node": {
                         "type": ["string", "null"],
@@ -183,12 +178,10 @@ PLANNER_TOOLS = [
                                 "description": "可使用 result_of 路径或绑定对象。",
                                 "anyOf": [
                                     {"type": "string"},
-                                    {"type": "object", "additionalProperties": True},
                                 ],
                             },
                             "field": {"type": "string", "description": "可选的子字段访问路径。"},
                         },
-                        "additionalProperties": False,
                     },
                     "cases": {
                         "type": "array",
@@ -201,7 +194,6 @@ PLANNER_TOOLS = [
                                 "to_node": {"type": ["string", "null"], "description": "匹配时跳转的节点 id 或 null。"},
                             },
                             "required": ["to_node"],
-                            "additionalProperties": True,
                         },
                     },
                     "default_to_node": {
@@ -238,7 +230,6 @@ PLANNER_TOOLS = [
                     "params": {
                         "type": "object",
                         "description": "action 入参，仅支持 arg_schema 中定义的字段。",
-                        "additionalProperties": True,
                     },
                     "out_params_schema": {"type": "object"},
                     "action_id": {"type": "string"},
@@ -280,7 +271,6 @@ PLANNER_TOOLS = [
                             "source": {
                                 "anyOf": [
                                     {"type": "string"},
-                                    {"type": "object", "additionalProperties": True},
                                 ]
                             },
                             "field": {"type": ["string", "null"]},
@@ -301,14 +291,11 @@ PLANNER_TOOLS = [
                                                 "label": {"type": "string"},
                                             },
                                             "required": ["min", "max"],
-                                            "additionalProperties": False,
                                         },
                                     },
-                                    {"type": "object", "additionalProperties": True},
                                 ],
                             },
                         },
-                        "additionalProperties": False,
                     },
                     "true_to_node": {
                         "type": ["string", "null"],
@@ -349,12 +336,10 @@ PLANNER_TOOLS = [
                             "source": {
                                 "anyOf": [
                                     {"type": "string"},
-                                    {"type": "object", "additionalProperties": True},
                                 ]
                             },
                             "field": {"type": "string"},
                         },
-                        "additionalProperties": False,
                     },
                     "cases": {
                         "type": "array",
@@ -366,7 +351,6 @@ PLANNER_TOOLS = [
                                 "to_node": {"type": ["string", "null"]},
                             },
                             "required": ["to_node"],
-                            "additionalProperties": True,
                         },
                     },
                     "default_to_node": {"type": ["string", "null"]},
@@ -403,7 +387,6 @@ PLANNER_TOOLS = [
                         "description": "for_each 迭代来源，支持绑定或 result_of 路径。",
                         "anyOf": [
                             {"type": "string"},
-                            {"type": "object", "additionalProperties": True},
                         ],
                     },
                     "item_alias": {
@@ -422,14 +405,12 @@ PLANNER_TOOLS = [
                                 "description": "for_each 迭代来源，支持绑定或 result_of 路径。",
                                 "anyOf": [
                                     {"type": "string"},
-                                    {"type": "object", "additionalProperties": True},
                                 ],
                             },
                             "condition": {
                                 "description": "while 循环退出条件，支持绑定或 result_of 路径。",
                                 "anyOf": [
                                     {"type": "string"},
-                                    {"type": "object", "additionalProperties": True},
                                 ],
                             },
                             "item_alias": {"type": "string"},
@@ -459,7 +440,6 @@ PLANNER_TOOLS = [
                                             },
                                         },
                                         "required": ["from_node", "fields"],
-                                        "additionalProperties": False,
                                     },
                                     "aggregates": {
                                         "type": "array",
@@ -488,7 +468,6 @@ PLANNER_TOOLS = [
                                                     "description": "聚合来源路径。",
                                                     "anyOf": [
                                                         {"type": "string"},
-                                                        {"type": "object", "additionalProperties": True},
                                                     ],
                                                 },
                                                 "expr": {
@@ -497,14 +476,11 @@ PLANNER_TOOLS = [
                                                 },
                                             },
                                             "required": ["name", "from_node", "kind", "source", "expr"],
-                                            "additionalProperties": False,
                                         },
                                     },
                                 },
-                                "additionalProperties": False,
                             },
                         },
-                        "additionalProperties": False,
                     },
                     "sub_graph_nodes": {
                         "type": "array",
@@ -547,14 +523,12 @@ PLANNER_TOOLS = [
                                 "description": "for_each 迭代来源，支持绑定或 result_of 路径。",
                                 "anyOf": [
                                     {"type": "string"},
-                                    {"type": "object", "additionalProperties": True},
                                 ],
                             },
                             "condition": {
                                 "description": "while 循环退出条件，支持绑定或 result_of 路径。",
                                 "anyOf": [
                                     {"type": "string"},
-                                    {"type": "object", "additionalProperties": True},
                                 ],
                             },
                             "item_alias": {"type": "string"},
@@ -584,7 +558,6 @@ PLANNER_TOOLS = [
                                             },
                                         },
                                         "required": ["from_node", "fields"],
-                                        "additionalProperties": False,
                                     },
                                     "aggregates": {
                                         "type": "array",
@@ -613,7 +586,6 @@ PLANNER_TOOLS = [
                                                     "description": "聚合来源路径。",
                                                     "anyOf": [
                                                         {"type": "string"},
-                                                        {"type": "object", "additionalProperties": True},
                                                     ],
                                                 },
                                                 "expr": {
@@ -622,14 +594,11 @@ PLANNER_TOOLS = [
                                                 },
                                             },
                                             "required": ["name", "from_node", "kind", "source", "expr"],
-                                            "additionalProperties": False,
                                         },
                                     },
                                 },
-                                "additionalProperties": False,
                             },
                         },
-                        "additionalProperties": False,
                     },
                     "sub_graph_nodes": {
                         "type": "array",
