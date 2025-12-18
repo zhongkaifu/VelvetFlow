@@ -100,6 +100,28 @@ def _attach_inferred_edges(workflow: Dict[str, Any]) -> Dict[str, Any]:
     return attach_condition_branches(copied)
 
 
+def _strip_additional_properties(value: Any) -> Any:
+    """Recursively drop additionalProperties keys from a JSON schema-like mapping."""
+
+    if isinstance(value, Mapping):
+        return {
+            key: _strip_additional_properties(val)
+            for key, val in value.items()
+            if key != "additionalProperties"
+        }
+    if isinstance(value, list):
+        return [_strip_additional_properties(item) for item in value]
+    return value
+
+
+def _clean_tool_schema(tool: Callable[..., Any]) -> Callable[..., Any]:
+    schema = getattr(tool, "__openai_schema__", None)
+    if isinstance(schema, Mapping):
+        cleaned = _strip_additional_properties(schema)
+        setattr(tool, "__openai_schema__", cleaned)
+    return tool
+
+
 def _normalize_sub_graph_nodes(
     raw: Any, *, builder: WorkflowBuilder
 ) -> tuple[List[str], Optional[Dict[str, Any]]]:
@@ -1115,23 +1137,25 @@ def plan_workflow_structure_with_llm(
             "workflow": snapshot,
         }
 
+    tools = [
+        search_business_actions,
+        set_workflow_meta,
+        add_action_node,
+        add_loop_node,
+        add_condition_node,
+        add_switch_node,
+        update_action_node,
+        update_condition_node,
+        update_switch_node,
+        update_loop_node,
+        finalize_workflow,
+        dump_model,
+    ]
+
     agent = Agent(
         name="WorkflowStructurePlanner",
         instructions=system_prompt,
-        tools=[
-            search_business_actions,
-            set_workflow_meta,
-            add_action_node,
-            add_loop_node,
-            add_condition_node,
-            add_switch_node,
-            update_action_node,
-            update_condition_node,
-            update_switch_node,
-            update_loop_node,
-            finalize_workflow,
-            dump_model,
-        ],
+        tools=[_clean_tool_schema(tool) for tool in tools],
         model=OPENAI_MODEL,
     )
 
