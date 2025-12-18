@@ -876,111 +876,6 @@ def apply_repair_tool(
 
     return patched, summary
 
-
-REPAIR_TOOLS = [
-    {
-        "type": "function",
-        "function": {
-            "name": "fix_loop_body_references",
-            "description": "清理 loop.body_subgraph 中的冗余 entry/exit/edges 字段，仅保留 nodes。",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "node_id": {"type": "string", "description": "loop 节点 ID"},
-                },
-                "required": ["node_id"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "fill_action_required_params",
-            "description": "根据动作 arg_schema 自动填充必填字段的占位值，并尝试做基本类型矫正。",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "node_id": {"type": "string", "description": "action 节点 ID"},
-                },
-                "required": ["node_id"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "update_node_field",
-            "description": "以可重复方式写入节点的字段值（支持 params.foo 或 params.items[0].field 形式的路径）。",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "node_id": {"type": "string", "description": "要修改的节点 ID"},
-                    "field_path": {
-                        "type": "string",
-                        "description": "点/下标路径，例如 params.source.__from__ 或 params.items[0].field",
-                    },
-                    "value": {
-                        "description": "要写入的 JSON 值，需与目标 schema 类型兼容。",
-                    },
-                },
-                "required": ["node_id", "field_path", "value"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "normalize_binding_paths",
-            "description": "标准化 __from__ 路径，去除形如 {{result_of.x}} 的模板包装，避免引用解析失败。",
-            "parameters": {"type": "object", "properties": {}},
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "replace_reference_paths",
-            "description": "批量替换 workflow 中的节点/字段引用（含 edges.from/to 与 params.__from__）。",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "old": {
-                        "type": "string",
-                        "description": "需要被替换的旧引用路径或节点 ID（例如 result_of.a.output）",
-                    },
-                    "new": {
-                        "type": "string",
-                        "description": "新的引用路径或节点 ID（例如 result_of.b.output）",
-                    },
-                    "include_edges": {
-                        "type": "boolean",
-                        "description": "是否同时替换 edges.from/to 中的匹配引用，默认为 true。",
-                        "default": True,
-                    },
-                },
-                "required": ["old", "new"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "drop_invalid_references",
-            "description": "移除指向不存在节点/非法路径的绑定与边，避免解析失败。",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "remove_edges": {
-                        "type": "boolean",
-                        "description": "是否同时移除引用缺失节点的 edges，默认为 true。",
-                        "default": True,
-                    },
-                },
-            },
-        },
-    },
-]
-
-
 __all__ = [
     "fill_loop_exports_defaults",
     "normalize_binding_paths",
@@ -994,5 +889,4 @@ __all__ = [
     "fix_loop_body_references",
     "align_loop_body_alias_references",
     "update_node_field",
-    "REPAIR_TOOLS",
 ]

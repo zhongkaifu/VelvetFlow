@@ -8,6 +8,7 @@ import copy
 import json
 import re
 import os
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional
 
@@ -163,6 +164,7 @@ class BindingContext:
             "loop_id": self.loop_id,
             **self.loop_ctx,
             "env": dict(os.environ),
+            "system": {"date": datetime.now().date().isoformat()},
         }
 
         if workflow_ctx:
@@ -1031,6 +1033,13 @@ def eval_node_params(node: Node, ctx: BindingContext) -> Dict[str, Any]:
 
         if isinstance(value, str):
             normalized_templates = canonicalize_template_placeholders(value)
+            stripped_template = normalized_templates.strip()
+            if stripped_template.startswith("{{") and stripped_template.endswith("}}"):
+                inner = stripped_template[2:-2].strip()
+                try:
+                    return eval_jinja_expression(inner, ctx.build_jinja_context())
+                except Exception:
+                    pass
             rendered_inline = _render_json_bindings(normalized_templates)
             rendered_with_each = _render_each_templates(rendered_inline)
             jinja_context: Dict[str, Any] = {

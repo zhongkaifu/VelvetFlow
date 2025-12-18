@@ -2,6 +2,7 @@
 # License: BSD 3-Clause License
 
 """Node-level validation logic for workflows."""
+import re
 from typing import Any, Dict, List, Mapping, Optional
 
 from velvetflow.jinja_utils import get_jinja_env
@@ -26,6 +27,14 @@ from .binding_checks import (
     _suggest_numeric_subfield,
     _walk_schema_with_tokens,
     validate_param_binding,
+)
+
+
+_SELECT_ATTR_PATTERN = re.compile(
+    r"(?P<source>result_of\.[A-Za-z0-9_.-]+)\s*\|\s*selectattr\(\s*['\"](?P<field>[A-Za-z0-9_.-]+)['\"]"
+)
+_MAP_ATTR_PATTERN = re.compile(
+    r"(?P<source>result_of\.[A-Za-z0-9_.-]+)\s*\|\s*map\(\s*attribute\s*=\s*['\"](?P<field>[A-Za-z0-9_.-]+)['\"]"
 )
 
 
@@ -68,6 +77,37 @@ def _validate_jinja_expression(expr: str, *, node_id: str | None, field: str, er
                 message=f"Jinja 表达式无法解析: {exc}",
             )
         )
+
+
+def _schema_contains_field(schema: Mapping[str, Any] | None, field: str) -> bool:
+    if not isinstance(schema, Mapping) or not field:
+        return False
+
+    parts = [token for token in field.split(".") if token]
+    current: Mapping[str, Any] | None = schema
+    for token in parts:
+        if not isinstance(current, Mapping):
+            return False
+        props = current.get("properties") if isinstance(current.get("properties"), Mapping) else None
+        if not props or token not in props:
+            return False
+        next_schema = props.get(token)
+        if isinstance(next_schema, Mapping) and next_schema.get("type") == "array":
+            current = next_schema.get("items") if isinstance(next_schema.get("items"), Mapping) else None
+        else:
+            current = next_schema if isinstance(next_schema, Mapping) else None
+    return True
+
+
+def _collect_collection_attribute_refs(expr: str) -> List[Dict[str, str]]:
+    checks: List[Dict[str, str]] = []
+    for pattern in (_SELECT_ATTR_PATTERN, _MAP_ATTR_PATTERN):
+        for match in pattern.finditer(expr):
+            source = match.group("source")
+            field = match.group("field")
+            if source and field:
+                checks.append({"source": source, "field": field})
+    return checks
 
 CONDITION_PARAM_FIELDS = {"expression"}
 
@@ -600,6 +640,38 @@ def _validate_nodes_recursive(
                         ),
                     )
                 )
+            else:
+                expression_checks = _collect_collection_attribute_refs(expr_val)
+                # 如果表达式被包裹在模板中（如 {{ ... }}），同时对内部引用进行检查
+                for templated_ref in _iter_template_references(expr_val):
+                    expression_checks.extend(_collect_collection_attribute_refs(templated_ref))
+
+                if expression_checks:
+                    for ref in expression_checks:
+                        source = normalize_reference_path(ref.get("source", ""))
+                        field = ref.get("field")
+                        item_schema = _get_array_item_schema_from_output(
+                            source,
+                            nodes_by_id,
+                            actions_by_id,
+                            loop_body_parents,
+                            context_node_id=nid,
+                        )
+                        if not item_schema:
+                            continue
+
+                        if not _schema_contains_field(item_schema, field or ""):
+                            errors.append(
+                                ValidationError(
+                                    code="SCHEMA_MISMATCH",
+                                    node_id=nid,
+                                    field="expression",
+                                    message=(
+                                        f"条件表达式引用 {source} 的属性 '{field}' 未在上游输出 schema 中声明，"
+                                        "请调整 exports.items.fields 或修改表达式以匹配可用字段。"
+                                    ),
+                                )
+                            )
         # 3) loop 节点
         if ntype == "loop":
             body_graph = params.get("body_subgraph") if isinstance(params, Mapping) else None

@@ -5,7 +5,7 @@ from collections.abc import Sequence
 from typing import Any, Dict, List, Mapping, Optional
 
 from velvetflow.bindings import BindingContext
-from velvetflow.jinja_utils import render_jinja_string_constants
+from velvetflow.jinja_utils import render_jinja_string_constants, render_jinja_template
 from velvetflow.logging_utils import log_json, log_warn
 from velvetflow.models import Node, Workflow
 
@@ -33,6 +33,9 @@ class LoopExecutionMixin:
         aggregates_output: Dict[str, Any],
         avg_state: Dict[str, Dict[str, float]],
         default_from_node: Optional[str],
+        extra_exports: Optional[Mapping[str, Any]],
+        extra_output: Dict[str, Any],
+        loop_binding: Optional[BindingContext],
     ) -> None:
         normalized_items_spec: Optional[Mapping[str, Any]] = None
 
@@ -235,6 +238,30 @@ class LoopExecutionMixin:
                         },
                     )
 
+        # 处理额外定义的 exports 字段（除 items/aggregates 外）
+        if isinstance(extra_exports, Mapping) and loop_binding is not None:
+            ctx = loop_binding.build_jinja_context()
+            for key, template in extra_exports.items():
+                if key in {"items", "aggregates"}:
+                    continue
+                resolved_val = template
+                if isinstance(template, str):
+                    try:
+                        resolved_val = render_jinja_template(template, ctx)
+                    except Exception:
+                        resolved_val = template
+
+                existing = extra_output.get(key)
+                if not isinstance(existing, list):
+                    existing = []
+
+                if isinstance(resolved_val, list):
+                    combined = existing + resolved_val
+                else:
+                    combined = existing + [resolved_val]
+
+                extra_output[key] = combined
+
     def _clear_loop_body_results(self, results: Dict[str, Any], body_node_ids: List[str]) -> None:
         """Remove intermediate results produced by loop body nodes."""
 
@@ -308,9 +335,15 @@ class LoopExecutionMixin:
             exports = body_exports
         items_spec = exports.get("items") if isinstance(exports, Mapping) else None
         aggregates_spec = exports.get("aggregates") if isinstance(exports, Mapping) else None
+        extra_exports_spec = (
+            {k: v for k, v in exports.items() if k not in {"items", "aggregates"}}
+            if isinstance(exports, Mapping)
+            else {}
+        )
         export_items: List[Dict[str, Any]] = []
         aggregates_output: Dict[str, Any] = {}
         avg_state: Dict[str, Dict[str, float]] = {}
+        extra_exports_output: Dict[str, Any] = {}
 
         if loop_kind == "for_each":
             source = params.get("source")
@@ -370,6 +403,9 @@ class LoopExecutionMixin:
                     aggregates_output,
                     avg_state,
                     default_export_from_node,
+                    extra_exports_spec,
+                    extra_exports_output,
+                    loop_binding,
                 )
                 self._clear_loop_body_results(binding_ctx.results, body_node_ids)
 
@@ -381,10 +417,11 @@ class LoopExecutionMixin:
                 "items": export_items,
                 "aggregates": aggregates_output,
                 "exports": {
-                    "items": export_items,
-                    "aggregates": aggregates_output,
-                },
-            }
+                "items": export_items,
+                "aggregates": aggregates_output,
+                **extra_exports_output,
+            },
+        }
 
         if loop_kind == "while":
             cond_def = params.get("condition") or {}
@@ -431,6 +468,9 @@ class LoopExecutionMixin:
                     aggregates_output,
                     avg_state,
                     default_export_from_node,
+                    extra_exports_spec,
+                    extra_exports_output,
+                    loop_binding,
                 )
                 self._clear_loop_body_results(binding_ctx.results, body_node_ids)
 
@@ -442,10 +482,11 @@ class LoopExecutionMixin:
                 "items": export_items,
                 "aggregates": aggregates_output,
                 "exports": {
-                    "items": export_items,
-                    "aggregates": aggregates_output,
-                },
-            }
+                "items": export_items,
+                "aggregates": aggregates_output,
+                **extra_exports_output,
+            },
+        }
 
         log_warn(f"[loop] 未知 loop_kind={loop_kind}，跳过执行")
         return {"status": "skipped", "reason": "unknown_loop_kind"}
