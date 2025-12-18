@@ -25,6 +25,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib
 import inspect
 import json
@@ -120,14 +121,29 @@ class _FallbackAgent:
         return tool(prompt)
 
 
-def _import_openai_agent() -> tuple[type, Callable[[Callable[..., Any]], Any] | None, bool]:
-    """Load Agent SDK lazily; fall back to a local stub when unavailable."""
+def _import_openai_agent() -> tuple[type, Callable[[Callable[..., Any]], Any] | None, bool, Any | None, bool]:
+    """Load Agent SDK lazily; fall back to a local stub when unavailable.
 
+    Returns (agent_cls, tool_wrapper, used_fallback, runner_cls, uses_agents_pkg)
+    """
+
+    # 1) 优先尝试新的 ``agents`` 包（示例中的调用方式）
+    last_error: Exception | None = None
+    try:
+        agents_mod = importlib.import_module("agents")
+        agent_cls = getattr(agents_mod, "Agent", None)
+        runner_cls = getattr(agents_mod, "Runner", None)
+        if agent_cls is not None and runner_cls is not None:
+            tool_wrapper = getattr(agents_mod, "tool", None)
+            return agent_cls, tool_wrapper, False, runner_cls, True  # type: ignore[arg-type]
+    except Exception as exc:  # pragma: no cover - depends on external SDK
+        last_error = exc
+
+    # 2) 回退到 openai agent SDK
     candidates = [
         "openai.agents",
         "openai.agent",
     ]
-    last_error: Exception | None = None
     for module_name in candidates:
         try:
             module = importlib.import_module(module_name)
@@ -138,9 +154,9 @@ def _import_openai_agent() -> tuple[type, Callable[[Callable[..., Any]], Any] | 
         agent_cls = getattr(module, "Agent", None)
         tool_wrapper = getattr(module, "tool", None)
         if agent_cls is not None:
-            return agent_cls, tool_wrapper, False  # type: ignore[arg-type]
+            return agent_cls, tool_wrapper, False, None, False  # type: ignore[arg-type]
 
-    # Fall back to local stub to避免 CLI 直接崩溃；提示用户安装官方 SDK。
+    # 3) 本地 fallback
     if last_error:
         message = (
             "未检测到 OpenAI Agent SDK（需要 openai>=1.60 或官方 agent 扩展）；"
@@ -149,7 +165,8 @@ def _import_openai_agent() -> tuple[type, Callable[[Callable[..., Any]], Any] | 
     else:
         message = "未检测到 OpenAI Agent SDK（需要 openai>=1.60 或官方 agent 扩展）；使用本地 FallbackAgent 继续运行。"
 
-    return _FallbackAgent, None, True
+    print(message)
+    return _FallbackAgent, None, True, None, False
 
 
 def coerce_agent_output(payload: Any) -> dict[str, Any]:
@@ -218,6 +235,8 @@ class _WorkflowAgentRuntime:
         max_repair_rounds: int,
         agent_cls: type,
         tool_wrapper: Callable[[Callable[..., Any]], Any] | None,
+        runner_cls: Any | None,
+        uses_agents_pkg: bool,
     ) -> None:
         self.action_registry = action_registry
         self.search_service = search_service
@@ -228,6 +247,10 @@ class _WorkflowAgentRuntime:
         self._tool_wrapper = tool_wrapper
         self._internal_agent = self._build_internal_agent()
         self.uses_fallback_agent = getattr(agent_cls, "_is_fallback", False)
+        self._runner_cls = runner_cls
+        self._uses_agents_pkg = uses_agents_pkg
+        self._runner_cls = runner_cls
+        self._uses_agents_pkg = uses_agents_pkg
 
     # --- 原子工具：直接调用规划/校验/修复/更新流水线（不经过 Agent 推理） ---
     def _plan_workflow_direct(self, requirement: str) -> dict[str, Any]:
@@ -306,6 +329,13 @@ class _WorkflowAgentRuntime:
         repair_tool = _wrap_tool(self._tool_wrapper, self._repair_workflow_direct)
         update_tool = _wrap_tool(self._tool_wrapper, self._update_workflow_direct)
 
+        if self._uses_agents_pkg:
+            return self._agent_cls(
+                name="workflow_internal_agent",
+                instructions=INTERNAL_AGENT_INSTRUCTIONS,
+                tools=[build_tool, validate_tool, repair_tool, update_tool],
+            )
+
         return self._agent_cls(
             model=self.model,
             instructions=INTERNAL_AGENT_INSTRUCTIONS,
@@ -314,12 +344,16 @@ class _WorkflowAgentRuntime:
 
     def _invoke_internal_agent(self, prompt: str, fallback: Callable[[], dict[str, Any]]):
         try:
-            if not self.uses_fallback:
+            if not self.uses_fallback_agent:
                 print("[Agent] 调用 OpenAI Agent 执行工具，prompt 已截断展示: ", prompt[:200])
-            raw = self._internal_agent.run(prompt)
+            if self._runner_cls is not None:
+                raw = asyncio.run(self._runner_cls.run(self._internal_agent, input=prompt))
+                raw = getattr(raw, "final_output", raw)
+            else:
+                raw = self._internal_agent.run(prompt)
             return coerce_agent_output(raw)
         except Exception as exc:  # noqa: BLE001 - Agent 推理可能失败，兜底使用直接路径
-            if not self.uses_fallback:
+            if not self.uses_fallback_agent:
                 print(f"[Agent] Agent 调用失败，回退到本地实现，原因: {exc}")
             return fallback()
 
@@ -331,7 +365,7 @@ class _WorkflowAgentRuntime:
             "需求如下，请仅调用 build_workflow 工具完成规划，并返回工具 JSON 输出。"
             f"\n需求: {requirement}"
         )
-        if not self.uses_fallback:
+        if not self.uses_fallback_agent:
             print("[Agent] 开始规划 workflow（build_workflow）。")
         return self._invoke_internal_agent(prompt, lambda: self._plan_workflow_direct(requirement))
 
@@ -344,7 +378,7 @@ class _WorkflowAgentRuntime:
             "务必返回工具原样输出的 JSON。"
             f"\n现有 workflow: {payload_text}\n新需求: {requirement}"
         )
-        if not self.uses_fallback:
+        if not self.uses_fallback_agent:
             print("[Agent] 开始更新 workflow（update_workflow）。")
         return self._invoke_internal_agent(
             prompt,
@@ -359,7 +393,7 @@ class _WorkflowAgentRuntime:
             "请调用 validate_workflow 工具，对以下 JSON 进行静态校验，并返回工具输出。"
             f"\nworkflow: {payload_text}"
         )
-        if not self.uses_fallback:
+        if not self.uses_fallback_agent:
             print("[Agent] 开始校验 workflow（validate_workflow）。")
         return self._invoke_internal_agent(prompt, lambda: self._validate_workflow_direct(workflow_raw))
 
@@ -372,7 +406,7 @@ class _WorkflowAgentRuntime:
             "若已通过校验则直接返回当前结果。请返回工具输出的 JSON。"
             f"\nworkflow: {payload_text}"
         )
-        if not self.uses_fallback:
+        if not self.uses_fallback_agent:
             print("[Agent] 开始修复 workflow（repair_workflow）。")
         return self._invoke_internal_agent(prompt, lambda: self._repair_workflow_direct(workflow_raw))
 
@@ -407,7 +441,7 @@ def create_workflow_agent(
         or the registry loaded from ``config.action_registry_path``.
     """
 
-    agent_cls, tool_wrapper, used_fallback = _import_openai_agent()
+    agent_cls, tool_wrapper, used_fallback, runner_cls, uses_agents_pkg = _import_openai_agent()
     config = config or WorkflowAgentConfig()
     registry = action_registry or _load_action_registry(config.action_registry_path)
     service = search_service or build_search_service_from_actions(registry)
@@ -419,6 +453,8 @@ def create_workflow_agent(
         max_repair_rounds=config.max_repair_rounds,
         agent_cls=agent_cls,
         tool_wrapper=tool_wrapper,
+        runner_cls=runner_cls,
+        uses_agents_pkg=uses_agents_pkg,
     )
 
     build_workflow_tool = _wrap_tool(tool_wrapper, runtime.plan_workflow)
@@ -426,25 +462,37 @@ def create_workflow_agent(
     repair_workflow_tool = _wrap_tool(tool_wrapper, runtime.repair_workflow)
     update_workflow_tool = _wrap_tool(tool_wrapper, runtime.update_workflow)
 
-    agent_kwargs = {
-        "model": config.model,
-        "instructions": config.instructions,
-        "tools": [
-            build_workflow_tool,
-            validate_workflow_tool,
-            repair_workflow_tool,
-            update_workflow_tool,
-        ],
-    }
+    if uses_agents_pkg:
+        agent_kwargs = {
+            "name": "workflow_orchestrator",
+            "instructions": config.instructions,
+            "tools": [
+                build_workflow_tool,
+                validate_workflow_tool,
+                repair_workflow_tool,
+                update_workflow_tool,
+            ],
+        }
+    else:
+        agent_kwargs = {
+            "model": config.model,
+            "instructions": config.instructions,
+            "tools": [
+                build_workflow_tool,
+                validate_workflow_tool,
+                repair_workflow_tool,
+                update_workflow_tool,
+            ],
+        }
 
-    if client is not None:
-        # Only attach client if the Agent constructor accepts it.
-        try:
-            signature = inspect.signature(agent_cls)  # type: ignore[arg-type]
-            if "client" in signature.parameters:
-                agent_kwargs["client"] = client
-        except (TypeError, ValueError):  # pragma: no cover - depends on SDK impl
-            pass
+        if client is not None:
+            # Only attach client if the Agent constructor accepts it.
+            try:
+                signature = inspect.signature(agent_cls)  # type: ignore[arg-type]
+                if "client" in signature.parameters:
+                    agent_kwargs["client"] = client
+            except (TypeError, ValueError):  # pragma: no cover - depends on SDK impl
+                pass
 
     agent = agent_cls(**agent_kwargs)
     if used_fallback:
