@@ -7,6 +7,7 @@ for business actions so that online search can focus on recall and ranking.
 from __future__ import annotations
 
 import json
+import logging
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -16,6 +17,7 @@ from velvetflow.action_registry import BUSINESS_ACTIONS
 
 
 DEFAULT_OFFLINE_EMBEDDING_MODEL = "text-embedding-3-large"
+logger = logging.getLogger(__name__)
 STOPWORDS = {
     "a", "an", "the", "and", "or", "of", "to", "in", "on", "for", "with",
     "by", "is", "are", "be", "this", "that", "these", "those", "it", "its",
@@ -228,11 +230,26 @@ def build_and_save_default_index(
     embedding_model: str = DEFAULT_OFFLINE_EMBEDDING_MODEL,
     path: Path | str = DEFAULT_INDEX_PATH,
 ) -> ActionIndex:
+    logger.info(
+        "Building default action index with embedding model '%s'", embedding_model
+    )
+    actions = load_default_actions()
+    logger.info("Loaded %d default actions", len(actions))
+
+    vocab_list = list(vocab) if vocab is not None else None
+    if vocab_list is not None:
+        logger.info("Using provided vocabulary with %d tokens", len(vocab_list))
+
     index = build_action_index(
-        load_default_actions(),
+        actions,
         embed_fn=embed_fn,
-        vocab=vocab,
+        vocab=vocab_list,
         embedding_model=embedding_model,
     )
+    logger.info(
+        "Built index for %d actions with vocab size %d", len(actions), len(index.vocab)
+    )
+
     index.save(path)
+    logger.info("Saved default action index to %s", path)
     return index
