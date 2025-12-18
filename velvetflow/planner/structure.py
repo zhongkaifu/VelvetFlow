@@ -1270,20 +1270,24 @@ def _plan_with_agent_runner(
 
         return _tool
 
-    tools = [
-        _wrap_tool("search_business_actions"),
-        _wrap_tool("set_workflow_meta"),
-        _wrap_tool("add_action_node"),
-        _wrap_tool("add_loop_node"),
-        _wrap_tool("add_condition_node"),
-        _wrap_tool("add_switch_node"),
-        _wrap_tool("update_action_node"),
-        _wrap_tool("update_condition_node"),
-        _wrap_tool("update_loop_node"),
-        _wrap_tool("update_switch_node"),
-        _wrap_tool("finalize_workflow"),
-        _wrap_tool("dump_model"),
-    ]
+    try:
+        tools = [
+            _wrap_tool("search_business_actions"),
+            _wrap_tool("set_workflow_meta"),
+            _wrap_tool("add_action_node"),
+            _wrap_tool("add_loop_node"),
+            _wrap_tool("add_condition_node"),
+            _wrap_tool("add_switch_node"),
+            _wrap_tool("update_action_node"),
+            _wrap_tool("update_condition_node"),
+            _wrap_tool("update_loop_node"),
+            _wrap_tool("update_switch_node"),
+            _wrap_tool("finalize_workflow"),
+            _wrap_tool("dump_model"),
+        ]
+    except Exception as exc:  # noqa: BLE001 - ensure compatible fallback
+        log_warn(f"[Planner] Agent SDK 工具注册失败，将回退到 chat.completions：{exc}")
+        return None
 
     agent = Agent(
         name="WorkflowStructurePlanner",
