@@ -5,6 +5,7 @@
 
 import asyncio
 import copy
+import inspect
 import json
 import os
 from typing import Any, Callable, Dict, List, Mapping, Optional
@@ -17,7 +18,7 @@ from velvetflow.logging_utils import (
     log_section,
     log_warn,
 )
-from velvetflow.planner.agent_runtime import Agent, FunctionTool, Runner
+from velvetflow.planner.agent_runtime import Agent, FunctionTool, Runner, function_tool
 from velvetflow.planner.action_guard import ensure_registered_actions
 from velvetflow.planner.approval import detect_missing_approval_nodes
 from velvetflow.planner.coverage import check_requirement_coverage_with_llm
@@ -1102,12 +1103,33 @@ def plan_workflow_structure_with_llm(
 
     def _build_function_tool(func: Callable[..., Any]):
         try:
-            return FunctionTool(func, strict=False)  # type: ignore[call-arg]
-        except TypeError:
-            tool = FunctionTool(func)
-            if not getattr(tool, "strict", None):
-                setattr(tool, "strict", False)
-            return tool
+            params = inspect.signature(FunctionTool).parameters
+        except (TypeError, ValueError):
+            params = {}
+
+        tool = None
+        if "strict" in params:
+            try:
+                tool = FunctionTool(func, strict=False)  # type: ignore[call-arg]
+            except TypeError:
+                tool = None
+
+        if tool is None and {"description", "params_json_schema", "on_invoke_tool"}.issubset(set(params)):
+            tool = function_tool(func)
+
+        if tool is None:
+            try:
+                tool = FunctionTool(func)
+            except TypeError:
+                tool = function_tool(func)
+
+        if hasattr(tool, "strict"):
+            try:
+                tool.strict = False
+            except Exception:
+                pass
+
+        return tool
 
     search_business_actions_tool = _build_function_tool(search_business_actions)
     set_workflow_meta_tool = _build_function_tool(set_workflow_meta)
