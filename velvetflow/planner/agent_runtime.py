@@ -25,7 +25,7 @@ from pydantic import create_model
 
 
 try:  # pragma: no cover - prefer the official SDK when available
-    from agents import Agent, Runner, function_tool  # type: ignore
+    from agents import Agent, Runner, function_tool as _official_function_tool  # type: ignore
 
     USING_OFFICIAL_AGENTS = True
     RunnerResult = None  # type: ignore[assignment]
@@ -56,7 +56,27 @@ def _build_parameter_schema(func: Callable[..., Any]) -> Mapping[str, Any]:
     return _strip_additional_properties(schema)
 
 
-if not USING_OFFICIAL_AGENTS:
+def _attach_sanitized_schema(func: Callable[..., Any]) -> None:
+    """Attach sanitized schemas for both fallback and official runners."""
+
+    schema = _build_parameter_schema(func)
+    sanitized = _strip_additional_properties(schema)
+    # The fallback runner reads __tool_schema__, while the official SDK may look
+    # for various internal attributes. We proactively attach a few common names
+    # to ensure the sanitized schema is discoverable regardless of the runner
+    # implementation.
+    func.__tool_schema__ = sanitized  # type: ignore[attr-defined]
+    func.__agents_schema__ = sanitized  # type: ignore[attr-defined]
+    func.__openai_schema__ = sanitized  # type: ignore[attr-defined]
+
+
+if USING_OFFICIAL_AGENTS:
+    def function_tool(func: Callable[..., Any]) -> Callable[..., Any]:  # pragma: no cover - passthrough wrapper
+        decorated = _official_function_tool(func)
+        _attach_sanitized_schema(decorated)
+        return decorated
+
+else:
 
     @dataclass
     class Agent:  # pragma: no cover - thin data holder
@@ -67,12 +87,13 @@ if not USING_OFFICIAL_AGENTS:
 
 
     def function_tool(func: Callable[..., Any]) -> Callable[..., Any]:  # pragma: no cover - simple decorator
-        func.__tool_schema__ = {
+        _attach_sanitized_schema(func)
+        func.__tool_schema__ = {  # type: ignore[attr-defined]
             "type": "function",
             "function": {
                 "name": func.__name__,
                 "description": inspect.getdoc(func) or "",
-                "parameters": _build_parameter_schema(func),
+                "parameters": func.__tool_schema__,  # sanitized schema
             },
         }
         return func
