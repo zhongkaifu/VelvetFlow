@@ -412,7 +412,7 @@ class _WorkflowAgentRuntime:
 
 
 def _wrap_tool(tool_wrapper: Callable[[Callable[..., Any]], Any] | None, func: Callable[..., Any]) -> Any:
-    if tool_wrapper is None:
+    if tool_wrapper is None or not callable(tool_wrapper):
         return func
     return tool_wrapper(func)
 
