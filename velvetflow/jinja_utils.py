@@ -27,6 +27,7 @@ def get_jinja_env() -> Environment:
         trim_blocks=True,
         lstrip_blocks=True,
     )
+    env.globals.setdefault("now", datetime.now)
     env.filters.setdefault("tojson", lambda obj: json.dumps(obj, ensure_ascii=False))
     env.filters.setdefault("length", lambda obj: len(obj) if obj is not None else 0)
 
