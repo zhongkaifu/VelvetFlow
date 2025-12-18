@@ -26,7 +26,6 @@
 from __future__ import annotations
 
 import asyncio
-import importlib
 import inspect
 import json
 from dataclasses import asdict, dataclass
@@ -130,31 +129,25 @@ def _import_openai_agent() -> tuple[type, Callable[[Callable[..., Any]], Any] | 
     # 1) 优先尝试新的 ``agents`` 包（示例中的调用方式）
     last_error: Exception | None = None
     try:
-        agents_mod = importlib.import_module("agents")
-        agent_cls = getattr(agents_mod, "Agent", None)
-        runner_cls = getattr(agents_mod, "Runner", None)
-        if agent_cls is not None and runner_cls is not None:
-            tool_wrapper = getattr(agents_mod, "tool", None)
-            return agent_cls, tool_wrapper, False, runner_cls, True  # type: ignore[arg-type]
+        from agents import Agent as AgentsAgent, Runner as AgentsRunner, tool as agents_tool  # type: ignore
+
+        return AgentsAgent, agents_tool, False, AgentsRunner, True
     except Exception as exc:  # pragma: no cover - depends on external SDK
         last_error = exc
 
     # 2) 回退到 openai agent SDK
-    candidates = [
-        "openai.agents",
-        "openai.agent",
-    ]
-    for module_name in candidates:
-        try:
-            module = importlib.import_module(module_name)
-        except Exception as exc:  # pragma: no cover - depends on external SDK
-            last_error = exc
-            continue
+    try:
+        from openai.agents import Agent as OAAgent, Runner as OARunner, tool as oa_tool  # type: ignore
 
-        agent_cls = getattr(module, "Agent", None)
-        tool_wrapper = getattr(module, "tool", None)
-        if agent_cls is not None:
-            return agent_cls, tool_wrapper, False, None, False  # type: ignore[arg-type]
+        return OAAgent, oa_tool, False, None, False
+    except Exception as exc:  # pragma: no cover - depends on external SDK
+        last_error = exc
+        try:
+            from openai.agent import Agent as OAAgentLegacy, tool as oa_tool_legacy  # type: ignore
+
+            return OAAgentLegacy, oa_tool_legacy, False, None, False
+        except Exception as exc2:  # pragma: no cover
+            last_error = exc2
 
     # 3) 本地 fallback
     if last_error:
