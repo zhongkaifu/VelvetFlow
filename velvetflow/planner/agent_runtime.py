@@ -28,7 +28,6 @@ try:  # pragma: no cover - prefer the official SDK when available
     from agents import Agent, Runner, function_tool as _official_function_tool  # type: ignore
 
     USING_OFFICIAL_AGENTS = True
-    RunnerResult = None  # type: ignore[assignment]
 except ImportError:  # pragma: no cover - exercised in environments without the SDK
     USING_OFFICIAL_AGENTS = False
 
@@ -88,104 +87,18 @@ else:
 
     def function_tool(func: Callable[..., Any]) -> Callable[..., Any]:  # pragma: no cover - simple decorator
         _attach_sanitized_schema(func)
-        func.__tool_schema__ = {  # type: ignore[attr-defined]
-            "type": "function",
-            "function": {
-                "name": func.__name__,
-                "description": inspect.getdoc(func) or "",
-                "parameters": func.__tool_schema__,  # sanitized schema
-            },
-        }
         return func
 
 
-    @dataclass
-    class RunnerResult:  # pragma: no cover - basic return wrapper
-        final_output: str | None
-        messages: List[Mapping[str, Any]]
-
-
-    class Runner:  # pragma: no cover - synchronous shim for Chat Completions
+    class Runner:  # pragma: no cover - explicit error to surface missing SDK
         @staticmethod
-        def run(
-            agent: Agent,
-            prompt_or_messages: str | Sequence[Mapping[str, Any]],
-            *,
-            client: OpenAI | None = None,
-            max_rounds: int = 12,
-            temperature: float = 0.2,
-        ) -> RunnerResult:
-            client = client or OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
-
-            if isinstance(prompt_or_messages, str):
-                messages: List[Mapping[str, Any]] = [{"role": "user", "content": prompt_or_messages}]
-            else:
-                messages = list(prompt_or_messages)
-
-            if agent.instructions:
-                messages = [{"role": "system", "content": agent.instructions}] + messages
-
-            tools = []
-            tool_lookup: Dict[str, Callable[..., Any]] = {}
-            for tool in agent.tools:
-                schema = getattr(tool, "__tool_schema__", None)
-                if schema:
-                    tools.append(schema)
-                tool_lookup[getattr(tool, "__name__", "")] = tool
-
-            for _ in range(max_rounds):
-                resp = client.chat.completions.create(
-                    model=agent.model or os.environ.get("OPENAI_MODEL"),
-                    messages=messages,
-                    tools=tools,
-                    tool_choice="auto",
-                    temperature=temperature,
-                )
-                msg = resp.choices[0].message
-                messages.append({
-                    "role": "assistant",
-                    "content": msg.content or "",
-                    "tool_calls": msg.tool_calls,
-                })
-
-                if not msg.tool_calls:
-                    return RunnerResult(final_output=msg.content, messages=messages)
-
-                for tc in msg.tool_calls:
-                    func_name = tc.function.name
-                    args_raw = tc.function.arguments
-                    try:
-                        args = json.loads(args_raw) if args_raw else {}
-                    except json.JSONDecodeError:
-                        args = {}
-
-                    tool_fn = tool_lookup.get(func_name)
-                    if not tool_fn:
-                        tool_result = {"status": "error", "message": f"未知工具 {func_name}"}
-                    else:
-                        try:
-                            tool_result = tool_fn(**args)
-                        except Exception as exc:  # pragma: no cover - defensive path
-                            tool_result = {
-                                "status": "error",
-                                "message": f"执行工具 {func_name} 时出错: {exc}",
-                            }
-
-                    messages.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": tc.id,
-                            "content": json.dumps(tool_result, ensure_ascii=False),
-                        }
-                    )
-
-            return RunnerResult(final_output=None, messages=messages)
+        def run(*_: Any, **__: Any) -> Any:
+            raise RuntimeError("The official `agents` SDK is required to run planners; please install `agents`.")
 
 
 __all__ = [
     "Agent",
     "Runner",
-    "RunnerResult",
     "USING_OFFICIAL_AGENTS",
     "function_tool",
 ]
