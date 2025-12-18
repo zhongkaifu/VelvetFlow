@@ -1,7 +1,7 @@
 # 内部实现与设计模式
 
 ## 模块分层
-- **规划层**：`planner/structure.py` 负责 tool-calling 生成骨架，`coverage.py` 提供覆盖度反馈，`orchestrator.py` 统筹补参、Action Guard、修复循环。
+- **规划层（基于 Agent SDK）**：`planner/structure.py` 内联定义 Agent 工具生成骨架，`workflow_builder.py` 推导 edges/depends_on 并裁剪无关字段，`coverage.py` 提供覆盖度反馈，`params.py`/`repair.py` 分别以 Agent Runner 执行逐节点补参与自修复，`orchestrator.py` 统筹 Action Guard、校验与修复循环，核心依赖由 `agent_runtime.py` 集中导出。
 - **校验层**：`verification/validation.py`、`planner/repair_tools.py` 检查节点类型、引用路径与 Schema 兼容性，必要时自动填充默认值或清理非法字段。
 - **执行层**：`executor` 包通过组合式 mixin 将动作调用、条件判断、循环展开、模板渲染与图遍历解耦，`dynamic_executor.py` 汇总后实现可挂起的执行主循环。
 

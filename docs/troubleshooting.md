@@ -2,6 +2,7 @@
 
 ## 常见错误
 - **缺少 OpenAI 凭证**：确保已设置 `OPENAI_API_KEY` 环境变量。
+- **缺少 Agent SDK**：如果报 `No module named 'agents'` 或 Planner 无法导入 Agent/Runner，请额外执行 `pip install agents`（或 `uv add agents`），因为结构/补参/修复阶段依赖 OpenAI Agent SDK。
 - **未注册的 action_id**：规划或执行阶段报错时，检查 `tools/business_actions/` 是否存在该动作并重新构建索引；执行器启动时会提前失败以避免运行期出错。
 - **绑定路径不合法**：`ValidationError` 提示找不到 `__from__` 路径时，确认上游节点的输出 Schema 是否包含该字段或在 loop.exports 中声明。
 - **异步节点无法恢复**：如果 `resume_from_suspension` 失败，确认 `suspension.json` 与回调结果的 `request_id` 一致，并确保结果文件包含 `status` 或业务返回体。
@@ -11,7 +12,7 @@
   ```bash
   python validate_workflow.py path/to/workflow.json --print-normalized
   ```
-- **查看规划日志**：`build_workflow.py` 会输出覆盖度缺失和 tool-calling 结果，便于定位 LLM 生成阶段的问题。
+- **查看规划日志**：`build_workflow.py` 会输出覆盖度缺失、Agent 工具调用与返回结果，便于定位 LLM 生成阶段的问题。
 - **执行期事件**：`execute_workflow.py` 默认打印节点起止、条件结果、loop 聚合等日志，异步挂起时会输出 `WorkflowSuspension` 细节。
 
 ## 进一步支持

@@ -1,7 +1,7 @@
 # VelvetFlow [![CI](https://github.com/zhongkaifu/VelvetFlow/actions/workflows/ci.yml/badge.svg)](https://github.com/zhongkaifu/VelvetFlow/actions/workflows/ci.yml)
 [![](logo.jpg)](logo.jpg)
 
-VelvetFlow 是一个可复用的 LLM 驱动工作流规划与执行演示项目。项目包含混合检索、两阶段 LLM 规划（结构 + 补参）、静态校验与自修复、参数绑定 DSL、可模拟执行器与 DAG 可视化，帮助从自然语言需求自动构建并运行业务流程。
+VelvetFlow 是一个可复用的 LLM 驱动工作流规划与执行演示项目。项目包含混合检索、两阶段 LLM 规划（结构 + 补参）、静态校验与自修复、参数绑定 DSL、可模拟执行器与 DAG 可视化，帮助从自然语言需求自动构建并运行业务流程。近期已将 Planner 全面迁移到 **OpenAI Agent SDK**（`agents.Agent`/`Runner`/`function_tool`），以便在同一套工具描述下同时适配云端 Agent 与本地调试场景。
 
 开篇先交代业务与交付价值：更少人工即可把文字需求变成可执行流程，内置安全审计、防御式修复与回滚路径，缩短 PoC 周期并提高交付确定性。随后的章节概述核心架构（混合检索、两阶段规划、Action Guard、本地/LLM 修复、可视化与模拟执行器），再逐步下钻到项目结构、运行方式、规划与执行细节及 DSL 参考，既便于决策判断落地性，也方便工程师按步骤复刻实现。
 
@@ -60,26 +60,38 @@ VelvetFlow (repo root)
 ├── simulation_data.json         # 执行动作的模拟返回模板
 ├── velvetflow/
 │   ├── action_registry.py       # 从 tools/business_actions/ 读取动作，附加安全元数据
+│   ├── aggregation.py           # 聚合/过滤操作的通用实现
 │   ├── bindings.py              # 参数绑定 DSL 解析/校验
+│   ├── reference_utils.py       # 引用路径归一化与替换工具
+│   ├── workflow_parser.py       # JSON Workflow 的加载与归一化
+│   ├── metrics.py               # RunManager 与指标收集
 │   ├── config.py                # 默认 OpenAI 模型配置
 │   ├── executor/                # 动态执行器与节点 mixin，支持条件/循环/异步挂起
 │   ├── logging_utils.py         # 终端友好日志 & 事件日志
 │   ├── loop_dsl.py              # loop 节点 exports 输出 Schema 辅助
 │   ├── models.py                # Workflow/Node/Edge 强类型模型与校验
-│   ├── planner/                 # 结构规划、补参与自修复模块
+│   ├── planner/                 # 结构规划、补参、更新与自修复，基于 Agent SDK
+│   │   ├── agent_runtime.py     # Agent SDK 兼容层，集中导出 Agent/Runner/function_tool
+│   │   ├── workflow_builder.py  # 规划期的可变骨架构建器，附带隐式 edges/depends_on
+│   │   ├── structure.py         # 结构规划 Agent（含 Action Guard、coverage 检查）
+│   │   ├── params.py            # 参数补全 Agent，按拓扑逐节点校验提交/验证
+│   │   ├── repair.py            # 自修复 Agent，支持补丁与命名修复工具
+│   │   ├── action_guard.py / approval.py / relations.py / update.py / coverage.py 等辅助模块
 │   ├── verification/            # 规划/更新/执行共享的静态校验模块
 │   ├── search.py                # 在线检索：基于离线索引的混合排序
 │   ├── search_index.py          # 离线索引：关键词与向量索引的构建/持久化
 │   └── visualization.py         # 将 workflow 渲染为 JPEG DAG
 ├── tools/
 │   ├── business_actions/        # HR/OPS/CRM 等示例动作库（按命名空间拆分）
-│   └── ...
-├── build_workflow.py                  # 端到端生成 + 可视化示例入口
-├── execute_workflow.py                 # 从已保存 JSON 执行 workflow
+│   ├── builtin.py               # 通用检索/网页抓取等内置动作
+│   └── action_index.json        # 默认的检索索引缓存
+├── webapp/                      # FastAPI + Canvas 的可视化/交互式 Planner & Executor
+├── build_workflow.py            # 端到端生成 + 可视化示例入口
+├── execute_workflow.py          # 从已保存 JSON 执行 workflow
 └── LICENSE
 ```
 
-## 核心能力
+- **Agent SDK 驱动的三段式 Planner**：结构规划、参数补全与修复均使用 OpenAI Agent SDK 的 `Agent`/`Runner`/`function_tool` 封装，`planner/agent_runtime.py` 集中导出依赖，`structure.py`/`params.py`/`repair.py` 分别提供骨架构建、逐节点参数校验提交/验证与按需自修复的 Agent 定义，保持同样的工具协议即可在云端 Agent 与本地运行之间切换。
 - **业务动作注册表**：`action_registry.py` 从 `tools/business_actions/` 载入动作，自动补齐 `requires_approval` / `allowed_roles` 安全字段，并提供 `get_action_by_id` 查询。
 - **离线索引 + 在线混合检索**：`search_index.py` 使用 OpenAI `text-embedding-3-large` 将业务动作构建为关键词与 embedding 索引，可由 `./build_action_index.py` 独立运行生成；`search.py` 读取索引并使用 `FakeElasticsearch`（关键词计分）与基于 Faiss 的向量检索（余弦相似度）混合排序，在线检索阶段仅对 query 进行 OpenAI embedding 再与索引中已有的动作 embedding 做匹配，`HybridActionSearchService` 提供工作流规划阶段的工具召回。
 - **工作流规划 Orchestrator**：`planner/orchestrator.py` 实现两阶段 `plan_workflow_with_two_pass`，在结构规划 + 补参后还会自动做动作合法性守卫、字段类型比对、缺省导出填充，再进入 LLM 修复循环：
@@ -99,19 +111,22 @@ VelvetFlow (repo root)
 
 ## 使用方法
 1. **安装依赖（支持 pip 或 uv）**
-   - 使用 pip + venv：
-     ```bash
-     python -m venv .venv
-     source .venv/bin/activate
-     pip install -r requirements.txt
-     ```
-   - 使用 [uv](https://github.com/astral-sh/uv)（依赖由 `pyproject.toml` 描述，默认创建 `.venv`）：
-     ```bash
-     uv venv --python 3.10
-     source .venv/bin/activate
-     uv sync
-     ```
-     uv 会自动读取 `pyproject.toml` 同步依赖；后续可以用 `uv run python build_workflow.py` 等方式直接运行脚本。
+ - 使用 pip + venv：
+   ```bash
+   python -m venv .venv
+   source .venv/bin/activate
+   pip install -r requirements.txt
+    # Planner 依赖 OpenAI Agent SDK 的 Agent/Runner/function_tool
+    pip install agents
+   ```
+  - 使用 [uv](https://github.com/astral-sh/uv)（依赖由 `pyproject.toml` 描述，默认创建 `.venv`）：
+    ```bash
+    uv venv --python 3.10
+    source .venv/bin/activate
+    uv sync
+    uv add agents
+    ```
+    uv 会自动读取 `pyproject.toml` 同步依赖；后续可以用 `uv run python build_workflow.py` 等方式直接运行脚本。
 2. **设置凭证**
    ```bash
    export OPENAI_API_KEY="<your_api_key>"
@@ -185,7 +200,7 @@ VelvetFlow (repo root)
 下面将端到端流程拆解为可复用的流水线，体现近期新增的“防御式校验 + 自动修复”改动：
 
 1. **需求接收与环境准备**：获取自然语言需求，加载业务动作库并初始化混合检索服务，后续 Action Guard 将复用检索结果做自动替换。
-2. **结构规划 + 覆盖度校验（LLM）**：`plan_workflow_structure_with_llm` 通过 `planner/tools.py` 工具集多轮构建 `nodes/entry/exit` 骨架（无需显式 edges，拓扑由参数引用与条件分支推导），每次 `finalize_workflow` 都会触发覆盖度检查并将缺失点回注给 LLM；同时提前检查 loop body 中的节点引用是否缺失，必要时进入修复。【F:velvetflow/planner/structure.py†L631-L960】【F:velvetflow/planner/tools.py†L1-L192】【F:velvetflow/planner/coverage.py†L13-L118】【F:velvetflow/planner/orchestrator.py†L170-L236】
+2. **结构规划 + 覆盖度校验（Agent）**：`plan_workflow_structure_with_llm` 通过内联的 Agent 工具集（检索、节点增删改、依赖修补、finalize/dump）多轮构建骨架（无需显式 edges，拓扑由参数引用与条件/分支推导），每次 `finalize_workflow` 都会触发覆盖度检查并将缺失点回注给 Agent；同时提前检查 loop body 中的节点引用是否缺失，必要时进入修复。【F:velvetflow/planner/structure.py†L603-L964】【F:velvetflow/planner/coverage.py†L13-L118】【F:velvetflow/planner/orchestrator.py†L170-L236】
 3. **动作守卫与骨架校准**：结构结果会被 Pydantic 校验并进入 Action Guard。未注册/缺失的 `action_id` 会先尝试用混合检索一键替换，再将剩余问题交给 LLM 修复，确保进入补参阶段的动作都在白名单内。【F:velvetflow/planner/orchestrator.py†L104-L214】【F:velvetflow/planner/orchestrator.py†L262-L343】
 4. **参数补全（LLM）**：`fill_params_with_llm` 在骨架上补齐各节点的 `params`、`exports` 与绑定表达式。若补参异常会直接回滚到上次合法版本，并走同样的 Action Guard 保障动作合法性。【F:velvetflow/planner/orchestrator.py†L361-L432】
 5. **本地自动修复与类型对齐**：补参结果会先经过多轮本地修复：
@@ -215,21 +230,18 @@ flowchart TD
     class C,F,H llm;
 ```
 
-LLM 相关节点说明：
-- **结构规划**：基于自然语言需求与动作 schema，生成 `nodes/entry/exit` 的骨架，连线关系由参数绑定与 condition 的 true/false 跳转隐式推导。规划阶段会使用预置的工具集（添加节点、设置入口出口、修改 meta 信息等），模型通过 tool-calling 自动选择，所有调用结果会以日志形式保存，便于复现或对照失败案例。【F:velvetflow/planner/structure.py†L337-L451】【F:velvetflow/models.py†L137-L246】【F:velvetflow/models.py†L441-L468】
-- **覆盖度检查**：在结构规划阶段，当模型调用 `finalize_workflow` 时会立即对照自然语言需求触发覆盖度检查；若出现 `missing_points` 会把缺失点和当前 workflow 反馈给模型，让其继续用规划工具补齐后再次 finalize，直至覆盖或达到补全上限。【F:velvetflow/planner/structure.py†L631-L960】【F:velvetflow/planner/coverage.py†L13-L118】
+LLM / Agent SDK 相关节点说明：
+- **结构规划 Agent**：基于自然语言需求与动作 schema 生成骨架，连线关系由参数绑定与 condition/switch 的 true/false/cases 跳转隐式推导。`WorkflowBuilder` 会把推导出的 edges、condition 分支与 `depends_on` 写回骨架，方便下游 Agent/校验共享上下文；节点的 `params`/字段也会按节点类型或 action schema 过滤无关字段，避免 Agent 生成不可识别的参数。【F:velvetflow/planner/workflow_builder.py†L20-L77】【F:velvetflow/planner/workflow_builder.py†L179-L222】【F:velvetflow/planner/structure.py†L603-L746】【F:velvetflow/planner/structure.py†L1134-L1186】
+- **覆盖度检查**：在结构规划阶段，当模型调用 `finalize_workflow` 时会立即对照自然语言需求触发覆盖度检查；若出现 `missing_points` 会把缺失点和当前 workflow 反馈给 Agent，让其继续用规划工具补齐后再次 finalize，直至覆盖或达到补全上限。【F:velvetflow/planner/structure.py†L780-L964】【F:velvetflow/planner/coverage.py†L13-L118】
 - **动作合法性守卫**：补参前后若发现 `action_id` 缺失或未注册，会先尝试基于 display_name/原 action_id 检索替换，再将剩余问题打包给 LLM 修复，避免幻觉动作进入最终 Workflow。【F:velvetflow/planner/orchestrator.py†L104-L214】【F:velvetflow/planner/orchestrator.py†L262-L343】
-- **参数补全**：为每个 action/condition/loop 节点填充必需的 `params`、`exports` 与绑定表达式，模型由 `velvetflow.config.OPENAI_MODEL` 控制。
-- **自修复**：当静态校验或本地修复仍未通过时，使用当前 workflow 字典与 `ValidationError` 列表提示模型修复，直到通过或达到 `max_repair_rounds`，并在过程中保留最近一次合法版本以确保可回退。【F:velvetflow/planner/orchestrator.py†L671-L817】【F:velvetflow/planner/orchestrator.py†L834-L940】
+- **参数补全 Agent**：在拓扑顺序上逐节点执行提交/校验两个工具（`submit_node_params` 与 `validate_node_params`），确保每个节点参数与上游绑定/Schema 一致；补全过程同样运行在 Agent Runner 上，并携带跨节点的绑定记忆以维持实体 ID 的一致性。【F:velvetflow/planner/params.py†L15-L210】【F:velvetflow/planner/params.py†L430-L520】
+- **自修复 Agent**：当静态校验或本地修复仍未通过时，使用当前 workflow 字典与 `ValidationError` 列表提示模型修复。Agent 可以调用命名修复工具（如替换引用、补必填参数、规范化绑定路径）或提交补丁文本，直至通过或达到 `max_repair_rounds`，并在过程中保留最近一次合法版本以确保可回退。【F:velvetflow/planner/repair.py†L616-L756】【F:velvetflow/planner/orchestrator.py†L671-L817】【F:velvetflow/planner/orchestrator.py†L834-L940】
 
-### Tool-calling 的设计与技术细节
-- **工具清单与参数规范**：规划阶段暴露给 LLM 的工具集中定义在 `planner/tools.py`，包含元数据设置、业务动作检索、节点增删/条件分支更新以及结束标记，共同组成结构规划的“编辑指令集”。每个工具都给出了 JSON Schema 约束，帮助模型生成可解析的参数；其中 `search_business_actions` 返回 candidates 列表，后续 `add_action_node` 只能在该候选集里选择 action_id，强制动作来自注册表。【F:velvetflow/planner/tools.py†L1-L192】
-- **系统提示词与回合驱动**：`plan_workflow_structure_with_llm` 会构造包含硬性约束的 system prompt，强调必须围绕用户需求逐步覆盖触发/查询/筛选/总结/通知等子任务，并在循环节点外部只能引用 `loop.exports`。随后以多轮对话驱动 tool-calling，默认温度 0.2、`tool_choice="auto"`，模型在调用 `finalize_workflow` 后会收到覆盖度缺失的 system 反馈并继续补齐。【F:velvetflow/planner/structure.py†L305-L375】【F:velvetflow/planner/structure.py†L631-L960】
-- **工具执行与防御式校验**：每轮返回的 tool_calls 会被逐个解析 JSON 参数并分派执行：
-  - 动作检索会更新 `last_action_candidates`，用来限定后续 action 节点的合法 ID；若未先检索或 ID 不在候选集中，会返回错误结果继续对话，防止幻觉动作写入工作流。【F:velvetflow/planner/structure.py†L376-L438】
-  - 节点增删与 condition 分支更新最终通过 `WorkflowBuilder` 汇总到 skeleton；解析失败时会记录错误并附带 `tool_call_id`，便于模型在下一轮修正。【F:velvetflow/planner/structure.py†L341-L449】
-  - 在 `finalize_workflow` 触发覆盖度缺失时，会通过 tool 回执与 system 提示反馈缺失点，允许模型继续使用相同的规划工具补齐骨架。【F:velvetflow/planner/structure.py†L631-L960】
-- **日志与可复现性**：每次调用都会使用 `log_info/log_error/log_event` 记录函数名与参数，LLM 返回的 `messages` 会完整保留 tool 调用及结果，覆盖度检查反馈同样会写入日志，方便重放或定位失败的阶段。【F:velvetflow/planner/structure.py†L327-L960】
+### Agent 工具的设计与运行方式
+- **会话级工具与闭包状态**：结构规划的工具集（检索、设置 meta、节点增删改、finalize/dump）在 `plan_workflow_structure_with_llm` 内使用 `@function_tool(strict_mode=False)` 声明，并依托闭包保存 `WorkflowBuilder`、动作候选、覆盖度反馈与依赖修补等上下文，`planner/agent_runtime.py` 统一导出 `Agent`/`Runner`/`function_tool` 便于切换 Agent SDK 版本。【F:velvetflow/planner/structure.py†L603-L829】【F:velvetflow/planner/agent_runtime.py†L4-L26】
+- **系统提示词与回合驱动**：结构规划 Agent 在构造 system prompt 时明确“逐步覆盖需求、限制 loop 引用范围、禁止幻觉动作”，随后通过 `Runner.run_sync(..., max_turns)` 触发多轮工具调用，必要时自动回落到异步 `Runner.run`；同一模式也复用于参数补全与修复 Agent，以统一的调用方式串联三段流程。【F:velvetflow/planner/structure.py†L560-L596】【F:velvetflow/planner/structure.py†L1134-L1163】【F:velvetflow/planner/params.py†L478-L491】【F:velvetflow/planner/repair.py†L695-L726】
+- **工具执行与防御式校验**：动作检索工具会更新候选集并校验后续 `add_action_node` 的合法 action_id，节点的 params/字段会在写入前按节点类型或 action schema 自动裁剪，避免 Agent 输出不受支持的字段；`finalize_workflow` 触发覆盖度检查或依赖修补后才会标记完成，确保骨架闭合。【F:velvetflow/planner/structure.py†L603-L964】【F:velvetflow/planner/workflow_builder.py†L20-L160】【F:velvetflow/planner/workflow_builder.py†L179-L222】
+- **日志与可复现性**：每次工具调用的参数、错误与覆盖度反馈都会写入事件日志，Agent 返回的 messages 也会完整保留，便于重放或定位失败阶段。【F:velvetflow/planner/structure.py†L470-L497】【F:velvetflow/planner/structure.py†L603-L1163】
 
 ## 循环节点的处理细节
 为方便开发者定位循环相关逻辑，补充 loop 的运行与导出细节：
@@ -255,7 +267,7 @@ LLM 相关节点说明：
   "nodes": [ /* 节点数组，详见下文 */ ]
 }
 ```
-- 节点会经由 Pydantic 强类型校验，重复的 `id` 或非法字段都会报错。显式的 `edges` 已被移除，拓扑由参数引用与条件分支自动推导。【F:velvetflow/models.py†L44-L92】【F:velvetflow/models.py†L137-L246】【F:velvetflow/models.py†L441-L468】
+- 节点会经由 Pydantic 强类型校验，重复的 `id` 或非法字段都会报错。显式 `edges` 不是必填项：Planner 会基于参数绑定与条件/分支自动推导并在输出中附带只读 edges，执行阶段同样会重新推导拓扑。【F:velvetflow/models.py†L44-L92】【F:velvetflow/models.py†L137-L246】【F:velvetflow/models.py†L441-L468】【F:velvetflow/planner/workflow_builder.py†L179-L222】
 
 ### 节点定义（nodes）
 每个节点都包含以下字段：
@@ -263,7 +275,7 @@ LLM 相关节点说明：
 ```jsonc
 {
   "id": "唯一字符串",
-  "type": "start|end|action|condition|loop|parallel",
+  "type": "start|end|action|condition|switch|loop|parallel",
   "action_id": "仅 action 节点需要，对应 tools/business_actions/ 中的 id",
   "display_name": "可选: 用于可视化/日志的友好名称",
   "params": { /* 取决于节点类型的参数，下文详述 */ }
@@ -273,11 +285,12 @@ LLM 相关节点说明：
 - **start/end**：只需 `id` 与 `type`，`params` 可为空。常作为入口/出口。
 - **action**：`action_id` 必填；`params` 按动作的 `arg_schema` 填写，支持绑定 DSL（见下文）。
 - **condition**：`params` 中通常包含 `source`（绑定路径或常量）、`op`（如 equals、greater_than）、`value`（对比值），并需要通过 `true_to_node`/`false_to_node` 显式指向下游节点（或设置为 `null` 表示分支终止）。
+- **switch**：支持多分支匹配，`params` 中可携带 `source/field` 并在 `cases` 指定 `value` 与 `to_node` 的映射，未命中时走 `default_to_node`。
 - **loop**：`params` 需要 `iter`（循环目标，如 `result_of.fetch.items`）、`body_subgraph`（子图，结构同顶层 workflow）、`exports`（定义每轮的收集字段与聚合规则）。`body_subgraph` 在解析时也会按完整 Workflow 校验，字段不合法会提前报错。【F:velvetflow/models.py†L70-L92】
 - **parallel**：用于并行分支的占位节点，通常没有额外参数。
 
 ### 拓扑推导（隐式 edges）
-- 工作流不再需要显式声明 `edges`。执行前会依据参数绑定里的 `result_of.<node>` 引用、字符串中的嵌入引用、condition 节点的 `true_to_node`/`false_to_node` 自动推导有向边，避免重复维护拓扑。
+- 工作流不再需要显式声明 `edges`。执行前会依据参数绑定里的 `result_of.<node>` 引用、字符串中的嵌入引用、condition 节点的 `true_to_node`/`false_to_node`、switch 节点的 `cases/default_to_node` 自动推导有向边，避免重复维护拓扑。
 - 推导逻辑会去重并忽略自引用，所有自动生成的边都会在可视化与执行阶段生效。【F:velvetflow/models.py†L137-L246】【F:velvetflow/models.py†L441-L468】
 
 ### 参数绑定 DSL（params 内的占位符）
