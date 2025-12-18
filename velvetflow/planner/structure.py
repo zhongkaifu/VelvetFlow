@@ -7,7 +7,7 @@ import asyncio
 import copy
 import json
 import os
-from typing import Any, Callable, Dict, List, Mapping, Optional
+from typing import Any, Callable, Dict, List, Mapping, Optional, Union
 
 from velvetflow.config import OPENAI_MODEL
 from velvetflow.logging_utils import (
@@ -29,6 +29,9 @@ from velvetflow.loop_dsl import iter_workflow_and_loop_body_nodes
 from velvetflow.search import HybridActionSearchService
 from velvetflow.models import infer_edges_from_bindings
 
+
+ToolResponse = Dict[str, object]
+ParamsMapping = Mapping[str, object]
 
 CONDITION_PARAM_FIELDS = {"expression"}
 
@@ -582,7 +585,7 @@ def plan_workflow_structure_with_llm(
         return payload
 
     @function_tool
-    def search_business_actions(query: str, top_k: int = 5) -> Mapping[str, Any]:
+    def search_business_actions(query: str, top_k: int = 5) -> ToolResponse:
         actions_raw = search_service.search(query=query, top_k=int(top_k))
         candidates = [
             {
@@ -598,7 +601,7 @@ def plan_workflow_structure_with_llm(
         return {"status": "ok", "query": query, "actions": actions_raw, "candidates": candidates}
 
     @function_tool
-    def set_workflow_meta(workflow_name: str, description: Optional[str] = None) -> Mapping[str, Any]:
+    def set_workflow_meta(workflow_name: str, description: Optional[str] = None) -> ToolResponse:
         builder.set_meta(workflow_name, description)
         _snapshot("meta_updated")
         return {"status": "ok", "type": "meta_set"}
@@ -609,10 +612,10 @@ def plan_workflow_structure_with_llm(
         action_id: str,
         display_name: Optional[str] = None,
         out_params_schema: Optional[Dict[str, str]] = None,
-        params: Optional[Dict[str, Any]] = None,
+        params: Optional[ParamsMapping] = None,
         depends_on: Optional[List[str]] = None,
         parent_node_id: Optional[str] = None,
-    ) -> Mapping[str, Any]:
+    ) -> ToolResponse:
         if not last_action_candidates:
             return _build_validation_error("action 节点必须在调用 search_business_actions 之后创建。")
         if action_id not in last_action_candidates:
@@ -654,14 +657,14 @@ def plan_workflow_structure_with_llm(
     def add_loop_node(
         id: str,
         loop_kind: str,
-        source: Any,
+        source: Union[str, ParamsMapping],
         item_alias: str,
         display_name: Optional[str] = None,
-        params: Optional[Dict[str, Any]] = None,
+        params: Optional[ParamsMapping] = None,
         sub_graph_nodes: Optional[List[str]] = None,
         depends_on: Optional[List[str]] = None,
         parent_node_id: Optional[str] = None,
-    ) -> Mapping[str, Any]:
+    ) -> ToolResponse:
         if parent_node_id is not None and not isinstance(parent_node_id, str):
             return _build_validation_error("parent_node_id 需要是字符串或 null。")
         invalid_fields: List[str] = []
@@ -714,10 +717,10 @@ def plan_workflow_structure_with_llm(
         true_to_node: Optional[str],
         false_to_node: Optional[str],
         display_name: Optional[str] = None,
-        params: Optional[Dict[str, Any]] = None,
+        params: Optional[ParamsMapping] = None,
         depends_on: Optional[List[str]] = None,
         parent_node_id: Optional[str] = None,
-    ) -> Mapping[str, Any]:
+    ) -> ToolResponse:
         if parent_node_id is not None and not isinstance(parent_node_id, str):
             return _build_validation_error("parent_node_id 需要是字符串或 null。")
         if true_to_node is not None and not isinstance(true_to_node, str):
@@ -756,13 +759,13 @@ def plan_workflow_structure_with_llm(
     @function_tool
     def add_switch_node(
         id: str,
-        cases: List[Dict[str, Any]],
+        cases: List[ParamsMapping],
         display_name: Optional[str] = None,
-        params: Optional[Dict[str, Any]] = None,
+        params: Optional[ParamsMapping] = None,
         default_to_node: Optional[str] = None,
         depends_on: Optional[List[str]] = None,
         parent_node_id: Optional[str] = None,
-    ) -> Mapping[str, Any]:
+    ) -> ToolResponse:
         if parent_node_id is not None and not isinstance(parent_node_id, str):
             return _build_validation_error("parent_node_id 需要是字符串或 null。")
         if not isinstance(cases, list):
@@ -822,12 +825,12 @@ def plan_workflow_structure_with_llm(
     def update_action_node(
         id: str,
         display_name: Optional[str] = None,
-        params: Optional[Dict[str, Any]] = None,
-        out_params_schema: Optional[Dict[str, Any]] = None,
+        params: Optional[ParamsMapping] = None,
+        out_params_schema: Optional[Mapping[str, object]] = None,
         action_id: Optional[str] = None,
         depends_on: Optional[List[str]] = None,
         parent_node_id: Optional[str] = None,
-    ) -> Mapping[str, Any]:
+    ) -> ToolResponse:
         precheck = _update_node_common(id, "action")
         if precheck:
             return precheck
@@ -884,12 +887,12 @@ def plan_workflow_structure_with_llm(
     def update_condition_node(
         id: str,
         display_name: Optional[str] = None,
-        params: Optional[Dict[str, Any]] = None,
+        params: Optional[ParamsMapping] = None,
         true_to_node: Optional[str] = None,
         false_to_node: Optional[str] = None,
         depends_on: Optional[List[str]] = None,
         parent_node_id: Optional[str] = None,
-    ) -> Mapping[str, Any]:
+    ) -> ToolResponse:
         precheck = _update_node_common(id, "condition")
         if precheck:
             return precheck
@@ -945,12 +948,12 @@ def plan_workflow_structure_with_llm(
     def update_switch_node(
         id: str,
         display_name: Optional[str] = None,
-        params: Optional[Dict[str, Any]] = None,
-        cases: Optional[List[Dict[str, Any]]] = None,
+        params: Optional[ParamsMapping] = None,
+        cases: Optional[List[ParamsMapping]] = None,
         default_to_node: Optional[str] = None,
         depends_on: Optional[List[str]] = None,
         parent_node_id: Optional[str] = None,
-    ) -> Mapping[str, Any]:
+    ) -> ToolResponse:
         precheck = _update_node_common(id, "switch")
         if precheck:
             return precheck
@@ -1014,11 +1017,11 @@ def plan_workflow_structure_with_llm(
     def update_loop_node(
         id: str,
         display_name: Optional[str] = None,
-        params: Optional[Dict[str, Any]] = None,
+        params: Optional[ParamsMapping] = None,
         sub_graph_nodes: Optional[List[str]] = None,
         depends_on: Optional[List[str]] = None,
         parent_node_id: Optional[str] = None,
-    ) -> Mapping[str, Any]:
+    ) -> ToolResponse:
         precheck = _update_node_common(id, "loop")
         if precheck:
             return precheck
@@ -1061,7 +1064,7 @@ def plan_workflow_structure_with_llm(
         return {"status": "ok", "type": "node_updated", "node_id": id}
 
     @function_tool
-    def finalize_workflow(ready: bool = True, notes: Optional[str] = None) -> Mapping[str, Any]:
+    def finalize_workflow(ready: bool = True, notes: Optional[str] = None) -> ToolResponse:
         nonlocal latest_skeleton, latest_coverage
         skeleton, coverage = _run_coverage_check(
             nl_requirement=nl_requirement,
@@ -1100,7 +1103,7 @@ def plan_workflow_structure_with_llm(
         }
 
     @function_tool
-    def dump_model() -> Mapping[str, Any]:
+    def dump_model() -> ToolResponse:
         snapshot = _snapshot("dump_model")
         return {
             "status": "ok",
