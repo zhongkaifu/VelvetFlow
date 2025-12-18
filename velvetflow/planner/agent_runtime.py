@@ -32,6 +32,20 @@ except ImportError:  # pragma: no cover - exercised in environments without the 
     USING_OFFICIAL_AGENTS = False
 
 
+def _unwrap_callable(obj: Any) -> Callable[..., Any]:
+    """Return a callable underlying FunctionTool-like objects."""
+
+    if callable(obj):
+        return obj
+
+    for attr in ("__wrapped__", "_fn", "fn", "function", "_function", "_callable", "original_fn"):
+        candidate = getattr(obj, attr, None)
+        if callable(candidate):
+            return candidate
+
+    raise TypeError(f"Tool object {obj!r} does not expose a callable function for signature inspection.")
+
+
 def _strip_additional_properties(schema: Any) -> Any:
     if isinstance(schema, MutableMapping):
         return {k: _strip_additional_properties(v) for k, v in schema.items() if k != "additionalProperties"}
@@ -43,14 +57,15 @@ def _strip_additional_properties(schema: Any) -> Any:
 def _build_parameter_schema(func: Callable[..., Any]) -> Mapping[str, Any]:
     """Derive a JSON schema for the function signature without additionalProperties."""
 
+    target = _unwrap_callable(func)
     fields: Dict[str, tuple[Any, Any]] = {}
-    signature = inspect.signature(func)
+    signature = inspect.signature(target)
     for name, param in signature.parameters.items():
         annotation = param.annotation if param.annotation is not inspect._empty else Any
         default = param.default if param.default is not inspect._empty else ...
         fields[name] = (annotation, default)
 
-    model = create_model(f"{func.__name__.capitalize()}Params", **fields)
+    model = create_model(f"{getattr(target, '__name__', 'tool').capitalize()}Params", **fields)
     schema = model.model_json_schema()
     return _strip_additional_properties(schema)
 
