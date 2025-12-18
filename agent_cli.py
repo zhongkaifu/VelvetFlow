@@ -15,13 +15,15 @@
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 from pathlib import Path
 
 from openai import OpenAI
 
 from velvetflow.config import OPENAI_MODEL
+from velvetflow.planner import plan_workflow_with_two_pass
+from velvetflow.search import build_search_service_from_actions
+from velvetflow.action_registry import BUSINESS_ACTIONS, load_actions_from_path, validate_actions
 from velvetflow.workflow_agent import (
     AgentSdkNotInstalled,
     WorkflowAgentConfig,
@@ -80,9 +82,33 @@ def main(argv: list[str] | None = None) -> int:
     except AgentSdkNotInstalled as exc:
         print(exc, file=sys.stderr)
         print("请安装支持 Agent 的 openai SDK (>=1.60) 或官方 agent 扩展包。", file=sys.stderr)
-        return 2
+        # 兜底：回退到本地规划流水线，确保 CLI 不因依赖缺失而中断
+        try:
+            actions = BUSINESS_ACTIONS if args.action_registry is None else validate_actions(
+                load_actions_from_path(args.action_registry)
+            )
+            search_service = build_search_service_from_actions(actions)
+            workflow = plan_workflow_with_two_pass(
+                nl_requirement=args.prompt,
+                search_service=search_service,
+                action_registry=actions,
+                max_rounds=args.max_plan_rounds,
+                max_repair_rounds=args.max_repair_rounds,
+                model=config.model,
+            )
+        except Exception as plan_exc:  # noqa: BLE001 - surface errors to CLI
+            print(f"本地回退规划失败: {plan_exc}", file=sys.stderr)
+            return 2
 
-    # 如果指定 --output，仍然通过 Agent 的 build_workflow 工具来生成并保存结果
+        if args.output:
+            args.output.write_text(json.dumps(workflow.model_dump(by_alias=True), ensure_ascii=False, indent=2), encoding="utf-8")
+            print(f"已使用本地回退模式生成并保存 workflow 到 {args.output.resolve()}")
+            return 0
+
+        print(json.dumps(workflow.model_dump(by_alias=True), ensure_ascii=False, indent=2))
+        return 0
+
+    # 如果指定 --output，仍然优先通过 Agent 的 build_workflow 工具来生成并保存结果
     if args.output:
         try:
             response = agent.run(
@@ -92,7 +118,32 @@ def main(argv: list[str] | None = None) -> int:
             normalized = coerce_agent_output(response)
         except Exception as exc:  # noqa: BLE001 - CLI surface
             print(f"通过 Agent 规划失败: {exc}", file=sys.stderr)
-            return 2
+            # fallback 模式：若 Agent 是 FallbackAgent，直接输出其结果；否则再尝试本地规划
+            if getattr(agent, "_is_fallback", False):
+                try:
+                    normalized = coerce_agent_output(response)
+                except Exception:
+                    print("FallbackAgent 输出解析失败。", file=sys.stderr)
+                    return 2
+            else:
+                try:
+                    actions = BUSINESS_ACTIONS if args.action_registry is None else validate_actions(
+                        load_actions_from_path(args.action_registry)
+                    )
+                    search_service = build_search_service_from_actions(actions)
+                    workflow = plan_workflow_with_two_pass(
+                        nl_requirement=args.prompt,
+                        search_service=search_service,
+                        action_registry=actions,
+                        max_rounds=args.max_plan_rounds,
+                        max_repair_rounds=args.max_repair_rounds,
+                        model=config.model,
+                    )
+                    normalized = workflow.model_dump(by_alias=True)
+                    print("已回退到本地规划流程。")
+                except Exception as plan_exc:  # noqa: BLE001 - surface errors to CLI
+                    print(f"本地回退规划失败: {plan_exc}", file=sys.stderr)
+                    return 2
 
         try:
             args.output.write_text(json.dumps(normalized, ensure_ascii=False, indent=2), encoding="utf-8")

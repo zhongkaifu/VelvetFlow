@@ -82,13 +82,49 @@ class WorkflowAgentConfig:
     max_repair_rounds: int = 3
 
 
-def _import_openai_agent() -> tuple[type, Callable[[Callable[..., Any]], Any] | None]:
-    """Load Agent SDK lazily to avoid hard dependency when unused."""
+class _FallbackAgent:
+    """Lightweight fallback when Agent SDK is unavailable.
+
+    This class simply routes ``run`` to the first provided tool to avoid
+    hard failures in environments缺失 Agent SDK. It is primarily used by CLI
+    调用，以便在未安装 Agent SDK 的情况下依然可运行核心流程。
+    """
+
+    def __init__(self, *, tools: list[Callable[..., Any]], **_: Any) -> None:
+        if not tools:
+            raise ValueError("FallbackAgent requires at least one tool")
+        self.tools = tools
+        self._is_fallback = True
+
+    def run(self, prompt: str):  # noqa: D401 - simple passthrough
+        # 尽力从 prompt 中推断要用的工具；若无法判断则使用第一个
+        lower = prompt.lower()
+        preferred_order = [
+            ("build_workflow", lambda name: "build_workflow" in name),
+            ("validate_workflow", lambda name: "validate" in name),
+            ("repair_workflow", lambda name: "repair" in name),
+            ("update_workflow", lambda name: "update" in name),
+        ]
+
+        def _find_tool() -> Callable[..., Any]:
+            for keyword, matcher in preferred_order:
+                if keyword in lower:
+                    for t in self.tools:
+                        tname = getattr(t, "__name__", "").lower()
+                        if matcher(tname):
+                            return t
+            return self.tools[0]
+
+        tool = _find_tool()
+        return tool(prompt)
+
+
+def _import_openai_agent() -> tuple[type, Callable[[Callable[..., Any]], Any] | None, bool]:
+    """Load Agent SDK lazily; fall back to a local stub when unavailable."""
 
     candidates = [
         "openai.agents",
         "openai.agent",
-        "openai.resources.experimental.agents",
     ]
     last_error: Exception | None = None
     for module_name in candidates:
@@ -101,14 +137,18 @@ def _import_openai_agent() -> tuple[type, Callable[[Callable[..., Any]], Any] | 
         agent_cls = getattr(module, "Agent", None)
         tool_wrapper = getattr(module, "tool", None)
         if agent_cls is not None:
-            return agent_cls, tool_wrapper  # type: ignore[arg-type]
+            return agent_cls, tool_wrapper, False  # type: ignore[arg-type]
 
-    message = (
-        "未检测到 OpenAI Agent SDK（需要 openai>=1.60 或官方 agent 扩展）。"
-    )
+    # Fall back to local stub to避免 CLI 直接崩溃；提示用户安装官方 SDK。
     if last_error:
-        message = f"{message} 最后一次导入错误: {last_error}"
-    raise AgentSdkNotInstalled(message)
+        message = (
+            "未检测到 OpenAI Agent SDK（需要 openai>=1.60 或官方 agent 扩展）；"
+            f"使用本地 FallbackAgent 继续运行。最后一次导入错误: {last_error}"
+        )
+    else:
+        message = "未检测到 OpenAI Agent SDK（需要 openai>=1.60 或官方 agent 扩展）；使用本地 FallbackAgent 继续运行。"
+
+    return _FallbackAgent, None, True
 
 
 def coerce_agent_output(payload: Any) -> dict[str, Any]:
@@ -186,6 +226,7 @@ class _WorkflowAgentRuntime:
         self._agent_cls = agent_cls
         self._tool_wrapper = tool_wrapper
         self._internal_agent = self._build_internal_agent()
+        self.uses_fallback_agent = getattr(agent_cls, "_is_fallback", False)
 
     # --- 原子工具：直接调用规划/校验/修复/更新流水线（不经过 Agent 推理） ---
     def _plan_workflow_direct(self, requirement: str) -> dict[str, Any]:
@@ -353,7 +394,7 @@ def create_workflow_agent(
         or the registry loaded from ``config.action_registry_path``.
     """
 
-    agent_cls, tool_wrapper = _import_openai_agent()
+    agent_cls, tool_wrapper, used_fallback = _import_openai_agent()
     config = config or WorkflowAgentConfig()
     registry = action_registry or _load_action_registry(config.action_registry_path)
     service = search_service or build_search_service_from_actions(registry)
@@ -392,7 +433,10 @@ def create_workflow_agent(
         except (TypeError, ValueError):  # pragma: no cover - depends on SDK impl
             pass
 
-    return agent_cls(**agent_kwargs)
+    agent = agent_cls(**agent_kwargs)
+    if used_fallback:
+        setattr(agent, "_is_fallback", True)
+    return agent
 
 
 __all__ = [

@@ -178,6 +178,7 @@ VelvetFlow (repo root)
       --output workflow_output.json
     ```
     此时仍会在内部通过 Agent 的 `build_workflow` 工具生成 DSL，然后将 JSON 写入指定文件。
+    若未安装 Agent SDK，会自动回退到本地规划流程并输出提示，不会中断运行。
 
 ### Web 可视化界面（带 Planner/Executor 的实时交互）
 - `webapp/` 目录提供了基于 Canvas 的前端页面，默认包含可缩放/拖拽的 DAG 画布、JSON 编辑器双 Tab，以及“添加节点/保存/加载”对话框，方便直接在浏览器调整 workflow。`core.js` 里内置节点生成、画布缩放/拖拽、多 Tab 独立布局等逻辑。【F:webapp/js/core.js†L1-L157】【F:webapp/js/core.js†L191-L329】【F:webapp/js/dialogs.js†L1-L148】
