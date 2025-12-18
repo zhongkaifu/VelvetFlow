@@ -526,7 +526,7 @@ def plan_workflow_structure_with_llm(
     nl_requirement: str,
     search_service: HybridActionSearchService,
     action_registry: List[Dict[str, Any]],
-    max_rounds: int = 10,
+    max_rounds: int = 100,
     max_coverage_refine_rounds: int = 2,
     max_dependency_refine_rounds: int = 1,
     progress_callback: Callable[[str, Mapping[str, Any]], None] | None = None,
@@ -581,7 +581,7 @@ def plan_workflow_structure_with_llm(
         payload.update(extra)
         return payload
 
-    @function_tool
+    @function_tool(strict_mode=False)
     def search_business_actions(query: str, top_k: int = 5) -> Mapping[str, Any]:
         actions_raw = search_service.search(query=query, top_k=int(top_k))
         candidates = [
@@ -597,13 +597,13 @@ def plan_workflow_structure_with_llm(
         last_action_candidates[:] = [c["id"] for c in candidates]
         return {"status": "ok", "query": query, "actions": actions_raw, "candidates": candidates}
 
-    @function_tool
+    @function_tool(strict_mode=False)
     def set_workflow_meta(workflow_name: str, description: Optional[str] = None) -> Mapping[str, Any]:
         builder.set_meta(workflow_name, description)
         _snapshot("meta_updated")
         return {"status": "ok", "type": "meta_set"}
 
-    @function_tool
+    @function_tool(strict_mode=False)
     def add_action_node(
         id: str,
         action_id: str,
@@ -650,7 +650,7 @@ def plan_workflow_structure_with_llm(
             )
         return {"status": "ok", "type": "node_added", "node_id": id}
 
-    @function_tool
+    @function_tool(strict_mode=False)
     def add_loop_node(
         id: str,
         loop_kind: str,
@@ -708,7 +708,7 @@ def plan_workflow_structure_with_llm(
             )
         return {"status": "ok", "type": "node_added", "node_id": id}
 
-    @function_tool
+    @function_tool(strict_mode=False)
     def add_condition_node(
         id: str,
         true_to_node: Optional[str],
@@ -753,7 +753,7 @@ def plan_workflow_structure_with_llm(
             )
         return {"status": "ok", "type": "node_added", "node_id": id}
 
-    @function_tool
+    @function_tool(strict_mode=False)
     def add_switch_node(
         id: str,
         cases: List[Dict[str, Any]],
@@ -818,7 +818,7 @@ def plan_workflow_structure_with_llm(
             return _build_validation_error(f"节点 {node_id} 类型不是 {expected_type}。")
         return None
 
-    @function_tool
+    @function_tool(strict_mode=False)
     def update_action_node(
         id: str,
         display_name: Optional[str] = None,
@@ -880,7 +880,7 @@ def plan_workflow_structure_with_llm(
             )
         return {"status": "ok", "type": "node_updated", "node_id": id}
 
-    @function_tool
+    @function_tool(strict_mode=False)
     def update_condition_node(
         id: str,
         display_name: Optional[str] = None,
@@ -941,7 +941,7 @@ def plan_workflow_structure_with_llm(
             )
         return {"status": "ok", "type": "node_updated", "node_id": id}
 
-    @function_tool
+    @function_tool(strict_mode=False)
     def update_switch_node(
         id: str,
         display_name: Optional[str] = None,
@@ -1010,7 +1010,7 @@ def plan_workflow_structure_with_llm(
             )
         return {"status": "ok", "type": "node_updated", "node_id": id}
 
-    @function_tool
+    @function_tool(strict_mode=False)
     def update_loop_node(
         id: str,
         display_name: Optional[str] = None,
@@ -1060,7 +1060,7 @@ def plan_workflow_structure_with_llm(
             )
         return {"status": "ok", "type": "node_updated", "node_id": id}
 
-    @function_tool
+    @function_tool(strict_mode=False)
     def finalize_workflow(ready: bool = True, notes: Optional[str] = None) -> Mapping[str, Any]:
         nonlocal latest_skeleton, latest_coverage
         skeleton, coverage = _run_coverage_check(
@@ -1099,7 +1099,7 @@ def plan_workflow_structure_with_llm(
             "workflow": skeleton,
         }
 
-    @function_tool
+    @function_tool(strict_mode=False)
     def dump_model() -> Mapping[str, Any]:
         snapshot = _snapshot("dump_model")
         return {
@@ -1129,7 +1129,7 @@ def plan_workflow_structure_with_llm(
             finalize_workflow,
             dump_model,
         ],
-        model=OPENAI_MODEL,
+        model=OPENAI_MODEL
     )
 
     total_rounds = max_rounds + max_coverage_refine_rounds + max_dependency_refine_rounds
@@ -1137,7 +1137,7 @@ def plan_workflow_structure_with_llm(
 
     run_input: Any = nl_requirement
     try:
-        result = Runner.run(agent, run_input, max_rounds=total_rounds, temperature=0.2)  # type: ignore[arg-type]
+        result = Runner.run_sync(agent, run_input, max_turns=total_rounds)  # type: ignore[arg-type]
     except TypeError:
         coro = Runner.run(agent, run_input)  # type: ignore[call-arg]
         result = asyncio.run(coro) if asyncio.iscoroutine(coro) else coro
