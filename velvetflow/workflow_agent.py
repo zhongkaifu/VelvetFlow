@@ -120,6 +120,17 @@ class _FallbackAgent:
         return tool(prompt)
 
 
+class _FnTool:
+    """Minimal callable tool wrapper for agents.Agent that expects `.name`."""
+
+    def __init__(self, name: str, fn: Callable[..., Any]):
+        self.name = name
+        self._fn = fn
+
+    def __call__(self, *args, **kwargs):
+        return self._fn(*args, **kwargs)
+
+
 def _import_openai_agent() -> tuple[type, Callable[[Callable[..., Any]], Any] | None, bool, Any | None, bool]:
     """Load Agent SDK lazily; fall back to a local stub when unavailable.
 
@@ -315,17 +326,21 @@ class _WorkflowAgentRuntime:
 
     # --- Internal Agent：用 Agent SDK 调度上述原子工具 ---
     def _build_internal_agent(self) -> Any:
-        build_tool = _wrap_tool(self._tool_wrapper, self._plan_workflow_direct)
-        validate_tool = _wrap_tool(self._tool_wrapper, self._validate_workflow_direct)
-        repair_tool = _wrap_tool(self._tool_wrapper, self._repair_workflow_direct)
-        update_tool = _wrap_tool(self._tool_wrapper, self._update_workflow_direct)
-
         if self._uses_agents_pkg:
+            build_tool = _FnTool("build_workflow", self._plan_workflow_direct)
+            validate_tool = _FnTool("validate_workflow", self._validate_workflow_direct)
+            repair_tool = _FnTool("repair_workflow", self._repair_workflow_direct)
+            update_tool = _FnTool("update_workflow", self._update_workflow_direct)
             return self._agent_cls(
                 name="workflow_internal_agent",
                 instructions=INTERNAL_AGENT_INSTRUCTIONS,
                 tools=[build_tool, validate_tool, repair_tool, update_tool],
             )
+
+        build_tool = _wrap_tool(self._tool_wrapper, self._plan_workflow_direct)
+        validate_tool = _wrap_tool(self._tool_wrapper, self._validate_workflow_direct)
+        repair_tool = _wrap_tool(self._tool_wrapper, self._repair_workflow_direct)
+        update_tool = _wrap_tool(self._tool_wrapper, self._update_workflow_direct)
 
         return self._agent_cls(
             model=self.model,
