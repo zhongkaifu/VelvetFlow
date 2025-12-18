@@ -149,6 +149,37 @@ VelvetFlow (repo root)
    ```
    - 将自然语言需求与现有 workflow 作为输入，调用 LLM 自动更新节点、参数与边；若校验失败会将错误列表反馈给 LLM 自动修复（最多 3 轮），最终写入通过校验的结果到 `--output` 指定的文件。
 
+### 使用 OpenAI Agent SDK 编排 Workflow 任务
+- `velvetflow.workflow_agent` 集成了 OpenAI Agent SDK 的 `Agent`，并把构建/校验/修复/更新封装成工具，方便在对话式场景中直接调用。
+  ```python
+  from openai import OpenAI
+  from velvetflow.workflow_agent import create_workflow_agent
+
+  client = OpenAI()
+  agent = create_workflow_agent(client=client)
+
+  # 让 Agent 自行选择合适的工具完成规划或更新
+  reply = agent.run("为 HR 的健康检查场景规划工作流并确保参数校验通过")
+  print(reply)
+  ```
+  - 需要使用支持 `Agent` 的新版 OpenAI SDK；若未安装会收到友好的报错提示。
+  - 构建、校验、修复、更新等内部流水线也会交给内置的 Agent 来调度工具，确保所有步骤都通过 Agent SDK 完成。
+  - 命令行使用：
+    ```bash
+    export OPENAI_API_KEY="<your_api_key>"
+    python agent_cli.py --prompt "为 HR 的健康检查场景规划工作流并确保参数校验通过" \
+      --action-registry tools/business_actions
+    ```
+    可通过 `--model`、`--max-plan-rounds`、`--max-repair-rounds` 等参数调整 Agent 运行时配置。
+    如需直接生成并保存 workflow（跳过 Agent 会话），可指定输出路径：
+    ```bash
+    python agent_cli.py --prompt "为 HR 的健康检查场景规划工作流" \
+      --action-registry tools/business_actions \
+      --output workflow_output.json
+    ```
+    此时仍会在内部通过 Agent 的 `build_workflow` 工具生成 DSL，然后将 JSON 写入指定文件。
+    若未安装 Agent SDK，会自动回退到本地规划流程并输出提示，不会中断运行。
+
 ### Web 可视化界面（带 Planner/Executor 的实时交互）
 - `webapp/` 目录提供了基于 Canvas 的前端页面，默认包含可缩放/拖拽的 DAG 画布、JSON 编辑器双 Tab，以及“添加节点/保存/加载”对话框，方便直接在浏览器调整 workflow。`core.js` 里内置节点生成、画布缩放/拖拽、多 Tab 独立布局等逻辑。【F:webapp/js/core.js†L1-L157】【F:webapp/js/core.js†L191-L329】【F:webapp/js/dialogs.js†L1-L148】
 - 后端使用 FastAPI 暴露 `/api/plan`、`/api/run` 以及对应的 `/stream` SSE 端点，能在计划/执行时实时推送日志与渐进式节点快照；`/api/actions` 则返回动作清单供前端下拉选择。【F:webapp/server.py†L52-L120】【F:webapp/server.py†L214-L365】

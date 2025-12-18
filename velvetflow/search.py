@@ -455,15 +455,21 @@ def build_search_service_from_actions(
     alpha: float = 0.6,
     embedding_model: str = DEFAULT_EMBEDDING_MODEL,
 ) -> HybridActionSearchService:
+
+    print("[Search] 构建动作搜索索引……")
     vocab = build_vocab_from_actions(actions)
+    print(f"[Search] 词汇表大小: {len(vocab)}")
     embed_fn = lambda text: embed_text_openai(text, model=embedding_model)
+    print("[Search] 计算动作向量……")
     index = build_action_index(
         actions,
         embed_fn=embed_fn,
         vocab=vocab,
         embedding_model=embedding_model,
     )
+    print(f"[Search] 索引构建完成，包含 {len(index.actions)} 个动作。")
     query_embed_fn = _select_query_embed_fn(index)
+    print("[Search] 动作搜索服务构建完成。")
     return build_search_service_from_index(index, embed_fn=query_embed_fn, alpha=alpha)
 
 
