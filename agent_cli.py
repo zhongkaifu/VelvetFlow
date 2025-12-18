@@ -32,6 +32,13 @@ from velvetflow.workflow_agent import (
 )
 
 
+def _print_agent_mode(agent: Any) -> None:
+    if getattr(agent, "_is_fallback", False):
+        print("[CLI] 使用本地 FallbackAgent（未安装官方 Agent SDK）。")
+    else:
+        print("[CLI] 使用 OpenAI Agent SDK 执行工作流工具。")
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run VelvetFlow workflow tools via OpenAI Agent SDK")
     parser.add_argument("--prompt", required=True, help="发送给 Agent 的自然语言指令")
@@ -108,9 +115,12 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(workflow.model_dump(by_alias=True), ensure_ascii=False, indent=2))
         return 0
 
+    _print_agent_mode(agent)
+
     # 如果指定 --output，仍然优先通过 Agent 的 build_workflow 工具来生成并保存结果
     if args.output:
         try:
+            print("[CLI] 调用 Agent 进行 workflow 构建并保存……")
             response = agent.run(
                 "请直接调用 build_workflow 工具生成 workflow DSL，并仅返回工具输出的 JSON。"
                 f"\n需求: {args.prompt}"

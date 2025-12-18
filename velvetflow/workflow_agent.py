@@ -90,11 +90,12 @@ class _FallbackAgent:
     调用，以便在未安装 Agent SDK 的情况下依然可运行核心流程。
     """
 
+    _is_fallback = True
+
     def __init__(self, *, tools: list[Callable[..., Any]], **_: Any) -> None:
         if not tools:
             raise ValueError("FallbackAgent requires at least one tool")
         self.tools = tools
-        self._is_fallback = True
 
     def run(self, prompt: str):  # noqa: D401 - simple passthrough
         # 尽力从 prompt 中推断要用的工具；若无法判断则使用第一个
