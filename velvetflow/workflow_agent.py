@@ -407,10 +407,14 @@ def create_workflow_agent(
         or the registry loaded from ``config.action_registry_path``.
     """
 
+    print("[Agent] 加载 OpenAI Agent SDK……")
     agent_cls, tool_wrapper, used_fallback = _import_openai_agent()
     config = config or WorkflowAgentConfig()
+    print(f"[Agent] 使用模型: {config.model}")
     registry = action_registry or _load_action_registry(config.action_registry_path)
+    print("[Agent] 构建动作搜索服务……")
     service = search_service or build_search_service_from_actions(registry)
+    print(f"[Agent] 加载动作库，包含 {len(registry)} 个动作。")
     runtime = _WorkflowAgentRuntime(
         action_registry=registry,
         search_service=service,
@@ -420,11 +424,17 @@ def create_workflow_agent(
         agent_cls=agent_cls,
         tool_wrapper=tool_wrapper,
     )
-
+    print("[Agent] Workflow Agent 运行时初始化完成。")
     build_workflow_tool = _wrap_tool(tool_wrapper, runtime.plan_workflow)
     validate_workflow_tool = _wrap_tool(tool_wrapper, runtime.validate_workflow)
     repair_workflow_tool = _wrap_tool(tool_wrapper, runtime.repair_workflow)
     update_workflow_tool = _wrap_tool(tool_wrapper, runtime.update_workflow)
+    print("[Agent] 已包装 build_workflow 工具。包含在内的工具有：{}".format(
+        ", ".join([
+            t.__name__ if hasattr(t, "__name__") else str(t)
+            for t in [build_workflow_tool, validate_workflow_tool, repair_workflow_tool, update_workflow_tool]
+        ])
+    ))
 
     agent_kwargs = {
         "model": config.model,

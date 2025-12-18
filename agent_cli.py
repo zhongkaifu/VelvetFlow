@@ -85,7 +85,9 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     try:
+        print("[CLI] 创建 Workflow Agent……")
         agent = create_workflow_agent(client=OpenAI(), config=config)
+        print("[CLI] Workflow Agent 创建成功。")
     except AgentSdkNotInstalled as exc:
         print(exc, file=sys.stderr)
         print("请安装支持 Agent 的 openai SDK (>=1.60) 或官方 agent 扩展包。", file=sys.stderr)
