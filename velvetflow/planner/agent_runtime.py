@@ -72,7 +72,22 @@ def _attach_sanitized_schema(func: Callable[..., Any]) -> None:
 if USING_OFFICIAL_AGENTS:
     def function_tool(func: Callable[..., Any]) -> Callable[..., Any]:  # pragma: no cover - passthrough wrapper
         decorated = _official_function_tool(func)
+        sanitized_schema = _build_parameter_schema(func)
+        cleaned_schema = _strip_additional_properties(sanitized_schema)
+
         _attach_sanitized_schema(decorated)
+        # Patch the official FunctionTool instance to avoid strict schema errors
+        # caused by additionalProperties.
+        if hasattr(decorated, "params_json_schema"):
+            try:
+                decorated.params_json_schema = cleaned_schema  # type: ignore[attr-defined]
+            except Exception:
+                pass
+        if getattr(decorated, "strict_json_schema", None):
+            try:
+                decorated.strict_json_schema = False  # type: ignore[attr-defined]
+            except Exception:
+                pass
         return decorated
 
 else:
