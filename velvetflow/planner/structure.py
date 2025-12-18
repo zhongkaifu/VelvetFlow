@@ -3,32 +3,24 @@
 
 """Structure planning logic for the planner."""
 
+import asyncio
 import copy
 import json
 import os
 from typing import Any, Callable, Dict, List, Mapping, Optional
 
-from openai import OpenAI
-
 from velvetflow.config import OPENAI_MODEL
 from velvetflow.logging_utils import (
-    child_span,
     log_debug,
-    log_info,
-    log_error,
     log_event,
     log_json,
-    log_llm_message,
-    log_llm_usage,
     log_section,
-    log_success,
     log_warn,
-    log_tool_call,
 )
+from velvetflow.planner.agent_runtime import Agent, Runner, function_tool
 from velvetflow.planner.action_guard import ensure_registered_actions
 from velvetflow.planner.approval import detect_missing_approval_nodes
 from velvetflow.planner.coverage import check_requirement_coverage_with_llm
-from velvetflow.planner.tools import PLANNER_TOOLS
 from velvetflow.planner.workflow_builder import (
     WorkflowBuilder,
     attach_condition_branches,
@@ -529,6 +521,7 @@ def _build_dependency_feedback_message(
         "当前 workflow 供参考（含推导的 edges）：\n"
         f"{json.dumps(workflow, ensure_ascii=False)}"
     )
+
 def plan_workflow_structure_with_llm(
     nl_requirement: str,
     search_service: HybridActionSearchService,
@@ -538,10 +531,15 @@ def plan_workflow_structure_with_llm(
     max_dependency_refine_rounds: int = 1,
     progress_callback: Callable[[str, Mapping[str, Any]], None] | None = None,
 ) -> Dict[str, Any]:
-    client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+    if not os.environ.get("OPENAI_API_KEY"):
+        raise RuntimeError("请先设置 OPENAI_API_KEY 环境变量再进行结构规划。")
+
     builder = WorkflowBuilder()
     action_schemas = _build_action_schema_map(action_registry)
     last_action_candidates: List[str] = []
+    latest_skeleton: Dict[str, Any] = {}
+    latest_coverage: Dict[str, Any] = {}
+    finalized_state: Dict[str, bool] = {"done": False}
 
     def _emit_progress(label: str, workflow_obj: Mapping[str, Any]) -> None:
         if not progress_callback:
@@ -551,6 +549,12 @@ def plan_workflow_structure_with_llm(
         except Exception:
             log_debug(f"[StructurePlanner] progress_callback {label} 调用失败，已忽略。")
 
+    def _snapshot(label: str) -> Dict[str, Any]:
+        nonlocal latest_skeleton
+        workflow_snapshot = _attach_inferred_edges(builder.to_workflow())
+        latest_skeleton = workflow_snapshot
+        _emit_progress(label, workflow_snapshot)
+        return workflow_snapshot
     system_prompt = (
         "你是一个通用业务工作流编排助手。\n"
         "【Workflow DSL 语法与语义（务必遵守）】\n"
@@ -558,869 +562,593 @@ def plan_workflow_structure_with_llm(
         "- node 基本结构：{id, type, display_name, params, depends_on, action_id?, out_params_schema?, loop/subgraph/branches?}。\n"
         "  type 仅允许 action/condition/loop/parallel。无需 start/end/exit 节点。\n"
         "  action 节点必须填写 action_id（来自动作库）与 params；只有 action 节点允许 out_params_schema。\n"
-        "  condition 节点的 params 必须只有 expression（单个返回布尔值的 Jinja 表达式）以及 true_to_node/false_to_node（字符串或 null）。\n"
-        "  loop 节点包含 loop_kind/iter/source/body_subgraph/exports，循环外部只能引用 exports.items 或 exports.aggregates，body_subgraph 仅需 nodes 数组，不需要 entry/exit/edges。\n"
-        "  parallel 节点的 branches 为非空数组，每个元素包含 id/entry_node/sub_graph_nodes。\n"
-        "- params 内部必须直接使用 Jinja 表达式引用上游结果（如 {{ result_of.<node_id>.<field_path> }} 或 {{ loop.item.xxx }}），不再允许旧的 __from__/__agg__ DSL。"
-        "  你在规划阶段输出的每一个 params 值（包含 condition/switch/loop 节点）都会被 Jinja 引擎解析，任何非 Jinja2 语法的引用会被视为错误并触发自动修复，请严格遵循 Jinja 模板写法。"
-        "  其中 <node_id> 必须存在且字段需与上游 output_schema 或 loop.exports 对齐。\n"
+        "  condition 节点的 params 必须只有 expression（返回布尔值的 Jinja 表达式）以及 true_to_node/false_to_node。\n"
+        "  loop 节点包含 loop_kind/iter/source/body_subgraph/exports，循环外部只能引用 exports.items 或 exports.aggregates。\n"
+        "- params 内部必须直接使用 Jinja 表达式引用上游结果（如 {{ result_of.<node_id>.<field_path> }} 或 {{ loop.item.xxx }}），不再允许旧的 __from__/__agg__ DSL。\n"
         "系统中有一个 Action Registry，包含大量业务动作，你只能通过 search_business_actions 查询。\n"
         "构建方式：\n"
         "1) 使用 set_workflow_meta 设置工作流名称和描述。\n"
         "2) 当需要业务动作时，必须先用 search_business_actions 查询候选；add_action_node 的 action_id 必须取自最近一次 candidates.id。\n"
-        "3) 如需修改已创建节点（补充 display_name/params/分支指向/父节点等），请调用 update_action_node 或 update_condition_node 并传入需要覆盖的字段列表；调用后务必检查上下游关联节点是否也需要同步更新以保持一致性。\n"
-        "4) condition 节点必须显式提供 true_to_node 和 false_to_node，值可以是节点 id（继续执行）或 null（表示该分支结束）；通过节点 params 中的输入/输出引用表达依赖关系，不需要显式绘制 edges。\n"
-        "5) 请为每个节点维护 depends_on（字符串数组），列出其直接依赖的上游节点；当节点被 condition.true_to_node/false_to_node 指向时，必须将该 condition 节点加入目标节点的 depends_on。\n"
-        "6) 当结构完成时调用 finalize_workflow。\n\n"
-        "特别注意：只有 action 节点需要 out_params_schema，condition 节点没有该属性；out_params_schema 的格式应为 {\"参数名\": \"类型\"}，仅需列出业务 action 输出参数的名称与类型，不要添加额外描述或示例。\n\n"
-        "【非常重要的原则】\n"
-        "1. 所有示例（包括后续你在补参阶段看到的示例）都只是为说明“DSL 的写法”和“节点之间如何连线”，\n"
-        "   不是实际的业务约束，不要在新任务里硬复用这些示例中的业务名或字段名。\n"
-        "2. 你必须严格围绕当前对话中的自然语言需求来设计 workflow：\n"
-        "   - 触发方式（定时 / 事件 / 手动）\n"
-        "   - 数据查询/读取\n"
-        "   - 筛选/过滤条件\n"
-        "   - 聚合/统计/总结\n"
-        "   - 通知 / 写入 / 落库 / 调用下游系统\n"
-        "3. 不允许为了模仿示例，而在与当前任务无关的情况下引入“健康/体温/新闻/Nvidia/员工/HR”等具体词汇。\n\n"
-        "4. 循环节点的内部数据只能通过 loop.exports 暴露给外部，下游引用循环结果时必须使用 result_of.<loop_id>.items（或 result_of.<loop_id>.exports.items）/ result_of.<loop_id>.aggregates.*，禁止直接引用 body 子图的节点。\n"
-        "5. loop.exports 应定义在 params.exports 下，请勿写在 body_subgraph 内；body_subgraph 仅包含 nodes 数组，无需 entry/exit/edges。\n"
-        "6. 允许嵌套循环，但需要通过 parent_node_id 或 sub_graph_nodes 明确将子循环纳入父循环的 body_subgraph；"
-        "   外部节点引用循环内部数据时仍需通过 loop.exports，而不是直接指向子图节点。\n\n"
-        "【覆盖度要求】\n"
-        "你必须确保工作流结构能够完全覆盖用户自然语言需求中的每个子任务，而不是只覆盖前半部分：\n"
-        "例如，如果需求包含：触发 + 查询 + 筛选 + 总结 + 通知，你不能只实现触发 + 查询，\n"
-        "必须在结构里显式包含筛选、总结、通知等对应节点和数据流。\n"
-        "调用 finalize_workflow 后系统会立即对照 nl_requirement 做覆盖度检查；如果发现 missing_points 会把缺失点和当前 workflow 反馈给你，请继续用规划工具修补后再次 finalize。"
+        "3) 如需修改已创建节点，请调用 update_* 工具覆盖字段。\n"
+        "4) condition 节点必须显式提供 true_to_node 和 false_to_node，并维护 depends_on。\n"
+        "5) 当结构完成时调用 finalize_workflow。\n\n"
+        "特别注意：只有 action 节点需要 out_params_schema，condition 节点没有该属性；out_params_schema 的格式应为 {\"参数名\": \"类型\"}。\n"
+        "循环节点的数据只能通过 exports 暴露给外部，下游引用循环结果时必须使用 result_of.<loop_id>.items / aggregates。"
     )
 
-    messages: List[Dict[str, Any]] = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": nl_requirement},
-    ]
+    def _build_validation_error(message: str, **extra: Any) -> Dict[str, Any]:
+        payload = {"status": "error", "message": message}
+        payload.update(extra)
+        return payload
 
-    finalized = False
-    latest_skeleton: Dict[str, Any] = {}
-    latest_coverage: Dict[str, Any] = {}
-    coverage_retry = 0
-    dependency_retry = 0
-    total_rounds = max_rounds + max_coverage_refine_rounds
-
-    # ---------- 结构规划（多轮 tool-calling） ----------
-    for round_idx in range(total_rounds):
-        log_section(f"结构规划 Round {round_idx + 1}")
-        with child_span("structure_planning_llm"):
-            resp = client.chat.completions.create(
-                model=OPENAI_MODEL,
-                messages=messages,
-                tools=PLANNER_TOOLS,
-                tool_choice="auto",
-                temperature=0.2,
-            )
-        log_llm_usage(OPENAI_MODEL, getattr(resp, "usage", None), operation="structure_planning")
-        if not resp.choices:
-            raise RuntimeError("plan_workflow_structure_with_llm 未返回任何候选消息")
-
-        msg = resp.choices[0].message
-        log_llm_message(OPENAI_MODEL, msg, operation="structure_planning")
-        messages.append(
+    @function_tool
+    def search_business_actions(query: str, top_k: int = 5) -> Mapping[str, Any]:
+        actions_raw = search_service.search(query=query, top_k=int(top_k))
+        candidates = [
             {
-                "role": "assistant",
-                "content": msg.content or "",
-                "tool_calls": msg.tool_calls,
+                "id": a.get("action_id"),
+                "name": a.get("name", ""),
+                "description": a.get("description", ""),
+                "category": a.get("domain") or "general",
             }
+            for a in actions_raw
+            if a.get("action_id")
+        ]
+        last_action_candidates[:] = [c["id"] for c in candidates]
+        return {"status": "ok", "query": query, "actions": actions_raw, "candidates": candidates}
+
+    @function_tool
+    def set_workflow_meta(workflow_name: str, description: Optional[str] = None) -> Mapping[str, Any]:
+        builder.set_meta(workflow_name, description)
+        _snapshot("meta_updated")
+        return {"status": "ok", "type": "meta_set"}
+
+    @function_tool
+    def add_action_node(
+        id: str,
+        action_id: str,
+        display_name: Optional[str] = None,
+        out_params_schema: Optional[Dict[str, str]] = None,
+        params: Optional[Dict[str, Any]] = None,
+        depends_on: Optional[List[str]] = None,
+        parent_node_id: Optional[str] = None,
+    ) -> Mapping[str, Any]:
+        if not last_action_candidates:
+            return _build_validation_error("action 节点必须在调用 search_business_actions 之后创建。")
+        if action_id not in last_action_candidates:
+            return _build_validation_error(
+                "action_id 必须是最近一次 search_business_actions 返回的 candidates.id 之一。",
+                allowed_action_ids=last_action_candidates,
+            )
+        if parent_node_id is not None and not isinstance(parent_node_id, str):
+            return _build_validation_error("parent_node_id 需要是字符串或 null。")
+
+        cleaned_params, removed_fields = _filter_supported_params(
+            node_type="action",
+            params=params or {},
+            action_schemas=action_schemas,
+            action_id=action_id,
         )
+        builder.add_node(
+            node_id=id,
+            node_type="action",
+            action_id=action_id,
+            display_name=display_name,
+            out_params_schema=out_params_schema,
+            params=cleaned_params,
+            parent_node_id=parent_node_id if isinstance(parent_node_id, str) else None,
+            depends_on=depends_on or [],
+        )
+        removed_node_fields = _sanitize_builder_node_fields(builder, id)
+        _snapshot(f"add_action_{id}")
+        if removed_fields or removed_node_fields:
+            return _build_validation_error(
+                "action 节点仅支持 id/type/action_id/display_name/params/out_params_schema 字段，params 仅支持 arg_schema 字段。",
+                removed_param_fields=removed_fields,
+                removed_node_fields=removed_node_fields,
+                node_id=id,
+            )
+        return {"status": "ok", "type": "node_added", "node_id": id}
 
-        if not msg.tool_calls:
-            log_warn("[Planner] 本轮没有 tool_calls，提前结束。")
-            break
-
-        for tc in msg.tool_calls:
-            func_name = tc.function.name
-            raw_args = tc.function.arguments
-            tool_call_id = tc.id
-            try:
-                args = json.loads(raw_args) if raw_args else {}
-            except json.JSONDecodeError:
-                log_error(f"[Error] 解析工具参数失败: {raw_args}")
-                args = {}
-
-            log_tool_call(
-                source="plan_workflow_structure",
-                tool_name=func_name,
-                tool_call_id=tool_call_id,
-                args=args or raw_args,
+    @function_tool
+    def add_loop_node(
+        id: str,
+        loop_kind: str,
+        source: Any,
+        item_alias: str,
+        display_name: Optional[str] = None,
+        params: Optional[Dict[str, Any]] = None,
+        sub_graph_nodes: Optional[List[str]] = None,
+        depends_on: Optional[List[str]] = None,
+        parent_node_id: Optional[str] = None,
+    ) -> Mapping[str, Any]:
+        if parent_node_id is not None and not isinstance(parent_node_id, str):
+            return _build_validation_error("parent_node_id 需要是字符串或 null。")
+        invalid_fields: List[str] = []
+        if loop_kind not in {"for_each", "while"}:
+            invalid_fields.append("loop_kind")
+        if not isinstance(source, (str, Mapping)):
+            invalid_fields.append("source")
+        if not isinstance(item_alias, str):
+            invalid_fields.append("item_alias")
+        if invalid_fields:
+            return _build_validation_error(
+                "loop 节点需要合法的 loop_kind/source/item_alias 参数。",
+                invalid_fields=invalid_fields,
             )
 
-            if func_name == "search_business_actions":
-                query = args.get("query", "")
-                top_k = int(args.get("top_k", 5))
-                actions_raw = search_service.search(query=query, top_k=top_k)
-                candidates = [
-                    {
-                        "id": a.get("action_id"),
-                        "name": a.get("name", ""),
-                        "description": a.get("description", ""),
-                        "category": a.get("domain") or "general",
-                    }
-                    for a in actions_raw
-                    if a.get("action_id")
-                ]
-                last_action_candidates = [c["id"] for c in candidates]
-                tool_result = {
-                    "status": "ok",
-                    "query": query,
-                    "actions": actions_raw,
-                    "candidates": candidates,
-                }
+        normalized_nodes, sub_graph_error = _normalize_sub_graph_nodes(sub_graph_nodes, builder=builder)
+        if sub_graph_error:
+            return {"status": "error", **sub_graph_error}
 
-            elif func_name == "set_workflow_meta":
-                builder.set_meta(args.get("workflow_name", ""), args.get("description"))
-                tool_result = {"status": "ok", "type": "meta_set"}
+        merged_params = dict(params or {})
+        merged_params.update({"loop_kind": loop_kind, "source": source, "item_alias": item_alias})
+        cleaned_params, removed_fields = _filter_supported_params(
+            node_type="loop", params=merged_params, action_schemas=action_schemas
+        )
+        builder.add_node(
+            node_id=id,
+            node_type="loop",
+            action_id=None,
+            display_name=display_name,
+            out_params_schema=None,
+            params=cleaned_params,
+            parent_node_id=parent_node_id if isinstance(parent_node_id, str) else None,
+            depends_on=depends_on or [],
+        )
+        _attach_sub_graph_nodes(builder, id, normalized_nodes)
+        removed_node_fields = _sanitize_builder_node_fields(builder, id)
+        _snapshot(f"add_loop_{id}")
+        if removed_fields or removed_node_fields:
+            return _build_validation_error(
+                "loop 节点的 params 仅支持 loop_kind/source/condition/item_alias/body_subgraph/exports，且 exports 只能包含 items/aggregates。",
+                removed_fields=removed_fields,
+                removed_node_fields=removed_node_fields,
+                node_id=id,
+            )
+        return {"status": "ok", "type": "node_added", "node_id": id}
 
-            elif func_name == "add_action_node":
-                action_id = args.get("action_id")
-                parent_node_id = args.get("parent_node_id")
+    @function_tool
+    def add_condition_node(
+        id: str,
+        true_to_node: Optional[str],
+        false_to_node: Optional[str],
+        display_name: Optional[str] = None,
+        params: Optional[Dict[str, Any]] = None,
+        depends_on: Optional[List[str]] = None,
+        parent_node_id: Optional[str] = None,
+    ) -> Mapping[str, Any]:
+        if parent_node_id is not None and not isinstance(parent_node_id, str):
+            return _build_validation_error("parent_node_id 需要是字符串或 null。")
+        if true_to_node is not None and not isinstance(true_to_node, str):
+            return _build_validation_error("true_to_node 只能是节点 id 或 null。", invalid_fields=["true_to_node"])
+        if false_to_node is not None and not isinstance(false_to_node, str):
+            return _build_validation_error("false_to_node 只能是节点 id 或 null。", invalid_fields=["false_to_node"])
+        normalized_params: Dict[str, Any] = dict(params or {})
+        expr_val = normalized_params.get("expression")
+        if not isinstance(expr_val, str) or not expr_val.strip():
+            return _build_validation_error("condition.params.expression 必须是返回布尔值的 Jinja 表达式。", invalid_fields=["expression"])
 
-                if not last_action_candidates:
-                    tool_result = {
-                        "status": "error",
-                        "message": "action 节点必须在调用 search_business_actions 之后创建，请先查询候选动作。",
-                    }
-                elif action_id not in last_action_candidates:
-                    tool_result = {
-                        "status": "error",
-                        "message": "action_id 必须是最近一次 search_business_actions 返回的 candidates.id 之一。",
-                        "allowed_action_ids": last_action_candidates,
-                    }
-                elif parent_node_id is not None and not isinstance(parent_node_id, str):
-                    tool_result = {
-                        "status": "error",
-                        "message": "parent_node_id 需要是字符串或 null。",
-                    }
-                else:
-                    original_params = args.get("params") or {}
-                    cleaned_params, removed_fields = _filter_supported_params(
-                        node_type="action",
-                        params=original_params,
-                        action_schemas=action_schemas,
-                        action_id=action_id,
-                    )
-                    builder.add_node(
-                        node_id=args["id"],
-                        node_type="action",
-                        action_id=action_id,
-                        display_name=args.get("display_name"),
-                        out_params_schema=args.get("out_params_schema"),
-                        params=cleaned_params,
-                        parent_node_id=parent_node_id if isinstance(parent_node_id, str) else None,
-                    )
-                    removed_node_fields = _sanitize_builder_node_fields(builder, args["id"])
-                    if removed_fields or removed_node_fields:
-                        tool_result = {
-                            "status": "error",
-                            "message": "action 节点仅支持 id/type/action_id/display_name/params/out_params_schema 字段，params 仅支持 arg_schema 字段，已移除不支持的字段。",
-                            "removed_param_fields": removed_fields,
-                            "removed_node_fields": removed_node_fields,
-                            "node_id": args["id"],
-                        }
-                    else:
-                        tool_result = {"status": "ok", "type": "node_added", "node_id": args["id"]}
+        cleaned_params, removed_fields = _filter_supported_params(
+            node_type="condition", params=normalized_params, action_schemas=action_schemas
+        )
+        builder.add_node(
+            node_id=id,
+            node_type="condition",
+            display_name=display_name,
+            params=cleaned_params,
+            true_to_node=true_to_node if isinstance(true_to_node, str) else None,
+            false_to_node=false_to_node if isinstance(false_to_node, str) else None,
+            parent_node_id=parent_node_id if isinstance(parent_node_id, str) else None,
+            depends_on=depends_on or [],
+        )
+        removed_node_fields = _sanitize_builder_node_fields(builder, id)
+        _snapshot(f"add_condition_{id}")
+        if removed_fields or removed_node_fields:
+            return _build_validation_error(
+                "condition 节点的 params 仅支持 expression。",
+                removed_fields=removed_fields,
+                removed_node_fields=removed_node_fields,
+                node_id=id,
+            )
+        return {"status": "ok", "type": "node_added", "node_id": id}
 
-            elif func_name == "add_loop_node":
-                parent_node_id = args.get("parent_node_id")
-                loop_kind = args.get("loop_kind")
-                source = args.get("source")
-                item_alias = args.get("item_alias")
-                sub_graph_nodes, sub_graph_error = _normalize_sub_graph_nodes(
-                    args.get("sub_graph_nodes"), builder=builder
-                )
-
-                missing_fields = [
-                    name
-                    for name, value in (
-                        ("loop_kind", loop_kind),
-                        ("source", source),
-                        ("item_alias", item_alias),
-                    )
-                    if value is None
-                ]
-                invalid_fields = []
-                if loop_kind is not None and loop_kind not in {"for_each", "while"}:
-                    invalid_fields.append("loop_kind")
-                if source is not None and not isinstance(source, (str, Mapping)):
-                    invalid_fields.append("source")
-                if item_alias is not None and not isinstance(item_alias, str):
-                    invalid_fields.append("item_alias")
-
-                if parent_node_id is not None and not isinstance(parent_node_id, str):
-                    tool_result = {
-                        "status": "error",
-                        "message": "parent_node_id 需要是字符串或 null。",
-                    }
-                elif missing_fields or invalid_fields:
-                    tool_result = {
-                        "status": "error",
-                        "message": "loop 节点需要提供合法的 loop_kind/source/item_alias 参数。",
-                        "missing_fields": missing_fields,
-                        "invalid_fields": invalid_fields,
-                    }
-                elif sub_graph_error:
-                    tool_result = {"status": "error", **sub_graph_error}
-                else:
-                    params = args.get("params") or {}
-                    params.update({
-                        "loop_kind": loop_kind,
-                        "source": source,
-                        "item_alias": item_alias,
-                    })
-                    cleaned_params, removed_fields = _filter_supported_params(
-                        node_type="loop",
-                        params=params,
-                        action_schemas=action_schemas,
-                    )
-                    builder.add_node(
-                        node_id=args["id"],
-                        node_type="loop",
-                        action_id=None,
-                        display_name=args.get("display_name"),
-                        out_params_schema=None,
-                        params=cleaned_params,
-                        parent_node_id=parent_node_id if isinstance(parent_node_id, str) else None,
-                    )
-                    _attach_sub_graph_nodes(builder, args["id"], sub_graph_nodes)
-                    removed_node_fields = _sanitize_builder_node_fields(builder, args["id"])
-                    if removed_fields or removed_node_fields:
-                        tool_result = {
-                            "status": "error",
-                            "message": "loop 节点的 params 仅支持 loop_kind/source/condition/item_alias/body_subgraph/exports，且 exports 只能包含 items/aggregates。",
-                            "removed_fields": removed_fields,
-                            "removed_node_fields": removed_node_fields,
-                            "node_id": args["id"],
-                        }
-                    else:
-                        tool_result = {"status": "ok", "type": "node_added", "node_id": args["id"]}
-
-            elif func_name == "add_condition_node":
-                true_to_node = args.get("true_to_node")
-                false_to_node = args.get("false_to_node")
-                parent_node_id = args.get("parent_node_id")
-                params = args.get("params")
-
-                missing_fields = [
-                    name
-                    for name in ("true_to_node", "false_to_node")
-                    if name not in args
-                ]
-                non_str_fields = [
-                    name
-                    for name, value in (
-                        ("true_to_node", true_to_node),
-                        ("false_to_node", false_to_node),
-                    )
-                    if value is not None and not isinstance(value, str)
-                ]
-
-                params_error: Optional[Dict[str, Any]] = None
-                normalized_params: Dict[str, Any] = {}
-                if isinstance(params, Mapping):
-                    normalized_params = dict(params)
-                elif params is not None:
-                    params_error = {
-                        "status": "error",
-                        "message": "condition 节点的 params 需要是对象。",
-                    }
-
-                if missing_fields or non_str_fields:
-                    tool_result = {
-                        "status": "error",
-                            "message": (
-                                "condition 节点需要提供 true_to_node/false_to_node 字段，分支跳转可为节点 id（继续执行）"
-                                "或 null（表示该分支结束），非字符串/未提供会被拒绝。"
-                            ),
-                            "missing_fields": missing_fields,
-                            "invalid_fields": non_str_fields,
-                        }
-                    messages.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": tool_call_id,
-                            "content": json.dumps(tool_result, ensure_ascii=False),
-                        }
-                    )
-                    continue
-
-                expr_val = normalized_params.get("expression") if isinstance(normalized_params, Mapping) else None
-
-                if params_error:
-                    tool_result = params_error
-                elif not isinstance(expr_val, str) or not expr_val.strip():
-                    tool_result = {
-                        "status": "error",
-                        "message": "condition 节点的 params.expression 必须是返回布尔值的 Jinja 表达式。",
-                        "invalid_fields": ["expression"],
-                    }
-                elif parent_node_id is not None and not isinstance(parent_node_id, str):
-                    tool_result = {
-                        "status": "error",
-                        "message": "parent_node_id 需要是字符串或 null。",
-                    }
-                else:
-                    cleaned_params, removed_fields = _filter_supported_params(
-                        node_type="condition",
-                        params=normalized_params,
-                        action_schemas=action_schemas,
-                    )
-                    builder.add_node(
-                        node_id=args["id"],
-                        node_type="condition",
-                        action_id=None,
-                        display_name=args.get("display_name"),
-                        out_params_schema=None,
-                        params=cleaned_params,
-                        true_to_node=true_to_node if isinstance(true_to_node, str) else None,
-                        false_to_node=false_to_node if isinstance(false_to_node, str) else None,
-                        parent_node_id=parent_node_id if isinstance(parent_node_id, str) else None,
-                    )
-                    removed_node_fields = _sanitize_builder_node_fields(builder, args["id"])
-                    if removed_fields or removed_node_fields:
-                        tool_result = {
-                            "status": "error",
-                            "message": "condition 节点的 params 仅支持 expression，已移除不支持的字段。",
-                            "removed_fields": removed_fields,
-                            "removed_node_fields": removed_node_fields,
-                            "node_id": args["id"],
-                        }
-                    else:
-                        tool_result = {"status": "ok", "type": "node_added", "node_id": args["id"]}
-
-            elif func_name == "add_switch_node":
-                parent_node_id = args.get("parent_node_id")
-                cases = args.get("cases")
-                params = args.get("params") or {}
-                default_to_node = args.get("default_to_node")
-
-                if not isinstance(cases, list):
-                    tool_result = {
-                        "status": "error",
-                        "message": "switch 节点需要提供 cases 数组。",
-                    }
-                elif parent_node_id is not None and not isinstance(parent_node_id, str):
-                    tool_result = {
-                        "status": "error",
-                        "message": "parent_node_id 需要是字符串或 null。",
-                    }
-                else:
-                    normalized_cases: list[Dict[str, Any]] = []
-                    invalid_case_indices: list[int] = []
-                    for idx, case in enumerate(cases):
-                        if not isinstance(case, Mapping):
-                            invalid_case_indices.append(idx)
-                            continue
-                        to_node = case.get("to_node") if "to_node" in case else None
-                        if to_node is not None and not isinstance(to_node, str):
-                            invalid_case_indices.append(idx)
-                            continue
-                        normalized_cases.append(dict(case))
-
-                    if invalid_case_indices:
-                        tool_result = {
-                            "status": "error",
-                            "message": "cases 中的 to_node 需要是字符串或 null。",
-                            "invalid_case_indices": invalid_case_indices,
-                        }
-                    elif default_to_node is not None and not isinstance(default_to_node, str):
-                        tool_result = {
-                            "status": "error",
-                            "message": "default_to_node 需要是字符串或 null。",
-                        }
-                    elif params is not None and not isinstance(params, Mapping):
-                        tool_result = {
-                            "status": "error",
-                            "message": "switch 节点的 params 需要是对象。",
-                        }
-                    else:
-                        cleaned_params, removed_fields = _filter_supported_params(
-                            node_type="switch",
-                            params=params,
-                            action_schemas=action_schemas,
-                        )
-                        builder.add_node(
-                            node_id=args["id"],
-                            node_type="switch",
-                            action_id=None,
-                            display_name=args.get("display_name"),
-                            params=cleaned_params,
-                            cases=normalized_cases,
-                            default_to_node=default_to_node if isinstance(default_to_node, str) else None,
-                            parent_node_id=parent_node_id if isinstance(parent_node_id, str) else None,
-                        )
-                        removed_node_fields = _sanitize_builder_node_fields(builder, args["id"])
-                        if removed_fields or removed_node_fields:
-                            tool_result = {
-                                "status": "error",
-                                "message": "switch 节点的 params 仅支持 source/field 字段，其他字段已移除。",
-                                "removed_fields": removed_fields,
-                                "removed_node_fields": removed_node_fields,
-                                "node_id": args["id"],
-                            }
-                        else:
-                            tool_result = {"status": "ok", "type": "node_added", "node_id": args["id"]}
-
-            elif func_name in {
-                "update_action_node",
-                "update_condition_node",
-                "update_loop_node",
-                "update_switch_node",
-            }:
-                node_id = args.get("id")
-                parent_node_id = args.get("parent_node_id")
-                sub_graph_nodes, sub_graph_error = _normalize_sub_graph_nodes(
-                    args.get("sub_graph_nodes"), builder=builder
-                )
-                expected_type = {
-                    "update_action_node": "action",
-                    "update_condition_node": "condition",
-                    "update_loop_node": "loop",
-                    "update_switch_node": "switch",
-                }[func_name]
-
-                if not isinstance(node_id, str):
-                    tool_result = {"status": "error", "message": f"{func_name} 需要提供字符串类型的 id。"}
-                elif node_id not in builder.nodes:
-                    tool_result = {"status": "error", "message": f"节点 {node_id} 尚未创建，无法更新。"}
-                elif builder.nodes.get(node_id, {}).get("type") != expected_type:
-                    tool_result = {
-                        "status": "error",
-                        "message": f"节点 {node_id} 类型不是 {expected_type}，无法使用 {func_name}。",
-                    }
-                elif parent_node_id is not None and not isinstance(parent_node_id, str):
-                    tool_result = {
-                        "status": "error",
-                        "message": "parent_node_id 需要是字符串或 null。",
-                    }
-                elif sub_graph_error:
-                    tool_result = {"status": "error", **sub_graph_error}
-                else:
-                    removed_param_fields: List[str] = []
-                    removed_node_fields: List[str] = []
-
-                    if func_name == "update_action_node":
-                        new_action_id = args.get("action_id") if "action_id" in args else None
-                        new_params = args.get("params") if "params" in args else None
-                        if "params" in args and not isinstance(new_params, Mapping):
-                            tool_result = {
-                                "status": "error",
-                                "message": "action 节点的 params 需要是对象。",
-                            }
-                            messages.append(
-                                {
-                                    "role": "tool",
-                                    "tool_call_id": tool_call_id,
-                                    "content": json.dumps(tool_result, ensure_ascii=False),
-                                }
-                            )
-                            continue
-                        if "action_id" in args:
-                            if not last_action_candidates:
-                                tool_result = {
-                                    "status": "error",
-                                    "message": "更新 action_id 前请先调用 search_business_actions 以获取候选。",
-                                }
-                                messages.append(
-                                    {
-                                        "role": "tool",
-                                        "tool_call_id": tool_call_id,
-                                        "content": json.dumps(tool_result, ensure_ascii=False),
-                                    }
-                                )
-                                continue
-                            if new_action_id not in last_action_candidates:
-                                tool_result = {
-                                    "status": "error",
-                                    "message": "action_id 必须是最近一次 search_business_actions 返回的 candidates.id 之一。",
-                                    "allowed_action_ids": last_action_candidates,
-                                }
-                                messages.append(
-                                    {
-                                        "role": "tool",
-                                        "tool_call_id": tool_call_id,
-                                        "content": json.dumps(tool_result, ensure_ascii=False),
-                                    }
-                                )
-                                continue
-                        updates: Dict[str, Any] = {}
-                        if "display_name" in args:
-                            updates["display_name"] = args.get("display_name")
-                        if "out_params_schema" in args:
-                            updates["out_params_schema"] = args.get("out_params_schema")
-                        if "action_id" in args:
-                            updates["action_id"] = new_action_id
-                        if "parent_node_id" in args:
-                            updates["parent_node_id"] = parent_node_id
-                        if "params" in args:
-                            cleaned_params, removed_param_fields = _filter_supported_params(
-                                node_type="action",
-                                params=new_params or {},
-                                action_schemas=action_schemas,
-                                action_id=new_action_id
-                                if isinstance(new_action_id, str)
-                                else builder.nodes.get(node_id, {}).get("action_id"),
-                            )
-                            updates["params"] = cleaned_params
-                        builder.update_node(node_id, **updates)
-                        removed_param_fields.extend(
-                            _sanitize_builder_node_params(builder, node_id, action_schemas)
-                        )
-                        removed_node_fields = _sanitize_builder_node_fields(builder, node_id)
-                        if removed_param_fields or removed_node_fields:
-                            tool_result = {
-                                "status": "error",
-                                "message": "action 节点仅支持 id/type/action_id/display_name/params/out_params_schema 字段，params 仅支持 arg_schema 字段，已移除不支持的字段。",
-                                "removed_param_fields": removed_param_fields,
-                                "removed_node_fields": removed_node_fields,
-                                "node_id": node_id,
-                            }
-                        else:
-                            tool_result = {"status": "ok", "type": "node_updated", "node_id": node_id}
-                    elif func_name == "update_condition_node":
-                        new_params = args.get("params") if "params" in args else None
-                        if "params" in args and not isinstance(new_params, Mapping):
-                            tool_result = {
-                                "status": "error",
-                                "message": "condition 节点的 params 需要是对象。",
-                            }
-                            messages.append(
-                                {
-                                    "role": "tool",
-                                    "tool_call_id": tool_call_id,
-                                    "content": json.dumps(tool_result, ensure_ascii=False),
-                                }
-                            )
-                            continue
-                        if "true_to_node" in args and args.get("true_to_node") is not None and not isinstance(args.get("true_to_node"), str):
-                            tool_result = {
-                                "status": "error",
-                                "message": "condition 的 true_to_node 只能是节点 id 或 null。",
-                                "invalid_fields": ["true_to_node"],
-                            }
-                            messages.append(
-                                {
-                                    "role": "tool",
-                                    "tool_call_id": tool_call_id,
-                                    "content": json.dumps(tool_result, ensure_ascii=False),
-                                }
-                            )
-                            continue
-                        if "false_to_node" in args and args.get("false_to_node") is not None and not isinstance(args.get("false_to_node"), str):
-                            tool_result = {
-                                "status": "error",
-                                "message": "condition 的 false_to_node 只能是节点 id 或 null。",
-                                "invalid_fields": ["false_to_node"],
-                            }
-                            messages.append(
-                                {
-                                    "role": "tool",
-                                    "tool_call_id": tool_call_id,
-                                    "content": json.dumps(tool_result, ensure_ascii=False),
-                                }
-                            )
-                            continue
-
-                        updates: Dict[str, Any] = {}
-                        if "display_name" in args:
-                            updates["display_name"] = args.get("display_name")
-                        if "true_to_node" in args:
-                            updates["true_to_node"] = args.get("true_to_node")
-                        if "false_to_node" in args:
-                            updates["false_to_node"] = args.get("false_to_node")
-                        if "parent_node_id" in args:
-                            updates["parent_node_id"] = parent_node_id
-                        if "params" in args:
-                            normalized_params = dict(new_params or {})
-                            expr_val = normalized_params.get("expression")
-                            if not isinstance(expr_val, str) or not expr_val.strip():
-                                tool_result = {
-                                    "status": "error",
-                                    "message": "condition 节点的 params.expression 必须是返回布尔值的 Jinja 表达式。",
-                                    "invalid_fields": ["expression"],
-                                }
-                                messages.append(
-                                    {
-                                        "role": "tool",
-                                        "tool_call_id": tool_call_id,
-                                        "content": json.dumps(tool_result, ensure_ascii=False),
-                                    }
-                                )
-                                continue
-                            cleaned_params, removed_param_fields = _filter_supported_params(
-                                node_type="condition",
-                                params=normalized_params,
-                                action_schemas=action_schemas,
-                            )
-                            updates["params"] = cleaned_params
-                        builder.update_node(node_id, **updates)
-                        removed_param_fields.extend(
-                            _sanitize_builder_node_params(builder, node_id, action_schemas)
-                        )
-                        removed_node_fields = _sanitize_builder_node_fields(builder, node_id)
-                        if removed_param_fields or removed_node_fields:
-                            tool_result = {
-                                "status": "error",
-                                "message": "condition 节点仅支持 id/type/display_name/params/true_to_node/false_to_node 字段，params 仅支持 expression，已移除不支持的字段。",
-                                "removed_fields": removed_param_fields,
-                                "removed_node_fields": removed_node_fields,
-                                "node_id": node_id,
-                            }
-                        else:
-                            tool_result = {"status": "ok", "type": "node_updated", "node_id": node_id}
-                    elif func_name == "update_switch_node":
-                        new_params = args.get("params") if "params" in args else None
-                        if "params" in args and not isinstance(new_params, Mapping):
-                            tool_result = {
-                                "status": "error",
-                                "message": "switch 节点的 params 需要是对象。",
-                            }
-                            messages.append(
-                                {
-                                    "role": "tool",
-                                    "tool_call_id": tool_call_id,
-                                    "content": json.dumps(tool_result, ensure_ascii=False),
-                                }
-                            )
-                            continue
-                        invalid_case_indices: list[int] = []
-                        normalized_cases: list[Dict[str, Any]] = []
-                        if "cases" in args:
-                            cases = args.get("cases")
-                            if not isinstance(cases, list):
-                                tool_result = {
-                                    "status": "error",
-                                    "message": "switch 的 cases 需要是数组。",
-                                }
-                                messages.append(
-                                    {
-                                        "role": "tool",
-                                        "tool_call_id": tool_call_id,
-                                        "content": json.dumps(tool_result, ensure_ascii=False),
-                                    }
-                                )
-                                continue
-                            for idx, case in enumerate(cases):
-                                if not isinstance(case, Mapping):
-                                    invalid_case_indices.append(idx)
-                                    continue
-                                to_node = case.get("to_node") if "to_node" in case else None
-                                if to_node is not None and not isinstance(to_node, str):
-                                    invalid_case_indices.append(idx)
-                                    continue
-                                normalized_cases.append(dict(case))
-
-                        if "default_to_node" in args and args.get("default_to_node") is not None and not isinstance(args.get("default_to_node"), str):
-                            tool_result = {
-                                "status": "error",
-                                "message": "switch 的 default_to_node 只能是节点 id 或 null。",
-                                "invalid_fields": ["default_to_node"],
-                            }
-                            messages.append(
-                                {
-                                    "role": "tool",
-                                    "tool_call_id": tool_call_id,
-                                    "content": json.dumps(tool_result, ensure_ascii=False),
-                                }
-                            )
-                            continue
-                        if invalid_case_indices:
-                            tool_result = {
-                                "status": "error",
-                                "message": "cases 中的 to_node 需要是字符串或 null。",
-                                "invalid_case_indices": invalid_case_indices,
-                            }
-                            messages.append(
-                                {
-                                    "role": "tool",
-                                    "tool_call_id": tool_call_id,
-                                    "content": json.dumps(tool_result, ensure_ascii=False),
-                                }
-                            )
-                            continue
-
-                        updates: Dict[str, Any] = {}
-                        if "display_name" in args:
-                            updates["display_name"] = args.get("display_name")
-                        if "parent_node_id" in args:
-                            updates["parent_node_id"] = parent_node_id
-                        if "default_to_node" in args:
-                            updates["default_to_node"] = args.get("default_to_node")
-                        if "cases" in args:
-                            updates["cases"] = normalized_cases
-                        if "params" in args:
-                            cleaned_params, removed_param_fields = _filter_supported_params(
-                                node_type="switch",
-                                params=new_params or {},
-                                action_schemas=action_schemas,
-                            )
-                            updates["params"] = cleaned_params
-                        builder.update_node(node_id, **updates)
-                        removed_param_fields.extend(
-                            _sanitize_builder_node_params(builder, node_id, action_schemas)
-                        )
-                        removed_node_fields = _sanitize_builder_node_fields(builder, node_id)
-                        if removed_param_fields or removed_node_fields:
-                            tool_result = {
-                                "status": "error",
-                                "message": "switch 节点仅支持 id/type/display_name/params/cases/default_to_node 字段，params 仅支持 source/field，已移除不支持的字段。",
-                                "removed_fields": removed_param_fields,
-                                "removed_node_fields": removed_node_fields,
-                                "node_id": node_id,
-                            }
-                        else:
-                            tool_result = {"status": "ok", "type": "node_updated", "node_id": node_id}
-                    else:  # update_loop_node
-                        new_params = args.get("params") if "params" in args else None
-                        if "params" in args and not isinstance(new_params, Mapping):
-                            tool_result = {
-                                "status": "error",
-                                "message": "loop 节点的 params 需要是对象。",
-                            }
-                            messages.append(
-                                {
-                                    "role": "tool",
-                                    "tool_call_id": tool_call_id,
-                                    "content": json.dumps(tool_result, ensure_ascii=False),
-                                }
-                            )
-                            continue
-                        updates: Dict[str, Any] = {}
-                        if "display_name" in args:
-                            updates["display_name"] = args.get("display_name")
-                        if "parent_node_id" in args:
-                            updates["parent_node_id"] = parent_node_id
-                        if "params" in args:
-                            cleaned_params, removed_param_fields = _filter_supported_params(
-                                node_type="loop",
-                                params=new_params or {},
-                                action_schemas=action_schemas,
-                            )
-                            updates["params"] = cleaned_params
-                        builder.update_node(node_id, **updates)
-                        if func_name == "update_loop_node":
-                            _attach_sub_graph_nodes(builder, node_id, sub_graph_nodes)
-                        removed_param_fields.extend(
-                            _sanitize_builder_node_params(builder, node_id, action_schemas)
-                        )
-                        removed_node_fields = _sanitize_builder_node_fields(builder, node_id)
-                        if removed_param_fields or removed_node_fields:
-                            tool_result = {
-                                "status": "error",
-                                "message": "loop 节点仅支持 id/type/display_name/params 字段，params 仅支持 loop_kind/source/condition/item_alias/body_subgraph/exports，且 exports 只能包含 items/aggregates，已移除不支持的字段。",
-                                "removed_fields": removed_param_fields,
-                                "removed_node_fields": removed_node_fields,
-                                "node_id": node_id,
-                            }
-                        else:
-                            tool_result = {"status": "ok", "type": "node_updated", "node_id": node_id}
-
-            elif func_name == "finalize_workflow":
-                skeleton, coverage = _run_coverage_check(
-                    nl_requirement=nl_requirement,
-                    builder=builder,
-                    action_registry=action_registry,
-                    search_service=search_service,
-                )
-                latest_skeleton = skeleton
-                latest_coverage = coverage
-                is_covered = bool(coverage.get("is_covered", False))
-                nodes_without_upstream = _find_nodes_without_upstream(skeleton)
-                needs_dependency_review = bool(nodes_without_upstream)
-                tool_result = {
-                    "status": "ok" if is_covered else "needs_more_coverage",
-                    "type": "finalized",
-                    "notes": args.get("notes"),
-                    "coverage": coverage,
-                    "nodes_without_upstream": nodes_without_upstream,
-                }
-                messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": tool_call_id,
-                        "content": json.dumps(tool_result, ensure_ascii=False),
-                    }
-                )
-
-                if needs_dependency_review:
-                    dependency_retry += 1
-                    log_info(
-                        "[Planner] 存在无上游依赖的节点，将提示 LLM 检查是否遗漏引用。",
-                        f"nodes={nodes_without_upstream}",
-                    )
-                    dependency_feedback = _build_dependency_feedback_message(
-                        workflow=skeleton, nodes_without_upstream=nodes_without_upstream
-                    )
-                    messages.append({"role": "system", "content": dependency_feedback})
-
-                if is_covered:
-                    if needs_dependency_review and dependency_retry <= max_dependency_refine_rounds:
-                        log_info("🔧 覆盖度通过，但需要进一步检查无上游依赖的节点，继续规划。")
-                    else:
-                        finalized = True
-                        log_success("[Planner] 覆盖度检查通过，结束结构规划。")
-                        if needs_dependency_review and dependency_retry > max_dependency_refine_rounds:
-                            log_warn(
-                                "已超过无上游依赖节点检查次数，继续后续流程。"
-                            )
-                else:
-                    coverage_retry += 1
-                    log_info("🔧 覆盖度检查未通过，将继续使用规划工具完善。")
-                    feedback_message = _build_coverage_feedback_message(
-                        coverage=coverage, workflow=skeleton
-                    )
-                    messages.append({"role": "system", "content": feedback_message})
-                    if coverage_retry > max_coverage_refine_rounds:
-                        log_warn("已达到覆盖度补全上限，仍有缺失点，结束规划阶段。")
-                        finalized = True
-
+    @function_tool
+    def add_switch_node(
+        id: str,
+        cases: List[Dict[str, Any]],
+        display_name: Optional[str] = None,
+        params: Optional[Dict[str, Any]] = None,
+        default_to_node: Optional[str] = None,
+        depends_on: Optional[List[str]] = None,
+        parent_node_id: Optional[str] = None,
+    ) -> Mapping[str, Any]:
+        if parent_node_id is not None and not isinstance(parent_node_id, str):
+            return _build_validation_error("parent_node_id 需要是字符串或 null。")
+        if not isinstance(cases, list):
+            return _build_validation_error("switch 节点需要提供 cases 数组。")
+        normalized_cases: list[Dict[str, Any]] = []
+        invalid_case_indices: list[int] = []
+        for idx, case in enumerate(cases):
+            if not isinstance(case, Mapping):
+                invalid_case_indices.append(idx)
                 continue
+            to_node = case.get("to_node") if "to_node" in case else None
+            if to_node is not None and not isinstance(to_node, str):
+                invalid_case_indices.append(idx)
+                continue
+            normalized_cases.append(dict(case))
+        if invalid_case_indices:
+            return _build_validation_error("cases 中的 to_node 需要是字符串或 null。", invalid_case_indices=invalid_case_indices)
+        if default_to_node is not None and not isinstance(default_to_node, str):
+            return _build_validation_error("default_to_node 需要是字符串或 null。", invalid_fields=["default_to_node"])
+        if params is not None and not isinstance(params, Mapping):
+            return _build_validation_error("switch 节点的 params 需要是对象。")
 
-            elif func_name == "dump_model":
-                workflow_snapshot = _attach_inferred_edges(builder.to_workflow())
-                latest_skeleton = workflow_snapshot
-                tool_result = {
-                    "status": "ok",
-                    "type": "dump_model",
-                    "summary": {
-                        "node_count": len(workflow_snapshot.get("nodes") or []),
-                        "edge_count": len(workflow_snapshot.get("edges") or []),
-                    },
-                    "workflow": workflow_snapshot,
-                }
+        cleaned_params, removed_fields = _filter_supported_params(
+            node_type="switch", params=params or {}, action_schemas=action_schemas
+        )
+        builder.add_node(
+            node_id=id,
+            node_type="switch",
+            display_name=display_name,
+            params=cleaned_params,
+            cases=normalized_cases,
+            default_to_node=default_to_node if isinstance(default_to_node, str) else None,
+            parent_node_id=parent_node_id if isinstance(parent_node_id, str) else None,
+            depends_on=depends_on or [],
+        )
+        removed_node_fields = _sanitize_builder_node_fields(builder, id)
+        _snapshot(f"add_switch_{id}")
+        if removed_fields or removed_node_fields:
+            return _build_validation_error(
+                "switch 节点的 params 仅支持 source/field 字段。",
+                removed_fields=removed_fields,
+                removed_node_fields=removed_node_fields,
+                node_id=id,
+            )
+        return {"status": "ok", "type": "node_added", "node_id": id}
 
-            else:
-                tool_result = {"status": "error", "message": f"未知工具 {func_name}"}
+    def _update_node_common(node_id: str, expected_type: str) -> Optional[Dict[str, Any]]:
+        if not isinstance(node_id, str):
+            return _build_validation_error(f"更新 {expected_type} 需要提供字符串类型的 id。")
+        if node_id not in builder.nodes:
+            return _build_validation_error(f"节点 {node_id} 尚未创建，无法更新。")
+        if builder.nodes.get(node_id, {}).get("type") != expected_type:
+            return _build_validation_error(f"节点 {node_id} 类型不是 {expected_type}。")
+        return None
 
-            messages.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": tool_call_id,
-                    "content": json.dumps(tool_result, ensure_ascii=False),
-                }
+    @function_tool
+    def update_action_node(
+        id: str,
+        display_name: Optional[str] = None,
+        params: Optional[Dict[str, Any]] = None,
+        out_params_schema: Optional[Dict[str, Any]] = None,
+        action_id: Optional[str] = None,
+        depends_on: Optional[List[str]] = None,
+        parent_node_id: Optional[str] = None,
+    ) -> Mapping[str, Any]:
+        precheck = _update_node_common(id, "action")
+        if precheck:
+            return precheck
+        if parent_node_id is not None and not isinstance(parent_node_id, str):
+            return _build_validation_error("parent_node_id 需要是字符串或 null。")
+        if action_id is not None:
+            if not last_action_candidates:
+                return _build_validation_error("更新 action_id 前请先调用 search_business_actions。")
+            if action_id not in last_action_candidates:
+                return _build_validation_error(
+                    "action_id 必须是最近一次 search_business_actions 返回的 candidates.id 之一。",
+                    allowed_action_ids=last_action_candidates,
+                )
+        if params is not None and not isinstance(params, Mapping):
+            return _build_validation_error("action 节点的 params 需要是对象。")
+
+        updates: Dict[str, Any] = {}
+        if display_name is not None:
+            updates["display_name"] = display_name
+        if out_params_schema is not None:
+            updates["out_params_schema"] = out_params_schema
+        if action_id is not None:
+            updates["action_id"] = action_id
+        if parent_node_id is not None:
+            updates["parent_node_id"] = parent_node_id
+        if params is not None:
+            cleaned_params, removed_param_fields = _filter_supported_params(
+                node_type="action",
+                params=params or {},
+                action_schemas=action_schemas,
+                action_id=action_id if isinstance(action_id, str) else builder.nodes.get(id, {}).get("action_id"),
+            )
+            updates["params"] = cleaned_params
+        else:
+            removed_param_fields = []
+
+        if depends_on is not None:
+            updates["depends_on"] = depends_on
+
+        builder.update_node(id, **updates)
+        removed_param_fields.extend(_sanitize_builder_node_params(builder, id, action_schemas))
+        removed_node_fields = _sanitize_builder_node_fields(builder, id)
+        _snapshot(f"update_action_{id}")
+        if removed_param_fields or removed_node_fields:
+            return _build_validation_error(
+                "action 节点仅支持 id/type/action_id/display_name/params/out_params_schema 字段，params 仅支持 arg_schema 字段。",
+                removed_param_fields=removed_param_fields,
+                removed_node_fields=removed_node_fields,
+                node_id=id,
+            )
+        return {"status": "ok", "type": "node_updated", "node_id": id}
+
+    @function_tool
+    def update_condition_node(
+        id: str,
+        display_name: Optional[str] = None,
+        params: Optional[Dict[str, Any]] = None,
+        true_to_node: Optional[str] = None,
+        false_to_node: Optional[str] = None,
+        depends_on: Optional[List[str]] = None,
+        parent_node_id: Optional[str] = None,
+    ) -> Mapping[str, Any]:
+        precheck = _update_node_common(id, "condition")
+        if precheck:
+            return precheck
+        if parent_node_id is not None and not isinstance(parent_node_id, str):
+            return _build_validation_error("parent_node_id 需要是字符串或 null。")
+        if true_to_node is not None and not isinstance(true_to_node, str):
+            return _build_validation_error("true_to_node 只能是节点 id 或 null。", invalid_fields=["true_to_node"])
+        if false_to_node is not None and not isinstance(false_to_node, str):
+            return _build_validation_error("false_to_node 只能是节点 id 或 null。", invalid_fields=["false_to_node"])
+        if params is not None and not isinstance(params, Mapping):
+            return _build_validation_error("condition 节点的 params 需要是对象。")
+
+        updates: Dict[str, Any] = {}
+        if display_name is not None:
+            updates["display_name"] = display_name
+        if true_to_node is not None:
+            updates["true_to_node"] = true_to_node
+        if false_to_node is not None:
+            updates["false_to_node"] = false_to_node
+        if parent_node_id is not None:
+            updates["parent_node_id"] = parent_node_id
+        if params is not None:
+            normalized_params = dict(params or {})
+            expr_val = normalized_params.get("expression")
+            if not isinstance(expr_val, str) or not expr_val.strip():
+                return _build_validation_error(
+                    "condition 节点的 params.expression 必须是返回布尔值的 Jinja 表达式。",
+                    invalid_fields=["expression"],
+                )
+            cleaned_params, removed_param_fields = _filter_supported_params(
+                node_type="condition", params=normalized_params, action_schemas=action_schemas
+            )
+            updates["params"] = cleaned_params
+        else:
+            removed_param_fields = []
+        if depends_on is not None:
+            updates["depends_on"] = depends_on
+
+        builder.update_node(id, **updates)
+        removed_param_fields.extend(_sanitize_builder_node_params(builder, id, action_schemas))
+        removed_node_fields = _sanitize_builder_node_fields(builder, id)
+        _snapshot(f"update_condition_{id}")
+        if removed_param_fields or removed_node_fields:
+            return _build_validation_error(
+                "condition 节点仅支持 id/type/display_name/params/true_to_node/false_to_node 字段，params 仅支持 expression。",
+                removed_fields=removed_param_fields,
+                removed_node_fields=removed_node_fields,
+                node_id=id,
+            )
+        return {"status": "ok", "type": "node_updated", "node_id": id}
+
+    @function_tool
+    def update_switch_node(
+        id: str,
+        display_name: Optional[str] = None,
+        params: Optional[Dict[str, Any]] = None,
+        cases: Optional[List[Dict[str, Any]]] = None,
+        default_to_node: Optional[str] = None,
+        depends_on: Optional[List[str]] = None,
+        parent_node_id: Optional[str] = None,
+    ) -> Mapping[str, Any]:
+        precheck = _update_node_common(id, "switch")
+        if precheck:
+            return precheck
+        if parent_node_id is not None and not isinstance(parent_node_id, str):
+            return _build_validation_error("parent_node_id 需要是字符串或 null。")
+        if default_to_node is not None and not isinstance(default_to_node, str):
+            return _build_validation_error("default_to_node 只能是节点 id 或 null。", invalid_fields=["default_to_node"])
+        if params is not None and not isinstance(params, Mapping):
+            return _build_validation_error("switch 节点的 params 需要是对象。")
+
+        normalized_cases: list[Dict[str, Any]] = []
+        invalid_case_indices: list[int] = []
+        if cases is not None:
+            if not isinstance(cases, list):
+                return _build_validation_error("switch 的 cases 需要是数组。")
+            for idx, case in enumerate(cases):
+                if not isinstance(case, Mapping):
+                    invalid_case_indices.append(idx)
+                    continue
+                to_node = case.get("to_node") if "to_node" in case else None
+                if to_node is not None and not isinstance(to_node, str):
+                    invalid_case_indices.append(idx)
+                    continue
+                normalized_cases.append(dict(case))
+        if invalid_case_indices:
+            return _build_validation_error("cases 中的 to_node 需要是字符串或 null。", invalid_case_indices=invalid_case_indices)
+
+        updates: Dict[str, Any] = {}
+        if display_name is not None:
+            updates["display_name"] = display_name
+        if parent_node_id is not None:
+            updates["parent_node_id"] = parent_node_id
+        if default_to_node is not None:
+            updates["default_to_node"] = default_to_node
+        if cases is not None:
+            updates["cases"] = normalized_cases
+        if params is not None:
+            cleaned_params, removed_param_fields = _filter_supported_params(
+                node_type="switch", params=params or {}, action_schemas=action_schemas
+            )
+            updates["params"] = cleaned_params
+        else:
+            removed_param_fields = []
+        if depends_on is not None:
+            updates["depends_on"] = depends_on
+
+        builder.update_node(id, **updates)
+        removed_param_fields.extend(_sanitize_builder_node_params(builder, id, action_schemas))
+        removed_node_fields = _sanitize_builder_node_fields(builder, id)
+        _snapshot(f"update_switch_{id}")
+        if removed_param_fields or removed_node_fields:
+            return _build_validation_error(
+                "switch 节点仅支持 id/type/display_name/params/cases/default_to_node 字段，params 仅支持 source/field。",
+                removed_fields=removed_param_fields,
+                removed_node_fields=removed_node_fields,
+                node_id=id,
+            )
+        return {"status": "ok", "type": "node_updated", "node_id": id}
+
+    @function_tool
+    def update_loop_node(
+        id: str,
+        display_name: Optional[str] = None,
+        params: Optional[Dict[str, Any]] = None,
+        sub_graph_nodes: Optional[List[str]] = None,
+        depends_on: Optional[List[str]] = None,
+        parent_node_id: Optional[str] = None,
+    ) -> Mapping[str, Any]:
+        precheck = _update_node_common(id, "loop")
+        if precheck:
+            return precheck
+        if parent_node_id is not None and not isinstance(parent_node_id, str):
+            return _build_validation_error("parent_node_id 需要是字符串或 null。")
+        if params is not None and not isinstance(params, Mapping):
+            return _build_validation_error("loop 节点的 params 需要是对象。")
+
+        normalized_nodes, sub_graph_error = _normalize_sub_graph_nodes(sub_graph_nodes, builder=builder)
+        if sub_graph_error:
+            return {"status": "error", **sub_graph_error}
+
+        updates: Dict[str, Any] = {}
+        if display_name is not None:
+            updates["display_name"] = display_name
+        if parent_node_id is not None:
+            updates["parent_node_id"] = parent_node_id
+        if params is not None:
+            cleaned_params, removed_param_fields = _filter_supported_params(
+                node_type="loop", params=params or {}, action_schemas=action_schemas
+            )
+            updates["params"] = cleaned_params
+        else:
+            removed_param_fields = []
+        if depends_on is not None:
+            updates["depends_on"] = depends_on
+
+        builder.update_node(id, **updates)
+        _attach_sub_graph_nodes(builder, id, normalized_nodes)
+        removed_param_fields.extend(_sanitize_builder_node_params(builder, id, action_schemas))
+        removed_node_fields = _sanitize_builder_node_fields(builder, id)
+        _snapshot(f"update_loop_{id}")
+        if removed_param_fields or removed_node_fields:
+            return _build_validation_error(
+                "loop 节点仅支持 id/type/display_name/params 字段，params 仅支持 loop_kind/source/condition/item_alias/body_subgraph/exports，且 exports 只能包含 items/aggregates。",
+                removed_fields=removed_param_fields,
+                removed_node_fields=removed_node_fields,
+                node_id=id,
+            )
+        return {"status": "ok", "type": "node_updated", "node_id": id}
+
+    @function_tool
+    def finalize_workflow(ready: bool = True, notes: Optional[str] = None) -> Mapping[str, Any]:
+        nonlocal latest_skeleton, latest_coverage
+        skeleton, coverage = _run_coverage_check(
+            nl_requirement=nl_requirement,
+            builder=builder,
+            action_registry=action_registry,
+            search_service=search_service,
+        )
+        latest_skeleton = skeleton
+        latest_coverage = coverage
+        nodes_without_upstream = _find_nodes_without_upstream(skeleton)
+        is_covered = bool(coverage.get("is_covered", False))
+        needs_dependency_review = bool(nodes_without_upstream)
+
+        feedback_parts: List[str] = []
+        if not is_covered:
+            feedback_parts.append(
+                _build_coverage_feedback_message(coverage=coverage, workflow=skeleton)
+            )
+        if nodes_without_upstream:
+            feedback_parts.append(
+                _build_dependency_feedback_message(workflow=skeleton, nodes_without_upstream=nodes_without_upstream)
             )
 
-        workflow_snapshot = _attach_inferred_edges(builder.to_workflow())
-        _emit_progress(f"structure_round_{round_idx + 1}", workflow_snapshot)
-        if workflow_snapshot:
-            latest_skeleton = workflow_snapshot
+        should_continue = not ready or not is_covered or needs_dependency_review
+        finalized_state["done"] = not should_continue
+        _snapshot("finalize")
+        return {
+            "status": "ok" if not should_continue else "needs_more_work",
+            "type": "finalized",
+            "notes": notes,
+            "coverage": coverage,
+            "nodes_without_upstream": nodes_without_upstream,
+            "should_continue": should_continue,
+            "feedback": "\n\n".join(feedback_parts) if feedback_parts else "结构已通过覆盖度与依赖检查。",
+            "workflow": skeleton,
+        }
 
-        if finalized:
-            break
+    @function_tool
+    def dump_model() -> Mapping[str, Any]:
+        snapshot = _snapshot("dump_model")
+        return {
+            "status": "ok",
+            "type": "dump_model",
+            "summary": {
+                "node_count": len(snapshot.get("nodes") or []),
+                "edge_count": len(snapshot.get("edges") or []),
+            },
+            "workflow": snapshot,
+        }
 
-    if not finalized:
+    agent = Agent(
+        name="WorkflowStructurePlanner",
+        instructions=system_prompt,
+        tools=[
+            search_business_actions,
+            set_workflow_meta,
+            add_action_node,
+            add_loop_node,
+            add_condition_node,
+            add_switch_node,
+            update_action_node,
+            update_condition_node,
+            update_switch_node,
+            update_loop_node,
+            finalize_workflow,
+            dump_model,
+        ],
+        model=OPENAI_MODEL,
+    )
+
+    total_rounds = max_rounds + max_coverage_refine_rounds + max_dependency_refine_rounds
+    log_section("结构规划 - Agent SDK")
+
+    run_input: Any = nl_requirement
+    try:
+        result = Runner.run(agent, run_input, max_rounds=total_rounds, temperature=0.2)  # type: ignore[arg-type]
+    except TypeError:
+        coro = Runner.run(agent, run_input)  # type: ignore[call-arg]
+        result = asyncio.run(coro) if asyncio.iscoroutine(coro) else coro
+
+    if not finalized_state.get("done"):
         if latest_coverage and not latest_coverage.get("is_covered", False):
-            log_warn("[Planner] 规划回合结束但覆盖度仍未通过，使用当前骨架继续后续阶段。")
+            log_warn("[Planner] 规划结束但覆盖度未通过，返回当前骨架。")
         else:
             log_warn("[Planner] 未收到 finalize_workflow，使用当前骨架继续后续阶段。")
 
-    if not finalized or not latest_skeleton:
+    if not finalized_state.get("done") or not latest_skeleton:
         latest_skeleton = _prepare_skeleton_for_coverage(
             builder=builder, action_registry=action_registry, search_service=search_service
         )
