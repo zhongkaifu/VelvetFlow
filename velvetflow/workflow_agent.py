@@ -463,10 +463,15 @@ def create_workflow_agent(
         uses_agents_pkg=uses_agents_pkg,
     )
 
-    build_workflow_tool = _wrap_tool(tool_wrapper, runtime.plan_workflow)
-    validate_workflow_tool = _wrap_tool(tool_wrapper, runtime.validate_workflow)
-    repair_workflow_tool = _wrap_tool(tool_wrapper, runtime.repair_workflow)
-    update_workflow_tool = _wrap_tool(tool_wrapper, runtime.update_workflow)
+    def _wrap_external(name: str, fn: Callable[..., Any]):
+        if uses_agents_pkg:
+            return _FnTool(name, fn)
+        return _wrap_tool(tool_wrapper, fn)
+
+    build_workflow_tool = _wrap_external("build_workflow", runtime.plan_workflow)
+    validate_workflow_tool = _wrap_external("validate_workflow", runtime.validate_workflow)
+    repair_workflow_tool = _wrap_external("repair_workflow", runtime.repair_workflow)
+    update_workflow_tool = _wrap_external("update_workflow", runtime.update_workflow)
 
     if uses_agents_pkg:
         agent_kwargs = {
