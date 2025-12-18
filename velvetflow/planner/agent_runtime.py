@@ -23,4 +23,4 @@ from typing import Any, Callable, Dict, Iterable, List, Mapping, MutableMapping,
 from openai import OpenAI
 from pydantic import create_model
 
-from agents import Agent, Runner, function_tool
+from agents import Agent, FunctionTool, Runner, function_tool
