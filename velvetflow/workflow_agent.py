@@ -313,9 +313,13 @@ class _WorkflowAgentRuntime:
 
     def _invoke_internal_agent(self, prompt: str, fallback: Callable[[], dict[str, Any]]):
         try:
+            if not self.uses_fallback:
+                print("[Agent] 调用 OpenAI Agent 执行工具，prompt 已截断展示: ", prompt[:200])
             raw = self._internal_agent.run(prompt)
             return coerce_agent_output(raw)
-        except Exception:  # noqa: BLE001 - Agent 推理可能失败，兜底使用直接路径
+        except Exception as exc:  # noqa: BLE001 - Agent 推理可能失败，兜底使用直接路径
+            if not self.uses_fallback:
+                print(f"[Agent] Agent 调用失败，回退到本地实现，原因: {exc}")
             return fallback()
 
     # --- 对外暴露的 Agent 工具：依赖 Internal Agent 完成任务 ---
@@ -326,6 +330,8 @@ class _WorkflowAgentRuntime:
             "需求如下，请仅调用 build_workflow 工具完成规划，并返回工具 JSON 输出。"
             f"\n需求: {requirement}"
         )
+        if not self.uses_fallback:
+            print("[Agent] 开始规划 workflow（build_workflow）。")
         return self._invoke_internal_agent(prompt, lambda: self._plan_workflow_direct(requirement))
 
     def update_workflow(self, workflow_raw: Any, requirement: str) -> dict[str, Any]:
@@ -337,6 +343,8 @@ class _WorkflowAgentRuntime:
             "务必返回工具原样输出的 JSON。"
             f"\n现有 workflow: {payload_text}\n新需求: {requirement}"
         )
+        if not self.uses_fallback:
+            print("[Agent] 开始更新 workflow（update_workflow）。")
         return self._invoke_internal_agent(
             prompt,
             lambda: self._update_workflow_direct(workflow_raw, requirement),
@@ -350,6 +358,8 @@ class _WorkflowAgentRuntime:
             "请调用 validate_workflow 工具，对以下 JSON 进行静态校验，并返回工具输出。"
             f"\nworkflow: {payload_text}"
         )
+        if not self.uses_fallback:
+            print("[Agent] 开始校验 workflow（validate_workflow）。")
         return self._invoke_internal_agent(prompt, lambda: self._validate_workflow_direct(workflow_raw))
 
     def repair_workflow(self, workflow_raw: Any) -> dict[str, Any]:
@@ -361,6 +371,8 @@ class _WorkflowAgentRuntime:
             "若已通过校验则直接返回当前结果。请返回工具输出的 JSON。"
             f"\nworkflow: {payload_text}"
         )
+        if not self.uses_fallback:
+            print("[Agent] 开始修复 workflow（repair_workflow）。")
         return self._invoke_internal_agent(prompt, lambda: self._repair_workflow_direct(workflow_raw))
 
 
@@ -436,6 +448,9 @@ def create_workflow_agent(
     agent = agent_cls(**agent_kwargs)
     if used_fallback:
         setattr(agent, "_is_fallback", True)
+        print("[Agent] 未检测到官方 Agent SDK，使用 FallbackAgent 运行。")
+    else:
+        print("[Agent] 已加载 OpenAI Agent SDK，将使用官方 Agent 调度工具。")
     return agent
 
 
