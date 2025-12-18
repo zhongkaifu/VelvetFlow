@@ -1,11 +1,12 @@
 # 核心概念
 
 ## Workflow 与节点模型
-- **Workflow**：包含 `nodes`、可选 `edges` 与元数据；edges 可由参数绑定或条件/循环出口自动推导，确保渲染与执行前结构闭合。
+- **Workflow**：包含 `nodes`、可选 `edges` 与元数据；edges 可由参数绑定或条件/循环/多分支出口自动推导，Planner 会在输出中附带只读 edges/depends_on 方便可视化与下游校验。
 - **节点类型**：
   - `action` 节点绑定业务动作与参数 Schema。
   - `condition`/`switch` 节点按布尔或多分支结果选择下游，未命中的分支会被标记为阻断以避免重复执行。
   - `loop` 节点使用 `iter` 定义循环集合，`body_subgraph` 执行子图，`exports.items/aggregates` 收集逐轮与聚合结果。
+  - `parallel/start/end` 仍可作为结构辅助节点存在。
 - `velvetflow.models` 使用 Pydantic 强类型校验节点字段、loop 子图完整性与引用合法性，失败时抛出统一的 `ValidationError`。
 
 ## 绑定与上下文
@@ -14,6 +15,7 @@
 - 绑定解析与 Jinja 模板折叠由 `bindings.py` 和 `jinja_utils.py` 完成，确保在执行前暴露类型不一致或模板语法错误。
 
 ## 规划与校验
-- **结构规划 + 覆盖度检查**：`planner/structure.py` 通过 tool-calling 逐步构建骨架，`coverage.py` 将缺失点反馈给 LLM 直至覆盖需求。
+- **基于 Agent SDK 的规划/补参/修复**：`planner/structure.py`、`params.py`、`repair.py` 使用 OpenAI Agent SDK 的 `Agent`/`Runner`/`function_tool` 构建三段式流程，并在 `planner/agent_runtime.py` 集中导出依赖，便于在云端 Agent 或本地兼容层之间切换。
+- **结构规划 + 覆盖度检查**：`planner/structure.py` 内联定义的工具逐步构建骨架，`coverage.py` 将缺失点反馈给 Agent 直至覆盖需求。
 - **Action Guard**：`planner/orchestrator.py` 在补参前后检查缺失或未注册的 `action_id`，必要时基于混合检索自动替换并提示模型修复。
-- **静态校验与修复循环**：`verification/validation.py`、`planner/repair_tools.py` 联合提供本地修复（填充默认值、删除未知字段、类型矫正）与按需的 LLM 修复，保证输出的 Workflow 可执行。
+- **静态校验与修复循环**：`verification/validation.py`、`planner/repair_tools.py` 联合提供本地修复（填充默认值、删除未知字段、类型矫正）与按需的 Agent 修复，保证输出的 Workflow 可执行。

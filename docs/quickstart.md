@@ -8,12 +8,14 @@
   python -m venv .venv
   source .venv/bin/activate
   pip install -r requirements.txt
+  pip install agents  # Planner 使用 OpenAI Agent SDK 的 Agent/Runner/function_tool
   ```
 - 或使用 [uv](https://github.com/astral-sh/uv) 同步 `pyproject.toml` 中的依赖：
   ```bash
   uv venv --python 3.10
   source .venv/bin/activate
   uv sync
+  uv add agents
   ```
 - 设置 OpenAI 凭证：
   ```bash
