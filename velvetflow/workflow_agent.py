@@ -491,6 +491,15 @@ def create_workflow_agent(
         print("[Agent] 未检测到官方 Agent SDK，使用 FallbackAgent 运行。")
     else:
         print("[Agent] 已加载 OpenAI Agent SDK，将使用官方 Agent 调度工具。")
+
+    # 如果底层 Agent 没有同步 run 方法（如 agents.Agent），为 CLI 提供兼容包装
+    if not hasattr(agent, "run") and runner_cls is not None:
+        def _run(prompt: str):
+            result = asyncio.run(runner_cls.run(agent, input=prompt))
+            return getattr(result, "final_output", result)
+
+        setattr(agent, "run", _run)
+
     return agent
 
 
