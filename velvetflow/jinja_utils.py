@@ -27,6 +27,7 @@ def get_jinja_env() -> Environment:
         trim_blocks=True,
         lstrip_blocks=True,
     )
+    env.globals.setdefault("now", datetime.now)
     env.filters.setdefault("tojson", lambda obj: json.dumps(obj, ensure_ascii=False))
     env.filters.setdefault("length", lambda obj: len(obj) if obj is not None else 0)
 
@@ -140,5 +141,13 @@ def _wrap_value(value: Any) -> Any:
 
 
 def _prepare_context(context: Mapping[str, Any]) -> Mapping[str, Any]:
-    return {k: _wrap_value(v) for k, v in context.items()}
+    prepared = dict(context)
+    system_ctx = prepared.get("system") if isinstance(prepared.get("system"), Mapping) else {}
+    if not system_ctx:
+        system_ctx = {}
+    if "date" not in system_ctx:
+        system_ctx = dict(system_ctx)
+        system_ctx["date"] = datetime.now().date().isoformat()
+    prepared["system"] = system_ctx
 
+    return {k: _wrap_value(v) for k, v in prepared.items()}

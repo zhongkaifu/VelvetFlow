@@ -1,6 +1,7 @@
 """Condition evaluation helpers for the executor."""
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any, Dict, List, Mapping, Optional, Union
 
 from velvetflow.aggregation import (
@@ -27,6 +28,7 @@ class ConditionEvaluationMixin:
             "loop_ctx": ctx.loop_ctx,
             "loop_id": ctx.loop_id,
             "get": _jinja_get,
+            "system": {"date": datetime.now().date().isoformat()},
         }
 
         if isinstance(ctx.loop_ctx, Mapping):
