@@ -11,6 +11,7 @@ from velvetflow.planner.orchestrator import (
 from velvetflow.planner.structure import plan_workflow_structure_with_llm
 from velvetflow.planner.params import fill_params_with_llm
 from velvetflow.planner.repair import repair_workflow_with_llm
+from velvetflow.planner.unified_agent import run_workflow_planning_agent
 from velvetflow.planner.update import update_workflow_with_llm
 from velvetflow.planner.relations import (
     build_node_relations,
@@ -25,6 +26,7 @@ __all__ = [
     "plan_workflow_structure_with_llm",
     "fill_params_with_llm",
     "repair_workflow_with_llm",
+    "run_workflow_planning_agent",
     "update_workflow_with_llm",
     "build_node_relations",
     "get_referenced_nodes",
