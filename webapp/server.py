@@ -35,11 +35,16 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ValidationError
 
 from velvetflow.action_registry import BUSINESS_ACTIONS
+from velvetflow.config import OPENAI_MODEL
 from velvetflow.executor import DynamicActionExecutor, load_simulation_data
 from velvetflow.executor.async_runtime import WorkflowSuspension
 from velvetflow.models import Workflow
 from velvetflow.planner import plan_workflow_with_two_pass, update_workflow_with_two_pass
-from velvetflow.search import HybridActionSearchService, build_default_search_service
+from velvetflow.search import (
+    HybridActionSearchService,
+    build_default_search_service,
+    get_openai_client,
+)
 
 SIMULATION_PATH = REPO_ROOT / "simulation_data.json"
 
@@ -61,6 +66,7 @@ class PlanRequest(BaseModel):
 class PlanResponse(BaseModel):
     workflow: Dict[str, Any]
     logs: List[str]
+    suggestions: Optional[List[str]] = None
 
 
 class RunRequest(BaseModel):
@@ -90,6 +96,45 @@ def _get_search_service() -> HybridActionSearchService:
     if _search_service is None:
         _search_service = build_default_search_service()
     return _search_service
+
+
+def _is_empty_workflow(workflow: Workflow | Dict[str, Any]) -> bool:
+    nodes = getattr(workflow, "nodes", None)
+    if nodes is None and isinstance(workflow, dict):
+        nodes = workflow.get("nodes")
+    return not nodes
+
+
+def _suggest_requirement_additions(user_requirement: str, *, model: str = OPENAI_MODEL) -> List[str]:
+    """Use an LLM to propose clarifications that make the workflow plannable."""
+
+    try:
+        client = get_openai_client()
+        resp = client.chat.completions.create(
+            model=model,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "你是业务流程规划助手，会帮用户把含糊的需求拆解得更具体。"
+                        "请基于已知需求给出 3 条补充思路，帮助用户明确：数据来源/触发时机、"
+                        "关键条件或过滤规则、具体输出/通知形式、成功判定标准。"
+                        "请用简短中文短句返回 JSON 数组，不要添加其他说明。"
+                    ),
+                },
+                {"role": "user", "content": user_requirement},
+            ],
+            temperature=0.4,
+        )
+
+        if not resp.choices:
+            raise RuntimeError("未获得补充建议")
+
+        content = (resp.choices[0].message.content or "").strip()
+        return json.loads(content)
+    except Exception as exc:  # pragma: no cover - 网络/模型依赖环境
+        logging_utils.log_error(f"[suggestion] 无法从 LLM 获取补充建议：{exc}")
+        return []
 
 
 @contextmanager
@@ -226,7 +271,11 @@ def plan_workflow(req: PlanRequest) -> PlanResponse:
             detail=f"规划或自修复失败: {exc} | trace: {traceback.format_exc()}",
         ) from exc
 
-    return PlanResponse(workflow=_serialize_workflow(workflow), logs=logs)
+    suggestions: List[str] = []
+    if _is_empty_workflow(workflow):
+        suggestions = _suggest_requirement_additions(req.requirement)
+
+    return PlanResponse(workflow=_serialize_workflow(workflow), logs=logs, suggestions=suggestions)
 
 
 @app.post("/api/plan/stream")
@@ -301,7 +350,16 @@ async def plan_workflow_stream(req: PlanRequest) -> StreamingResponse:
                 await queue.put(
                     payload
                 )
-            await queue.put({"type": "result", "workflow": workflow_dict})
+            needs_more_detail = _is_empty_workflow(workflow_dict)
+            suggestions = _suggest_requirement_additions(req.requirement) if needs_more_detail else []
+            await queue.put(
+                {
+                    "type": "result",
+                    "workflow": workflow_dict,
+                    "needs_more_detail": needs_more_detail,
+                    "suggestions": suggestions,
+                }
+            )
         except Exception as exc:  # noqa: BLE001 - keep API message concise
             await queue.put(
                 {

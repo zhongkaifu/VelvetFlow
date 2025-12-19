@@ -1,12 +1,52 @@
+let planningContext = { baseRequirement: "", supplements: [] };
+let awaitingSupplement = false;
+let lastSuggestions = [];
 
-function handleChatSubmit(event) {
+function buildRequirementWithSupplements() {
+  const lines = [];
+  if (planningContext.baseRequirement) {
+    lines.push(planningContext.baseRequirement.trim());
+  }
+  planningContext.supplements.forEach((item, idx) => {
+    lines.push(`补充信息 ${idx + 1}：${item}`);
+  });
+  return lines.join("\n\n");
+}
+
+function resetPlanningContext() {
+  planningContext = { baseRequirement: "", supplements: [] };
+  awaitingSupplement = false;
+  lastSuggestions = [];
+}
+
+async function handleChatSubmit(event) {
   event.preventDefault();
   const text = userInput.value.trim();
   if (!text) return;
 
   addChatMessage(text, "user");
   userInput.value = "";
-  requestPlan(text);
+
+  if (awaitingSupplement) {
+    planningContext.supplements.push(text);
+    awaitingSupplement = false;
+    addChatMessage("已收到补充信息，将结合现有需求重新规划。", "agent");
+  } else {
+    planningContext = { baseRequirement: text, supplements: [] };
+  }
+
+  const combinedRequirement = buildRequirementWithSupplements();
+  const result = await requestPlan(combinedRequirement);
+  if (result && result.needsMoreDetail) {
+    awaitingSupplement = true;
+    lastSuggestions = result.suggestions || [];
+    const hints = lastSuggestions.length
+      ? lastSuggestions.map((item, idx) => `${idx + 1}. ${item}`).join("\n")
+      : "可以补充触发时机、输入/输出格式、过滤条件或成功指标。";
+    addChatMessage(`为了更好地规划流程，请再提供一些细节：\n${hints}`, "agent");
+  } else {
+    resetPlanningContext();
+  }
 }
 
 function refreshWorkflowCanvases() {
