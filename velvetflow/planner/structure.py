@@ -572,10 +572,13 @@ def plan_workflow_structure_with_llm(
         "构建方式：\n"
         "1) 使用 set_workflow_meta 设置工作流名称和描述。\n"
         "2) 当需要业务动作时，必须先用 search_business_actions 查询候选；add_action_node 的 action_id 必须取自最近一次 candidates.id。\n"
-        "3) 如需修改已创建节点（补充 display_name/params/分支指向/父节点等），请调用 update_action_node 或 update_condition_node 并传入需要覆盖的字段列表；调用后务必检查上下游关联节点是否也需要同步更新以保持一致性。\n"
-        "4) condition 节点必须显式提供 true_to_node 和 false_to_node，值可以是节点 id（继续执行）或 null（表示该分支结束）；通过节点 params 中的输入/输出引用表达依赖关系，不需要显式绘制 edges。\n"
-        "5) 请为每个节点维护 depends_on（字符串数组），列出其直接依赖的上游节点；当节点被 condition.true_to_node/false_to_node 指向时，必须将该 condition 节点加入目标节点的 depends_on。\n"
-        "6) 当结构完成时调用 finalize_workflow。\n\n"
+        "3）当需要 condition/switch/loop 节点时，必须先用 add_condition_node/add_switch_node/add_loop_node 创建，params 中的表达式和引用需严格遵循 Jinja 模板写法；\n"
+        "4) 调用submit_node_params 为已创建的节点补充 params；\n"
+        "5) 调用validate_node_params 验证节点参数；\n"
+        "6) 如需修改已创建节点（补充 display_name/params/分支指向/父节点等），请调用 update_action_node 或 update_condition_node 并传入需要覆盖的字段列表；调用后务必检查上下游关联节点是否也需要同步更新以保持一致性。\n"
+        "7) condition 节点必须显式提供 true_to_node 和 false_to_node，值可以是节点 id（继续执行）或 null（表示该分支结束）；通过节点 params 中的输入/输出引用表达依赖关系，不需要显式绘制 edges。\n"
+        "8) 请为每个节点维护 depends_on（字符串数组），列出其直接依赖的上游节点；当节点被 condition.true_to_node/false_to_node 指向时，必须将该 condition 节点加入目标节点的 depends_on。\n"
+        "9) 当结构完成时调用 finalize_workflow。\n\n"
         "特别注意：只有 action 节点需要 out_params_schema，condition 节点没有该属性；out_params_schema 的格式应为 {\"参数名\": \"类型\"}，仅需列出业务 action 输出参数的名称与类型，不要添加额外描述或示例。\n\n"
         "【非常重要的原则】\n"        
         "1. 你必须严格围绕当前对话中的自然语言需求来设计 workflow：\n"
@@ -1131,6 +1134,59 @@ def plan_workflow_structure_with_llm(
             "workflow": snapshot,
         }
 
+    validated_params: Dict[str, Any] | None = None
+    last_submitted_params: Dict[str, Any] | None = None
+
+    @function_tool(strict_mode=False)
+    def submit_node_params(id: str, params: Dict[str, Any]) -> Mapping[str, Any]:
+        nonlocal last_submitted_params
+        if id != node.id:
+            return _build_response(
+                "error",
+                message="只能提交当前正在处理的节点。",
+                expected_id=node.id,
+            )
+        last_submitted_params = params
+        log_event(
+            "params_tool_result",
+            {"node_id": node.id, "tool_name": "submit_node_params", "params": params},
+            node_id=node.id,
+            action_id=node.action_id,
+        )
+        return _build_response("received", message="已收到提交，请立即调用 validate_node_params。")
+
+    @function_tool(strict_mode=False)
+    def validate_node_params(id: str, params: Optional[Dict[str, Any]] = None) -> Mapping[str, Any]:
+        nonlocal validated_params, last_submitted_params
+        if id != node.id:
+            return _build_response(
+                "error",
+                message="只能校验当前节点。",
+                expected_id=node.id,
+            )
+
+        params_to_check = params if isinstance(params, dict) else last_submitted_params
+        if params_to_check is None:
+            return _build_response(
+                "error",
+                errors=["缺少待校验的 params（请先提交或在参数中提供 params）"],
+            )
+
+        errors = _validate_node_params(
+            node=node,
+            params=params_to_check,
+            upstream_nodes=upstream_nodes,
+            action_schemas=action_schemas,
+            binding_memory=binding_memory,
+        )
+
+        if errors:
+            return _build_response("error", errors=errors)
+
+        validated_params = params_to_check
+        filled_params[node.id] = params_to_check
+        return _build_response("ok", params=params_to_check)
+
     agent = Agent(
         name="WorkflowStructurePlanner",
         instructions=system_prompt,
@@ -1147,6 +1203,8 @@ def plan_workflow_structure_with_llm(
             update_loop_node,
             finalize_workflow,
             dump_model,
+            submit_node_params, 
+            validate_node_params
         ],
         model=OPENAI_MODEL
     )
