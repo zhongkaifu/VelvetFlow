@@ -451,13 +451,6 @@ textarea#workflowEditor {
   border-color: rgba(255, 255, 255, 0.1);
 }
 
-.button:disabled {
-  opacity: 0.55;
-  cursor: not-allowed;
-  transform: none;
-  box-shadow: none;
-}
-
 .button--primary {
   background: linear-gradient(135deg, var(--accent), var(--accent-strong));
   border: none;
