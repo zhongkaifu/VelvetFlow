@@ -27,17 +27,12 @@ def build_loop_workflow(action_id: str) -> Workflow:
                                 "id": "loop_action",
                                 "type": "action",
                                 "action_id": action_id,
-                                "params": {"email_content": {"__from__": "loop.item"}},
+                                "params": {"email_content": "{{ loop.item }}"},
                             }
                         ],
                         "edges": [],
                     },
-                    "exports": {
-                        "items": {
-                            "from_node": "loop_action",
-                            "fields": ["email_content"],
-                        }
-                    },
+                    "exports": {"items": "{{ result_of.loop_action }}"},
                 },
             }
         ],
@@ -60,7 +55,7 @@ def test_loop_body_results_are_cleared_between_iterations():
     results = executor.run()
 
     assert "loop_action" not in results
-    assert results["loop"]["items"] == [
+    assert results["loop"]["exports"]["items"] == [
         {"email_content": "1"},
         {"email_content": "2"},
     ]
@@ -84,7 +79,7 @@ def test_nested_loop_results_do_not_leak_across_outer_iterations():
                                 "type": "loop",
                                 "params": {
                                     "loop_kind": "for_each",
-                                    "source": {"__from__": "loop.group"},
+                                    "source": "{{ loop.group }}",
                                     "item_alias": "item",
                                     "body_subgraph": {
                                         "nodes": [
@@ -92,26 +87,16 @@ def test_nested_loop_results_do_not_leak_across_outer_iterations():
                                                 "id": "record_item",
                                                 "type": "action",
                                                 "action_id": "productivity.compose_outlook_email.v1",
-                                                "params": {"email_content": {"__from__": "loop.item"}},
+                                                "params": {"email_content": "{{ loop.item }}"},
                                             }
                                         ]
                                     },
-                                    "exports": {
-                                        "items": {
-                                            "from_node": "record_item",
-                                            "fields": ["email_content"],
-                                        }
-                                    },
+                                    "exports": {"items": "{{ result_of.record_item }}"},
                                 },
                             }
                         ]
                     },
-                    "exports": {
-                        "items": {
-                            "from_node": "inner_loop",
-                            "fields": ["items"],
-                        }
-                    },
+                    "exports": {"items": "{{ result_of.inner_loop.exports.items }}"},
                 },
             }
         ],
@@ -131,9 +116,10 @@ def test_nested_loop_results_do_not_leak_across_outer_iterations():
 
     assert "record_item" not in results
     assert "inner_loop" not in results
-    assert results["outer_loop"]["items"] == [
-        {"items": [{"email_content": "1"}, {"email_content": "2"}]},
-        {"items": [{"email_content": "3"}]},
+    assert results["outer_loop"]["exports"]["items"] == [
+        {"email_content": "1"},
+        {"email_content": "2"},
+        {"email_content": "3"},
     ]
 
 
@@ -165,12 +151,7 @@ def test_condition_branch_inside_loop_body_uses_true_target():
                             },
                         ],
                     },
-                    "exports": {
-                        "items": {
-                            "from_node": "t_branch",
-                            "fields": ["branch"],
-                        }
-                    },
+                    "exports": {"items": "{{ result_of.t_branch }}"},
                 },
             }
         ],
@@ -186,7 +167,7 @@ def test_condition_branch_inside_loop_body_uses_true_target():
 
     results = executor.run()
 
-    assert results["loop"]["items"] == [{"branch": "true_taken"}]
+    assert results["loop"]["exports"]["items"] == [{"branch": "true_taken"}]
 
 
 def test_condition_false_branch_inside_loop_body_skips_true_target():
@@ -218,19 +199,14 @@ def test_condition_false_branch_inside_loop_body_skips_true_target():
                                 "type": "action",
                                 "action_id": "hr.update_employee_health_profile.v1",
                                 "params": {
-                                    "employee_id": {"__from__": "loop.employee.employee_id"},
-                                    "last_temperature": {"__from__": "loop.employee.temperature"},
+                                    "employee_id": "{{ loop.employee.employee_id }}",
+                                    "last_temperature": "{{ loop.employee.temperature }}",
                                     "status": "fever",
                                 },
                             },
                         ],
                     },
-                    "exports": {
-                        "items": {
-                            "from_node": "add_to_warning_list",
-                            "fields": ["employee_id"],
-                        }
-                    },
+                    "exports": {"items": "{{ result_of.add_to_warning_list.employee_id }}"},
                 },
             }
         ],
@@ -243,4 +219,4 @@ def test_condition_false_branch_inside_loop_body_skips_true_target():
 
     results = executor.run()
 
-    assert results["loop"]["items"] == []
+    assert results["loop"]["exports"]["items"] == []

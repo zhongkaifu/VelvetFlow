@@ -117,8 +117,7 @@
   - `condition`：可选布尔表达式，控制循环提前终止。
   - `body_subgraph`：必填子图，包含至少一个 `action` 节点。
   - `exports`：指定输出：
-    - `items.fields`：逐轮收集的字段列表。
-    - `aggregates`：聚合计算数组，`{ "name": "total", "kind": "sum", "expr": {"source": "result_of.step.amount", "field": "value"} }`。
+    - 使用 `{key: Jinja 表达式}` 形式暴露循环体字段，执行时每个 key 收集逐轮结果形成列表，可在表达式中组合多个来源或进行字段聚合。
 - **示例**：
 ```json
 {
@@ -135,26 +134,15 @@
           "type": "action",
           "action_id": "finance.pay_invoice",
           "params": {
-            "invoice_id": {"__from__": "loop.invoice.id"},
-            "amount": {"__from__": "loop.invoice.amount"}
+            "invoice_id": "{{ loop.invoice.id }}",
+            "amount": "{{ loop.invoice.amount }}"
           }
         }
       ]
     },
     "exports": {
-      "items": {"fields": ["id", "status", "amount"]},
-      "aggregates": [
-        {
-          "name": "paid_total",
-          "kind": "sum",
-          "expr": {"source": "result_of.pay_once", "field": "amount"}
-        },
-        {
-          "name": "paid_count",
-          "kind": "count_if",
-          "expr": {"source": "result_of.pay_once", "field": "status", "op": "equals", "value": "success"}
-        }
-      ]
+      "payments": "{{ result_of.pay_once }}",
+      "payment_amounts": "{{ result_of.pay_once.amount }}"
     }
   }
 }
@@ -214,11 +202,11 @@
               "id": "fetch_detail",
               "type": "action",
               "action_id": "crm.get_order_detail",
-              "params": {"order_id": {"__from__": "loop.order.id"}}
+              "params": {"order_id": "{{ loop.order.id }}"}
             }
           ]
         },
-        "exports": {"items": {"fields": ["id", "status"]}}
+        "exports": {"orders": "{{ result_of.fetch_detail }}"}
       }
     },
     {
@@ -235,7 +223,7 @@
                 "id": "ops_summary",
                 "type": "action",
                 "action_id": "ops.send_report",
-                "params": {"orders": {"__from__": "result_of.for_each_order.items"}}
+                "params": {"orders": "{{ result_of.for_each_order.exports.orders }}"}
               }
             ]
           },

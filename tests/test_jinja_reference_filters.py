@@ -57,13 +57,7 @@ def test_filter_expression_paths_validated_on_base_reference():
                             }
                         ]
                     },
-                    "exports": {
-                        "items": {
-                            "from_node": "collect_high_temp_employee",
-                            "fields": ["status"],
-                            "mode": "collect",
-                        }
-                    },
+                    "exports": {"items": "{{ result_of.collect_high_temp_employee }}"},
                 },
                 "depends_on": ["get_today_temperatures"],
             },

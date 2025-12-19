@@ -60,13 +60,7 @@ def _workflow_with_scalar_loop_source():
                             }
                         ]
                     },
-                    "exports": {
-                        "items": {
-                            "from_node": "noop",
-                            "fields": ["employee_id"],
-                            "mode": "collect",
-                        }
-                    },
+                    "exports": {"items": "{{ result_of.noop }}"},
                 },
                 "depends_on": ["fetch"],
             },

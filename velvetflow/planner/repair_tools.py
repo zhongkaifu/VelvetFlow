@@ -13,7 +13,7 @@ from typing import Any, Dict, Iterable, List, Mapping, MutableMapping, Optional,
 
 from velvetflow.loop_dsl import iter_workflow_and_loop_body_nodes
 from velvetflow.verification.binding_checks import _get_array_item_schema_from_output
-from velvetflow.planner.structure import _ensure_loop_items_fields, _fallback_loop_exports
+from velvetflow.planner.structure import _fallback_loop_exports
 from velvetflow.logging_utils import log_event, log_info, log_warn
 from velvetflow.models import ValidationError, Workflow
 from velvetflow.reference_utils import normalize_reference_path, parse_field_path
@@ -292,28 +292,19 @@ def fill_loop_exports_defaults(
             updated_nodes.append(node)
             continue
 
-        new_exports: Dict[str, Any] = dict(exports)
-        items_spec = new_exports.get("items")
+        cleaned_exports = {
+            key: value
+            for key, value in exports.items()
+            if isinstance(key, str) and isinstance(value, str) and value.strip()
+        }
 
-        if not isinstance(items_spec, Mapping):
-            if fallback and isinstance(fallback.get("items"), Mapping):
-                new_exports["items"] = fallback["items"]
-                changed = True
-        else:
-            new_items = dict(items_spec)
-            from_node = new_items.get("from_node")
-            if body_ids and (not isinstance(from_node, str) or from_node not in body_ids):
-                if fallback and isinstance(fallback.get("items"), Mapping):
-                    new_items["from_node"] = fallback["items"].get("from_node")
-                    changed = True
-            new_exports["items"] = new_items
+        if not cleaned_exports and fallback:
+            cleaned_exports = fallback
+            changed = True
 
-        ensured_exports = _ensure_loop_items_fields(
-            exports=new_exports, loop_node=node, action_schemas=actions_by_id
-        )
-        if ensured_exports != exports:
+        if cleaned_exports != exports:
             params = dict(params)
-            params["exports"] = ensured_exports
+            params["exports"] = cleaned_exports
             node = dict(node)
             node["params"] = params
             changed = True
@@ -464,14 +455,7 @@ def fix_missing_loop_exports_items(
     workflow: Mapping[str, Any],
     errors: Sequence[ValidationError],
 ) -> Tuple[Mapping[str, Any], Dict[str, Any]]:
-    """Insert missing ``exports.items`` segments for loop references.
-
-    When validators emit ``SCHEMA_MISMATCH`` for references like
-    ``result_of.loop.exports.field`` (missing the required ``items`` segment),
-    this helper rewrites all matching references to
-    ``result_of.loop.exports.items.field`` if the loop definition exposes
-    ``exports.items``.
-    """
+    """Insert missing ``exports`` segments for loop references."""
 
     patched = copy.deepcopy(workflow)
     replacements: List[Dict[str, str]] = []
@@ -502,12 +486,7 @@ def fix_missing_loop_exports_items(
             except Exception:
                 continue
 
-            if (
-                len(tokens) < 4
-                or tokens[0] != "result_of"
-                or tokens[2] != "exports"
-                or tokens[3] in {"items", "aggregates"}
-            ):
+            if len(tokens) < 3 or tokens[0] != "result_of" or tokens[2] == "exports":
                 continue
 
             loop_id = tokens[1]
@@ -520,29 +499,11 @@ def fix_missing_loop_exports_items(
             if not isinstance(exports, Mapping):
                 continue
 
-            items_spec = exports.get("items")
-            if not isinstance(items_spec, Mapping):
+            export_keys = {key for key in exports.keys() if isinstance(key, str)}
+            if tokens[2] not in export_keys:
                 continue
 
-            fields = items_spec.get("fields") if isinstance(items_spec, Mapping) else None
-            parsed_fields: List[List[Any]] = []
-            if isinstance(fields, list):
-                for field in fields:
-                    if not isinstance(field, str):
-                        continue
-                    try:
-                        parsed_fields.append(parse_field_path(field))
-                    except Exception:
-                        parsed_fields.append([field])
-
-            rest_tokens = tokens[3:]
-            if parsed_fields and not any(
-                rest_tokens[: len(field_tokens)] == field_tokens
-                for field_tokens in parsed_fields
-            ):
-                continue
-
-            corrected_parts = [*tokens[:3], "items", *tokens[3:]]
+            corrected_parts = [*tokens[:2], "exports", *tokens[2:]]
             corrected = _format_path(corrected_parts)
             replacements.append({"from": normalized, "to": corrected})
             patched, _ = replace_reference_paths(patched, old=normalized, new=corrected)

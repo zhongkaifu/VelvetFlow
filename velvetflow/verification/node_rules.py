@@ -16,7 +16,6 @@ from .binding_checks import (
     _get_array_item_schema_from_output,
     _get_field_schema,
     _get_field_schema_from_item,
-    _get_loop_items_schema_from_exports,
     _get_node_output_schema,
     _get_output_schema_at_path,
     _iter_empty_param_fields,
@@ -668,7 +667,7 @@ def _validate_nodes_recursive(
                                     field="expression",
                                     message=(
                                         f"条件表达式引用 {source} 的属性 '{field}' 未在上游输出 schema 中声明，"
-                                        "请调整 exports.items.fields 或修改表达式以匹配可用字段。"
+                                        "请调整 exports 中暴露的字段或修改表达式以匹配可用字段。"
                                     ),
                                 )
                             )
@@ -906,221 +905,30 @@ def _validate_nodes_recursive(
                         message=f"loop 节点 '{nid}' 的 exports 必须是对象。",
                     )
                 )
-            else:
-                items = exports.get("items") if isinstance(exports, Mapping) else None
-                if items is not None:
-                    if not isinstance(items, Mapping):
+            elif isinstance(exports, Mapping):
+                for key, value in exports.items():
+                    if not isinstance(key, str):
                         errors.append(
                             ValidationError(
                                 code="SCHEMA_MISMATCH",
                                 node_id=nid,
-                                field="exports.items",
-                                message=f"loop 节点 '{nid}' 的 exports.items 必须是对象。",
+                                field="exports",
+                                message=f"loop 节点 '{nid}' 的 exports key 必须是字符串。",
                             )
                         )
-                    else:
-                        from_node = items.get("from_node")
-                        fields = items.get("fields")
-                        if not isinstance(from_node, str):
-                            errors.append(
-                                ValidationError(
-                                    code="SCHEMA_MISMATCH",
-                                    node_id=nid,
-                                    field="exports.items.from_node",
-                                    message=f"loop 节点 '{nid}' 的 exports.items.from_node 需要字符串。",
-                                )
-                            )
-                        elif not isinstance(fields, list) or not all(
-                            isinstance(f, str) for f in fields
-                        ):
-                            errors.append(
-                                ValidationError(
-                                    code="SCHEMA_MISMATCH",
-                                    node_id=nid,
-                                    field="exports.items.fields",
-                                    message=f"loop 节点 '{nid}' 的 exports.items.fields 需要字符串数组。",
-                                )
-                            )
-                        elif isinstance(from_node, str) and exports:
-                            body_nodes = (
-                                params.get("body_subgraph") or {}
-                            ).get("nodes", [])
-                            body_node_map = {
-                                bn.get("id"): bn for bn in body_nodes if isinstance(bn, Mapping)
-                            }
-                            target_node = body_node_map.get(from_node)
-                            if not target_node:
-                                errors.append(
-                                    ValidationError(
-                                        code="SCHEMA_MISMATCH",
-                                        node_id=nid,
-                                        field="exports.items.from_node",
-                                        message=f"loop 节点 '{nid}' 的 exports.items.from_node 必须引用 body_subgraph 中的节点。",
-                                    )
-                                )
-                            else:
-                                output_schema = _get_node_output_schema(
-                                    target_node, actions_by_id
-                                )
-
-                                if not isinstance(output_schema, Mapping):
-                                    errors.append(
-                                        ValidationError(
-                                            code="SCHEMA_MISMATCH",
-                                            node_id=nid,
-                                            field="exports.items.fields",
-                                            message=(
-                                                f"loop 节点 '{nid}' 的 exports.items.from_node='{from_node}'"
-                                                " 缺少可用的 output_schema，无法暴露字段。"
-                                            ),
-                                        )
-                                    )
-                                else:
-                                    for fld in fields:
-                                        if _schema_path_error(output_schema, [fld]):
-                                            errors.append(
-                                                ValidationError(
-                                                    code="SCHEMA_MISMATCH",
-                                                    node_id=nid,
-                                                    field="exports.items.fields",
-                                                    message=(
-                                                        f"loop 节点 '{nid}' 的 exports.items.fields 包含未知字段 '{fld}'"
-                                                    ),
-                                                )
-                                            )
-
-                aggregates = exports.get("aggregates") if isinstance(exports, Mapping) else None
-                if aggregates is not None:
-                    if not isinstance(aggregates, list):
+                        continue
+                    if not isinstance(value, str) or not value.strip():
                         errors.append(
                             ValidationError(
                                 code="SCHEMA_MISMATCH",
                                 node_id=nid,
-                                field="exports.aggregates",
-                                message=f"loop 节点 '{nid}' 的 exports.aggregates 需要数组。",
+                                field=f"exports.{key}",
+                                message=f"loop 节点 '{nid}' 的 exports.{key} 必须是非空 Jinja 表达式字符串。",
                             )
                         )
-                    else:
-                        body_nodes = (params.get("body_subgraph") or {}).get(
-                            "nodes", []
-                        )
-                        extended_nodes_by_id = dict(nodes_by_id)
-                        body_node_ids = set()
-                        for bn in body_nodes:
-                            if (
-                                isinstance(bn, Mapping)
-                                and isinstance(bn.get("id"), str)
-                            ):
-                                body_node_ids.add(bn.get("id"))
-                                extended_nodes_by_id[bn.get("id")] = bn
-                        for idx, agg in enumerate(aggregates):
-                            if not isinstance(agg, Mapping):
-                                continue
-                            expr = agg.get("expr", {})
-                            kind = (agg.get("kind") or "").lower()
-                            source = agg.get("source") or ""
-                            field = expr.get("field") if isinstance(expr, Mapping) else None
-                            from_node = agg.get("from_node") if isinstance(agg, Mapping) else None
-
-                            if not isinstance(kind, str) or kind not in {"count", "count_if", "max", "min", "sum", "avg"}:
-                                errors.append(
-                                    ValidationError(
-                                        code="SCHEMA_MISMATCH",
-                                        node_id=nid,
-                                        field=f"exports.aggregates[{idx}].kind",
-                                        message=f"loop 节点 '{nid}' 的聚合 kind 仅支持 count/count_if/max/min/sum/avg。",
-                                    )
-                                )
-                                continue
-
-                            if not isinstance(expr, Mapping):
-                                errors.append(
-                                    ValidationError(
-                                        code="MISSING_REQUIRED_PARAM",
-                                        node_id=nid,
-                                        field=f"exports.aggregates[{idx}].expr",
-                                        message=f"loop 节点 '{nid}' 的聚合缺少 expr。",
-                                    )
-                                )
-                                continue
-
-                            if not source:
-                                errors.append(
-                                    ValidationError(
-                                        code="MISSING_REQUIRED_PARAM",
-                                        node_id=nid,
-                                        field=f"exports.aggregates[{idx}].source",
-                                        message=f"loop 节点 '{nid}' 的聚合缺少 source。",
-                                    )
-                                )
-                            elif isinstance(source, str):
-                                schema_err = _check_output_path_against_schema(
-                                    source,
-                                    extended_nodes_by_id,
-                                    actions_by_id,
-                                    loop_body_parents,
-                                    context_node_id=nid,
-                                )
-                                if schema_err:
-                                    errors.append(
-                                        ValidationError(
-                                            code="SCHEMA_MISMATCH",
-                                            node_id=nid,
-                                            field=f"exports.aggregates[{idx}].source",
-                                            message=f"loop 节点 '{nid}' 的聚合 source 无效：{schema_err}",
-                                        )
-                                )
-
-                            if not isinstance(from_node, str) or from_node not in body_node_ids:
-                                errors.append(
-                                    ValidationError(
-                                        code="SCHEMA_MISMATCH",
-                                        node_id=nid,
-                                        field=f"exports.aggregates[{idx}].from_node",
-                                        message=f"loop 节点 '{nid}' 的聚合 from_node 必须指向 body_subgraph 节点。",
-                                    )
-                                )
-
-                            if kind == "count_if":
-                                if not all(
-                                    isinstance(expr.get(k), (int, float, str, bool)) for k in ["value"]
-                                ):
-                                    errors.append(
-                                        ValidationError(
-                                            code="MISSING_REQUIRED_PARAM",
-                                            node_id=nid,
-                                            field=f"exports.aggregates[{idx}].expr.value",
-                                            message=f"loop 节点 '{nid}' 的 count_if 缺少比较值。",
-                                        )
-                                    )
-                                if "op" not in expr:
-                                    errors.append(
-                                        ValidationError(
-                                            code="MISSING_REQUIRED_PARAM",
-                                            node_id=nid,
-                                            field=f"exports.aggregates[{idx}].expr.op",
-                                            message=f"loop 节点 '{nid}' 的 count_if 需要 op。",
-                                        )
-                                    )
-                                if not isinstance(field, str):
-                                    errors.append(
-                                        ValidationError(
-                                            code="MISSING_REQUIRED_PARAM",
-                                            node_id=nid,
-                                            field=f"exports.aggregates[{idx}].expr.field",
-                                            message=f"loop 节点 '{nid}' 的 count_if 需要 field。",
-                                        )
-                                    )
-                            elif kind in {"max", "min", "sum", "avg"}:
-                                if not isinstance(field, str):
-                                    errors.append(
-                                        ValidationError(
-                                            code="MISSING_REQUIRED_PARAM",
-                                            node_id=nid,
-                                            field=f"exports.aggregates[{idx}].expr.field",
-                                            message=f"loop 节点 '{nid}' 的 {kind} 需要 field。",
-                                        )
-                                    )
+                        continue
+                    expr = normalize_reference_path(value)
+                    _validate_jinja_expression(expr, node_id=nid, field=f"exports.{key}", errors=errors)
 
             # 递归校验 body_subgraph
             body_graph = params.get("body_subgraph") if isinstance(params, Mapping) else None

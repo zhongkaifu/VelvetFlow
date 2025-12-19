@@ -165,17 +165,6 @@ def _filter_supported_params(
     cleaned: Dict[str, Any] = {k: v for k, v in params.items() if k in allowed_fields}
     removed = [k for k in params if k not in allowed_fields]
 
-    if node_type == "loop" and "exports" in cleaned and isinstance(cleaned["exports"], Mapping):
-        cleaned_exports: Dict[str, Any] = {}
-        removed_exports: List[str] = []
-        for key, value in cleaned["exports"].items():
-            if key in {"items", "aggregates"}:
-                cleaned_exports[key] = value
-            else:
-                removed_exports.append(key)
-        cleaned["exports"] = cleaned_exports
-        removed.extend([f"exports.{key}" for key in removed_exports])
-
     return cleaned, removed
 
 
@@ -285,44 +274,12 @@ def _validate_loop_exports(
     if not isinstance(exports, Mapping):
         return ["exports 必须是对象"]
 
-    items = exports.get("items")
-    if not isinstance(items, Mapping):
-        errors.append("缺少 items 对象")
-    else:
-        from_node = items.get("from_node")
-        if not isinstance(from_node, str) or from_node not in body_ids:
-            errors.append("items.from_node 必须引用 body_subgraph.nodes 中的节点")
-
-        fields = items.get("fields")
-        if not (isinstance(fields, list) and [f for f in fields if isinstance(f, str)]):
-            errors.append("items.fields 必须是非空字符串数组")
-
-        mode = items.get("mode")
-        if mode is not None and mode not in {"collect", "first", "last"}:
-            errors.append("items.mode 仅支持 collect/first/last")
-
-    aggregates = exports.get("aggregates")
-    if aggregates is not None:
-        if not isinstance(aggregates, list):
-            errors.append("aggregates 必须是数组或省略")
-        else:
-            for idx, agg in enumerate(aggregates):
-                if not isinstance(agg, Mapping):
-                    errors.append(f"aggregates[{idx}] 必须是对象")
-                    continue
-
-                if not isinstance(agg.get("name"), str):
-                    errors.append(f"aggregates[{idx}].name 必须是字符串")
-
-                from_node = agg.get("from_node")
-                if not isinstance(from_node, str) or from_node not in body_ids:
-                    errors.append(
-                        f"aggregates[{idx}].from_node 必须引用 body_subgraph.nodes 中的节点"
-                    )
-
-                expr = agg.get("expr")
-                if not isinstance(expr, Mapping):
-                    errors.append(f"aggregates[{idx}].expr 必须是对象")
+    for key, value in exports.items():
+        if not isinstance(key, str):
+            errors.append("exports 的 key 必须是字符串")
+            continue
+        if not isinstance(value, str) or not value.strip():
+            errors.append(f"exports.{key} 必须是非空 Jinja 表达式字符串")
 
     return errors
 
@@ -344,23 +301,8 @@ def _fallback_loop_exports(
     if not from_node:
         return None
 
-    field_candidates: List[str] = []
-    target_node = next((bn for bn in body_nodes if bn.get("id") == from_node), None)
-    if isinstance(target_node, Mapping):
-        action_id = target_node.get("action_id")
-        schema = action_schemas.get(action_id, {}) if isinstance(action_id, str) else {}
-        props = schema.get("output_schema", {}).get("properties") if isinstance(schema.get("output_schema"), Mapping) else None
-        if isinstance(props, Mapping):
-            field_candidates = [k for k in props.keys() if isinstance(k, str)]
-
-    fields = field_candidates[:4] if field_candidates else ["status"]
     return {
-        "items": {
-            "from_node": from_node,
-            "fields": fields,
-            "mode": "collect",
-        },
-        "aggregates": [],
+        "items": f"{{{{ result_of.{from_node} }}}}",
     }
 
 
@@ -370,45 +312,9 @@ def _ensure_loop_items_fields(
     loop_node: Mapping[str, Any],
     action_schemas: Mapping[str, Mapping[str, Any]],
 ) -> Dict[str, Any]:
-    """Ensure items.fields is a non-empty list.
+    """Placeholder for legacy API; returns exports unchanged."""
 
-    If the original exports already contains non-empty fields, it will be
-    returned unchanged. Otherwise, we try to infer several representative
-    fields from the referenced body node's output schema; fall back to a
-    single "status" field if nothing is available.
-    """
-
-    items_spec = exports.get("items")
-    if not isinstance(items_spec, Mapping):
-        return dict(exports)
-
-    fields = items_spec.get("fields") if isinstance(items_spec.get("fields"), list) else []
-    normalized_fields = [f for f in fields if isinstance(f, str)]
-    if normalized_fields:
-        return exports
-
-    params = loop_node.get("params") if isinstance(loop_node.get("params"), Mapping) else {}
-    body = params.get("body_subgraph") if isinstance(params, Mapping) else {}
-    body_nodes = [bn for bn in body.get("nodes", []) or [] if isinstance(bn, Mapping)]
-    target_id = items_spec.get("from_node") if isinstance(items_spec.get("from_node"), str) else None
-    target_node = next((bn for bn in body_nodes if bn.get("id") == target_id), None)
-
-    fallback_fields: list[str] = []
-    if isinstance(target_node, Mapping):
-        action_id = target_node.get("action_id") if isinstance(target_node.get("action_id"), str) else None
-        schema = action_schemas.get(action_id, {}) if isinstance(action_id, str) else {}
-        props = schema.get("output_schema", {}).get("properties") if isinstance(schema.get("output_schema"), Mapping) else None
-        if isinstance(props, Mapping):
-            fallback_fields = [k for k in props.keys() if isinstance(k, str)]
-
-    if not fallback_fields:
-        fallback_fields = ["status"]
-
-    new_items = dict(items_spec)
-    new_items["fields"] = fallback_fields[:4]
-    new_exports = dict(exports)
-    new_exports["items"] = new_items
-    return new_exports
+    return dict(exports)
 
 
 
@@ -563,7 +469,7 @@ def plan_workflow_structure_with_llm(
         "  type 仅允许 action/condition/loop/parallel。无需 start/end/exit 节点。\n"
         "  action 节点必须填写 action_id（来自动作库）与 params；只有 action 节点允许 out_params_schema。\n"
         "  condition 节点的 params 只能包含 expression（单个返回布尔值的 Jinja 表达式）；true_to_node/false_to_node 必须是节点顶层字段（字符串或 null），不得放入 params。\n"
-        "  loop 节点包含 loop_kind/iter/source/body_subgraph/exports，循环外部只能引用 exports.items 或 exports.aggregates，body_subgraph 仅需 nodes 数组，不需要 entry/exit/edges。\n"
+        "  loop 节点包含 loop_kind/iter/source/body_subgraph/exports，循环外部只能引用 exports.<key>，body_subgraph 仅需 nodes 数组，不需要 entry/exit/edges。\n"
         "  parallel 节点的 branches 为非空数组，每个元素包含 id/entry_node/sub_graph_nodes。\n"
         "- params 内部必须直接使用 Jinja 表达式引用上游结果（如 {{ result_of.<node_id>.<field_path> }} 或 {{ loop.item.xxx }}），不再允许旧的 __from__/__agg__ DSL。"
         "  你在规划阶段输出的每一个 params 值（包含 condition/switch/loop 节点）都会被 Jinja 引擎解析，任何非 Jinja2 语法的引用会被视为错误并触发自动修复，请严格遵循 Jinja 模板写法。"
@@ -584,7 +490,7 @@ def plan_workflow_structure_with_llm(
         "   - 筛选/过滤条件\n"
         "   - 聚合/统计/总结\n"
         "   - 通知 / 写入 / 落库 / 调用下游系统\n"        
-        "2. 循环节点的内部数据只能通过 loop.exports 暴露给外部，下游引用循环结果时必须使用 result_of.<loop_id>.items（或 result_of.<loop_id>.exports.items）/ result_of.<loop_id>.aggregates.*，禁止直接引用 body 子图的节点。\n"
+        "2. 循环节点的内部数据只能通过 loop.exports 暴露给外部，下游引用循环结果时必须使用 result_of.<loop_id>.exports.<key>，禁止直接引用 body 子图的节点。\n"
         "3. loop.exports 应定义在 params.exports 下，请勿写在 body_subgraph 内；body_subgraph 仅包含 nodes 数组，无需 entry/exit/edges。\n"
         "4. 允许嵌套循环，但需要通过 parent_node_id 或 sub_graph_nodes 明确将子循环纳入父循环的 body_subgraph；"
         "   外部节点引用循环内部数据时仍需通过 loop.exports，而不是直接指向子图节点。\n\n"
@@ -720,7 +626,7 @@ def plan_workflow_structure_with_llm(
         _snapshot(f"add_loop_{id}")
         if removed_fields or removed_node_fields:
             return _build_validation_error(
-                "loop 节点的 params 仅支持 loop_kind/source/condition/item_alias/body_subgraph/exports，且 exports 只能包含 items/aggregates。",
+                "loop 节点的 params 仅支持 loop_kind/source/condition/item_alias/body_subgraph/exports，exports 应使用 {key: Jinja表达式} 结构。",
                 removed_fields=removed_fields,
                 removed_node_fields=removed_node_fields,
                 node_id=id,
@@ -1072,7 +978,7 @@ def plan_workflow_structure_with_llm(
         _snapshot(f"update_loop_{id}")
         if removed_param_fields or removed_node_fields:
             return _build_validation_error(
-                "loop 节点仅支持 id/type/display_name/params 字段，params 仅支持 loop_kind/source/condition/item_alias/body_subgraph/exports，且 exports 只能包含 items/aggregates。",
+                "loop 节点仅支持 id/type/display_name/params 字段，params 仅支持 loop_kind/source/condition/item_alias/body_subgraph/exports，exports 应使用 {key: Jinja表达式} 结构。",
                 removed_fields=removed_param_fields,
                 removed_node_fields=removed_node_fields,
                 node_id=id,

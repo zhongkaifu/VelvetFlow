@@ -1080,7 +1080,7 @@ def _validate_and_repair_workflow(
         )
         if fix_summary.get("applied"):
             log_info(
-                "[AutoRepair] 检测到 loop.exports 引用缺少 items 段，已自动补全。",
+                "[AutoRepair] 检测到 loop.exports 引用缺少 exports 段，已自动补全。",
                 f"replacements={fix_summary.get('replacements')}",
             )
             current_workflow = Workflow.model_validate(fixed_workflow)

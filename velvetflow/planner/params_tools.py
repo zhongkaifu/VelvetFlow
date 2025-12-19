@@ -85,47 +85,12 @@ def _loop_params_schema() -> Dict[str, Any]:
             },
             "exports": {
                 "type": "object",
-                "properties": {
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "from_node": {"type": "string"},
-                            "fields": {
-                                "type": "array",
-                                "items": {"type": "string"},
-                            },
-                        },
-                        "required": ["from_node", "fields"],
-                        "additionalProperties": True,
-                    },
-                    "aggregates": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "from_node": {"type": "string"},
-                                "source": {"type": "string"},
-                                "kind": {
-                                    "type": "string",
-                                    "enum": ["count", "count_if", "max", "min", "sum", "avg"],
-                                },
-                                "expr": {
-                                    "type": "object",
-                                    "properties": {
-                                        "field": {"type": "string"},
-                                        "op": {"type": "string"},
-                                        "value": {},
-                                    },
-                                    "additionalProperties": True,
-                                },
-                            },
-                            "required": ["kind", "source"],
-                            "additionalProperties": True,
-                        },
-                    },
-                },
-                "required": ["items"],
-                "additionalProperties": True,
+                "description": (
+                    "loop.exports 使用 {key: Jinja表达式} 结构暴露循环体字段，"
+                    "每个 key 生成一个列表，包含每轮迭代计算得到的元素。"
+                    f"{JINJA_EXPRESSION_NOTE}"
+                ),
+                "additionalProperties": {"type": "string"},
             },
         },
         "required": ["loop_kind", "source", "item_alias", "exports"],

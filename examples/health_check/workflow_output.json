@@ -49,15 +49,7 @@
       "params": {
         "source": "result_of.fetch_temperatures.data",
         "exports": {
-          "items": {
-            "from_node": "add_to_warning_list",
-            "fields": [
-              "employee_id",
-              "last_temperature",
-              "status"
-            ],
-            "mode": "collect"
-          }
+          "items": "{{ result_of.add_to_warning_list }}"
         },
         "body_subgraph": {
           "nodes": [

@@ -256,16 +256,16 @@ def _check_output_path_against_schema(
         allowed_meta_fields = {"status", "loop_kind"}
         if rest_path:
             root_field = rest_path[0]
-            if root_field not in {"items", "exports", "aggregates", *allowed_meta_fields}:
+            if root_field not in {"exports", *allowed_meta_fields}:
                 return (
-                    f"loop 节点 '{node_id}' 的输出只能通过 exports.items/exports.aggregates "
+                    f"loop 节点 '{node_id}' 的输出只能通过 exports.* "
                     f"或内置状态字段 {', '.join(sorted(allowed_meta_fields))} 暴露，找不到字段 '{root_field}'"
                 )
 
             if root_field == "exports" and len(rest_path) == 1:
                 return (
                     f"引用 loop 节点 '{node_id}' 的 exports 时必须指定 exports 内部的字段或结构，"
-                    "例如 exports.items/exports.aggregates。"
+                    "例如 exports.<key>。"
                 )
 
         if context_parent_loop and context_parent_loop == node_id and rest_path:
@@ -275,10 +275,7 @@ def _check_output_path_against_schema(
                     f"'{node_id}' 的 exports，请改为引用 body_subgraph 节点的输出"
                 )
 
-        effective_path = rest_path[1:] if rest_path and rest_path[0] == "exports" else rest_path
-        return _schema_path_error(
-            loop_schema, _normalize_field_tokens(list(effective_path))
-        )
+        return _schema_path_error(loop_schema, _normalize_field_tokens(list(rest_path)))
 
     if target_type == "condition":
         pretty_path = ".".join(str(p) for p in rest_path) if rest_path else ""
@@ -342,35 +339,8 @@ def _get_array_item_schema_from_output(
 
     if node_type == "loop":
         loop_params = (node or {}).get("params") or {}
-        item_alias = loop_params.get("item_alias")
-        source = loop_params.get("source")
-        if isinstance(item_alias, str):
-            body_subgraph = loop_params.get("body_subgraph")
-            body_nodes = body_subgraph.get("nodes") if isinstance(body_subgraph, Mapping) else []
-            body_node_map = {bn.get("id"): bn for bn in body_nodes if isinstance(bn, Mapping)}
-
-            exports = loop_params.get("exports") if isinstance(loop_params, Mapping) else None
-            items_spec = exports.get("items") if isinstance(exports, Mapping) else None
-            from_node = items_spec.get("from_node") if isinstance(items_spec, Mapping) else None
-            fields = items_spec.get("fields") if isinstance(items_spec, Mapping) else None
-
-            body_params = node.get("params") if isinstance(node, Mapping) else {}
-            loop_params = body_params if isinstance(body_params, Mapping) else {}
-            body_nodes = loop_params.get("body_subgraph", {}).get("nodes", [])
-            body_node_map = {bn.get("id"): bn for bn in body_nodes if isinstance(bn, Mapping)}
-
-            if (
-                isinstance(from_node, str)
-                and isinstance(fields, list)
-                and from_node in body_node_map
-            ):
-                items_spec = (body_params.get("exports") or {}).get("items")
-                items_schema = _get_loop_items_schema_from_exports(
-                    items_spec, node, nodes_by_id, actions_by_id
-                )
-                if items_schema:
-                    return items_schema
-
+        if first_field == "exports":
+            return {}
         schema = build_loop_output_schema(loop_params) or {}
         props = schema.get("properties") or {}
         return (props.get(first_field) or {}).get("items") if first_field in props else None
@@ -409,27 +379,10 @@ def _get_output_schema_at_path(
     if node_type == "loop":
         params = node.get("params") if isinstance(node, Mapping) else {}
         loop_schema = build_loop_output_schema(params or {})
-        exports = params.get("exports") if isinstance(params, Mapping) else {}
-        items_spec = exports.get("items") if isinstance(exports, Mapping) else None
-        items_schema = _get_loop_items_schema_from_exports(
-            items_spec, node, nodes_by_id, actions_by_id
-        )
         if not loop_schema:
             return None
 
-        if items_schema:
-            props = loop_schema.setdefault("properties", {})
-            items_container = props.get("items") if isinstance(props, Mapping) else {}
-            new_items = {"type": "array", "items": items_schema}
-            if isinstance(items_container, Mapping):
-                merged = dict(items_container)
-                merged.update(new_items)
-                props["items"] = merged
-            else:
-                props["items"] = new_items
-
-        effective_path = rest_path[1:] if rest_path and rest_path[0] == "exports" else rest_path
-        normalized_path = _normalize_field_tokens(list(effective_path))
+        normalized_path = _normalize_field_tokens(list(rest_path))
         if normalized_path and normalized_path[-1] in {"length", "count"}:
             container_schema = _walk_schema_with_tokens(loop_schema, normalized_path[:-1])
             properties = (
@@ -735,42 +688,6 @@ def _suggest_numeric_subfield(schema: Mapping[str, Any], prefix: str = "") -> Op
     return None
 
 
-def _get_loop_items_schema_from_exports(
-    items_spec: Any,
-    loop_node: Mapping[str, Any],
-    nodes_by_id: Mapping[str, Mapping[str, Any]],
-    actions_by_id: Mapping[str, Mapping[str, Any]],
-) -> Optional[Mapping[str, Any]]:
-    """Derive the loop items array schema using the referenced action's output schema."""
-
-    if not isinstance(items_spec, Mapping):
-        return None
-
-    from_node_id = items_spec.get("from_node")
-    fields = items_spec.get("fields")
-    if not isinstance(from_node_id, str) or not isinstance(fields, list):
-        return None
-
-    body_nodes = (
-        (loop_node.get("params") or {}).get("body_subgraph") or {}
-    ).get("nodes", [])
-    src_node = next(
-        (n for n in body_nodes if isinstance(n, Mapping) and n.get("id") == from_node_id),
-        None,
-    )
-
-    output_schema = _get_node_output_schema(src_node, actions_by_id)
-
-    item_props: Dict[str, Any] = {}
-    for fld in fields:
-        if not isinstance(fld, str):
-            continue
-        field_schema = _get_field_schema(output_schema, fld) if output_schema else None
-        item_props[fld] = field_schema or {}
-
-    return {"type": "object", "properties": item_props} if item_props else None
-
-
 def _check_array_item_field(
     source: str,
     field: str,
@@ -837,7 +754,6 @@ __all__ = [
     "_get_array_item_schema_from_output",
     "_get_field_schema",
     "_get_field_schema_from_item",
-    "_get_loop_items_schema_from_exports",
     "_get_node_output_schema",
     "_get_output_schema_at_path",
     "_index_actions_by_id",

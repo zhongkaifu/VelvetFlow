@@ -173,14 +173,7 @@ class BindingContext:
         return ctx
 
     def _infer_loop_reference_path(self, src_path: str) -> str:
-        """Try to recover missing loop exports/items/aggregates segments.
-
-        Some LLM-generated bindings may omit ``exports`` or ``items`` when
-        referencing loop outputs. This helper attempts to insert the missing
-        segments based on the loop's ``exports`` definition. If multiple
-        completions are possible, a ``ValueError`` will be raised to surface the
-        ambiguity instead of guessing.
-        """
+        """Try to recover missing loop exports segments in result paths."""
 
         try:
             parts = parse_field_path(src_path)
@@ -207,67 +200,14 @@ class BindingContext:
             return src_path
 
         normalized_rest = rest_path[1:] if rest_path and rest_path[0] == "exports" else rest_path
-        if normalized_rest and normalized_rest[0] in {"items", "aggregates"}:
+        if not normalized_rest:
             return src_path
 
-        items_fields: List[List[Any]] = []
-        items_spec = exports.get("items")
-        if isinstance(items_spec, Mapping):
-            for field in items_spec.get("fields", []):
-                if not isinstance(field, str):
-                    continue
-                try:
-                    items_fields.append(parse_field_path(field))
-                except Exception:
-                    items_fields.append([field])
-
-        aggregate_names = {
-            agg.get("name")
-            for agg in exports.get("aggregates", [])
-            if isinstance(agg, Mapping) and isinstance(agg.get("name"), str)
-        }
-
-        candidates: List[List[Any]] = []
-        for field_tokens in items_fields:
-            if normalized_rest[: len(field_tokens)] == field_tokens:
-                candidates.append(["items", *normalized_rest])
-                candidates.append(["exports", "items", *normalized_rest])
-
-        if normalized_rest and normalized_rest[0] in aggregate_names:
-            candidates.append(["aggregates", *normalized_rest])
-            candidates.append(["exports", "aggregates", *normalized_rest])
-
-        if not candidates:
+        export_keys = {key for key in exports.keys() if isinstance(key, str)}
+        if normalized_rest[0] not in export_keys:
             return src_path
 
-        loop_schema = build_loop_output_schema(params)
-        validated_candidates: List[List[Any]] = []
-        for cand in candidates:
-            effective = cand[1:] if cand and cand[0] == "exports" else cand
-            if loop_schema and self._schema_has_path(loop_schema, effective):
-                validated_candidates.append(cand)
-
-        if not validated_candidates:
-            return src_path
-
-        deduped: List[List[Any]] = []
-        seen_effective: set = set()
-        for cand in validated_candidates:
-            effective = tuple(cand[1:] if cand and cand[0] == "exports" else cand)
-            if effective in seen_effective:
-                continue
-            seen_effective.add(effective)
-            deduped.append(cand)
-
-        if len(deduped) > 1:
-            readable = [
-                self._format_field_path(["result_of", node_id, *cand]) for cand in deduped
-            ]
-            raise ValueError(
-                f"__from__ 引用 '{src_path}' 存在歧义，可能的有效路径: {', '.join(readable)}"
-            )
-
-        corrected_parts = ["result_of", node_id, *deduped[0]]
+        corrected_parts = ["result_of", node_id, "exports", *normalized_rest]
         return self._format_field_path(corrected_parts)
 
     def resolve_binding(self, binding: dict) -> Any:

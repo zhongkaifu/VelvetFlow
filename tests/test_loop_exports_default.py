@@ -1,75 +1,31 @@
+from velvetflow.bindings import BindingContext
 from velvetflow.executor.loops import LoopExecutionMixin
+from velvetflow.models import Workflow
 
 
 class _DummyLoopExecutor(LoopExecutionMixin):
-    def __init__(self) -> None:
-        self.workflow = {"workflow_name": "dummy", "nodes": []}
-
-    def _get_field_value(self, obj, field):
-        return obj.get(field) if isinstance(obj, dict) else None
+    def __init__(self, workflow: Workflow) -> None:
+        self.workflow = workflow
 
 
-def test_items_list_exports_use_last_action_as_source():
-    dummy = _DummyLoopExecutor()
-    body_nodes = [
-        {"id": "check", "type": "condition"},
-        {"id": "collect_high_temp", "type": "action"},
-    ]
-    default_source = dummy._infer_default_export_source(body_nodes, {})
-
-    items_out = []
-    dummy._apply_loop_exports(
-        ["employee_id"],
-        None,
+def test_exports_collect_values_from_loop_body():
+    workflow = Workflow.model_validate(
+        {"workflow_name": "dummy", "nodes": [{"id": "noop", "type": "action"}]}
+    )
+    dummy = _DummyLoopExecutor(workflow)
+    binding = BindingContext(
+        workflow,
         {"collect_high_temp": {"employee_id": "e1", "temperature": 39}},
-        items_out,
-        {},
-        {},
-        default_source,
+        loop_ctx={"index": 0, "item": {"employee_id": "e1"}},
+        loop_id="loop_employees",
     )
+    exports_output = {}
 
-    assert items_out == [{"employee_id": "e1"}]
-
-
-def test_items_mapping_without_from_node_uses_default():
-    dummy = _DummyLoopExecutor()
-    body_nodes = [
-        {"id": "check", "type": "condition"},
-        {"id": "collect_high_temp", "type": "action"},
-    ]
-    default_source = dummy._infer_default_export_source(body_nodes, {})
-
-    items_out = []
     dummy._apply_loop_exports(
-        {"fields": ["employee_id"]},
-        None,
-        {"collect_high_temp": {"employee_id": "e2", "temperature": 37}},
-        items_out,
-        {},
-        {},
-        default_source,
+        {"items": "{{ result_of.collect_high_temp }}", "employee_ids": "{{ result_of.collect_high_temp.employee_id }}"},
+        exports_output,
+        binding,
     )
 
-    assert items_out == [{"employee_id": "e2"}]
-
-
-def test_items_default_from_node_with_jinja_literal_type():
-    dummy = _DummyLoopExecutor()
-    body_nodes = [
-        {"id": "check", "type": "{{ 'condition' }}"},
-        {"id": "collect_high_temp", "type": "{{ 'action' }}"},
-    ]
-    default_source = dummy._infer_default_export_source(body_nodes, {})
-
-    items_out = []
-    dummy._apply_loop_exports(
-        ["employee_id"],
-        None,
-        {"collect_high_temp": {"employee_id": "e3", "temperature": 40}},
-        items_out,
-        {},
-        {},
-        default_source,
-    )
-
-    assert items_out == [{"employee_id": "e3"}]
+    assert exports_output["items"] == [{"employee_id": "e1", "temperature": 39}]
+    assert exports_output["employee_ids"] == ["e1"]

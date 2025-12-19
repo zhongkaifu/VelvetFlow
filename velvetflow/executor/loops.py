@@ -4,263 +4,46 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any, Dict, List, Mapping, Optional
 
+from velvetflow.aggregation import eval_jinja_expression
 from velvetflow.bindings import BindingContext
-from velvetflow.jinja_utils import render_jinja_string_constants, render_jinja_template
-from velvetflow.logging_utils import log_json, log_warn
+from velvetflow.jinja_utils import render_jinja_string_constants
+from velvetflow.logging_utils import log_warn
 from velvetflow.models import Node, Workflow
+from velvetflow.reference_utils import canonicalize_template_placeholders, normalize_reference_path
 
 
 class LoopExecutionMixin:
-    def _extract_export_values(self, raw_source: Any, field: Optional[str]) -> List[Any]:
-        """Extract values from a loop export source for aggregate calculations."""
-
-        # Normalize a single mapping/list/scalar into a flat list for aggregation.
-        if isinstance(raw_source, list):
-            values = [self._get_field_value(item, field) for item in raw_source]
-        elif isinstance(raw_source, Mapping):
-            values = [self._get_field_value(raw_source, field)]
-        else:
-            values = [raw_source]
-
-        return [v for v in values if v is not None]
-
     def _apply_loop_exports(
         self,
-        items_spec: Optional[Mapping[str, Any]],
-        aggregates_spec: Optional[List[Mapping[str, Any]]],
-        results: Mapping[str, Any],
-        items_output: List[Dict[str, Any]],
-        aggregates_output: Dict[str, Any],
-        avg_state: Dict[str, Dict[str, float]],
-        default_from_node: Optional[str],
-        extra_exports: Optional[Mapping[str, Any]],
-        extra_output: Dict[str, Any],
+        exports_spec: Optional[Mapping[str, Any]],
+        exports_output: Dict[str, List[Any]],
         loop_binding: Optional[BindingContext],
     ) -> None:
-        normalized_items_spec: Optional[Mapping[str, Any]] = None
-
-        if isinstance(items_spec, list):
-            normalized_items_spec = {"fields": [f for f in items_spec if isinstance(f, str)]}
-        elif isinstance(items_spec, Mapping):
-            normalized_items_spec = dict(items_spec)
-
-        if isinstance(normalized_items_spec, Mapping):
-            from_node = normalized_items_spec.get("from_node") or default_from_node
-            fields = normalized_items_spec.get("fields") if isinstance(normalized_items_spec.get("fields"), list) else []
-            list_field = (
-                normalized_items_spec.get("list_field") if isinstance(normalized_items_spec.get("list_field"), str) else None
-            )
-
-            def _build_record(obj: Any) -> Dict[str, Any]:
-                if isinstance(obj, Mapping):
-                    return {f: self._get_field_value(obj, f) for f in fields if isinstance(f, str)}
-                return {f: None for f in fields if isinstance(f, str)}
-
-            if isinstance(from_node, str):
-                source_res = results.get(from_node)
-                handled_items = False
-
-                if isinstance(source_res, Mapping) and list_field:
-                    list_data = self._get_field_value(source_res, list_field)
-                    if isinstance(list_data, list):
-                        for element in list_data:
-                            items_output.append(_build_record(element))
-                        handled_items = True
-
-                if not handled_items and isinstance(source_res, list):
-                    for element in source_res:
-                        items_output.append(_build_record(element))
-                    handled_items = True
-
-                if not handled_items:
-                    if isinstance(source_res, Mapping):
-                        items_output.append(_build_record(source_res))
-                    elif source_res is not None:
-                        items_output.append(_build_record(None))
-
-        if not isinstance(aggregates_spec, list):
+        if not isinstance(exports_spec, Mapping) or loop_binding is None:
             return
 
-        for agg in aggregates_spec:
-            if not isinstance(agg, Mapping):
+        ctx = loop_binding.build_jinja_context()
+        for key, template in exports_spec.items():
+            if not isinstance(key, str):
                 continue
-            name = agg.get("name")
-            expr = agg.get("expr") or {}
-            from_node = agg.get("from_node")
-            if not isinstance(name, str) or not isinstance(from_node, str):
-                continue
-
-            expr_kind = expr.get("kind") if isinstance(expr, Mapping) else None
-            kind = (expr_kind or agg.get("kind") or "").lower()
-            field = expr.get("field") if isinstance(expr, Mapping) else None
-            if field is None and isinstance(agg.get("field"), str):
-                field = agg.get("field")
-
-            if from_node not in results:
-                continue
-
-            raw_source = results.get(from_node)
-            values = self._extract_export_values(raw_source, field if isinstance(field, str) else None)
-
-            log_json(
-                "[loop.exports.aggregates] 输入",
-                {
-                    "name": name,
-                    "kind": kind,
-                    "from_node": from_node,
-                    "field": field,
-                    "raw_result": raw_source,
-                    "extracted_values": values,
-                    "current_output": aggregates_output.get(name),
-                    "avg_state": avg_state.get(name),
-                },
-            )
-
-            if kind == "count":
-                base = aggregates_output.get(name, 0) or 0
-                increment = len(values)
-                aggregates_output[name] = base + increment
-                log_json(
-                    "[loop.exports.aggregates] count 计算结果",
-                    {
-                        "name": name,
-                        "values_length": increment,
-                        "base": base,
-                        "result": aggregates_output[name],
-                    },
-                )
-                continue
-
-            if kind == "count_if":
-                op = expr.get("op", "==")
-                target = expr.get("value")
-                count = aggregates_output.get(name, 0) or 0
-
-                def _match(v: Any) -> bool:
-                    try:
-                        if op == ">" and v is not None:
-                            return v > target
-                        if op == ">=" and v is not None:
-                            return v >= target
-                        if op == "<" and v is not None:
-                            return v < target
-                        if op == "<=" and v is not None:
-                            return v <= target
-                        if op == "!=":
-                            return v != target
-                        return v == target
-                    except Exception:
-                        return False
-
-                for v in values:
-                    if _match(v):
-                        count += 1
-                aggregates_output[name] = count
-                log_json(
-                    "[loop.exports.aggregates] count_if 计算结果",
-                    {
-                        "name": name,
-                        "op": op,
-                        "target": target,
-                        "matched_values": [v for v in values if _match(v)],
-                        "count_before": count - sum(1 for v in values if _match(v)),
-                        "count_after": count,
-                    },
-                )
-                continue
-
-            numeric_values: List[float] = []
-            for v in values:
+            resolved_val = template
+            if isinstance(template, str):
+                normalized = canonicalize_template_placeholders(template)
+                expr = normalize_reference_path(normalized)
                 try:
-                    if v is None:
-                        continue
-                    numeric_values.append(float(v))
-                except Exception:
-                    continue
+                    resolved_val = eval_jinja_expression(expr, ctx)
+                except Exception as exc:  # noqa: BLE001
+                    log_warn(f"[loop.exports] 无法解析 {key} 的表达式: {exc}")
+                    resolved_val = None
 
-            log_json(
-                "[loop.exports.aggregates] 数值化输入",
-                {
-                    "name": name,
-                    "kind": kind,
-                    "numeric_values": numeric_values,
-                    "previous_output": aggregates_output.get(name),
-                    "avg_state": avg_state.get(name),
-                },
-            )
-
-            if not numeric_values and kind not in {"max", "min"}:
+            if resolved_val is None:
                 continue
 
-            if kind == "max":
-                current = aggregates_output.get(name)
-                max_val = current
-                for v in numeric_values:
-                    if max_val is None or v > max_val:
-                        max_val = v
-                aggregates_output[name] = max_val
-                log_json(
-                    "[loop.exports.aggregates] max 计算结果",
-                    {"name": name, "previous": current, "values": numeric_values, "result": max_val},
-                )
-            elif kind == "min":
-                current = aggregates_output.get(name)
-                min_val = current
-                for v in numeric_values:
-                    if min_val is None or v < min_val:
-                        min_val = v
-                aggregates_output[name] = min_val
-                log_json(
-                    "[loop.exports.aggregates] min 计算结果",
-                    {"name": name, "previous": current, "values": numeric_values, "result": min_val},
-                )
-            elif kind == "sum":
-                base = aggregates_output.get(name, 0)
-                aggregates_output[name] = base + sum(numeric_values)
-                log_json(
-                    "[loop.exports.aggregates] sum 计算结果",
-                    {"name": name, "base": base, "values": numeric_values, "result": aggregates_output[name]},
-                )
-            elif kind == "avg":
-                state = avg_state.setdefault(name, {"sum": 0.0, "count": 0})
-                state["sum"] += sum(numeric_values)
-                state["count"] += len(numeric_values)
-                if state["count"] > 0:
-                    aggregates_output[name] = state["sum"] / state["count"]
-                    log_json(
-                        "[loop.exports.aggregates] avg 计算结果",
-                        {
-                            "name": name,
-                            "values": numeric_values,
-                            "state_sum": state["sum"],
-                            "state_count": state["count"],
-                            "result": aggregates_output.get(name),
-                        },
-                    )
-
-        # 处理额外定义的 exports 字段（除 items/aggregates 外）
-        if isinstance(extra_exports, Mapping) and loop_binding is not None:
-            ctx = loop_binding.build_jinja_context()
-            for key, template in extra_exports.items():
-                if key in {"items", "aggregates"}:
-                    continue
-                resolved_val = template
-                if isinstance(template, str):
-                    try:
-                        resolved_val = render_jinja_template(template, ctx)
-                    except Exception:
-                        resolved_val = template
-
-                existing = extra_output.get(key)
-                if not isinstance(existing, list):
-                    existing = []
-
-                if isinstance(resolved_val, list):
-                    combined = existing + resolved_val
-                else:
-                    combined = existing + [resolved_val]
-
-                extra_output[key] = combined
+            existing = exports_output.setdefault(key, [])
+            if isinstance(resolved_val, list):
+                existing.extend(resolved_val)
+            else:
+                existing.append(resolved_val)
 
     def _clear_loop_body_results(self, results: Dict[str, Any], body_node_ids: List[str]) -> None:
         """Remove intermediate results produced by loop body nodes."""
@@ -324,8 +107,6 @@ class LoopExecutionMixin:
         except Exception:
             extra_node_models = {}
 
-        default_export_from_node = self._infer_default_export_source(body_nodes, extra_node_models)
-
         accumulator = params.get("accumulator") or {}
         max_iterations = params.get("max_iterations") or 100
         iterations: List[Dict[str, Any]] = []
@@ -333,17 +114,12 @@ class LoopExecutionMixin:
         exports = params.get("exports") if isinstance(params, Mapping) else None
         if not isinstance(exports, Mapping) and isinstance(body_exports, Mapping):
             exports = body_exports
-        items_spec = exports.get("items") if isinstance(exports, Mapping) else None
-        aggregates_spec = exports.get("aggregates") if isinstance(exports, Mapping) else None
-        extra_exports_spec = (
-            {k: v for k, v in exports.items() if k not in {"items", "aggregates"}}
-            if isinstance(exports, Mapping)
-            else {}
-        )
-        export_items: List[Dict[str, Any]] = []
-        aggregates_output: Dict[str, Any] = {}
-        avg_state: Dict[str, Dict[str, float]] = {}
-        extra_exports_output: Dict[str, Any] = {}
+        exports_spec = exports if isinstance(exports, Mapping) else {}
+        exports_output: Dict[str, List[Any]] = {
+            key: []
+            for key in exports_spec.keys()
+            if isinstance(key, str)
+        }
 
         if loop_kind == "for_each":
             source = params.get("source")
@@ -396,15 +172,8 @@ class LoopExecutionMixin:
                 iterations.append(iter_result)
 
                 self._apply_loop_exports(
-                    items_spec,
-                    aggregates_spec if isinstance(aggregates_spec, list) else None,
-                    binding_ctx.results,
-                    export_items,
-                    aggregates_output,
-                    avg_state,
-                    default_export_from_node,
-                    extra_exports_spec,
-                    extra_exports_output,
+                    exports_spec,
+                    exports_output,
                     loop_binding,
                 )
                 self._clear_loop_body_results(binding_ctx.results, body_node_ids)
@@ -414,14 +183,8 @@ class LoopExecutionMixin:
                 "loop_kind": loop_kind,
                 "iterations": iterations,
                 "accumulator": accumulator,
-                "items": export_items,
-                "aggregates": aggregates_output,
-                "exports": {
-                "items": export_items,
-                "aggregates": aggregates_output,
-                **extra_exports_output,
-            },
-        }
+                "exports": exports_output,
+            }
 
         if loop_kind == "while":
             cond_def = params.get("condition") or {}
@@ -461,15 +224,8 @@ class LoopExecutionMixin:
                 iteration += 1
 
                 self._apply_loop_exports(
-                    items_spec,
-                    aggregates_spec if isinstance(aggregates_spec, list) else None,
-                    binding_ctx.results,
-                    export_items,
-                    aggregates_output,
-                    avg_state,
-                    default_export_from_node,
-                    extra_exports_spec,
-                    extra_exports_output,
+                    exports_spec,
+                    exports_output,
                     loop_binding,
                 )
                 self._clear_loop_body_results(binding_ctx.results, body_node_ids)
@@ -479,14 +235,8 @@ class LoopExecutionMixin:
                 "loop_kind": loop_kind,
                 "iterations": iterations,
                 "accumulator": accumulator,
-                "items": export_items,
-                "aggregates": aggregates_output,
-                "exports": {
-                "items": export_items,
-                "aggregates": aggregates_output,
-                **extra_exports_output,
-            },
-        }
+                "exports": exports_output,
+            }
 
         log_warn(f"[loop] 未知 loop_kind={loop_kind}，跳过执行")
         return {"status": "skipped", "reason": "unknown_loop_kind"}
