@@ -24,7 +24,13 @@ jobs:
             pip install -r requirements.txt
           fi
 
+      - name: Run test suite
+        run: |
+          mkdir -p reports
+          pytest --junitxml=reports/pytest.xml
+
       - name: Diagnose openai import
+        if: failure()
         run: |
           python - <<'PY'
           import importlib.util
@@ -54,11 +60,6 @@ jobs:
           for entry in sys.path:
             print(f"  {entry}")
           PY
-
-      - name: Run test suite
-        run: |
-          mkdir -p reports
-          pytest --junitxml=reports/pytest.xml
 
       - name: Upload test results
         if: always()
