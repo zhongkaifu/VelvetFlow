@@ -29,11 +29,21 @@ jobs:
           python - <<'PY'
           import importlib.util
           import sys
+          from pathlib import Path
           import openai
           print("openai version:", getattr(openai, "__version__", None))
           print("openai file:", getattr(openai, "__file__", None))
           print("has AsyncOpenAI:", hasattr(openai, "AsyncOpenAI"))
           print("openai spec:", importlib.util.find_spec("openai"))
+          print("cwd:", Path.cwd())
+          print("openai __path__:", getattr(openai, "__path__", None))
+          repo_candidates = sorted(
+              {p for p in Path(".").rglob("openai.py")}
+              | {p for p in Path(".").rglob("openai/__init__.py")}
+          )
+          print("repo openai candidates:")
+          for candidate in repo_candidates:
+            print(f"  {candidate}")
           print("sys.path:")
           for entry in sys.path:
             print(f"  {entry}")
