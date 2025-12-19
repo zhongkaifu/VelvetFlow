@@ -11,7 +11,7 @@ from velvetflow.planner.repair_tools import (
 )
 
 
-def test_fill_loop_exports_defaults_adds_missing_items_fields():
+def test_fill_loop_exports_defaults_adds_missing_exports():
     workflow = {
         "nodes": [
             {"id": "start", "type": "start"},
@@ -20,7 +20,7 @@ def test_fill_loop_exports_defaults_adds_missing_items_fields():
                 "type": "loop",
                 "params": {
                     "loop_kind": "for_each",
-                    "source": {"__from__": "result_of.start"},
+                    "source": "{{ result_of.start }}",
                     "item_alias": "item",
                     "body_subgraph": {
                         "nodes": [
@@ -54,8 +54,7 @@ def test_fill_loop_exports_defaults_adds_missing_items_fields():
     assert summary["applied"] is True
     loop_node = next(n for n in patched["nodes"] if n.get("id") == "loop1")
     exports = loop_node["params"].get("exports")
-    assert exports["items"]["from_node"] == "inner_action"
-    assert exports["items"]["fields"]
+    assert exports["items"] == "{{ result_of.inner_action.title }}"
 
 
 def test_normalize_binding_paths_unwraps_templates():
@@ -86,7 +85,7 @@ def test_align_loop_body_alias_references_rewrites_stale_alias():
                 "type": "loop",
                 "params": {
                     "loop_kind": "for_each",
-                    "source": "result_of.get_temperatures.items",
+                    "source": "{{ result_of.get_temperatures.items }}",
                     "item_alias": "warning_item",
                     "body_subgraph": {
                         "nodes": [
@@ -107,12 +106,7 @@ def test_align_loop_body_alias_references_rewrites_stale_alias():
                         "entry": "add_to_warning_list",
                         "exit": "add_to_warning_list",
                     },
-                    "exports": {
-                        "items": {
-                            "from_node": "add_to_warning_list",
-                            "fields": ["employee_id", "last_temperature"],
-                        }
-                    },
+                    "exports": {"items": "{{ result_of.add_to_warning_list }}"},
                 },
             },
             {
@@ -189,4 +183,4 @@ def test_summarize_validation_errors_adds_loop_item_guidance():
     summary = _summarize_validation_errors_for_llm([err])
 
     assert "loop item 引用修复" in summary
-    assert "result_of.loop_employees.exports.items" in summary
+    assert "result_of.loop_employees.exports.<key>" in summary
