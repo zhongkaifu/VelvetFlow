@@ -1037,7 +1037,14 @@ def eval_node_params(node: Node, ctx: BindingContext) -> Dict[str, Any]:
             if stripped_template.startswith("{{") and stripped_template.endswith("}}"):
                 inner = stripped_template[2:-2].strip()
                 try:
-                    return eval_jinja_expression(inner, ctx.build_jinja_context())
+                    jinja_result = eval_jinja_expression(inner, ctx.build_jinja_context())
+                    try:
+                        from jinja2.runtime import Undefined  # type: ignore[import]
+                    except Exception:  # pragma: no cover - fallback when jinja is absent
+                        Undefined = ()  # type: ignore[assignment]
+
+                    if jinja_result is not None and not isinstance(jinja_result, Undefined):
+                        return jinja_result
                 except Exception:
                     pass
             rendered_inline = _render_json_bindings(normalized_templates)

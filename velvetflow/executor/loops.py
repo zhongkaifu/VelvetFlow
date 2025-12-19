@@ -33,10 +33,13 @@ class LoopExecutionMixin:
         aggregates_output: Dict[str, Any],
         avg_state: Dict[str, Dict[str, float]],
         default_from_node: Optional[str],
-        extra_exports: Optional[Mapping[str, Any]],
-        extra_output: Dict[str, Any],
-        loop_binding: Optional[BindingContext],
+        extra_exports: Optional[Mapping[str, Any]] = None,
+        extra_output: Optional[Dict[str, Any]] = None,
+        loop_binding: Optional[BindingContext] = None,
     ) -> None:
+        if extra_output is None:
+            extra_output = {}
+
         normalized_items_spec: Optional[Mapping[str, Any]] = None
 
         if isinstance(items_spec, list):
