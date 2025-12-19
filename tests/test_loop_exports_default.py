@@ -22,10 +22,10 @@ def test_exports_collect_values_from_loop_body():
     exports_output = {}
 
     dummy._apply_loop_exports(
-        {"items": "{{ result_of.collect_high_temp }}", "employee_ids": "{{ result_of.collect_high_temp.employee_id }}"},
+        {"items": "{{ result_of.collect_high_temp.employee_id }}", "employee_ids": "{{ result_of.collect_high_temp.employee_id }}"},
         exports_output,
         binding,
     )
 
-    assert exports_output["items"] == [{"employee_id": "e1", "temperature": 39}]
+    assert exports_output["items"] == ["e1"]
     assert exports_output["employee_ids"] == ["e1"]

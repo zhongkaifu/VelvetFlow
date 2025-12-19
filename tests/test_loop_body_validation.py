@@ -63,7 +63,7 @@ def test_model_validation_rejects_missing_body_subgraph():
                 "type": "loop",
                 "params": {
                     "loop_kind": "for_each",
-                    "source": "result_of.loop_check_temperature.exports.items",
+                    "source": "result_of.loop_check_temperature.exports.employee_ids",
                     "item_alias": "warning_employee",
                 },
             }
@@ -131,7 +131,7 @@ def test_stringified_binding_referencing_loop_body_is_flagged():
                         "entry": "summarize_news",
                         "exit": "exit",
                     },
-                    "exports": {"items": "{{ result_of.summarize_news }}"},
+                    "exports": {"items": "{{ result_of.summarize_news.summary }}"},
                 },
             },
             {

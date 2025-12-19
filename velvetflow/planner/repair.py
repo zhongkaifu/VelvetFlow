@@ -281,7 +281,7 @@ def _summarize_validation_errors_for_llm(
         ):
             loop_hints.append(
                 "- loop 节点需同时包含 params.loop_kind（for_each/while）、params.source、"
-                "params.item_alias；exports 需使用 {key: Jinja表达式} 结构暴露循环体字段"
+                "params.item_alias；exports 需使用 {key: Jinja表达式} 结构暴露循环体字段，表达式必须引用 body_subgraph 节点字段"
             )
 
         if err.node_id and err.field:
@@ -373,7 +373,7 @@ _ERROR_TYPE_PROMPTS: Dict[str, str] = {
     "INVALID_EDGE": "修复边的 from/to 以引用存在的节点，并保持条件字段合法。示例：若 edge.to 指向不存在的 node-3，可改为实际存在的 reviewer 节点。",
     "SCHEMA_MISMATCH": "调整绑定字段或聚合方式，使类型与上游 output_schema/arg_schema 兼容。示例：如果上游输出是 list 而当前节点期望 string，可改为 join 列表或选择单个元素。",
     "INVALID_SCHEMA": "按 DSL 结构补齐/修正字段类型（nodes/edges/params），避免 JSON 结构缺失。示例：在 workflow 缺少 edges 字段时补空数组，并确保 nodes 为列表。",
-    "INVALID_LOOP_BODY": "补齐 loop.body_subgraph.nodes（至少一个 action），并确保 exports 使用 {key: Jinja表达式} 结构引用 body 输出。",
+    "INVALID_LOOP_BODY": "补齐 loop.body_subgraph.nodes（至少一个 action），并确保 exports 使用 {key: Jinja表达式} 结构引用 body_subgraph 节点字段。",
     "STATIC_RULES_SUMMARY": "遵循静态规则摘要中的提示逐项修复，优先处理连通性和 schema 不匹配。示例：按摘要要求先修复未连接的边，再补齐缺失的必填参数。",
     "EMPTY_PARAM_VALUE": "为空的参数应填入非空值或绑定，避免空字符串/空对象。示例：将空的 params.prompt 改为具体提示词或绑定上游结果。",
     "EMPTY_PARAMS": "params 不能是空对象，为必填字段提供值或引用，并使用工具完成不确定的填充。示例：若节点类型为 action 但 params 为 {}，根据 arg_schema 填入 prompt/template 等必填字段。",
@@ -565,7 +565,7 @@ def repair_workflow_with_llm(
   type 仅允许 action/condition/loop/parallel。无需 start/end/exit 节点。
   action 节点必须填写 action_id（来自动作库）与 params；只有 action 节点允许 out_params_schema。
   condition 节点需包含返回布尔值的 params.expression（合法 Jinja 表达式），以及 true_to_node/false_to_node（字符串或 null）。
-  loop 节点包含 loop_kind/iter/source/body_subgraph/exports，循环外部只能引用 exports.<key>，body_subgraph 仅包含 nodes 数组。
+  loop 节点包含 loop_kind/iter/source/body_subgraph/exports，exports 的 value 必须引用 body_subgraph 节点字段（如 {{ result_of.node.field }}），循环外部只能引用 exports.<key>，body_subgraph 仅包含 nodes 数组。
   loop.body_subgraph 内不需要也不允许显式声明 edges、entry 或 exit 节点，如发现请直接删除。
   - params 必须直接使用 Jinja 表达式引用上游结果（如 {{ result_of.<node_id>.<field_path> }} 或 {{ loop.item.xxx }}），不再允许 __from__/__agg__ DSL。
     <node_id> 必须存在且字段需与上游 output_schema 或 loop.exports 对齐。
@@ -600,7 +600,7 @@ def repair_workflow_with_llm(
     - expression 应直接编写判断逻辑，引用上游结果请使用 {{ result_of.<node>.<field_path> }} 或 {{ loop.item.xxx }}；
     - 不要生成 kind/field/op/value 等字段，所有条件均需融入 expression。
 
- 4. loop 节点：确保 loop_kind（for_each/while）和 source 字段合法，并使用 exports 暴露 body 结果，下游只能引用 result_of.<loop_id>.exports.<key>。
+ 4. loop 节点：确保 loop_kind（for_each/while）和 source 字段合法，并使用 exports 暴露 body 结果（表达式需引用 body_subgraph 节点字段），下游只能引用 result_of.<loop_id>.exports.<key>。
  5. parallel 节点：branches 必须是非空数组。
 
 6. 参数绑定修复：

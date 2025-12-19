@@ -57,7 +57,7 @@ def test_filter_expression_paths_validated_on_base_reference():
                             }
                         ]
                     },
-                    "exports": {"items": "{{ result_of.collect_high_temp_employee }}"},
+                    "exports": {"statuses": "{{ result_of.collect_high_temp_employee.status }}"},
                 },
                 "depends_on": ["get_today_temperatures"],
             },
@@ -66,7 +66,7 @@ def test_filter_expression_paths_validated_on_base_reference():
                 "type": "action",
                 "action_id": "hr.record_health_event.v1",
                 "params": {
-                    "abnormal_count": "{{ result_of.loop_employees.exports.items | selectattr('status', 'equalto', '异常') | list | length }}",
+                    "abnormal_count": "{{ result_of.loop_employees.exports.statuses | select('equalto', '异常') | list | length }}",
                 },
                 "depends_on": ["loop_employees"],
             },

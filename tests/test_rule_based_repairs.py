@@ -54,7 +54,7 @@ def test_fill_loop_exports_defaults_adds_missing_exports():
     assert summary["applied"] is True
     loop_node = next(n for n in patched["nodes"] if n.get("id") == "loop1")
     exports = loop_node["params"].get("exports")
-    assert exports["items"] == "{{ result_of.inner_action }}"
+    assert exports["items"] == "{{ result_of.inner_action.title }}"
 
 
 def test_normalize_binding_paths_unwraps_templates():

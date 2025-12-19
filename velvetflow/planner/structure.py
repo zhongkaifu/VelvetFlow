@@ -28,6 +28,8 @@ from velvetflow.planner.workflow_builder import (
 from velvetflow.loop_dsl import iter_workflow_and_loop_body_nodes
 from velvetflow.search import HybridActionSearchService
 from velvetflow.models import infer_edges_from_bindings
+from velvetflow.reference_utils import parse_field_path
+from velvetflow.verification.binding_checks import _iter_template_references
 
 
 CONDITION_PARAM_FIELDS = {"expression"}
@@ -280,6 +282,29 @@ def _validate_loop_exports(
             continue
         if not isinstance(value, str) or not value.strip():
             errors.append(f"exports.{key} 必须是非空 Jinja 表达式字符串")
+            continue
+
+        refs = list(_iter_template_references(value))
+        if not refs:
+            errors.append(f"exports.{key} 必须引用 loop body 节点的输出字段")
+            continue
+
+        has_body_ref = False
+        for ref in refs:
+            try:
+                tokens = parse_field_path(ref)
+            except Exception:
+                continue
+            if len(tokens) < 3 or tokens[0] != "result_of":
+                continue
+            ref_node = tokens[1]
+            if isinstance(ref_node, str) and ref_node in body_ids:
+                has_body_ref = True
+            else:
+                errors.append(f"exports.{key} 只能引用 body_subgraph 内的节点输出")
+                break
+        if not has_body_ref and not errors:
+            errors.append(f"exports.{key} 必须引用 loop body 节点的输出字段")
 
     return errors
 
@@ -301,8 +326,21 @@ def _fallback_loop_exports(
     if not from_node:
         return None
 
+    target_node = next((bn for bn in body_nodes if bn.get("id") == from_node), None)
+    field_name = "status"
+    if isinstance(target_node, Mapping):
+        action_id = target_node.get("action_id")
+        schema = action_schemas.get(action_id, {}) if isinstance(action_id, str) else {}
+        props = (
+            schema.get("output_schema", {}).get("properties")
+            if isinstance(schema.get("output_schema"), Mapping)
+            else None
+        )
+        if isinstance(props, Mapping):
+            field_name = next((k for k in props.keys() if isinstance(k, str)), field_name)
+
     return {
-        "items": f"{{{{ result_of.{from_node} }}}}",
+        "items": f"{{{{ result_of.{from_node}.{field_name} }}}}",
     }
 
 
@@ -469,7 +507,7 @@ def plan_workflow_structure_with_llm(
         "  type 仅允许 action/condition/loop/parallel。无需 start/end/exit 节点。\n"
         "  action 节点必须填写 action_id（来自动作库）与 params；只有 action 节点允许 out_params_schema。\n"
         "  condition 节点的 params 只能包含 expression（单个返回布尔值的 Jinja 表达式）；true_to_node/false_to_node 必须是节点顶层字段（字符串或 null），不得放入 params。\n"
-        "  loop 节点包含 loop_kind/iter/source/body_subgraph/exports，循环外部只能引用 exports.<key>，body_subgraph 仅需 nodes 数组，不需要 entry/exit/edges。\n"
+        "  loop 节点包含 loop_kind/iter/source/body_subgraph/exports，exports 的 value 必须引用 body_subgraph 节点字段（如 {{ result_of.node.field }}），循环外部只能引用 exports.<key>，body_subgraph 仅需 nodes 数组，不需要 entry/exit/edges。\n"
         "  parallel 节点的 branches 为非空数组，每个元素包含 id/entry_node/sub_graph_nodes。\n"
         "- params 内部必须直接使用 Jinja 表达式引用上游结果（如 {{ result_of.<node_id>.<field_path> }} 或 {{ loop.item.xxx }}），不再允许旧的 __from__/__agg__ DSL。"
         "  你在规划阶段输出的每一个 params 值（包含 condition/switch/loop 节点）都会被 Jinja 引擎解析，任何非 Jinja2 语法的引用会被视为错误并触发自动修复，请严格遵循 Jinja 模板写法。"

@@ -40,8 +40,8 @@ def test_loop_exports_collects_values_from_body_nodes():
                         "exit": "add_to_warning_list",
                     },
                     "exports": {
-                        "records": "{{ result_of.add_to_warning_list }}",
                         "employee_ids": "{{ result_of.add_to_warning_list.employee_id }}",
+                        "temperatures": "{{ result_of.add_to_warning_list.last_temperature }}",
                     },
                 },
             }
@@ -55,8 +55,4 @@ def test_loop_exports_collects_values_from_body_nodes():
 
     loop_output = results["loop_employees"]
     assert loop_output["exports"]["employee_ids"] == ["E100", "E101", "E102"]
-    assert loop_output["exports"]["records"] == [
-        {"employee_id": "E100", "last_temperature": "39.2", "status": "预警"},
-        {"employee_id": "E101", "last_temperature": "37.4", "status": "预警"},
-        {"employee_id": "E102", "last_temperature": "38.5", "status": "预警"},
-    ]
+    assert loop_output["exports"]["temperatures"] == ["39.2", "37.4", "38.5"]

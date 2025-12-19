@@ -352,7 +352,7 @@ def fill_params_with_llm(
         "你的所有 params 值都会直接交给 Jinja2 引擎解析，任何非 Jinja 语法（包括残留的绑定对象或伪代码）都会被视为错误并触发自动修复，请务必输出可被 Jinja 渲染的字符串或字面量。\n"
         "循环场景下可使用 loop.item/loop.index 以及 loop.exports.* 暴露的字段，依然通过 Jinja 表达式引用，禁止直接引用 loop body 的节点。\n"
         "引用 loop.exports 结构时必须指向 exports 内部的具体字段或子结构，不能只写 result_of.<loop_id>.exports。\n"
-        "loop.exports 的每个键会收集每轮迭代的结果形成列表，需要访问字段时写成 result_of.<loop_id>.exports.<key> 的形式。\n"
+        "loop.exports 的每个键会收集每轮迭代的结果形成列表，每个 exports value 必须引用 body_subgraph 节点字段，如 {{ result_of.<body_node>.<field> }}。\n"
         "所有节点的 params 不得为空；如无明显默认值，需要分析上下游语义后调用工具补全。\n"
         "聚合/筛选/格式化也请用 Jinja 过滤器或表达式完成（例如 {{ result_of.a.items | selectattr('score', '>', 80) | list | length }} 或 {{ result_of.a.items | map(attribute='name') | join(', ') }}），不要再输出带 __agg__ 的对象。"
     )

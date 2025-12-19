@@ -906,6 +906,11 @@ def _validate_nodes_recursive(
                     )
                 )
             elif isinstance(exports, Mapping):
+                body_node_ids: set[str] = set()
+                body_nodes = (params.get("body_subgraph") or {}).get("nodes", [])
+                for bn in body_nodes:
+                    if isinstance(bn, Mapping) and isinstance(bn.get("id"), str):
+                        body_node_ids.add(bn.get("id"))
                 for key, value in exports.items():
                     if not isinstance(key, str):
                         errors.append(
@@ -924,6 +929,50 @@ def _validate_nodes_recursive(
                                 node_id=nid,
                                 field=f"exports.{key}",
                                 message=f"loop 节点 '{nid}' 的 exports.{key} 必须是非空 Jinja 表达式字符串。",
+                            )
+                        )
+                        continue
+                    refs = list(_iter_template_references(value))
+                    if not refs:
+                        errors.append(
+                            ValidationError(
+                                code="SCHEMA_MISMATCH",
+                                node_id=nid,
+                                field=f"exports.{key}",
+                                message=f"loop 节点 '{nid}' 的 exports.{key} 必须引用 body_subgraph 节点输出字段。",
+                            )
+                        )
+                        continue
+                    has_body_ref = False
+                    for ref in refs:
+                        try:
+                            tokens = parse_field_path(ref)
+                        except Exception:
+                            continue
+                        if len(tokens) < 3 or tokens[0] != "result_of":
+                            continue
+                        ref_node = tokens[1]
+                        if isinstance(ref_node, str) and ref_node in body_node_ids:
+                            has_body_ref = True
+                        else:
+                            errors.append(
+                                ValidationError(
+                                    code="SCHEMA_MISMATCH",
+                                    node_id=nid,
+                                    field=f"exports.{key}",
+                                    message=(
+                                        f"loop 节点 '{nid}' 的 exports.{key} 只能引用 body_subgraph 内的节点输出。"
+                                    ),
+                                )
+                            )
+                            break
+                    if not has_body_ref:
+                        errors.append(
+                            ValidationError(
+                                code="SCHEMA_MISMATCH",
+                                node_id=nid,
+                                field=f"exports.{key}",
+                                message=f"loop 节点 '{nid}' 的 exports.{key} 必须引用 body_subgraph 节点输出字段。",
                             )
                         )
                         continue

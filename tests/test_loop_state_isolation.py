@@ -32,7 +32,7 @@ def build_loop_workflow(action_id: str) -> Workflow:
                         ],
                         "edges": [],
                     },
-                    "exports": {"items": "{{ result_of.loop_action }}"},
+                    "exports": {"items": "{{ result_of.loop_action.email_content }}"},
                 },
             }
         ],
@@ -55,10 +55,7 @@ def test_loop_body_results_are_cleared_between_iterations():
     results = executor.run()
 
     assert "loop_action" not in results
-    assert results["loop"]["exports"]["items"] == [
-        {"email_content": "1"},
-        {"email_content": "2"},
-    ]
+    assert results["loop"]["exports"]["items"] == ["1", "2"]
 
 
 def test_nested_loop_results_do_not_leak_across_outer_iterations():
@@ -91,7 +88,7 @@ def test_nested_loop_results_do_not_leak_across_outer_iterations():
                                             }
                                         ]
                                     },
-                                    "exports": {"items": "{{ result_of.record_item }}"},
+                                    "exports": {"items": "{{ result_of.record_item.email_content }}"},
                                 },
                             }
                         ]
@@ -116,11 +113,7 @@ def test_nested_loop_results_do_not_leak_across_outer_iterations():
 
     assert "record_item" not in results
     assert "inner_loop" not in results
-    assert results["outer_loop"]["exports"]["items"] == [
-        {"email_content": "1"},
-        {"email_content": "2"},
-        {"email_content": "3"},
-    ]
+    assert results["outer_loop"]["exports"]["items"] == ["1", "2", "3"]
 
 
 def test_condition_branch_inside_loop_body_uses_true_target():
@@ -151,7 +144,7 @@ def test_condition_branch_inside_loop_body_uses_true_target():
                             },
                         ],
                     },
-                    "exports": {"items": "{{ result_of.t_branch }}"},
+                    "exports": {"items": "{{ result_of.t_branch.branch }}"},
                 },
             }
         ],
@@ -167,7 +160,7 @@ def test_condition_branch_inside_loop_body_uses_true_target():
 
     results = executor.run()
 
-    assert results["loop"]["exports"]["items"] == [{"branch": "true_taken"}]
+    assert results["loop"]["exports"]["items"] == ["true_taken"]
 
 
 def test_condition_false_branch_inside_loop_body_skips_true_target():

@@ -87,7 +87,8 @@ def _loop_params_schema() -> Dict[str, Any]:
                 "type": "object",
                 "description": (
                     "loop.exports 使用 {key: Jinja表达式} 结构暴露循环体字段，"
-                    "每个 key 生成一个列表，包含每轮迭代计算得到的元素。"
+                    "每个 value 必须引用 body_subgraph 节点的字段，如 {{ result_of.node.field }}，"
+                    "执行时每个 key 生成一个列表，包含每轮迭代计算得到的元素。"
                     f"{JINJA_EXPRESSION_NOTE}"
                 ),
                 "additionalProperties": {"type": "string"},

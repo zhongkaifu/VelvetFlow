@@ -56,7 +56,7 @@ def update_workflow_with_llm(
         "  type 仅允许 action/condition/loop/parallel。无需 start/end/exit 节点。\n"
         "  action 节点必须填写 action_id（来自动作库）与 params；只有 action 节点允许 out_params_schema。\n"
         "  condition 节点的 params 仅包含 expression（单个返回布尔值的 Jinja 表达式）；true_to_node/false_to_node 必须是节点顶层字段（字符串或 null），不得放入 params。\n"
-        "  loop 节点包含 loop_kind/iter/source/body_subgraph/exports，循环外部只能引用 exports.<key>。\n"
+        "  loop 节点包含 loop_kind/iter/source/body_subgraph/exports，exports 的 value 必须引用 body_subgraph 节点字段（如 {{ result_of.node.field }}），循环外部只能引用 exports.<key>。\n"
         "  引用 loop.exports 结构时必须指向 exports 内部的字段或子结构，不能只写 result_of.<loop_id>.exports；body_subgraph 只需要 nodes 数组，不要提供 entry/exit/edges。\n"
         "  parallel 节点的 branches 为非空数组，每个元素包含 id/entry_node/sub_graph_nodes。\n"
         "- params 必须直接使用 Jinja 表达式引用上游结果（如 {{ result_of.<node_id>.<field_path> }} 或 {{ loop.item.xxx }}），不再允许旧的 __from__/__agg__ DSL。"

@@ -117,7 +117,7 @@
   - `condition`：可选布尔表达式，控制循环提前终止。
   - `body_subgraph`：必填子图，包含至少一个 `action` 节点。
   - `exports`：指定输出：
-    - 使用 `{key: Jinja 表达式}` 形式暴露循环体字段，执行时每个 key 收集逐轮结果形成列表，可在表达式中组合多个来源或进行字段聚合。
+    - 使用 `{key: Jinja 表达式}` 形式暴露循环体字段，表达式必须引用 body_subgraph 节点字段（如 `{{ result_of.node.field }}`）；执行时每个 key 收集逐轮结果形成列表，可在表达式中组合多个来源或进行字段聚合。
 - **示例**：
 ```json
 {
@@ -206,7 +206,7 @@
             }
           ]
         },
-        "exports": {"orders": "{{ result_of.fetch_detail }}"}
+        "exports": {"orders": "{{ result_of.fetch_detail.id }}"}
       }
     },
     {

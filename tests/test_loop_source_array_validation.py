@@ -60,7 +60,7 @@ def _workflow_with_scalar_loop_source():
                             }
                         ]
                     },
-                    "exports": {"items": "{{ result_of.noop }}"},
+                    "exports": {"items": "{{ result_of.noop.employee_id }}"},
                 },
                 "depends_on": ["fetch"],
             },
