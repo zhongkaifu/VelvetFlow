@@ -257,6 +257,20 @@ function renderLogs(logs = [], echoToChat = false) {
   });
 }
 
+function setRunWorkflowEnabled(enabled, message = "") {
+  if (!runWorkflowBtn) return;
+  const disabled = !enabled;
+  runWorkflowBtn.disabled = disabled;
+  runWorkflowBtn.setAttribute("aria-disabled", String(disabled));
+  if (message) {
+    runWorkflowBtn.title = message;
+  } else if (disabled) {
+    runWorkflowBtn.title = "workflow 构建成功后可运行";
+  } else {
+    runWorkflowBtn.removeAttribute("title");
+  }
+}
+
 function setStatus(label, variant = "info") {
   const colors = {
     info: { bg: "rgba(59, 130, 246, 0.15)", color: "#60a5fa" },
@@ -269,6 +283,8 @@ function setStatus(label, variant = "info") {
   statusIndicator.style.background = theme.bg;
   statusIndicator.style.color = theme.color;
 }
+
+setRunWorkflowEnabled(false);
 
 function findLoopNode(loopId, workflow = currentWorkflow) {
   if (!workflow || !Array.isArray(workflow.nodes)) return null;

@@ -96,6 +96,7 @@ function resetWorkflow() {
   lastRunResults = {};
   updateEditor();
   refreshWorkflowCanvases();
+  setRunWorkflowEnabled(false, "workflow 已重置，需要重新构建");
   appendLog("已重置为空 workflow");
   logWorkflowSnapshot(currentWorkflow, "重置后的 DAG");
 }
