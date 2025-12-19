@@ -24,6 +24,15 @@ jobs:
             pip install -r requirements.txt
           fi
 
+      - name: Diagnose openai import
+        run: |
+          python - <<'PY'
+          import openai
+          print("openai version:", getattr(openai, "__version__", None))
+          print("openai file:", getattr(openai, "__file__", None))
+          print("has AsyncOpenAI:", hasattr(openai, "AsyncOpenAI"))
+          PY
+
       - name: Run test suite
         run: |
           mkdir -p reports
