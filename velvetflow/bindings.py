@@ -12,6 +12,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional
 
+from jinja2 import Undefined
 from velvetflow.aggregation import (
     JinjaExprValidationError,
     _is_instance_of_type,
@@ -169,6 +170,10 @@ class BindingContext:
 
         if workflow_ctx:
             ctx["workflow"] = workflow_ctx
+            if isinstance(workflow_ctx, Mapping) and "execution_date" in workflow_ctx:
+                ctx["execution_date"] = workflow_ctx.get("execution_date")
+
+        ctx.setdefault("execution_date", ctx["system"]["date"])
 
         return ctx
 
@@ -977,7 +982,10 @@ def eval_node_params(node: Node, ctx: BindingContext) -> Dict[str, Any]:
             if stripped_template.startswith("{{") and stripped_template.endswith("}}"):
                 inner = stripped_template[2:-2].strip()
                 try:
-                    return eval_jinja_expression(inner, ctx.build_jinja_context())
+                    rendered = eval_jinja_expression(inner, ctx.build_jinja_context())
+                    if isinstance(rendered, Undefined):
+                        return None
+                    return rendered
                 except Exception:
                     pass
             rendered_inline = _render_json_bindings(normalized_templates)
