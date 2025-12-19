@@ -312,7 +312,7 @@ def ask_ai(
             messages=messages,
             tools=tools_spec or None,
             tool_choice="auto" if tools_spec else None,
-            max_tokens=max_tokens,
+            max_completion_tokens=max_tokens,
         )
         if not response.choices:
             raise RuntimeError("ask_ai did not return any choices")
@@ -409,7 +409,7 @@ def classify_text(
             {"role": "system", "content": "\n".join(system_prompt)},
             {"role": "user", "content": text},
         ],
-        max_tokens=max_tokens,
+        max_completion_tokens=max_tokens,
     )
     if not response.choices:
         raise RuntimeError("classify_text did not return any choices")
@@ -542,7 +542,7 @@ def summarize(text: str, max_sentences: int = 3) -> Dict[str, Any]:
             {"role": "system", "content": "You are an expert summarization assistant."},
             {"role": "user", "content": prompt},
         ],
-        max_tokens=max(64, max_sentences * 64),
+        max_completion_tokens=max(64, max_sentences * 64),
     )
     if not response.choices:
         raise RuntimeError("summarize did not return any choices")
