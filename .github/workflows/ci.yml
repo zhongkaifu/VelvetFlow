@@ -31,10 +31,13 @@ jobs:
           import sys
           from pathlib import Path
           import openai
+          import agents
           print("openai version:", getattr(openai, "__version__", None))
           print("openai file:", getattr(openai, "__file__", None))
           print("has AsyncOpenAI:", hasattr(openai, "AsyncOpenAI"))
           print("openai spec:", importlib.util.find_spec("openai"))
+          print("agents file:", getattr(agents, "__file__", None))
+          print("agents spec:", importlib.util.find_spec("agents"))
           print("cwd:", Path.cwd())
           print("openai __path__:", getattr(openai, "__path__", None))
           repo_candidates = sorted(
