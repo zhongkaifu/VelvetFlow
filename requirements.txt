@@ -1,5 +1,5 @@
-openai==2.14.0
-openai-agents==0.6.4
+openai>=2.14.0
+openai-agents>=0.6.4
 numpy>=1.26.0
 faiss-cpu>=1.8.0
 anyio>=4.4.0
