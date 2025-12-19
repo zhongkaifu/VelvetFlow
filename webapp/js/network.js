@@ -69,6 +69,90 @@ function isEmptyWorkflow(workflow) {
   return !nodes || nodes.length === 0;
 }
 
+function applyPlanOutcome({
+  finalWorkflow,
+  suggestions = [],
+  needsMoreDetail = false,
+  toolGapMessage = null,
+  toolGapSuggestions = [],
+}) {
+  const empty = isEmptyWorkflow(finalWorkflow);
+  if (!empty) {
+    lastRunResults = {};
+    clearPositionCaches();
+    closeAllLoopTabs(true);
+    currentWorkflow = finalWorkflow;
+    updateEditor();
+    refreshWorkflowCanvases();
+  }
+
+  const shouldPrompt = empty || needsMoreDetail;
+  if (!shouldPrompt) {
+    setStatus("构建完成", "success");
+    setRunWorkflowEnabled(true);
+    addChatMessage("已完成 DAG 规划与校验，可在画布上查看并继续修改。", "agent");
+    return {
+      workflow: finalWorkflow,
+      suggestions,
+      needsMoreDetail: false,
+      toolGapMessage,
+      toolGapSuggestions,
+    };
+  }
+
+  setStatus("待补充需求", "warning");
+  setRunWorkflowEnabled(false, "workflow 尚未构建完成");
+  const hintSource = toolGapSuggestions.length ? toolGapSuggestions : suggestions;
+  const hints = hintSource && hintSource.length
+    ? hintSource.map((item, idx) => `${idx + 1}. ${item}`).join("\n")
+    : "请补充数据来源、触发时机、关键判断或输出方式等具体细节。";
+  const intro = toolGapMessage
+    ? `${toolGapMessage}\n`
+    : "当前需求还需要更多上下文才能规划清晰的流程，请补充更具体的限制或目标。\n";
+  addChatMessage(
+    `${intro}${hints}`,
+    "agent",
+  );
+  return {
+    workflow: finalWorkflow,
+    suggestions,
+    needsMoreDetail: true,
+    toolGapMessage,
+    toolGapSuggestions,
+  };
+}
+
+async function requestPlanFallback(requirement, existingWorkflow, streamError) {
+  appendLog(`流式构建失败，尝试非流式接口：${streamError.message}`);
+  addChatMessage("流式构建通道不可用，正在切换到备用接口……", "agent");
+  const response = await fetch("/api/plan", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ requirement, existing_workflow: existingWorkflow }),
+  });
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}));
+    throw new Error(detail.detail || detail.message || response.statusText);
+  }
+  const payload = await response.json();
+  const finalWorkflow = normalizeWorkflow(payload.workflow || {});
+  const suggestions = Array.isArray(payload.suggestions) ? payload.suggestions : [];
+  const toolGapMessage = typeof payload.tool_gap_message === "string" ? payload.tool_gap_message : null;
+  const toolGapSuggestions = Array.isArray(payload.tool_gap_suggestions) ? payload.tool_gap_suggestions : [];
+  const logs = Array.isArray(payload.logs) ? payload.logs : [];
+  if (logs.length) {
+    renderLogs(logs, true);
+  }
+  const needsMoreDetail = isEmptyWorkflow(finalWorkflow) || Boolean(toolGapMessage);
+  return applyPlanOutcome({
+    finalWorkflow,
+    suggestions,
+    needsMoreDetail,
+    toolGapMessage,
+    toolGapSuggestions,
+  });
+}
+
 async function requestPlan(requirement) {
   setRunWorkflowEnabled(false, "workflow 构建中，完成后即可运行");
   setStatus("规划中", "warning");
@@ -138,46 +222,23 @@ async function requestPlan(requirement) {
       throw new Error("未收到构建结果");
     }
 
-    const empty = isEmptyWorkflow(finalWorkflow);
-    if (!empty) {
-      lastRunResults = {};
-      clearPositionCaches();
-      closeAllLoopTabs(true);
-      currentWorkflow = finalWorkflow;
-      updateEditor();
-      refreshWorkflowCanvases();
-      setStatus("构建完成", "success");
-      setRunWorkflowEnabled(true);
-      addChatMessage("已完成 DAG 规划与校验，可在画布上查看并继续修改。", "agent");
-    } else {
-      setStatus("待补充需求", "warning");
-      setRunWorkflowEnabled(false, "workflow 尚未构建完成");
-      const hintSource = finalToolGapSuggestions.length ? finalToolGapSuggestions : finalSuggestions;
-      const hints = hintSource && hintSource.length
-        ? hintSource.map((item, idx) => `${idx + 1}. ${item}`).join("\n")
-        : "请补充数据来源、触发时机、关键判断或输出方式等具体细节。";
-      const intro = finalToolGapMessage
-        ? `${finalToolGapMessage}\n`
-        : "当前需求还需要更多上下文才能规划清晰的流程，请补充更具体的限制或目标。\n";
-      addChatMessage(
-        `${intro}${hints}`,
-        "agent",
-      );
-    }
-
-    return {
-      workflow: finalWorkflow,
+    return applyPlanOutcome({
+      finalWorkflow,
       suggestions: finalSuggestions,
-      needsMoreDetail: empty || needsMoreDetail,
+      needsMoreDetail,
       toolGapMessage: finalToolGapMessage,
       toolGapSuggestions: finalToolGapSuggestions,
-    };
+    });
   } catch (error) {
-    setStatus("构建失败", "danger");
-    setRunWorkflowEnabled(false, "workflow 构建失败，请重新尝试");
-    appendLog(`规划失败: ${error.message}`);
-    addChatMessage(`规划失败：${error.message}，请检查 OPENAI_API_KEY 是否已配置。`, "agent");
-    return { workflow: null, suggestions: [], needsMoreDetail: false };
+    try {
+      return await requestPlanFallback(requirement, existingWorkflow, error);
+    } catch (fallbackError) {
+      setStatus("构建失败", "danger");
+      setRunWorkflowEnabled(false, "workflow 构建失败，请重新尝试");
+      appendLog(`规划失败: ${fallbackError.message}`);
+      addChatMessage(`规划失败：${fallbackError.message}，请检查 OPENAI_API_KEY 是否已配置。`, "agent");
+      return { workflow: null, suggestions: [], needsMoreDetail: false };
+    }
   }
 }
 
