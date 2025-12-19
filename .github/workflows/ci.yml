@@ -27,10 +27,16 @@ jobs:
       - name: Diagnose openai import
         run: |
           python - <<'PY'
+          import importlib.util
+          import sys
           import openai
           print("openai version:", getattr(openai, "__version__", None))
           print("openai file:", getattr(openai, "__file__", None))
           print("has AsyncOpenAI:", hasattr(openai, "AsyncOpenAI"))
+          print("openai spec:", importlib.util.find_spec("openai"))
+          print("sys.path:")
+          for entry in sys.path:
+            print(f"  {entry}")
           PY
 
       - name: Run test suite
