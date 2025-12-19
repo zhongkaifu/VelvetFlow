@@ -70,6 +70,7 @@ function isEmptyWorkflow(workflow) {
 }
 
 async function requestPlan(requirement) {
+  setRunWorkflowEnabled(false, "workflow 构建中，完成后即可运行");
   setStatus("规划中", "warning");
   appendLog(`收到需求：${requirement}`);
   addChatMessage(`已收到需求：“${requirement}”，开始规划/校验/修复。`, "agent");
@@ -146,9 +147,11 @@ async function requestPlan(requirement) {
       updateEditor();
       refreshWorkflowCanvases();
       setStatus("构建完成", "success");
+      setRunWorkflowEnabled(true);
       addChatMessage("已完成 DAG 规划与校验，可在画布上查看并继续修改。", "agent");
     } else {
       setStatus("待补充需求", "warning");
+      setRunWorkflowEnabled(false, "workflow 尚未构建完成");
       const hintSource = finalToolGapSuggestions.length ? finalToolGapSuggestions : finalSuggestions;
       const hints = hintSource && hintSource.length
         ? hintSource.map((item, idx) => `${idx + 1}. ${item}`).join("\n")
@@ -171,6 +174,7 @@ async function requestPlan(requirement) {
     };
   } catch (error) {
     setStatus("构建失败", "danger");
+    setRunWorkflowEnabled(false, "workflow 构建失败，请重新尝试");
     appendLog(`规划失败: ${error.message}`);
     addChatMessage(`规划失败：${error.message}，请检查 OPENAI_API_KEY 是否已配置。`, "agent");
     return { workflow: null, suggestions: [], needsMoreDetail: false };
