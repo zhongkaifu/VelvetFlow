@@ -28,10 +28,13 @@ jobs:
         run: |
           python - <<'PY'
           import importlib.util
+          import importlib.metadata
           import sys
           from pathlib import Path
           import openai
           import agents
+          print("openai dist version:", importlib.metadata.version("openai"))
+          print("openai-agents dist version:", importlib.metadata.version("openai-agents"))
           print("openai version:", getattr(openai, "__version__", None))
           print("openai file:", getattr(openai, "__file__", None))
           print("has AsyncOpenAI:", hasattr(openai, "AsyncOpenAI"))
