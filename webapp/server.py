@@ -35,11 +35,16 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ValidationError
 
 from velvetflow.action_registry import BUSINESS_ACTIONS
+from velvetflow.config import OPENAI_MODEL
 from velvetflow.executor import DynamicActionExecutor, load_simulation_data
 from velvetflow.executor.async_runtime import WorkflowSuspension
 from velvetflow.models import Workflow
 from velvetflow.planner import plan_workflow_with_two_pass, update_workflow_with_two_pass
-from velvetflow.search import HybridActionSearchService, build_default_search_service
+from velvetflow.search import (
+    HybridActionSearchService,
+    build_default_search_service,
+    get_openai_client,
+)
 
 SIMULATION_PATH = REPO_ROOT / "simulation_data.json"
 
@@ -61,6 +66,9 @@ class PlanRequest(BaseModel):
 class PlanResponse(BaseModel):
     workflow: Dict[str, Any]
     logs: List[str]
+    suggestions: Optional[List[str]] = None
+    tool_gap_message: Optional[str] = None
+    tool_gap_suggestions: Optional[List[str]] = None
 
 
 class RunRequest(BaseModel):
@@ -90,6 +98,120 @@ def _get_search_service() -> HybridActionSearchService:
     if _search_service is None:
         _search_service = build_default_search_service()
     return _search_service
+
+
+def _is_empty_workflow(workflow: Workflow | Dict[str, Any]) -> bool:
+    nodes = getattr(workflow, "nodes", None)
+    if nodes is None and isinstance(workflow, dict):
+        nodes = workflow.get("nodes")
+    return not nodes
+
+
+def _suggest_requirement_additions(user_requirement: str, *, model: str = OPENAI_MODEL) -> List[str]:
+    """Use an LLM to propose clarifications that make the workflow plannable."""
+
+    try:
+        client = get_openai_client()
+        resp = client.chat.completions.create(
+            model=model,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "你是业务流程规划助手，会帮用户把含糊的需求拆解得更具体。"
+                        "请基于用户输入的需求、想法和目的给出 3 条补充思路，帮助用户明确：数据来源/触发时机、"
+                        "关键条件或过滤规则、具体输出/通知形式、成功判定标准。"
+                        "请用简短中文短句返回 JSON 数组，不要添加其他说明。"
+                    ),
+                },
+                {"role": "user", "content": user_requirement},
+            ],
+        )
+
+        if not resp.choices:
+            raise RuntimeError("未获得补充建议")
+
+        content = (resp.choices[0].message.content or "").strip()
+        return json.loads(content)
+    except Exception as exc:  # pragma: no cover - 网络/模型依赖环境
+        logging_utils.log_error(f"[suggestion] 无法从 LLM 获取补充建议：{exc}")
+        return []
+
+
+def _workflow_missing_business_tools(
+    workflow: Workflow | Dict[str, Any], action_registry: List[Dict[str, Any]]
+) -> bool:
+    nodes = getattr(workflow, "nodes", None)
+    if nodes is None and isinstance(workflow, dict):
+        nodes = workflow.get("nodes")
+    nodes = nodes or []
+    if not nodes:
+        return True
+
+    actions_by_id = {action.get("action_id") for action in action_registry if action.get("action_id")}
+    for node in nodes:
+        if isinstance(node, dict):
+            if node.get("type") != "action":
+                continue
+            action_id = node.get("action_id")
+        else:
+            if getattr(node, "type", None) != "action":
+                continue
+            action_id = getattr(node, "action_id", None)
+        if action_id and action_id in actions_by_id:
+            return False
+    return True
+
+
+def _suggest_tool_gap_guidance(
+    user_requirement: str, *, model: str = OPENAI_MODEL
+) -> tuple[str, List[str]]:
+    fallback_message = "当前动作库中暂未找到适合该需求的业务工具，可能需要调整需求描述或提供可用的系统信息。"
+    fallback_suggestions = [
+        "补充你期望使用的业务系统/数据源名称或接口类型。",
+        "说明可接受的替代流程（例如改为通知/记录/导出）。",
+        "明确触发时机、输入字段与输出目标，便于匹配到可用动作。",
+    ]
+
+    try:
+        client = get_openai_client()
+        resp = client.chat.completions.create(
+            model=model,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "你是业务流程规划助手。当前动作库里没有发现能够支撑该需求的业务工具。"
+                        "请输出 JSON 对象，包含 message 和 suggestions 两个字段："
+                        "message 用 1-2 句中文明确告知没有匹配的业务工具，并从用户输入的需求、想法和目的出发提示可以如何调整；"
+                        "suggestions 提供 3 条修改建议（简短中文短句），必须基于用户的需求意图。"
+                        "仅返回 JSON，不要添加其他说明。"
+                    ),
+                },
+                {"role": "user", "content": user_requirement},
+            ],
+        )
+
+        if not resp.choices:
+            raise RuntimeError("未获得业务工具缺失建议")
+
+        content = (resp.choices[0].message.content or "").strip()
+        payload = json.loads(content)
+        message = payload.get("message") if isinstance(payload, dict) else None
+        suggestions = payload.get("suggestions") if isinstance(payload, dict) else None
+
+        normalized_message = message.strip() if isinstance(message, str) and message.strip() else fallback_message
+        normalized_suggestions = (
+            [item for item in suggestions if isinstance(item, str) and item.strip()]
+            if isinstance(suggestions, list)
+            else fallback_suggestions
+        )
+        if not normalized_suggestions:
+            normalized_suggestions = fallback_suggestions
+        return normalized_message, normalized_suggestions
+    except Exception as exc:  # pragma: no cover - 网络/模型依赖环境
+        logging_utils.log_error(f"[tool-gap] 无法从 LLM 获取业务工具缺失建议：{exc}")
+        return fallback_message, fallback_suggestions
 
 
 @contextmanager
@@ -226,7 +348,22 @@ def plan_workflow(req: PlanRequest) -> PlanResponse:
             detail=f"规划或自修复失败: {exc} | trace: {traceback.format_exc()}",
         ) from exc
 
-    return PlanResponse(workflow=_serialize_workflow(workflow), logs=logs)
+    suggestions: List[str] = []
+    tool_gap_message = None
+    tool_gap_suggestions: List[str] = []
+    needs_tool_gap = _workflow_missing_business_tools(workflow, BUSINESS_ACTIONS)
+    if needs_tool_gap:
+        tool_gap_message, tool_gap_suggestions = _suggest_tool_gap_guidance(req.requirement)
+    elif _is_empty_workflow(workflow):
+        suggestions = _suggest_requirement_additions(req.requirement)
+
+    return PlanResponse(
+        workflow=_serialize_workflow(workflow),
+        logs=logs,
+        suggestions=suggestions,
+        tool_gap_message=tool_gap_message,
+        tool_gap_suggestions=tool_gap_suggestions or None,
+    )
 
 
 @app.post("/api/plan/stream")
@@ -301,7 +438,25 @@ async def plan_workflow_stream(req: PlanRequest) -> StreamingResponse:
                 await queue.put(
                     payload
                 )
-            await queue.put({"type": "result", "workflow": workflow_dict})
+            needs_tool_gap = _workflow_missing_business_tools(workflow_dict, BUSINESS_ACTIONS)
+            needs_more_detail = _is_empty_workflow(workflow_dict) or needs_tool_gap
+            suggestions = []
+            tool_gap_message = None
+            tool_gap_suggestions: List[str] = []
+            if needs_tool_gap:
+                tool_gap_message, tool_gap_suggestions = _suggest_tool_gap_guidance(req.requirement)
+            elif needs_more_detail:
+                suggestions = _suggest_requirement_additions(req.requirement)
+            await queue.put(
+                {
+                    "type": "result",
+                    "workflow": workflow_dict,
+                    "needs_more_detail": needs_more_detail,
+                    "suggestions": suggestions,
+                    "tool_gap_message": tool_gap_message,
+                    "tool_gap_suggestions": tool_gap_suggestions or None,
+                }
+            )
         except Exception as exc:  # noqa: BLE001 - keep API message concise
             await queue.put(
                 {
