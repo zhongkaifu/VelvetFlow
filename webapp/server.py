@@ -126,7 +126,6 @@ def _suggest_requirement_additions(user_requirement: str, *, model: str = OPENAI
                 },
                 {"role": "user", "content": user_requirement},
             ],
-            temperature=0.4,
         )
 
         if not resp.choices:
@@ -191,7 +190,6 @@ def _suggest_tool_gap_guidance(
                 },
                 {"role": "user", "content": user_requirement},
             ],
-            temperature=0.4,
         )
 
         if not resp.choices:
