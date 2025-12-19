@@ -316,6 +316,15 @@ function saveWorkflowToFile() {
   appendLog("已导出 workflow JSON 到文件");
 }
 
+function triggerBuildWorkflow(event) {
+  if (chatForm?.requestSubmit) {
+    event.preventDefault();
+    chatForm.requestSubmit();
+  } else {
+    handleChatSubmit(event);
+  }
+}
+
 chatForm.addEventListener("submit", handleChatSubmit);
 runWorkflowBtn.addEventListener("click", requestRun);
 applyWorkflowBtn.addEventListener("click", applyWorkflowFromEditor);
@@ -366,6 +375,10 @@ if (loadWorkflowInput) {
 }
 if (saveWorkflowBtn) {
   saveWorkflowBtn.addEventListener("click", saveWorkflowToFile);
+}
+const buildWorkflowBtn = document.getElementById("buildWorkflow");
+if (buildWorkflowBtn) {
+  buildWorkflowBtn.addEventListener("click", triggerBuildWorkflow);
 }
 
 const editorResizeObserver = new ResizeObserver(() => render(currentTab));
