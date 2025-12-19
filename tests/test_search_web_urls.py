@@ -1,20 +1,7 @@
 # Author: Zhongkai Fu (fuzhongkai@gmail.com)
 # License: BSD 3-Clause License
 
-import sys
-import types
-
 import pytest
-
-
-def _install_dummy_module(name: str, attrs: dict[str, object]) -> None:
-    module = types.ModuleType(name)
-    for key, value in attrs.items():
-        setattr(module, key, value)
-    sys.modules[name] = module
-
-
-_install_dummy_module("openai", {"OpenAI": object})
 
 from tools.builtin import _normalize_web_url, _resolve_search_url
 

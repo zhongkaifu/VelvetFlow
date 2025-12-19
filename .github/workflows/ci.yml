@@ -29,6 +29,38 @@ jobs:
           mkdir -p reports
           pytest --junitxml=reports/pytest.xml
 
+      - name: Diagnose openai import
+        if: failure()
+        run: |
+          python - <<'PY'
+          import importlib.util
+          import importlib.metadata
+          import sys
+          from pathlib import Path
+          import openai
+          import agents
+          print("openai dist version:", importlib.metadata.version("openai"))
+          print("openai-agents dist version:", importlib.metadata.version("openai-agents"))
+          print("openai version:", getattr(openai, "__version__", None))
+          print("openai file:", getattr(openai, "__file__", None))
+          print("has AsyncOpenAI:", hasattr(openai, "AsyncOpenAI"))
+          print("openai spec:", importlib.util.find_spec("openai"))
+          print("agents file:", getattr(agents, "__file__", None))
+          print("agents spec:", importlib.util.find_spec("agents"))
+          print("cwd:", Path.cwd())
+          print("openai __path__:", getattr(openai, "__path__", None))
+          repo_candidates = sorted(
+              {p for p in Path(".").rglob("openai.py")}
+              | {p for p in Path(".").rglob("openai/__init__.py")}
+          )
+          print("repo openai candidates:")
+          for candidate in repo_candidates:
+            print(f"  {candidate}")
+          print("sys.path:")
+          for entry in sys.path:
+            print(f"  {entry}")
+          PY
+
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4
