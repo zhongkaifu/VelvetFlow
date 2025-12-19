@@ -101,6 +101,74 @@ def _suggest_requirement_additions(user_requirement: str, *, model: str = OPENAI
         return []
 
 
+def _workflow_missing_business_tools(workflow, action_registry: List[dict]) -> bool:
+    nodes = getattr(workflow, "nodes", None) or []
+    if not nodes:
+        return True
+    actions_by_id = {action.get("action_id") for action in action_registry if action.get("action_id")}
+    for node in nodes:
+        if getattr(node, "type", None) != "action":
+            continue
+        action_id = getattr(node, "action_id", None)
+        if action_id and action_id in actions_by_id:
+            return False
+    return True
+
+
+def _suggest_tool_gap_guidance(
+    user_requirement: str, *, model: str = OPENAI_MODEL
+) -> tuple[str, List[str]]:
+    """Use an LLM to inform the user that no suitable tools were found and suggest adjustments."""
+
+    fallback_message = "当前动作库中暂未找到适合该需求的业务工具，可能需要调整需求描述或提供可用的系统信息。"
+    fallback_suggestions = [
+        "补充你期望使用的业务系统/数据源名称或接口类型。",
+        "说明可接受的替代流程（例如改为通知/记录/导出）。",
+        "明确触发时机、输入字段与输出目标，便于匹配到可用动作。",
+    ]
+
+    try:
+        client = get_openai_client()
+        resp = client.chat.completions.create(
+            model=model,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "你是业务流程规划助手。当前动作库里没有发现能够支撑该需求的业务工具。"
+                        "请输出 JSON 对象，包含 message 和 suggestions 两个字段："
+                        "message 用 1-2 句中文明确告知没有匹配的业务工具，并提示用户可以如何调整；"
+                        "suggestions 提供 3 条修改建议（简短中文短句）。"
+                        "仅返回 JSON，不要添加其他说明。"
+                    ),
+                },
+                {"role": "user", "content": user_requirement},
+            ],
+            temperature=0.4,
+        )
+
+        if not resp.choices:
+            raise RuntimeError("未获得业务工具缺失建议")
+
+        content = (resp.choices[0].message.content or "").strip()
+        payload = json.loads(content)
+        message = payload.get("message") if isinstance(payload, dict) else None
+        suggestions = payload.get("suggestions") if isinstance(payload, dict) else None
+
+        normalized_message = message.strip() if isinstance(message, str) and message.strip() else fallback_message
+        normalized_suggestions = (
+            [item for item in suggestions if isinstance(item, str) and item.strip()]
+            if isinstance(suggestions, list)
+            else fallback_suggestions
+        )
+        if not normalized_suggestions:
+            normalized_suggestions = fallback_suggestions
+        return normalized_message, normalized_suggestions
+    except Exception as exc:  # pragma: no cover - 网络/模型依赖环境
+        log_error(f"[tool-gap] 无法从 LLM 获取业务工具缺失建议：{exc}")
+        return fallback_message, fallback_suggestions
+
+
 def prompt_additional_requirement(suggestions: List[str]) -> str:
     while True:
         if suggestions:
@@ -146,10 +214,17 @@ def main():
                 print("[main] Call stack:\n", traceback.format_exc())
                 return
 
-            if not _is_empty_workflow(workflow):
+            needs_tool_guidance = _workflow_missing_business_tools(workflow, BUSINESS_ACTIONS)
+            if not _is_empty_workflow(workflow) and not needs_tool_guidance:
                 break
 
-            suggestions = _suggest_requirement_additions(combined_requirement)
+            if needs_tool_guidance:
+                message, suggestions = _suggest_tool_gap_guidance(combined_requirement)
+                if message:
+                    print(f"\n{message}")
+            else:
+                suggestions = _suggest_requirement_additions(combined_requirement)
+
             extra_requirement = prompt_additional_requirement(suggestions)
             supplements.append(extra_requirement)
             supplement_lines = [f"补充信息 {idx + 1}：{item}" for idx, item in enumerate(supplements)]

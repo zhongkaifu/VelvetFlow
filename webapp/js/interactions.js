@@ -39,11 +39,15 @@ async function handleChatSubmit(event) {
   const result = await requestPlan(combinedRequirement);
   if (result && result.needsMoreDetail) {
     awaitingSupplement = true;
-    lastSuggestions = result.suggestions || [];
+    const toolGapSuggestions = result.toolGapSuggestions || [];
+    lastSuggestions = toolGapSuggestions.length ? toolGapSuggestions : result.suggestions || [];
     const hints = lastSuggestions.length
       ? lastSuggestions.map((item, idx) => `${idx + 1}. ${item}`).join("\n")
       : "可以补充触发时机、输入/输出格式、过滤条件或成功指标。";
-    addChatMessage(`为了更好地规划流程，请再提供一些细节：\n${hints}`, "agent");
+    const intro = result.toolGapMessage
+      ? `${result.toolGapMessage}\n`
+      : "为了更好地规划流程，请再提供一些细节：\n";
+    addChatMessage(`${intro}${hints}`, "agent");
   } else {
     resetPlanningContext();
   }

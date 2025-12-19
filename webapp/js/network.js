@@ -89,6 +89,8 @@ async function requestPlan(requirement) {
     let streamError = null;
     let finalWorkflow = null;
     let finalSuggestions = [];
+    let finalToolGapMessage = null;
+    let finalToolGapSuggestions = [];
     let needsMoreDetail = false;
 
     await streamEvents(
@@ -119,6 +121,8 @@ async function requestPlan(requirement) {
         } else if (event.type === "result" && latestWorkflow) {
           finalWorkflow = normalizeWorkflow(latestWorkflow);
           finalSuggestions = Array.isArray(event.suggestions) ? event.suggestions : [];
+          finalToolGapMessage = typeof event.tool_gap_message === "string" ? event.tool_gap_message : null;
+          finalToolGapSuggestions = Array.isArray(event.tool_gap_suggestions) ? event.tool_gap_suggestions : [];
           needsMoreDetail = Boolean(event.needs_more_detail);
         } else if (event.type === "error") {
           streamError = event.message || "未知错误";
@@ -145,16 +149,26 @@ async function requestPlan(requirement) {
       addChatMessage("已完成 DAG 规划与校验，可在画布上查看并继续修改。", "agent");
     } else {
       setStatus("待补充需求", "warning");
-      const hints = finalSuggestions && finalSuggestions.length
-        ? finalSuggestions.map((item, idx) => `${idx + 1}. ${item}`).join("\n")
+      const hintSource = finalToolGapSuggestions.length ? finalToolGapSuggestions : finalSuggestions;
+      const hints = hintSource && hintSource.length
+        ? hintSource.map((item, idx) => `${idx + 1}. ${item}`).join("\n")
         : "请补充数据来源、触发时机、关键判断或输出方式等具体细节。";
+      const intro = finalToolGapMessage
+        ? `${finalToolGapMessage}\n`
+        : "当前需求还需要更多上下文才能规划清晰的流程，请补充更具体的限制或目标。\n";
       addChatMessage(
-        `当前需求还需要更多上下文才能规划清晰的流程，请补充更具体的限制或目标。\n${hints}`,
+        `${intro}${hints}`,
         "agent",
       );
     }
 
-    return { workflow: finalWorkflow, suggestions: finalSuggestions, needsMoreDetail: empty || needsMoreDetail };
+    return {
+      workflow: finalWorkflow,
+      suggestions: finalSuggestions,
+      needsMoreDetail: empty || needsMoreDetail,
+      toolGapMessage: finalToolGapMessage,
+      toolGapSuggestions: finalToolGapSuggestions,
+    };
   } catch (error) {
     setStatus("构建失败", "danger");
     appendLog(`规划失败: ${error.message}`);
