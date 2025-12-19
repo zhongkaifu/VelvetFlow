@@ -69,7 +69,10 @@ function isEmptyWorkflow(workflow) {
   return !nodes || nodes.length === 0;
 }
 
+let planningInProgress = false;
+
 async function requestPlan(requirement) {
+  planningInProgress = true;
   setRunWorkflowEnabled(false, "workflow 构建中，完成后即可运行");
   setStatus("规划中", "warning");
   appendLog(`收到需求：${requirement}`);
@@ -178,10 +181,22 @@ async function requestPlan(requirement) {
     appendLog(`规划失败: ${error.message}`);
     addChatMessage(`规划失败：${error.message}，请检查 OPENAI_API_KEY 是否已配置。`, "agent");
     return { workflow: null, suggestions: [], needsMoreDetail: false };
+  } finally {
+    planningInProgress = false;
   }
 }
 
 async function requestRun() {
+  if (planningInProgress) {
+    appendLog("workflow 正在构建中，请稍后再运行。");
+    addChatMessage("workflow 仍在构建中，请等待规划完成后再运行。", "agent");
+    return;
+  }
+  if (isEmptyWorkflow(currentWorkflow)) {
+    appendLog("当前 workflow 为空，无法执行。");
+    addChatMessage("当前 workflow 为空，请先构建或导入流程。", "agent");
+    return;
+  }
   setStatus("运行中", "warning");
   addChatMessage("开始执行 workflow，实时同步运行日志。", "agent");
   appendLog("开始执行当前 workflow ...");
