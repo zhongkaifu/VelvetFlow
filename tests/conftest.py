@@ -48,15 +48,3 @@ _fake_numpy = types.SimpleNamespace(
 )
 sys.modules.setdefault("numpy", _fake_numpy)
 
-
-class _FakeEmbeddings:
-    def create(self, model=None, input=None):  # noqa: D401 - test stub
-        return types.SimpleNamespace(data=[types.SimpleNamespace(embedding=[])])
-
-
-class OpenAI:  # noqa: D401 - test stub
-    def __init__(self, *_, **__):
-        self.embeddings = _FakeEmbeddings()
-
-
-sys.modules.setdefault("openai", types.SimpleNamespace(OpenAI=OpenAI))
