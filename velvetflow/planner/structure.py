@@ -468,7 +468,7 @@ def _build_coverage_feedback_message(
     missing_points = coverage.get("missing_points", []) or []
     analysis = coverage.get("analysis", "")
     return (
-        "覆盖度检查未通过，请继续使用规划工具补充缺失点，并再次调用 finalize_workflow。\n"
+        "覆盖度检查未通过，请继续使用规划工具补充缺失点，并基于以下信息调整 workflow。\n"
         f"- missing_points: {json.dumps(missing_points, ensure_ascii=False)}\n"
         f"- analysis: {analysis}\n"
         "当前 workflow 供参考（含推导的 edges）：\n"
@@ -482,7 +482,7 @@ def _build_dependency_feedback_message(
     return (
         "检测到以下节点没有任何上游依赖，"
         "请检查是否遗漏了对相关节点结果的引用或绑定。如果需要，请继续使用规划工具补充；"
-        "如果确认这些节点应该独立存在，请在 finalize_workflow.notes 中简单说明原因。\n"
+        "如果确认这些节点应该独立存在，请在下一轮反馈中简单说明原因。\n"
         f"- nodes_without_upstream: {json.dumps(nodes_without_upstream, ensure_ascii=False)}\n"
         "当前 workflow 供参考（含推导的 edges）：\n"
         f"{json.dumps(workflow, ensure_ascii=False)}"
@@ -506,7 +506,6 @@ def plan_workflow_structure_with_llm(
     all_action_candidates: List[str] = []
     latest_skeleton: Dict[str, Any] = {}
     latest_coverage: Dict[str, Any] = {}
-    finalized_state: Dict[str, bool] = {"done": False}
 
     def _emit_progress(label: str, workflow_obj: Mapping[str, Any]) -> None:
         if not progress_callback:
@@ -563,7 +562,7 @@ def plan_workflow_structure_with_llm(
         "6) 如需修改已创建节点（补充 display_name/params/分支指向/父节点等），请调用 update_action_node 或 update_condition_node 并传入需要覆盖的字段列表；调用后务必检查上下游关联节点是否也需要同步更新以保持一致性。\n"
         "7) condition 节点必须显式提供 true_to_node 和 false_to_node，值可以是节点 id（继续执行）或 null（表示该分支结束）；通过节点 params 中的输入/输出引用表达依赖关系，不需要显式绘制 edges。\n"
         "8) 请为每个节点维护 depends_on（字符串数组），列出其直接依赖的上游节点；当节点被 condition.true_to_node/false_to_node 指向时，必须将该 condition 节点加入目标节点的 depends_on。\n"
-        "9) 当结构完成时调用 finalize_workflow。\n\n"
+        "9) 当结构完成时停止调用工具，等待系统执行覆盖度检查。\n\n"
         "特别注意：只有 action 节点需要 out_params_schema，condition 节点没有该属性；out_params_schema 的格式应为 {\"参数名\": \"类型\"}，仅需列出业务 action 输出参数的名称与类型，不要添加额外描述或示例。\n\n"
         "【非常重要的原则】\n"        
         "1. 你必须严格围绕当前对话中的自然语言需求来设计 workflow：\n"
@@ -580,7 +579,7 @@ def plan_workflow_structure_with_llm(
         "你必须确保工作流结构能够完全覆盖用户自然语言需求中的每个子任务，而不是只覆盖前半部分：\n"
         "例如，如果需求包含：触发 + 查询 + 筛选 + 总结 + 通知，你不能只实现触发 + 查询，\n"
         "必须在结构里显式包含筛选、总结、通知等对应节点和数据流。\n"
-        "调用 finalize_workflow 后系统会立即对照 nl_requirement 做覆盖度检查；如果发现 missing_points 会把缺失点和当前 workflow 反馈给你，请继续用规划工具修补后再次 finalize。"
+        "系统会在本轮结束后对照 nl_requirement 做覆盖度检查；如果发现 missing_points 会把缺失点和当前 workflow 反馈给你，请继续用规划工具修补后再进入下一轮。"
     )
 
     def _build_validation_error(message: str, **extra: Any) -> Dict[str, Any]:
@@ -1291,69 +1290,6 @@ def plan_workflow_structure_with_llm(
         return {"status": "ok", "type": "node_updated", "node_id": id}
 
     @function_tool(strict_mode=False)
-    def finalize_workflow(ready: bool = True, notes: Optional[str] = None) -> Mapping[str, Any]:
-        """触发覆盖度与依赖检查，并决定是否进入完成态。
-
-        适用场景：结构规划结束时提交当前 workflow 供系统校验。
-
-        Args:
-            ready: 是否声明结构已完成（仍可能因检查失败而继续）。
-            notes: 额外说明信息，可选。
-
-        Returns:
-            校验结果与反馈的字典，包含 coverage、workflow 与 should_continue 等字段。
-        """
-        _log_tool_call("finalize_workflow", {"ready": ready, "notes": notes})
-        nonlocal latest_skeleton, latest_coverage
-        skeleton, coverage = _run_coverage_check(
-            nl_requirement=nl_requirement,
-            builder=builder,
-            action_registry=action_registry,
-            search_service=search_service,
-        )
-        latest_skeleton = skeleton
-        latest_coverage = coverage
-        nodes_without_upstream = _find_nodes_without_upstream(skeleton)
-        is_covered = bool(coverage.get("is_covered", False))
-        needs_dependency_review = bool(nodes_without_upstream)
-
-        feedback_parts: List[str] = []
-        if not is_covered:
-            feedback_parts.append(
-                _build_coverage_feedback_message(coverage=coverage, workflow=skeleton)
-            )
-        if nodes_without_upstream:
-            feedback_parts.append(
-                _build_dependency_feedback_message(workflow=skeleton, nodes_without_upstream=nodes_without_upstream)
-            )
-
-        should_continue = not ready or not is_covered or needs_dependency_review
-        log_info(
-            "[StructurePlanner] finalize_workflow 结果",
-            json.dumps(
-                {
-                    "ready": ready,
-                    "is_covered": is_covered,
-                    "needs_dependency_review": needs_dependency_review,
-                    "should_continue": should_continue,
-                },
-                ensure_ascii=False,
-            ),
-        )
-        finalized_state["done"] = not should_continue
-        _snapshot("finalize")
-        return {
-            "status": "ok" if not should_continue else "needs_more_work",
-            "type": "finalized",
-            "notes": notes,
-            "coverage": coverage,
-            "nodes_without_upstream": nodes_without_upstream,
-            "should_continue": should_continue,
-            "feedback": "\n\n".join(feedback_parts) if feedback_parts else "结构已通过覆盖度与依赖检查。",
-            "workflow": skeleton,
-        }
-
-    @function_tool(strict_mode=False)
     def dump_model() -> Mapping[str, Any]:
         """导出当前 workflow 快照，便于调试或回显。
 
@@ -1391,29 +1327,73 @@ def plan_workflow_structure_with_llm(
             update_condition_node,
             update_switch_node,
             update_loop_node,
-            finalize_workflow,
-            dump_model
+            dump_model,
         ],
         model=OPENAI_MODEL
     )
 
-    total_rounds = max_rounds + max_coverage_refine_rounds + max_dependency_refine_rounds
     log_section("结构规划 - Agent SDK")
 
+    def _run_agent(prompt: Any) -> Any:
+        try:
+            return Runner.run_sync(agent, prompt, max_turns=max_rounds)  # type: ignore[arg-type]
+        except TypeError:
+            coro = Runner.run(agent, prompt)  # type: ignore[call-arg]
+            return asyncio.run(coro) if asyncio.iscoroutine(coro) else coro
+
     run_input: Any = nl_requirement
-    try:
-        result = Runner.run_sync(agent, run_input, max_turns=total_rounds)  # type: ignore[arg-type]
-    except TypeError:
-        coro = Runner.run(agent, run_input)  # type: ignore[call-arg]
-        result = asyncio.run(coro) if asyncio.iscoroutine(coro) else coro
+    coverage_refines = 0
+    dependency_refines = 0
+    is_covered = False
+    needs_dependency_review = False
 
-    if not finalized_state.get("done"):
-        if latest_coverage and not latest_coverage.get("is_covered", False):
-            log_warn("[Planner] 规划结束但覆盖度未通过，返回当前骨架。")
-        else:
-            log_warn("[Planner] 未收到 finalize_workflow，使用当前骨架继续后续阶段。")
+    while True:
+        _run_agent(run_input)
+        skeleton, coverage = _run_coverage_check(
+            nl_requirement=nl_requirement,
+            builder=builder,
+            action_registry=action_registry,
+            search_service=search_service,
+        )
+        latest_skeleton = skeleton
+        latest_coverage = coverage
+        nodes_without_upstream = _find_nodes_without_upstream(skeleton)
+        is_covered = bool(coverage.get("is_covered", False))
+        needs_dependency_review = bool(nodes_without_upstream)
 
-    if not finalized_state.get("done") or not latest_skeleton:
+        feedback_parts: List[str] = []
+        if not is_covered:
+            feedback_parts.append(
+                _build_coverage_feedback_message(coverage=coverage, workflow=skeleton)
+            )
+        if nodes_without_upstream:
+            feedback_parts.append(
+                _build_dependency_feedback_message(
+                    workflow=skeleton, nodes_without_upstream=nodes_without_upstream
+                )
+            )
+
+        if is_covered and not needs_dependency_review:
+            break
+
+        if not is_covered and coverage_refines < max_coverage_refine_rounds:
+            coverage_refines += 1
+            run_input = "\n\n".join(feedback_parts)
+            continue
+
+        if needs_dependency_review and dependency_refines < max_dependency_refine_rounds:
+            dependency_refines += 1
+            run_input = "\n\n".join(feedback_parts)
+            continue
+
+        break
+
+    if not is_covered:
+        log_warn("[Planner] 规划结束但覆盖度未通过，返回当前骨架。")
+    elif needs_dependency_review:
+        log_warn("[Planner] 规划结束但仍存在依赖需要复核，返回当前骨架。")
+
+    if not latest_skeleton:
         latest_skeleton = _prepare_skeleton_for_coverage(
             builder=builder, action_registry=action_registry, search_service=search_service
         )
