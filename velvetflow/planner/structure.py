@@ -12,16 +12,11 @@ from typing import Any, Callable, Dict, List, Mapping, Optional
 from velvetflow.config import OPENAI_MODEL
 from velvetflow.logging_utils import (
     log_debug,
-    log_event,
     log_info,
-    log_json,
     log_section,
-    log_warn,
 )
 from velvetflow.planner.agent_runtime import Agent, Runner, function_tool
 from velvetflow.planner.action_guard import ensure_registered_actions
-from velvetflow.planner.approval import detect_missing_approval_nodes
-from velvetflow.planner.coverage import check_requirement_coverage_with_llm
 from velvetflow.planner.workflow_builder import (
     WorkflowBuilder,
     attach_condition_branches,
@@ -356,9 +351,7 @@ def _ensure_loop_items_fields(
     return dict(exports)
 
 
-
-
-def _prepare_skeleton_for_coverage(
+def _prepare_skeleton_for_next_stage(
     *,
     builder: WorkflowBuilder,
     action_registry: List[Dict[str, Any]],
@@ -371,130 +364,12 @@ def _prepare_skeleton_for_coverage(
     return _attach_inferred_edges(skeleton)
 
 
-def _find_nodes_without_upstream(workflow: Mapping[str, Any]) -> List[Dict[str, Any]]:
-    nodes = workflow.get("nodes") if isinstance(workflow.get("nodes"), list) else []
-    inferred_edges = infer_edges_from_bindings(nodes)
-
-    indegree = {}
-    for node in nodes:
-        if isinstance(node, Mapping) and isinstance(node.get("id"), str):
-            indegree[node["id"]] = 0
-
-    for edge in inferred_edges:
-        if not isinstance(edge, Mapping):
-            continue
-        target = edge.get("to")
-        if isinstance(target, str) and target in indegree:
-            indegree[target] += 1
-
-    dangling: List[Dict[str, Any]] = []
-    for node in nodes:
-        if not isinstance(node, Mapping):
-            continue
-
-        node_id = node.get("id")
-        node_type = node.get("type")
-        if not isinstance(node_id, str) or not isinstance(node_type, str):
-            continue
-
-        if indegree.get(node_id, 0) == 0:
-            dangling.append(
-                {
-                    "id": node_id,
-                    "type": node_type,
-                    "action_id": node.get("action_id")
-                    if isinstance(node.get("action_id"), str)
-                    else None,
-                    "display_name": node.get("display_name"),
-                }
-            )
-
-    return dangling
-
-
-def _run_coverage_check(
-    *,
-    nl_requirement: str,
-    builder: WorkflowBuilder,
-    action_registry: List[Dict[str, Any]],
-    search_service: HybridActionSearchService,
-) -> Dict[str, Any]:
-    log_info("[StructurePlanner] 覆盖度检查开始")
-    skeleton = _prepare_skeleton_for_coverage(
-        builder=builder, action_registry=action_registry, search_service=search_service
-    )
-    log_info(
-        "[StructurePlanner] 覆盖度检查输入快照",
-        json.dumps(
-            {
-                "node_count": len(skeleton.get("nodes") or []),
-                "edge_count": len(skeleton.get("edges") or []),
-            },
-            ensure_ascii=False,
-        ),
-    )
-
-    coverage = check_requirement_coverage_with_llm(
-        nl_requirement=nl_requirement,
-        workflow=skeleton,
-        model=OPENAI_MODEL,
-    )
-    approval_missing = detect_missing_approval_nodes(
-        workflow=skeleton, action_registry=action_registry
-    )
-    if approval_missing:
-        coverage.setdefault("missing_points", [])
-        coverage["missing_points"].extend(approval_missing)
-        coverage["is_covered"] = False
-
-    log_event("coverage_check", {"coverage": coverage})
-    log_json("覆盖度检查结果", coverage)
-    log_info(
-        "[StructurePlanner] 覆盖度检查结束",
-        json.dumps(
-            {
-                "is_covered": coverage.get("is_covered", False),
-                "missing_points_count": len(coverage.get("missing_points") or []),
-            },
-            ensure_ascii=False,
-        ),
-    )
-    return skeleton, coverage
-
-
-def _build_coverage_feedback_message(
-    *, coverage: Mapping[str, Any], workflow: Mapping[str, Any]
-) -> str:
-    missing_points = coverage.get("missing_points", []) or []
-    analysis = coverage.get("analysis", "")
-    return (
-        "覆盖度检查未通过，请继续使用规划工具补充缺失点，并基于以下信息调整 workflow。\n"
-        f"- missing_points: {json.dumps(missing_points, ensure_ascii=False)}\n"
-        f"- analysis: {analysis}\n"
-        "当前 workflow 供参考（含推导的 edges）：\n"
-        f"{json.dumps(workflow, ensure_ascii=False)}"
-    )
-
-
-def _build_dependency_feedback_message(
-    *, workflow: Mapping[str, Any], nodes_without_upstream: List[Mapping[str, Any]]
-) -> str:
-    return (
-        "检测到以下节点没有任何上游依赖，"
-        "请检查是否遗漏了对相关节点结果的引用或绑定。如果需要，请继续使用规划工具补充；"
-        "如果确认这些节点应该独立存在，请在下一轮反馈中简单说明原因。\n"
-        f"- nodes_without_upstream: {json.dumps(nodes_without_upstream, ensure_ascii=False)}\n"
-        "当前 workflow 供参考（含推导的 edges）：\n"
-        f"{json.dumps(workflow, ensure_ascii=False)}"
-    )
 
 def plan_workflow_structure_with_llm(
     nl_requirement: str,
     search_service: HybridActionSearchService,
     action_registry: List[Dict[str, Any]],
     max_rounds: int = 100,
-    max_coverage_refine_rounds: int = 2,
-    max_dependency_refine_rounds: int = 1,
     progress_callback: Callable[[str, Mapping[str, Any]], None] | None = None,
 ) -> Dict[str, Any]:
     if not os.environ.get("OPENAI_API_KEY"):
@@ -505,7 +380,6 @@ def plan_workflow_structure_with_llm(
     last_action_candidates: List[str] = []
     all_action_candidates: List[str] = []
     latest_skeleton: Dict[str, Any] = {}
-    latest_coverage: Dict[str, Any] = {}
 
     def _emit_progress(label: str, workflow_obj: Mapping[str, Any]) -> None:
         if not progress_callback:
@@ -562,7 +436,7 @@ def plan_workflow_structure_with_llm(
         "6) 如需修改已创建节点（补充 display_name/params/分支指向/父节点等），请调用 update_action_node 或 update_condition_node 并传入需要覆盖的字段列表；调用后务必检查上下游关联节点是否也需要同步更新以保持一致性。\n"
         "7) condition 节点必须显式提供 true_to_node 和 false_to_node，值可以是节点 id（继续执行）或 null（表示该分支结束）；通过节点 params 中的输入/输出引用表达依赖关系，不需要显式绘制 edges。\n"
         "8) 请为每个节点维护 depends_on（字符串数组），列出其直接依赖的上游节点；当节点被 condition.true_to_node/false_to_node 指向时，必须将该 condition 节点加入目标节点的 depends_on。\n"
-        "9) 当结构完成时停止调用工具，等待系统执行覆盖度检查。\n\n"
+        "9) 当结构完成时停止调用工具，等待进入参数填充阶段。\n\n"
         "特别注意：只有 action 节点需要 out_params_schema，condition 节点没有该属性；out_params_schema 的格式应为 {\"参数名\": \"类型\"}，仅需列出业务 action 输出参数的名称与类型，不要添加额外描述或示例。\n\n"
         "【非常重要的原则】\n"        
         "1. 你必须严格围绕当前对话中的自然语言需求来设计 workflow：\n"
@@ -575,11 +449,9 @@ def plan_workflow_structure_with_llm(
         "3. loop.exports 应定义在 params.exports 下，请勿写在 body_subgraph 内；body_subgraph 仅包含 nodes 数组，无需 entry/exit/edges。\n"
         "4. 允许嵌套循环，但需要通过 parent_node_id 或 sub_graph_nodes 明确将子循环纳入父循环的 body_subgraph；"
         "   外部节点引用循环内部数据时仍需通过 loop.exports，而不是直接指向子图节点。\n\n"
-        "【覆盖度要求】\n"
-        "你必须确保工作流结构能够完全覆盖用户自然语言需求中的每个子任务，而不是只覆盖前半部分：\n"
+        "你必须确保工作流结构能够覆盖用户自然语言需求中的每个子任务，而不是只覆盖前半部分：\n"
         "例如，如果需求包含：触发 + 查询 + 筛选 + 总结 + 通知，你不能只实现触发 + 查询，\n"
-        "必须在结构里显式包含筛选、总结、通知等对应节点和数据流。\n"
-        "系统会在本轮结束后对照 nl_requirement 做覆盖度检查；如果发现 missing_points 会把缺失点和当前 workflow 反馈给你，请继续用规划工具修补后再进入下一轮。"
+        "必须在结构里显式包含筛选、总结、通知等对应节点和数据流。"
     )
 
     def _build_validation_error(message: str, **extra: Any) -> Dict[str, Any]:
@@ -624,7 +496,7 @@ def plan_workflow_structure_with_llm(
     def set_workflow_meta(workflow_name: str, description: Optional[str] = None) -> Mapping[str, Any]:
         """设置工作流的名称与描述。
 
-        适用场景：在规划工作流结构前初始化元信息，确保覆盖度检查可读。
+        适用场景：在规划工作流结构前初始化元信息，便于后续阶段阅读。
 
         Args:
             workflow_name: 工作流名称。
@@ -1334,67 +1206,15 @@ def plan_workflow_structure_with_llm(
 
     log_section("结构规划 - Agent SDK")
 
-    def _run_agent(prompt: Any) -> Any:
-        try:
-            return Runner.run_sync(agent, prompt, max_turns=max_rounds)  # type: ignore[arg-type]
-        except TypeError:
-            coro = Runner.run(agent, prompt)  # type: ignore[call-arg]
-            return asyncio.run(coro) if asyncio.iscoroutine(coro) else coro
-
-    run_input: Any = nl_requirement
-    coverage_refines = 0
-    dependency_refines = 0
-    is_covered = False
-    needs_dependency_review = False
-
-    while True:
-        _run_agent(run_input)
-        skeleton, coverage = _run_coverage_check(
-            nl_requirement=nl_requirement,
-            builder=builder,
-            action_registry=action_registry,
-            search_service=search_service,
-        )
-        latest_skeleton = skeleton
-        latest_coverage = coverage
-        nodes_without_upstream = _find_nodes_without_upstream(skeleton)
-        is_covered = bool(coverage.get("is_covered", False))
-        needs_dependency_review = bool(nodes_without_upstream)
-
-        feedback_parts: List[str] = []
-        if not is_covered:
-            feedback_parts.append(
-                _build_coverage_feedback_message(coverage=coverage, workflow=skeleton)
-            )
-        if nodes_without_upstream:
-            feedback_parts.append(
-                _build_dependency_feedback_message(
-                    workflow=skeleton, nodes_without_upstream=nodes_without_upstream
-                )
-            )
-
-        if is_covered and not needs_dependency_review:
-            break
-
-        if not is_covered and coverage_refines < max_coverage_refine_rounds:
-            coverage_refines += 1
-            run_input = "\n\n".join(feedback_parts)
-            continue
-
-        if needs_dependency_review and dependency_refines < max_dependency_refine_rounds:
-            dependency_refines += 1
-            run_input = "\n\n".join(feedback_parts)
-            continue
-
-        break
-
-    if not is_covered:
-        log_warn("[Planner] 规划结束但覆盖度未通过，返回当前骨架。")
-    elif needs_dependency_review:
-        log_warn("[Planner] 规划结束但仍存在依赖需要复核，返回当前骨架。")
+    try:
+        Runner.run_sync(agent, nl_requirement, max_turns=max_rounds)  # type: ignore[arg-type]
+    except TypeError:
+        coro = Runner.run(agent, nl_requirement)  # type: ignore[call-arg]
+        if asyncio.iscoroutine(coro):
+            asyncio.run(coro)
 
     if not latest_skeleton:
-        latest_skeleton = _prepare_skeleton_for_coverage(
+        latest_skeleton = _prepare_skeleton_for_next_stage(
             builder=builder, action_registry=action_registry, search_service=search_service
         )
 

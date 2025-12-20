@@ -1312,7 +1312,6 @@ def plan_workflow_with_two_pass(
                     search_service=search_service,
                     action_registry=action_registry,
                     max_rounds=max_rounds,
-                    max_coverage_refine_rounds=2,
                     progress_callback=progress_callback,
                 )
             log_section("第一阶段结果：Workflow Skeleton")
