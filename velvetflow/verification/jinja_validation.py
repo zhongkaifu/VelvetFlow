@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Mapping, Tuple
 
 from jinja2 import TemplateError
 
-from velvetflow.jinja_utils import get_jinja_env
+from velvetflow.jinja_utils import get_jinja_env, has_unwrapped_variable
 from velvetflow.models import ValidationError
 from velvetflow.reference_utils import normalize_reference_path
 
@@ -30,6 +30,8 @@ def _normalize_jinja_expr(value: Any) -> Tuple[Any, bool]:
         stripped = value.strip()
         if stripped and "{{" not in stripped and "{%" not in stripped:
             if _SIMPLE_PATH_RE.match(stripped):
+                return f"{{{{ {stripped} }}}}", True
+            if has_unwrapped_variable(stripped):
                 return f"{{{{ {stripped} }}}}", True
             # Fallback: wrap raw literals as Jinja templates so every param
             # remains Jinja-compatible (e.g., condition.field="employee_id").

@@ -66,6 +66,29 @@ def get_jinja_env() -> Environment:
 
 
 _CONST_STR_TMPL = re.compile(r"^\s*\{\{\s*(['\"])(.*)\1\s*\}\}\s*$", re.DOTALL)
+POTENTIAL_JINJA_EXPR = re.compile(
+    r"\b[a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z0-9_]+|\[[^\]]+\])+\b"
+)
+
+
+def looks_like_missing_jinja(value: str) -> bool:
+    if "{{" in value or "{%" in value:
+        return False
+    return bool(POTENTIAL_JINJA_EXPR.search(value))
+
+
+def has_unwrapped_variable(template: str) -> bool:
+    if "{{" in template or "{%" in template:
+        return False
+    if not looks_like_missing_jinja(template):
+        return False
+
+    env = get_jinja_env()
+    try:
+        env.compile_expression(template)
+    except TemplateError:
+        return False
+    return True
 
 
 def render_jinja_string_constants(value: Any) -> Any:

@@ -270,6 +270,18 @@ def _validate_nodes_recursive(
                     ),
                 )
             )
+        if ntype == "action" and (not isinstance(action_id, str) or not action_id.strip()):
+            errors.append(
+                ValidationError(
+                    code="MISSING_REQUIRED_PARAM",
+                    node_id=nid,
+                    field="action_id",
+                    message=(
+                        "action 节点的 action_id 不能为空，请将该错误信息、节点信息及上下文提交给 LLM 分析，"
+                        "并使用可用工具补齐正确的 action_id。"
+                    ),
+                )
+            )
 
         empty_fields = list(_iter_empty_param_fields(params))
         for path in empty_fields:
