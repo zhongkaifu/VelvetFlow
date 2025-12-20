@@ -39,7 +39,6 @@ from velvetflow.logging_utils import (
 from velvetflow.models import PydanticValidationError, ValidationError, Workflow
 from velvetflow.loop_dsl import index_loop_body_nodes, iter_workflow_and_loop_body_nodes
 from velvetflow.planner.action_guard import ensure_registered_actions
-from velvetflow.planner.structure import fill_params_with_llm
 from velvetflow.planner.repair import (
     _convert_pydantic_errors,
     _make_failure_validation_error,
@@ -1392,120 +1391,8 @@ def plan_workflow_with_two_pass(
                 progress_callback=progress_callback,
             )
             last_good_workflow: Workflow = skeleton
-            try:
-                with child_span("params_completion"):
-                    completed_workflow_raw = fill_params_with_llm(
-                        workflow_skeleton=skeleton.model_dump(by_alias=True),
-                        action_registry=action_registry,
-                        model=OPENAI_MODEL,
-                        progress_callback=progress_callback,
-                    )
-            except Exception as err:  # noqa: BLE001
-                log_warn(
-                    f"[plan_workflow_with_two_pass] 参数补全阶段发生异常，将错误交给 LLM 自修复：{err}"
-                )
-                current_workflow = _repair_with_llm_and_fallback(
-                    broken_workflow=skeleton.model_dump(by_alias=True),
-                    validation_errors=[
-                        _make_failure_validation_error(f"参数补全阶段失败：{err}")
-                    ],
-                    action_registry=action_registry,
-                    search_service=search_service,
-                    reason="参数补全异常，尝试直接基于 skeleton 修复",
-                    progress_callback=progress_callback,
-                )
-                current_workflow = _ensure_actions_registered_or_repair(
-                    current_workflow,
-                    action_registry=action_registry,
-                    search_service=search_service,
-                    reason="参数补全异常修复后校验 action_id",
-                    progress_callback=progress_callback,
-                )
-                last_good_workflow = current_workflow
-                completed_workflow_raw = current_workflow.model_dump(by_alias=True)
-            else:
-                precheck_errors = precheck_loop_body_graphs(completed_workflow_raw)
-                if precheck_errors:
-                    log_warn(
-                        "[plan_workflow_with_two_pass] 警告：补参结果包含 loop body 节点缺失，将交给 LLM 修复。"
-                    )
-                    current_workflow = _repair_with_llm_and_fallback(
-                        broken_workflow=completed_workflow_raw,
-                        validation_errors=precheck_errors,
-                        action_registry=action_registry,
-                        search_service=search_service,
-                        reason="补参结果校验失败",
-                        progress_callback=progress_callback,
-                    )
-                    current_workflow = _ensure_actions_registered_or_repair(
-                        current_workflow,
-                        action_registry=action_registry,
-                        search_service=search_service,
-                        reason="补参结果修复后校验 action_id",
-                        progress_callback=progress_callback,
-                    )
-                    last_good_workflow = current_workflow
-                else:
-                    try:
-                        completed_workflow = Workflow.model_validate(completed_workflow_raw)
-                        current_workflow = _ensure_actions_registered_or_repair(
-                            completed_workflow,
-                            action_registry=action_registry,
-                            search_service=search_service,
-                            reason="参数补全后修正未注册的 action_id",
-                            progress_callback=progress_callback,
-                        )
-                        last_good_workflow = current_workflow
-                    except PydanticValidationError as e:
-                        log_warn(
-                            f"[plan_workflow_with_two_pass] 警告：fill_params_with_llm 返回的结构无法通过校验，{e}"
-                        )
-                        validation_errors = _convert_pydantic_errors(completed_workflow_raw, e)
-                        if validation_errors:
-                            current_workflow = _repair_with_llm_and_fallback(
-                                broken_workflow=completed_workflow_raw,
-                                validation_errors=validation_errors,
-                                action_registry=action_registry,
-                                search_service=search_service,
-                                reason="补参结果校验失败",
-                                progress_callback=progress_callback,
-                            )
-                            current_workflow = _ensure_actions_registered_or_repair(
-                                current_workflow,
-                                action_registry=action_registry,
-                                search_service=search_service,
-                                reason="补参结果修复后校验 action_id",
-                                progress_callback=progress_callback,
-                            )
-                            last_good_workflow = current_workflow
-                        else:
-                            current_workflow = last_good_workflow
-
-                    except Exception as e:  # noqa: BLE001
-                        log_warn(
-                            f"[plan_workflow_with_two_pass] 参数补全阶段遇到致命错误，交给 LLM 修复：{e}"
-                        )
-                        current_workflow = _repair_with_llm_and_fallback(
-                            broken_workflow=completed_workflow_raw if isinstance(completed_workflow_raw, dict) else {},
-                            validation_errors=[_make_failure_validation_error(str(e))],
-                            action_registry=action_registry,
-                            search_service=search_service,
-                            reason="补参结果校验失败",
-                            progress_callback=progress_callback,
-                        )
-                        current_workflow = _ensure_actions_registered_or_repair(
-                            current_workflow,
-                            action_registry=action_registry,
-                            search_service=search_service,
-                            reason="补参结果修复后校验 action_id",
-                            progress_callback=progress_callback,
-                        )
-                        last_good_workflow = current_workflow
-            if progress_callback:
-                try:
-                    progress_callback("params_completed", current_workflow.model_dump(by_alias=True))
-                except Exception:
-                    log_debug("[plan_workflow_with_two_pass] progress_callback 参数阶段调用失败，已忽略。")
+            current_workflow = skeleton
+            last_good_workflow = current_workflow
 
             planned_workflow = _validate_and_repair_workflow(
                 current_workflow,
