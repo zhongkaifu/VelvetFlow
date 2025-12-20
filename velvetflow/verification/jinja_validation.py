@@ -13,6 +13,26 @@ from velvetflow.reference_utils import normalize_reference_path
 
 
 _SIMPLE_PATH_RE = re.compile(r"^(result_of|loop)\.[A-Za-z_][\w.]*$")
+POTENTIAL_JINJA_EXPR = re.compile(
+    r"\b[a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z0-9_]+|\[[^\]]+\])+\b"
+)
+
+
+def looks_like_missing_jinja(s: str) -> bool:
+    if "{{" in s or "{%" in s:
+        return False
+    return bool(POTENTIAL_JINJA_EXPR.search(s))
+
+
+def has_unwrapped_variable(template: str) -> bool:
+    if "{{" in template or "{%" in template:
+        return False
+    env = get_jinja_env()
+    try:
+        env.parse(f"{{{{ {template} }}}}")
+    except TemplateError:
+        return False
+    return looks_like_missing_jinja(template)
 
 
 def _normalize_jinja_expr(value: Any) -> Tuple[Any, bool]:
@@ -29,6 +49,8 @@ def _normalize_jinja_expr(value: Any) -> Tuple[Any, bool]:
     if isinstance(value, str):
         stripped = value.strip()
         if stripped and "{{" not in stripped and "{%" not in stripped:
+            if has_unwrapped_variable(stripped):
+                return f"{{{{ {stripped} }}}}", True
             if _SIMPLE_PATH_RE.match(stripped):
                 return f"{{{{ {stripped} }}}}", True
             # Fallback: wrap raw literals as Jinja templates so every param
