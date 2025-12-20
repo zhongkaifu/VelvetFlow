@@ -6,6 +6,8 @@
 - **未注册的 action_id**：规划或执行阶段报错时，检查 `tools/business_actions/` 是否存在该动作并重新构建索引；执行器启动时会提前失败以避免运行期出错。
 - **绑定路径不合法**：`ValidationError` 提示找不到 `__from__` 路径时，确认上游节点的输出 Schema 是否包含该字段或在 loop.exports 中声明。
 - **异步节点无法恢复**：如果 `resume_from_suspension` 失败，确认 `suspension.json` 与回调结果的 `request_id` 一致，并确保结果文件包含 `status` 或业务返回体。
+- **loop 被跳过**：运行日志提示 `source_not_list` 时，检查 loop 的 `params.source` 是否指向数组/序列，或使用 `{"__from__": ...}` 绑定确保引用可解析为列表。
+- **parallel 分支未执行**：`parallel` 节点当前仅用于前端分组与可视化，执行器不会调度 `branches` 内的节点；请将实际节点放在顶层 `nodes` 并使用 `depends_on`/绑定推导控制顺序。
 
 ## 定位手段
 - **打印归一化 DSL**：

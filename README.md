@@ -101,7 +101,7 @@ VelvetFlow (repo root)
   - 本地自动修复（缺字段默认值、移除 schema 未定义字段、匹配输出/输入的类型转换、填充 `loop.exports`）完成后，再由 `verification/validation.py` 做最终静态校验并按需多轮 LLM 修复。
 - **DSL 模型与校验**：`models.py` 定义 Node/Edge/Workflow，边由参数绑定与条件分支自动推导并在可视化/执行前归一化；校验涵盖节点类型、隐式连线合法性、loop 子图 Schema 等，并通过 `ValidationError` 统一描述错误。
 - **参数绑定 DSL**：`bindings.py` 支持 `__from__` 引用上游结果，`__agg__` 支持 `identity/count/count_if/format_join/filter_map/pipeline`，并校验引用路径是否存在于动作输出/输入或 loop exports。
-- **执行器**：`executor/` 包中的 `DynamicActionExecutor` 会先校验 action_id 是否在注册表中，再执行拓扑排序确保连通；支持 condition 节点（如 list_not_empty/equals/contains/greater_than/between 等）与 loop 节点（body_subgraph + exports.items/aggregates 收集迭代与聚合结果），并结合 repo 根目录的 `simulation_data.json` 模拟动作返回。日志输出使用 `logging_utils.py`。
+- **执行器**：`executor/` 包中的 `DynamicActionExecutor` 会先校验 action_id 是否在注册表中，再执行拓扑排序确保连通；支持 condition 节点（基于 `params.expression` 的 Jinja 表达式）与 loop 节点（`body_subgraph` + `params.exports` 逐轮收集结果），并结合 repo 根目录的 `simulation_data.json` 模拟动作返回。日志输出使用 `logging_utils.py`。
 - **可视化**：`visualization.py` 提供 `render_workflow_dag`，支持 Unicode 字体回退，将 Workflow 渲染为 JPEG DAG。
 - **Jinja 表达式支持**：`jinja_utils.py` 构建严格模式的 Jinja 环境并在校验/执行前把包裹在 `{{ }}` 的纯字面量折叠为常量，静态检查会提前阻止语法错误的模板，运行时也可以在条件/聚合里直接求值表达式。【F:velvetflow/jinja_utils.py†L8-L114】【F:velvetflow/verification/jinja_validation.py†L50-L189】【F:velvetflow/executor/conditions.py†L14-L114】
 
@@ -206,7 +206,7 @@ VelvetFlow (repo root)
 4. **参数补全（LLM）**：`fill_params_with_llm` 在骨架上补齐各节点的 `params`、`exports` 与绑定表达式。若补参异常会直接回滚到上次合法版本，并走同样的 Action Guard 保障动作合法性。【F:velvetflow/planner/orchestrator.py†L361-L432】
 5. **本地自动修复与类型对齐**：补参结果会先经过多轮本地修复：
    - **条件/引用类型矫正**：根据 condition kind 需求与输出 Schema 自动转换数值/正则类型，并为绑定的 `__from__` 与目标 Schema 之间的类型不匹配提供自动包装或错误提示。【F:velvetflow/planner/orchestrator.py†L444-L580】
-   - **loop.exports 补全**：自动填充缺失的 `items/aggregates` 声明并规范化导出字段，避免循环节点留空导致 LLM 返工。【F:velvetflow/planner/orchestrator.py†L589-L662】
+   - **loop.exports 补全**：自动填充缺失的 `params.exports` 映射并规范化导出字段，避免循环节点留空导致 LLM 返工。【F:velvetflow/planner/orchestrator.py†L589-L662】
    - **Schema 感知修复**：移除动作 Schema 未定义的字段、为空字段写入默认值或尝试按类型转换，再进入正式校验；无法修复的错误会打包为 `ValidationError` 供后续 LLM 使用。【F:velvetflow/planner/repair_tools.py†L63-L215】【F:velvetflow/planner/orchestrator.py†L664-L817】
 6. **静态校验 + LLM 自修复循环**：`validate_completed_workflow` 会在每轮本地修复后运行，若仍有错误则将错误分布与上下文交给 `_repair_with_llm_and_fallback`，在限定轮次内迭代直至通过或返回最后一个合法版本。【F:velvetflow/planner/orchestrator.py†L671-L817】【F:velvetflow/planner/orchestrator.py†L834-L940】
 7. **持久化与可视化**：通过校验后写出 `workflow_output.json`，并可用 `render_workflow_image.py` 生成 `workflow_dag.jpg`，同时日志保留所有 LLM 对话与自动修复记录便于审计。
@@ -247,15 +247,15 @@ LLM / Agent SDK 相关节点说明：
 ## 循环节点的处理细节
 为方便开发者定位循环相关逻辑，补充 loop 的运行与导出细节：
 
-- **定义与校验**：`models.py` 会检查 loop 的 `iter` 路径、`body_subgraph` 的拓扑完整性，以及 `exports` 的 `items/aggregates` 是否声明了引用名，未通过会在规划阶段直接报错，避免运行时才失败。【F:velvetflow/models.py†L70-L92】
-- **DSL 辅助 Schema**：`loop_dsl.py` 定义了 loop 节点 exports 的 Pydantic 模型，确保 `items`（逐轮收集）与 `aggregates`（汇总）字段结构一致。【F:velvetflow/loop_dsl.py†L1-L96】
-- **执行阶段**：`executor.DynamicActionExecutor` 在遇到 loop 节点时会展开 `iter` 集合，依次执行 `body_subgraph`，将每轮输出写入 `loop_context`。子图可以引用 `loop.item`/`loop.index`，并在循环结束后依据 `exports.items/aggregates` 聚合到上层节点上下文。【F:velvetflow/executor.py†L187-L281】【F:velvetflow/bindings.py†L206-L341】
+- **定义与校验**：`models.py` 会检查 loop 的 `source` 路径、`body_subgraph` 的拓扑完整性，以及 `params.exports` 是否为合法的 Jinja 表达式映射，未通过会在规划阶段直接报错，避免运行时才失败。【F:velvetflow/models.py†L70-L92】
+- **DSL 辅助 Schema**：`loop_dsl.py` 会根据 `params.exports` 构造 loop 节点的虚拟输出 schema，确保外部只能通过 `result_of.<loop_id>.exports.<key>` 读取循环输出。【F:velvetflow/loop_dsl.py†L1-L96】
+- **执行阶段**：`executor.DynamicActionExecutor` 在遇到 loop 节点时会展开 `source` 集合，依次执行 `body_subgraph`，将每轮输出写入 `loop` 上下文。子图可以引用 `loop.item`/`loop.index`/`loop.size`/`loop.accumulator` 或自定义 `item_alias`，并在循环结束后依据 `params.exports` 汇总到上层节点上下文。【F:velvetflow/executor/loops.py†L33-L248】【F:velvetflow/bindings.py†L206-L341】
 
 ## 自定义与扩展
 - **扩展动作库**：在 `tools/business_actions/` 下增加/调整动作文件，`action_registry.py` 会自动加载并附加安全字段。
 - **调优检索**：在 `build_workflow.py` 的 `build_default_search_service` 调整 `alpha` 或替换 `DEFAULT_EMBEDDING_MODEL`/`embed_text_openai` 以适配自定义向量模型。
 - **更换模型**：`velvetflow/config.py` 中的 `OPENAI_MODEL` 控制规划/补参阶段使用的 OpenAI Chat 模型。
-- **定制执行行为**：修改根目录的 `simulation_data.json` 模板以覆盖动作返回；如需调整条件/循环聚合规则，可在 `executor.py` 与`bindings.py` 中扩展。
+- **定制执行行为**：修改根目录的 `simulation_data.json` 模板以覆盖动作返回；如需调整条件/循环聚合规则，可在 `velvetflow/executor/conditions.py`、`velvetflow/executor/loops.py` 与 `velvetflow/bindings.py` 中扩展。
 
 ## Workflow DSL 速查
 下面的 JSON 结构是 VelvetFlow 规划/执行都遵循的 DSL。理解这些字段有助于手写、调试或修复 LLM 产出的 workflow。
@@ -285,10 +285,10 @@ LLM / Agent SDK 相关节点说明：
 
 - **start/end**：只需 `id` 与 `type`，`params` 可为空。常作为入口/出口。
 - **action**：`action_id` 必填；`params` 按动作的 `arg_schema` 填写，支持绑定 DSL（见下文）。
-- **condition**：`params` 中通常包含 `source`（绑定路径或常量）、`op`（如 equals、greater_than）、`value`（对比值），并需要通过 `true_to_node`/`false_to_node` 显式指向下游节点（或设置为 `null` 表示分支终止）。
+- **condition**：`params.expression` 为布尔 Jinja 表达式，并需要通过 `true_to_node`/`false_to_node` 显式指向下游节点（或设置为 `null` 表示分支终止）。
 - **switch**：支持多分支匹配，`params` 中可携带 `source/field` 并在 `cases` 指定 `value` 与 `to_node` 的映射，未命中时走 `default_to_node`。
-- **loop**：`params` 需要 `iter`（循环目标，如 `result_of.fetch.items`）、`body_subgraph`（子图，结构同顶层 workflow）、`exports`（定义每轮的收集字段与聚合规则）。`body_subgraph` 在解析时也会按完整 Workflow 校验，字段不合法会提前报错。【F:velvetflow/models.py†L70-L92】
-- **parallel**：用于并行分支的占位节点，通常没有额外参数。
+- **loop**：`params` 需要 `loop_kind`（`for_each`/`while`）、`source`（循环目标，如 `result_of.fetch.items`）、`item_alias`（循环体内引用当前元素）、`body_subgraph`（子图，结构同顶层 workflow）、`exports`（Jinja 表达式映射，逐轮收集）。`body_subgraph` 在解析时也会按完整 Workflow 校验，字段不合法会提前报错。【F:velvetflow/models.py†L70-L92】
+- **parallel**：用于前端分组/展示的占位节点（`params.branches` 仅供 UI），执行器目前不会并发调度该分支；实际执行仍依赖普通节点与 `depends_on`/绑定推导的拓扑关系。
 
 ### 拓扑推导（隐式 edges）
 - 工作流不再需要显式声明 `edges`。执行前会依据参数绑定里的 `result_of.<node>` 引用、字符串中的嵌入引用、condition 节点的 `true_to_node`/`false_to_node`、switch 节点的 `cases/default_to_node` 自动推导有向边，避免重复维护拓扑。
@@ -302,7 +302,7 @@ LLM / Agent SDK 相关节点说明：
 ```
 
 常用能力：
-- `__from__`: 必填，指向上游结果或循环上下文，形如 `result_of.<node_id>.<path>`。如果节点是 loop，还可以写 `loop.item` 或 `loop.index`。
+- `__from__`: 必填，指向上游结果或循环上下文，形如 `result_of.<node_id>.<path>`。如果节点位于 loop 体内，还可以写 `loop.item`/`loop.index`/`loop.size`/`loop.accumulator` 或 `item_alias` 指定的别名。
 - `__agg__`: 聚合/变换方式，默认 `identity`。支持：
   - `count` / `count_if`：统计列表长度，`count_if` 还能用 `field`+`op`+`value` 过滤。
   - `join`: 直接用 `separator`（或 `sep`）把字符串列表拼接成一个字符串。
@@ -321,7 +321,7 @@ LLM / Agent SDK 相关节点说明：
 2. **检查绑定路径**：若报 `__from__` 相关错误，确认 `result_of.<node>.<field>` 中的节点是否存在且有对应字段；loop 节点需检查 `exports` 中是否声明了该字段。
 
 ### 常见绑定警告示例
-- **引用了 loop 未导出的字段**：loop 节点的输出仅包含 `exports.items`/`exports.aggregates` 声明的字段，不会直接暴露子图节点的字段。示例中 `aggregate_summaries` 的 `text` 绑定写成 `{"__from__":"result_of.loop_each_news.summarize_news.summary","__agg__":"format_join","sep":"\n"}`，在解析时会因为 `loop_each_news` 的虚拟输出 Schema 中不存在 `summarize_news.summary` 而触发 `__from__ 路径 ... 引用了 loop 输出中不存在的字段` 的警告。应改为引用 loop 导出的数组：`{"__from__":"result_of.loop_each_news.items.summary","__agg__":"format_join","sep":"\n"}`。
+- **引用了 loop 未导出的字段**：loop 节点的输出仅包含 `params.exports` 声明的字段，不会直接暴露子图节点的字段。示例中 `aggregate_summaries` 的 `text` 绑定写成 `{"__from__":"result_of.loop_each_news.summarize_news.summary","__agg__":"format_join","sep":"\n"}`，在解析时会因为 `loop_each_news` 的虚拟输出 Schema 中不存在 `summarize_news.summary` 而触发 `__from__ 路径 ... 引用了 loop 输出中不存在的字段` 的警告。应改为引用 loop 导出的数组：`{"__from__":"result_of.loop_each_news.exports.summary","__agg__":"format_join","sep":"\n"}`。
 3. **最小化修改面**：调试时优先修改 `params` 中的绑定表达式或 condition 节点的跳转（`true_to_node`/`false_to_node`），避免破坏整体拓扑。
 4. **模拟执行观察输出**：用 `python execute_workflow.py --workflow-json your_workflow.json`，日志会标明每个节点解析后的参数值，便于确认聚合逻辑是否符合预期。
 5. **可视化辅助**：通过 `python render_workflow_image.py --workflow-json your_workflow.json --output tmp.jpg` 生成 DAG，快速核对节点/边连通性与显示名称。

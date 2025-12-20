@@ -5,8 +5,9 @@
 - **节点类型**：
   - `action` 节点绑定业务动作与参数 Schema。
   - `condition`/`switch` 节点按布尔或多分支结果选择下游，未命中的分支会被标记为阻断以避免重复执行。
-- `loop` 节点使用 `iter` 定义循环集合，`body_subgraph` 执行子图，`exports` 使用 `{key: Jinja 表达式}` 收集逐轮结果列表，表达式应引用 body_subgraph 节点字段（例如 `{{ result_of.node.field }}`）。
-  - `parallel/start/end` 仍可作为结构辅助节点存在。
+- `loop` 节点使用 `source` 定义循环集合，`item_alias` 指定循环体内引用当前元素的名称，`body_subgraph` 执行子图，`exports` 使用 `{key: Jinja 表达式}` 收集逐轮结果列表，表达式必须引用 body_subgraph 节点字段（例如 `{{ result_of.node.field }}`），最终通过 `result_of.<loop_id>.exports.<key>` 读取。
+  - 循环体可使用 `loop.item`/`loop.index`/`loop.size`/`loop.accumulator`，或 `item_alias` 指定的别名。
+  - `parallel/start/end` 仍可作为结构辅助节点存在（`parallel` 目前只用于 UI 分组，执行器会将其视为无副作用节点）。
 - `velvetflow.models` 使用 Pydantic 强类型校验节点字段、loop 子图完整性与引用合法性，失败时抛出统一的 `ValidationError`。
 
 ## 绑定与上下文

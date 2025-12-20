@@ -111,20 +111,21 @@
 
 ### 5. `loop`
 - **字段**：
-  - `loop_kind`：可选标签，描述循环用途。
-  - `source`：数组/序列的引用路径（如 `result_of.search.items`）。
-  - `item_alias`：为每轮迭代命名，便于子图中引用当前项。
-  - `condition`：可选布尔表达式，控制循环提前终止。
-  - `body_subgraph`：必填子图，包含至少一个 `action` 节点。
+  - `loop_kind`：必填，支持 `for_each`/`foreach`/`while`。
+  - `source`：数组/序列的引用路径（如 `result_of.search.items`），支持字符串或 `{"__from__": ...}` 绑定对象。
+  - `item_alias`：为每轮迭代命名，便于子图中引用当前项（例如 `loop.<item_alias>` 或直接使用别名）。
+  - `condition`：仅 `while` 循环需要的布尔表达式（Jinja）。
+  - `body_subgraph`：必填子图，包含至少一个 `action` 节点。可选 `entry`/`exit` 字段用于指定起止节点。
   - `exports`：指定输出：
-    - 使用 `{key: Jinja 表达式}` 形式暴露循环体字段，表达式必须引用 body_subgraph 节点字段（如 `{{ result_of.node.field }}`）；执行时每个 key 收集逐轮结果形成列表，可在表达式中组合多个来源或进行字段聚合。
+    - 使用 `{key: Jinja 表达式}` 形式暴露循环体字段，表达式必须引用 body_subgraph 节点字段（如 `{{ result_of.node.field }}`）；执行时每个 key 收集逐轮结果形成列表，外部通过 `result_of.<loop_id>.exports.<key>` 访问。
+    - `exports` 必须位于 `params.exports`，不允许放在 `body_subgraph.exports`。
 - **示例**：
 ```json
 {
   "id": "batch_payments",
   "type": "loop",
   "params": {
-    "loop_kind": "for_each_invoice",
+    "loop_kind": "for_each",
     "source": "result_of.list_invoices.items",
     "item_alias": "invoice",
     "body_subgraph": {
@@ -149,7 +150,7 @@
 ```
 
 ### 6. `parallel`
-- **字段**：`params.branches` 为非空数组，每个分支包含 `id`、`entry_node` 与 `sub_graph_nodes` 列表；执行器会并发触发各分支并等待全部完成后继续。
+- **字段**：`params.branches` 为非空数组，每个分支包含 `id`、`entry_node` 与 `sub_graph_nodes` 列表；该结构当前主要用于可视化与前端分组，执行器不会真正并发调度 `branches` 中的节点（运行时请将需要执行的节点放在顶层 `nodes` 并通过 `depends_on`/绑定推导控制顺序）。
 - **示例**：
 ```json
 {
@@ -176,7 +177,7 @@
 }
 ```
 
-## 组合示例：含条件、循环与并行的 DAG
+## 组合示例：含条件与循环的 DAG
 ```json
 {
   "workflow_name": "async_order_pipeline",
@@ -194,6 +195,7 @@
       "id": "for_each_order",
       "type": "loop",
       "params": {
+        "loop_kind": "for_each",
         "source": "result_of.search_orders.items",
         "item_alias": "order",
         "body_subgraph": {
@@ -210,37 +212,18 @@
       }
     },
     {
-      "id": "notify_parallel",
-      "type": "parallel",
+      "id": "ops_summary",
+      "type": "action",
       "depends_on": ["for_each_order"],
-      "params": {
-        "branches": [
-          {
-            "id": "notify_ops",
-            "entry_node": "ops_summary",
-            "sub_graph_nodes": [
-              {
-                "id": "ops_summary",
-                "type": "action",
-                "action_id": "ops.send_report",
-                "params": {"orders": "{{ result_of.for_each_order.exports.orders }}"}
-              }
-            ]
-          },
-          {
-            "id": "notify_finance",
-            "entry_node": "finance_summary",
-            "sub_graph_nodes": [
-              {
-                "id": "finance_summary",
-                "type": "action",
-                "action_id": "finance.sync_erp",
-                "params": {"orders": {"__from__": "result_of.for_each_order.items"}}
-              }
-            ]
-          }
-        ]
-      }
+      "action_id": "ops.send_report",
+      "params": {"orders": "{{ result_of.for_each_order.exports.orders }}"}
+    },
+    {
+      "id": "finance_summary",
+      "type": "action",
+      "depends_on": ["for_each_order"],
+      "action_id": "finance.sync_erp",
+      "params": {"orders": {"__from__": "result_of.for_each_order.exports.orders"}}
     },
     {"id": "end", "type": "end"}
   ]
