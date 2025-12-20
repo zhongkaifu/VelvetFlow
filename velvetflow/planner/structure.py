@@ -1520,6 +1520,11 @@ def plan_workflow_structure_with_llm(
     coverage_refine_rounds = 0
     dependency_refine_rounds = 0
     while True:
+        latest_finalize_called = False
+        latest_coverage = {}
+        latest_nodes_without_upstream = []
+        latest_isolated_nodes = []
+        latest_finalize_feedback = ""
         result = _run_agent(run_input, max_rounds)
         if finalized_state.get("done"):
             break
