@@ -24,6 +24,7 @@
 - 替换模拟结果：`simulation_data.json` 定义默认的动作返回，可以通过 `--simulation-file` 指向自定义 JSON。
 - Jinja 严格模式：`jinja_utils.py` 会在校验和执行前折叠纯字面量模板并阻断语法错误，可在条件或聚合参数中直接嵌入表达式。
 - 权限校验：业务动作在 `action_registry.py` 中可声明 `allowed_roles`，执行时若用户角色不符会返回 `forbidden` 状态而不会中断整个工作流。
+- parallel 占位：`parallel` 节点目前主要用于 UI 分组与可视化，不会触发真正的并发调度；如需控制实际执行顺序，请使用 `depends_on` 与绑定推导。
 
 ## 可观测性与日志
 - 规划阶段：`planner/structure.py` 会记录每次 tool-calling、覆盖度缺失与 LLM 返回，便于复现失败案例。
