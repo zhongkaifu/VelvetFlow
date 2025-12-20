@@ -752,6 +752,10 @@ class Workflow:
                 normalize_reference_path(source) if isinstance(source, str) else None
             )
             if isinstance(normalized_source, str):
+                if normalized_source == "loop" or normalized_source.startswith(
+                    ("loop.", "loop_ctx.")
+                ):
+                    continue
                 from velvetflow.verification.binding_checks import (
                     _get_output_schema_at_path,
                 )
