@@ -324,7 +324,11 @@ def _validate_nodes_recursive(
                         code="UNKNOWN_ACTION_ID",
                         node_id=nid,
                         field="action_id",
-                        message=f"节点 '{nid}' 的 action_id '{action_id}' 不在 Action Registry 中。",
+                        message=(
+                            f"节点 '{nid}' 的 action_id '{action_id}' 不在 Action Registry 中。"
+                            "请将错误信息与节点上下文提交给 LLM，使用工具搜索合适的业务工具，"
+                            "并将匹配的 action_id 应用到该节点。"
+                        ),
                     )
                 )
             else:
