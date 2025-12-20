@@ -220,6 +220,55 @@ def validate_completed_workflow(
                     message="depends_on 必须是节点 id 的字符串数组。",
                 )
             )
+
+        ntype = node.get("type")
+        if ntype == "condition":
+            for branch_field in ("true_to_node", "false_to_node"):
+                target = node.get(branch_field)
+                if isinstance(target, str) and target not in node_ids:
+                    errors.append(
+                        ValidationError(
+                            code="UNDEFINED_REFERENCE",
+                            node_id=node.get("id"),
+                            field=branch_field,
+                            message=(
+                                f"condition 分支 {branch_field} 指向不存在的节点 '{target}'。"
+                                "请确认该节点是否已创建或使用修复工具清理无效分支引用。"
+                            ),
+                        )
+                    )
+        if ntype == "switch":
+            cases = node.get("cases") if isinstance(node.get("cases"), list) else []
+            for idx, case in enumerate(cases):
+                if not isinstance(case, Mapping):
+                    continue
+                target = case.get("to_node")
+                if isinstance(target, str) and target not in node_ids:
+                    errors.append(
+                        ValidationError(
+                            code="UNDEFINED_REFERENCE",
+                            node_id=node.get("id"),
+                            field=f"cases[{idx}].to_node",
+                            message=(
+                                f"switch 分支 cases[{idx}].to_node 指向不存在的节点 '{target}'。"
+                                "请确认该节点是否已创建或使用修复工具清理无效分支引用。"
+                            ),
+                        )
+                    )
+            if "default_to_node" in node:
+                default_target = node.get("default_to_node")
+                if isinstance(default_target, str) and default_target not in node_ids:
+                    errors.append(
+                        ValidationError(
+                            code="UNDEFINED_REFERENCE",
+                            node_id=node.get("id"),
+                            field="default_to_node",
+                            message=(
+                                f"switch 默认分支 default_to_node 指向不存在的节点 '{default_target}'。"
+                                "请确认该节点是否已创建或使用修复工具清理无效分支引用。"
+                            ),
+                        )
+                    )
         elif isinstance(depends_on_val, list):
             for dep in depends_on_val:
                 if not isinstance(dep, str) or dep not in node_ids:
