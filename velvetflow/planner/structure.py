@@ -895,6 +895,13 @@ def plan_workflow_structure_with_llm(
         return payload
 
     @function_tool(strict_mode=False)
+    def review_user_requirement() -> Mapping[str, Any]:
+        """回显用户需求，便于再次检查与规划."""
+        _log_tool_call("review_user_requirement")
+        result = {"status": "ok", "requirement": nl_requirement}
+        return _return_tool_result("review_user_requirement", result)
+
+    @function_tool(strict_mode=False)
     def search_business_actions(query: str, top_k: int = 5) -> Mapping[str, Any]:
         """检索业务动作候选，用于规划时选择合法的 action_id。
 
@@ -1805,6 +1812,7 @@ def plan_workflow_structure_with_llm(
         name="WorkflowStructurePlanner",
         instructions=system_prompt,
         tools=[
+            review_user_requirement,
             search_business_actions,
             set_workflow_meta,
             add_action_node,
