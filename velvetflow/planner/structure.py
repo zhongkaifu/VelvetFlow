@@ -762,6 +762,16 @@ def plan_workflow_structure_with_llm(
         else:
             log_info(f"[StructurePlanner] tool={tool_name}")
 
+    def _log_tool_result(tool_name: str, result: Mapping[str, Any]) -> None:
+        log_info(
+            f"[StructurePlanner] tool_result={tool_name}",
+            json.dumps(result, ensure_ascii=False),
+        )
+
+    def _return_tool_result(tool_name: str, result: Mapping[str, Any]) -> Mapping[str, Any]:
+        _log_tool_result(tool_name, result)
+        return result
+
     def _emit_canvas_update(label: str, workflow_obj: Mapping[str, Any] | None = None) -> None:
         if not progress_callback:
             return
@@ -815,7 +825,13 @@ def plan_workflow_structure_with_llm(
             if action_id not in all_action_candidates:
                 all_action_candidates.append(action_id)
         _emit_canvas_update("search_business_actions")
-        return {"status": "ok", "query": query, "actions": actions_raw, "candidates": candidates}
+        result = {
+            "status": "ok",
+            "query": query,
+            "actions": actions_raw,
+            "candidates": candidates,
+        }
+        return _return_tool_result("search_business_actions", result)
 
     @function_tool(strict_mode=False)
     def set_workflow_meta(workflow_name: str, description: Optional[str] = None) -> Mapping[str, Any]:
@@ -836,7 +852,8 @@ def plan_workflow_structure_with_llm(
         )
         builder.set_meta(workflow_name, description)
         _snapshot("meta_updated")
-        return {"status": "ok", "type": "meta_set"}
+        result = {"status": "ok", "type": "meta_set"}
+        return _return_tool_result("set_workflow_meta", result)
 
     @function_tool(strict_mode=False)
     def add_action_node(
@@ -874,14 +891,17 @@ def plan_workflow_structure_with_llm(
             },
         )
         if not all_action_candidates:
-            return _build_validation_error("action 节点必须在调用 search_business_actions 之后创建。")
+            result = _build_validation_error("action 节点必须在调用 search_business_actions 之后创建。")
+            return _return_tool_result("add_action_node", result)
         if action_id not in all_action_candidates:
-            return _build_validation_error(
+            result = _build_validation_error(
                 "action_id 必须是 search_business_actions 返回过的 candidates.id 之一。",
                 allowed_action_ids=all_action_candidates,
             )
+            return _return_tool_result("add_action_node", result)
         if parent_node_id is not None and not isinstance(parent_node_id, str):
-            return _build_validation_error("parent_node_id 需要是字符串或 null。")
+            result = _build_validation_error("parent_node_id 需要是字符串或 null。")
+            return _return_tool_result("add_action_node", result)
 
         cleaned_params, removed_fields = _filter_supported_params(
             node_type="action",
@@ -902,13 +922,15 @@ def plan_workflow_structure_with_llm(
         removed_node_fields = _sanitize_builder_node_fields(builder, id)
         _snapshot(f"add_action_{id}")
         if removed_fields or removed_node_fields:
-            return _build_validation_error(
+            result = _build_validation_error(
                 "action 节点仅支持 id/type/action_id/display_name/params/out_params_schema 字段，params 仅支持 arg_schema 字段。",
                 removed_param_fields=removed_fields,
                 removed_node_fields=removed_node_fields,
                 node_id=id,
             )
-        return {"status": "ok", "type": "node_added", "node_id": id}
+            return _return_tool_result("add_action_node", result)
+        result = {"status": "ok", "type": "node_added", "node_id": id}
+        return _return_tool_result("add_action_node", result)
 
     @function_tool(strict_mode=False)
     def add_loop_node(
@@ -950,7 +972,8 @@ def plan_workflow_structure_with_llm(
             },
         )
         if parent_node_id is not None and not isinstance(parent_node_id, str):
-            return _build_validation_error("parent_node_id 需要是字符串或 null。")
+            result = _build_validation_error("parent_node_id 需要是字符串或 null。")
+            return _return_tool_result("add_loop_node", result)
         invalid_fields: List[str] = []
         if loop_kind not in {"for_each", "while"}:
             invalid_fields.append("loop_kind")
@@ -959,14 +982,16 @@ def plan_workflow_structure_with_llm(
         if not isinstance(item_alias, str):
             invalid_fields.append("item_alias")
         if invalid_fields:
-            return _build_validation_error(
+            result = _build_validation_error(
                 "loop 节点需要合法的 loop_kind/source/item_alias 参数。",
                 invalid_fields=invalid_fields,
             )
+            return _return_tool_result("add_loop_node", result)
 
         normalized_nodes, sub_graph_error = _normalize_sub_graph_nodes(sub_graph_nodes, builder=builder)
         if sub_graph_error:
-            return {"status": "error", **sub_graph_error}
+            result = {"status": "error", **sub_graph_error}
+            return _return_tool_result("add_loop_node", result)
 
         merged_params = dict(params or {})
         merged_params.update({"loop_kind": loop_kind, "source": source, "item_alias": item_alias})
@@ -987,13 +1012,15 @@ def plan_workflow_structure_with_llm(
         removed_node_fields = _sanitize_builder_node_fields(builder, id)
         _snapshot(f"add_loop_{id}")
         if removed_fields or removed_node_fields:
-            return _build_validation_error(
+            result = _build_validation_error(
                 "loop 节点的 params 仅支持 loop_kind/source/condition/item_alias/body_subgraph/exports，exports 应使用 {key: Jinja表达式} 结构。",
                 removed_fields=removed_fields,
                 removed_node_fields=removed_node_fields,
                 node_id=id,
             )
-        return {"status": "ok", "type": "node_added", "node_id": id}
+            return _return_tool_result("add_loop_node", result)
+        result = {"status": "ok", "type": "node_added", "node_id": id}
+        return _return_tool_result("add_loop_node", result)
 
     @function_tool(strict_mode=False)
     def add_condition_node(
@@ -1031,15 +1058,22 @@ def plan_workflow_structure_with_llm(
             },
         )
         if parent_node_id is not None and not isinstance(parent_node_id, str):
-            return _build_validation_error("parent_node_id 需要是字符串或 null。")
+            result = _build_validation_error("parent_node_id 需要是字符串或 null。")
+            return _return_tool_result("add_condition_node", result)
         if true_to_node is not None and not isinstance(true_to_node, str):
-            return _build_validation_error("true_to_node 只能是节点 id 或 null。", invalid_fields=["true_to_node"])
+            result = _build_validation_error("true_to_node 只能是节点 id 或 null。", invalid_fields=["true_to_node"])
+            return _return_tool_result("add_condition_node", result)
         if false_to_node is not None and not isinstance(false_to_node, str):
-            return _build_validation_error("false_to_node 只能是节点 id 或 null。", invalid_fields=["false_to_node"])
+            result = _build_validation_error("false_to_node 只能是节点 id 或 null。", invalid_fields=["false_to_node"])
+            return _return_tool_result("add_condition_node", result)
         normalized_params: Dict[str, Any] = dict(params or {})
         expr_val = normalized_params.get("expression")
         if not isinstance(expr_val, str) or not expr_val.strip():
-            return _build_validation_error("condition.params.expression 必须是返回布尔值的 Jinja 表达式。", invalid_fields=["expression"])
+            result = _build_validation_error(
+                "condition.params.expression 必须是返回布尔值的 Jinja 表达式。",
+                invalid_fields=["expression"],
+            )
+            return _return_tool_result("add_condition_node", result)
 
         cleaned_params, removed_fields = _filter_supported_params(
             node_type="condition", params=normalized_params, action_schemas=action_schemas
@@ -1057,13 +1091,15 @@ def plan_workflow_structure_with_llm(
         removed_node_fields = _sanitize_builder_node_fields(builder, id)
         _snapshot(f"add_condition_{id}")
         if removed_fields or removed_node_fields:
-            return _build_validation_error(
+            result = _build_validation_error(
                 "condition 节点的 params 仅支持 expression。",
                 removed_fields=removed_fields,
                 removed_node_fields=removed_node_fields,
                 node_id=id,
             )
-        return {"status": "ok", "type": "node_added", "node_id": id}
+            return _return_tool_result("add_condition_node", result)
+        result = {"status": "ok", "type": "node_added", "node_id": id}
+        return _return_tool_result("add_condition_node", result)
 
     @function_tool(strict_mode=False)
     def add_switch_node(
@@ -1101,9 +1137,11 @@ def plan_workflow_structure_with_llm(
             },
         )
         if parent_node_id is not None and not isinstance(parent_node_id, str):
-            return _build_validation_error("parent_node_id 需要是字符串或 null。")
+            result = _build_validation_error("parent_node_id 需要是字符串或 null。")
+            return _return_tool_result("add_switch_node", result)
         if not isinstance(cases, list):
-            return _build_validation_error("switch 节点需要提供 cases 数组。")
+            result = _build_validation_error("switch 节点需要提供 cases 数组。")
+            return _return_tool_result("add_switch_node", result)
         normalized_cases: list[Dict[str, Any]] = []
         invalid_case_indices: list[int] = []
         for idx, case in enumerate(cases):
@@ -1116,11 +1154,20 @@ def plan_workflow_structure_with_llm(
                 continue
             normalized_cases.append(dict(case))
         if invalid_case_indices:
-            return _build_validation_error("cases 中的 to_node 需要是字符串或 null。", invalid_case_indices=invalid_case_indices)
+            result = _build_validation_error(
+                "cases 中的 to_node 需要是字符串或 null。",
+                invalid_case_indices=invalid_case_indices,
+            )
+            return _return_tool_result("add_switch_node", result)
         if default_to_node is not None and not isinstance(default_to_node, str):
-            return _build_validation_error("default_to_node 需要是字符串或 null。", invalid_fields=["default_to_node"])
+            result = _build_validation_error(
+                "default_to_node 需要是字符串或 null。",
+                invalid_fields=["default_to_node"],
+            )
+            return _return_tool_result("add_switch_node", result)
         if params is not None and not isinstance(params, Mapping):
-            return _build_validation_error("switch 节点的 params 需要是对象。")
+            result = _build_validation_error("switch 节点的 params 需要是对象。")
+            return _return_tool_result("add_switch_node", result)
 
         cleaned_params, removed_fields = _filter_supported_params(
             node_type="switch", params=params or {}, action_schemas=action_schemas
@@ -1138,13 +1185,15 @@ def plan_workflow_structure_with_llm(
         removed_node_fields = _sanitize_builder_node_fields(builder, id)
         _snapshot(f"add_switch_{id}")
         if removed_fields or removed_node_fields:
-            return _build_validation_error(
+            result = _build_validation_error(
                 "switch 节点的 params 仅支持 source/field 字段。",
                 removed_fields=removed_fields,
                 removed_node_fields=removed_node_fields,
                 node_id=id,
             )
-        return {"status": "ok", "type": "node_added", "node_id": id}
+            return _return_tool_result("add_switch_node", result)
+        result = {"status": "ok", "type": "node_added", "node_id": id}
+        return _return_tool_result("add_switch_node", result)
 
     def _update_node_common(node_id: str, expected_type: str) -> Optional[Dict[str, Any]]:
         if not isinstance(node_id, str):
@@ -1187,19 +1236,23 @@ def plan_workflow_structure_with_llm(
         )
         precheck = _update_node_common(id, "action")
         if precheck:
-            return precheck
+            return _return_tool_result("update_action_node", precheck)
         if parent_node_id is not None and not isinstance(parent_node_id, str):
-            return _build_validation_error("parent_node_id 需要是字符串或 null。")
+            result = _build_validation_error("parent_node_id 需要是字符串或 null。")
+            return _return_tool_result("update_action_node", result)
         if action_id is not None:
             if not all_action_candidates:
-                return _build_validation_error("更新 action_id 前请先调用 search_business_actions。")
+                result = _build_validation_error("更新 action_id 前请先调用 search_business_actions。")
+                return _return_tool_result("update_action_node", result)
             if action_id not in all_action_candidates:
-                return _build_validation_error(
+                result = _build_validation_error(
                     "action_id 必须是 search_business_actions 返回过的 candidates.id 之一。",
                     allowed_action_ids=all_action_candidates,
                 )
+                return _return_tool_result("update_action_node", result)
         if params is not None and not isinstance(params, Mapping):
-            return _build_validation_error("action 节点的 params 需要是对象。")
+            result = _build_validation_error("action 节点的 params 需要是对象。")
+            return _return_tool_result("update_action_node", result)
 
         updates: Dict[str, Any] = {}
         if display_name is not None:
@@ -1229,13 +1282,15 @@ def plan_workflow_structure_with_llm(
         removed_node_fields = _sanitize_builder_node_fields(builder, id)
         _snapshot(f"update_action_{id}")
         if removed_param_fields or removed_node_fields:
-            return _build_validation_error(
+            result = _build_validation_error(
                 "action 节点仅支持 id/type/action_id/display_name/params/out_params_schema 字段，params 仅支持 arg_schema 字段。",
                 removed_param_fields=removed_param_fields,
                 removed_node_fields=removed_node_fields,
                 node_id=id,
             )
-        return {"status": "ok", "type": "node_updated", "node_id": id}
+            return _return_tool_result("update_action_node", result)
+        result = {"status": "ok", "type": "node_updated", "node_id": id}
+        return _return_tool_result("update_action_node", result)
 
     @function_tool(strict_mode=False)
     def update_condition_node(
@@ -1274,15 +1329,19 @@ def plan_workflow_structure_with_llm(
         )
         precheck = _update_node_common(id, "condition")
         if precheck:
-            return precheck
+            return _return_tool_result("update_condition_node", precheck)
         if parent_node_id is not None and not isinstance(parent_node_id, str):
-            return _build_validation_error("parent_node_id 需要是字符串或 null。")
+            result = _build_validation_error("parent_node_id 需要是字符串或 null。")
+            return _return_tool_result("update_condition_node", result)
         if true_to_node is not None and not isinstance(true_to_node, str):
-            return _build_validation_error("true_to_node 只能是节点 id 或 null。", invalid_fields=["true_to_node"])
+            result = _build_validation_error("true_to_node 只能是节点 id 或 null。", invalid_fields=["true_to_node"])
+            return _return_tool_result("update_condition_node", result)
         if false_to_node is not None and not isinstance(false_to_node, str):
-            return _build_validation_error("false_to_node 只能是节点 id 或 null。", invalid_fields=["false_to_node"])
+            result = _build_validation_error("false_to_node 只能是节点 id 或 null。", invalid_fields=["false_to_node"])
+            return _return_tool_result("update_condition_node", result)
         if params is not None and not isinstance(params, Mapping):
-            return _build_validation_error("condition 节点的 params 需要是对象。")
+            result = _build_validation_error("condition 节点的 params 需要是对象。")
+            return _return_tool_result("update_condition_node", result)
 
         updates: Dict[str, Any] = {}
         if display_name is not None:
@@ -1297,10 +1356,11 @@ def plan_workflow_structure_with_llm(
             normalized_params = dict(params or {})
             expr_val = normalized_params.get("expression")
             if not isinstance(expr_val, str) or not expr_val.strip():
-                return _build_validation_error(
+                result = _build_validation_error(
                     "condition 节点的 params.expression 必须是返回布尔值的 Jinja 表达式。",
                     invalid_fields=["expression"],
                 )
+                return _return_tool_result("update_condition_node", result)
             cleaned_params, removed_param_fields = _filter_supported_params(
                 node_type="condition", params=normalized_params, action_schemas=action_schemas
             )
@@ -1315,13 +1375,15 @@ def plan_workflow_structure_with_llm(
         removed_node_fields = _sanitize_builder_node_fields(builder, id)
         _snapshot(f"update_condition_{id}")
         if removed_param_fields or removed_node_fields:
-            return _build_validation_error(
+            result = _build_validation_error(
                 "condition 节点仅支持 id/type/display_name/params/true_to_node/false_to_node 字段，params 仅支持 expression。",
                 removed_fields=removed_param_fields,
                 removed_node_fields=removed_node_fields,
                 node_id=id,
             )
-        return {"status": "ok", "type": "node_updated", "node_id": id}
+            return _return_tool_result("update_condition_node", result)
+        result = {"status": "ok", "type": "node_updated", "node_id": id}
+        return _return_tool_result("update_condition_node", result)
 
     @function_tool(strict_mode=False)
     def update_switch_node(
@@ -1360,19 +1422,26 @@ def plan_workflow_structure_with_llm(
         )
         precheck = _update_node_common(id, "switch")
         if precheck:
-            return precheck
+            return _return_tool_result("update_switch_node", precheck)
         if parent_node_id is not None and not isinstance(parent_node_id, str):
-            return _build_validation_error("parent_node_id 需要是字符串或 null。")
+            result = _build_validation_error("parent_node_id 需要是字符串或 null。")
+            return _return_tool_result("update_switch_node", result)
         if default_to_node is not None and not isinstance(default_to_node, str):
-            return _build_validation_error("default_to_node 只能是节点 id 或 null。", invalid_fields=["default_to_node"])
+            result = _build_validation_error(
+                "default_to_node 只能是节点 id 或 null。",
+                invalid_fields=["default_to_node"],
+            )
+            return _return_tool_result("update_switch_node", result)
         if params is not None and not isinstance(params, Mapping):
-            return _build_validation_error("switch 节点的 params 需要是对象。")
+            result = _build_validation_error("switch 节点的 params 需要是对象。")
+            return _return_tool_result("update_switch_node", result)
 
         normalized_cases: list[Dict[str, Any]] = []
         invalid_case_indices: list[int] = []
         if cases is not None:
             if not isinstance(cases, list):
-                return _build_validation_error("switch 的 cases 需要是数组。")
+                result = _build_validation_error("switch 的 cases 需要是数组。")
+                return _return_tool_result("update_switch_node", result)
             for idx, case in enumerate(cases):
                 if not isinstance(case, Mapping):
                     invalid_case_indices.append(idx)
@@ -1383,7 +1452,11 @@ def plan_workflow_structure_with_llm(
                     continue
                 normalized_cases.append(dict(case))
         if invalid_case_indices:
-            return _build_validation_error("cases 中的 to_node 需要是字符串或 null。", invalid_case_indices=invalid_case_indices)
+            result = _build_validation_error(
+                "cases 中的 to_node 需要是字符串或 null。",
+                invalid_case_indices=invalid_case_indices,
+            )
+            return _return_tool_result("update_switch_node", result)
 
         updates: Dict[str, Any] = {}
         if display_name is not None:
@@ -1409,13 +1482,15 @@ def plan_workflow_structure_with_llm(
         removed_node_fields = _sanitize_builder_node_fields(builder, id)
         _snapshot(f"update_switch_{id}")
         if removed_param_fields or removed_node_fields:
-            return _build_validation_error(
+            result = _build_validation_error(
                 "switch 节点仅支持 id/type/display_name/params/cases/default_to_node 字段，params 仅支持 source/field。",
                 removed_fields=removed_param_fields,
                 removed_node_fields=removed_node_fields,
                 node_id=id,
             )
-        return {"status": "ok", "type": "node_updated", "node_id": id}
+            return _return_tool_result("update_switch_node", result)
+        result = {"status": "ok", "type": "node_updated", "node_id": id}
+        return _return_tool_result("update_switch_node", result)
 
     @function_tool(strict_mode=False)
     def update_loop_node(
@@ -1447,15 +1522,18 @@ def plan_workflow_structure_with_llm(
         )
         precheck = _update_node_common(id, "loop")
         if precheck:
-            return precheck
+            return _return_tool_result("update_loop_node", precheck)
         if parent_node_id is not None and not isinstance(parent_node_id, str):
-            return _build_validation_error("parent_node_id 需要是字符串或 null。")
+            result = _build_validation_error("parent_node_id 需要是字符串或 null。")
+            return _return_tool_result("update_loop_node", result)
         if params is not None and not isinstance(params, Mapping):
-            return _build_validation_error("loop 节点的 params 需要是对象。")
+            result = _build_validation_error("loop 节点的 params 需要是对象。")
+            return _return_tool_result("update_loop_node", result)
 
         normalized_nodes, sub_graph_error = _normalize_sub_graph_nodes(sub_graph_nodes, builder=builder)
         if sub_graph_error:
-            return {"status": "error", **sub_graph_error}
+            result = {"status": "error", **sub_graph_error}
+            return _return_tool_result("update_loop_node", result)
 
         updates: Dict[str, Any] = {}
         if display_name is not None:
@@ -1478,13 +1556,15 @@ def plan_workflow_structure_with_llm(
         removed_node_fields = _sanitize_builder_node_fields(builder, id)
         _snapshot(f"update_loop_{id}")
         if removed_param_fields or removed_node_fields:
-            return _build_validation_error(
+            result = _build_validation_error(
                 "loop 节点仅支持 id/type/display_name/params 字段，params 仅支持 loop_kind/source/condition/item_alias/body_subgraph/exports，exports 应使用 {key: Jinja表达式} 结构。",
                 removed_fields=removed_param_fields,
                 removed_node_fields=removed_node_fields,
                 node_id=id,
             )
-        return {"status": "ok", "type": "node_updated", "node_id": id}
+            return _return_tool_result("update_loop_node", result)
+        result = {"status": "ok", "type": "node_updated", "node_id": id}
+        return _return_tool_result("update_loop_node", result)
 
     @function_tool(strict_mode=False)
     def dump_model() -> Mapping[str, Any]:
@@ -1497,7 +1577,7 @@ def plan_workflow_structure_with_llm(
         """
         _log_tool_call("dump_model")
         snapshot = _snapshot("dump_model")
-        return {
+        result = {
             "status": "ok",
             "type": "dump_model",
             "summary": {
@@ -1506,6 +1586,7 @@ def plan_workflow_structure_with_llm(
             },
             "workflow": snapshot,
         }
+        return _return_tool_result("dump_model", result)
 
     filled_params: Dict[str, Dict[str, Any]] = {
         nid: copy.deepcopy(node.get("params", {}))
@@ -1568,20 +1649,25 @@ def plan_workflow_structure_with_llm(
         """获取指定节点的参数补全上下文。"""
         _log_tool_call("get_param_context", {"id": id})
         if not isinstance(id, str) or id not in builder.nodes:
-            return {"status": "error", "message": "节点不存在，无法获取参数上下文。"}
+            result = {"status": "error", "message": "节点不存在，无法获取参数上下文。"}
+            return _return_tool_result("get_param_context", result)
         payload = _build_param_context(id)
         if not payload:
-            return {"status": "error", "message": "无法生成参数上下文。"}
-        return {"status": "ok", "payload": payload}
+            result = {"status": "error", "message": "无法生成参数上下文。"}
+            return _return_tool_result("get_param_context", result)
+        result = {"status": "ok", "payload": payload}
+        return _return_tool_result("get_param_context", result)
 
     @function_tool(strict_mode=False)
     def submit_node_params(id: str, params: Dict[str, Any]) -> Mapping[str, Any]:
         """提交指定节点的参数草案，等待校验。"""
         _log_tool_call("submit_node_params", {"id": id})
         if not isinstance(id, str) or id not in builder.nodes:
-            return {"status": "error", "message": "节点不存在，无法提交参数。"}
+            result = {"status": "error", "message": "节点不存在，无法提交参数。"}
+            return _return_tool_result("submit_node_params", result)
         if not isinstance(params, Mapping):
-            return {"status": "error", "message": "params 需要是对象。"}
+            result = {"status": "error", "message": "params 需要是对象。"}
+            return _return_tool_result("submit_node_params", result)
         last_submitted_params[id] = dict(params)
         log_event(
             "params_tool_result",
@@ -1589,23 +1675,27 @@ def plan_workflow_structure_with_llm(
             node_id=id,
             action_id=builder.nodes.get(id, {}).get("action_id"),
         )
-        return {"status": "received", "message": "已收到提交，请调用 validate_node_params。"}
+        result = {"status": "received", "message": "已收到提交，请调用 validate_node_params。"}
+        return _return_tool_result("submit_node_params", result)
 
     @function_tool(strict_mode=False)
     def validate_node_params(id: str, params: Optional[Dict[str, Any]] = None) -> Mapping[str, Any]:
         """校验指定节点参数并写入已填充结果。"""
         _log_tool_call("validate_node_params", {"id": id})
         if not isinstance(id, str) or id not in builder.nodes:
-            return {"status": "error", "message": "节点不存在，无法校验。"}
+            result = {"status": "error", "message": "节点不存在，无法校验。"}
+            return _return_tool_result("validate_node_params", result)
         params_to_check = params if isinstance(params, dict) else last_submitted_params.get(id)
         if params_to_check is None:
-            return {"status": "error", "errors": ["缺少待校验的 params（请先提交或在参数中提供 params）"]}
+            result = {"status": "error", "errors": ["缺少待校验的 params（请先提交或在参数中提供 params）"]}
+            return _return_tool_result("validate_node_params", result)
 
         workflow = _build_workflow_for_params()
         nodes_by_id = {n.id: n for n in workflow.nodes}
         node = nodes_by_id.get(id)
         if not node:
-            return {"status": "error", "errors": ["节点不存在于当前 workflow。"]}
+            result = {"status": "error", "errors": ["节点不存在于当前 workflow。"]}
+            return _return_tool_result("validate_node_params", result)
 
         upstream_nodes = get_referenced_nodes(workflow, id)
         binding_memory = _build_binding_memory(filled_params, validated_node_ids)
@@ -1618,14 +1708,16 @@ def plan_workflow_structure_with_llm(
         )
 
         if errors:
-            return {"status": "error", "errors": errors}
+            result = {"status": "error", "errors": errors}
+            return _return_tool_result("validate_node_params", result)
 
         filled_params[id] = dict(params_to_check)
         if id not in validated_node_ids:
             validated_node_ids.append(id)
         builder.update_node(id, params=dict(params_to_check))
         _snapshot(f"validate_params_{id}")
-        return {"status": "ok", "params": params_to_check}
+        result = {"status": "ok", "params": params_to_check}
+        return _return_tool_result("validate_node_params", result)
     
     agent = Agent(
         name="WorkflowStructurePlanner",
@@ -1704,6 +1796,16 @@ def fill_params_with_llm(
             )
         else:
             log_info(f"[ParamFiller] tool={tool_name}")
+
+    def _log_tool_result(tool_name: str, result: Mapping[str, Any]) -> None:
+        log_info(
+            f"[ParamFiller] tool_result={tool_name}",
+            json.dumps(result, ensure_ascii=False),
+        )
+
+    def _return_tool_result(tool_name: str, result: Mapping[str, Any]) -> Mapping[str, Any]:
+        _log_tool_result(tool_name, result)
+        return result
 
     def _emit_canvas_update(
         label: str,
@@ -1790,11 +1892,12 @@ def fill_params_with_llm(
             _log_tool_call("submit_node_params", {"id": id})
             nonlocal last_submitted_params
             if id != node.id:
-                return _build_response(
+                result = _build_response(
                     "error",
                     message="只能提交当前正在处理的节点。",
                     expected_id=node.id,
                 )
+                return _return_tool_result("submit_node_params", result)
             last_submitted_params = params
             log_event(
                 "params_tool_result",
@@ -1807,7 +1910,8 @@ def fill_params_with_llm(
                 params_override=params,
                 current_node_id=node.id,
             )
-            return _build_response("received", message="已收到提交，请立即调用 validate_node_params。")
+            result = _build_response("received", message="已收到提交，请立即调用 validate_node_params。")
+            return _return_tool_result("submit_node_params", result)
 
         @function_tool(strict_mode=False)
         def validate_node_params(id: str, params: Optional[Dict[str, Any]] = None) -> Mapping[str, Any]:
@@ -1815,18 +1919,20 @@ def fill_params_with_llm(
             _log_tool_call("validate_node_params", {"id": id})
             nonlocal validated_params, last_submitted_params
             if id != node.id:
-                return _build_response(
+                result = _build_response(
                     "error",
                     message="只能校验当前节点。",
                     expected_id=node.id,
                 )
+                return _return_tool_result("validate_node_params", result)
 
             params_to_check = params if isinstance(params, dict) else last_submitted_params
             if params_to_check is None:
-                return _build_response(
+                result = _build_response(
                     "error",
                     errors=["缺少待校验的 params（请先提交或在参数中提供 params）"],
                 )
+                return _return_tool_result("validate_node_params", result)
 
             errors = _validate_node_params(
                 node=node,
@@ -1842,7 +1948,8 @@ def fill_params_with_llm(
                     params_override=params_to_check,
                     current_node_id=node.id,
                 )
-                return _build_response("error", errors=errors)
+                result = _build_response("error", errors=errors)
+                return _return_tool_result("validate_node_params", result)
 
             validated_params = params_to_check
             filled_params[node.id] = params_to_check
@@ -1851,7 +1958,8 @@ def fill_params_with_llm(
                 params_override=params_to_check,
                 current_node_id=node.id,
             )
-            return _build_response("ok", params=params_to_check)
+            result = _build_response("ok", params=params_to_check)
+            return _return_tool_result("validate_node_params", result)
 
         agent = Agent(
             name="WorkflowPlanner",
