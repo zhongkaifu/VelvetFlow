@@ -4,6 +4,8 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any, Dict, List, Mapping, Optional
 
+from jinja2 import UndefinedError
+
 from velvetflow.aggregation import eval_jinja_expression
 from velvetflow.bindings import BindingContext
 from velvetflow.jinja_utils import render_jinja_string_constants
@@ -13,6 +15,12 @@ from velvetflow.reference_utils import canonicalize_template_placeholders, norma
 
 
 class LoopExecutionMixin:
+    def _is_missing_export_reference(self, exc: Exception) -> bool:
+        if isinstance(exc, (AttributeError, KeyError, UndefinedError)):
+            return True
+        message = str(exc)
+        return "has no attribute" in message or "is undefined" in message
+
     def _apply_loop_exports(
         self,
         exports_spec: Optional[Mapping[str, Any]],
@@ -33,6 +41,9 @@ class LoopExecutionMixin:
                 try:
                     resolved_val = eval_jinja_expression(expr, ctx)
                 except Exception as exc:  # noqa: BLE001
+                    if self._is_missing_export_reference(exc):
+                        resolved_val = None
+                        continue
                     log_warn(f"[loop.exports] 无法解析 {key} 的表达式: {exc}")
                     resolved_val = None
 
