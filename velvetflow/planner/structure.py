@@ -549,6 +549,17 @@ def plan_workflow_structure_with_llm(
 
     @function_tool(strict_mode=False)
     def search_business_actions(query: str, top_k: int = 5) -> Mapping[str, Any]:
+        """检索业务动作候选，用于规划时选择合法的 action_id。
+
+        适用场景：在创建/更新 action 节点之前，先查询可用动作列表。
+
+        Args:
+            query: 检索关键词，描述业务动作能力或名称。
+            top_k: 返回候选数量上限。
+
+        Returns:
+            包含检索状态、原始动作列表与精简候选信息的结果字典。
+        """
         actions_raw = search_service.search(query=query, top_k=int(top_k))
         candidates = [
             {
@@ -565,6 +576,17 @@ def plan_workflow_structure_with_llm(
 
     @function_tool(strict_mode=False)
     def set_workflow_meta(workflow_name: str, description: Optional[str] = None) -> Mapping[str, Any]:
+        """设置工作流的名称与描述。
+
+        适用场景：在规划工作流结构前初始化元信息，确保覆盖度检查可读。
+
+        Args:
+            workflow_name: 工作流名称。
+            description: 工作流描述，可选。
+
+        Returns:
+            包含状态与操作类型的结果字典。
+        """
         builder.set_meta(workflow_name, description)
         _snapshot("meta_updated")
         return {"status": "ok", "type": "meta_set"}
@@ -579,6 +601,22 @@ def plan_workflow_structure_with_llm(
         depends_on: Optional[List[str]] = None,
         parent_node_id: Optional[str] = None,
     ) -> Mapping[str, Any]:
+        """添加 action 节点，绑定已检索到的业务动作。
+
+        适用场景：在结构规划阶段加入具体业务能力，并挂接上游依赖。
+
+        Args:
+            id: 节点唯一标识。
+            action_id: 业务动作 ID，必须来自最近一次检索候选。
+            display_name: 节点展示名称，可选。
+            out_params_schema: action 输出参数 schema 映射，可选。
+            params: action 输入参数字典，可选。
+            depends_on: 直接依赖的上游节点 ID 列表，可选。
+            parent_node_id: 父节点 ID（用于子图/循环场景），可选。
+
+        Returns:
+            包含状态、类型与节点 ID 的结果字典；失败时返回错误信息。
+        """
         if not last_action_candidates:
             return _build_validation_error("action 节点必须在调用 search_business_actions 之后创建。")
         if action_id not in last_action_candidates:
@@ -628,6 +666,24 @@ def plan_workflow_structure_with_llm(
         depends_on: Optional[List[str]] = None,
         parent_node_id: Optional[str] = None,
     ) -> Mapping[str, Any]:
+        """添加 loop 节点并绑定循环子图。
+
+        适用场景：需要对集合进行遍历或 while 循环时，创建 loop 结构。
+
+        Args:
+            id: 节点唯一标识。
+            loop_kind: 循环类型（for_each/while）。
+            source: 循环数据源（Jinja 表达式或映射对象）。
+            item_alias: 循环项别名。
+            display_name: 节点展示名称，可选。
+            params: loop 参数字典，可选。
+            sub_graph_nodes: 循环子图节点 ID 列表，可选。
+            depends_on: 直接依赖的上游节点 ID 列表，可选。
+            parent_node_id: 父节点 ID（用于嵌套循环），可选。
+
+        Returns:
+            包含状态、类型与节点 ID 的结果字典；失败时返回错误信息。
+        """
         if parent_node_id is not None and not isinstance(parent_node_id, str):
             return _build_validation_error("parent_node_id 需要是字符串或 null。")
         invalid_fields: List[str] = []
@@ -684,6 +740,22 @@ def plan_workflow_structure_with_llm(
         depends_on: Optional[List[str]] = None,
         parent_node_id: Optional[str] = None,
     ) -> Mapping[str, Any]:
+        """添加 condition 节点并声明分支走向。
+
+        适用场景：需要根据表达式判断走向不同分支时创建条件节点。
+
+        Args:
+            id: 节点唯一标识。
+            true_to_node: 条件为真时跳转的节点 ID 或 null。
+            false_to_node: 条件为假时跳转的节点 ID 或 null。
+            display_name: 节点展示名称，可选。
+            params: 条件参数字典，需包含 expression。
+            depends_on: 直接依赖的上游节点 ID 列表，可选。
+            parent_node_id: 父节点 ID（用于子图/循环场景），可选。
+
+        Returns:
+            包含状态、类型与节点 ID 的结果字典；失败时返回错误信息。
+        """
         if parent_node_id is not None and not isinstance(parent_node_id, str):
             return _build_validation_error("parent_node_id 需要是字符串或 null。")
         if true_to_node is not None and not isinstance(true_to_node, str):
@@ -729,6 +801,22 @@ def plan_workflow_structure_with_llm(
         depends_on: Optional[List[str]] = None,
         parent_node_id: Optional[str] = None,
     ) -> Mapping[str, Any]:
+        """添加 switch 节点，按多分支 case 路由。
+
+        适用场景：需要多条件分支跳转时创建 switch 节点。
+
+        Args:
+            id: 节点唯一标识。
+            cases: 分支列表，每个元素包含匹配信息与 to_node。
+            display_name: 节点展示名称，可选。
+            params: switch 参数字典（source/field），可选。
+            default_to_node: 默认分支节点 ID 或 null。
+            depends_on: 直接依赖的上游节点 ID 列表，可选。
+            parent_node_id: 父节点 ID（用于子图/循环场景），可选。
+
+        Returns:
+            包含状态、类型与节点 ID 的结果字典；失败时返回错误信息。
+        """
         if parent_node_id is not None and not isinstance(parent_node_id, str):
             return _build_validation_error("parent_node_id 需要是字符串或 null。")
         if not isinstance(cases, list):
@@ -794,6 +882,22 @@ def plan_workflow_structure_with_llm(
         depends_on: Optional[List[str]] = None,
         parent_node_id: Optional[str] = None,
     ) -> Mapping[str, Any]:
+        """更新已有 action 节点的属性或参数。
+
+        适用场景：对已创建的 action 节点补充显示名、参数或重选动作。
+
+        Args:
+            id: 节点唯一标识。
+            display_name: 节点展示名称，可选。
+            params: action 参数字典，可选。
+            out_params_schema: 输出参数 schema，可选。
+            action_id: 业务动作 ID（需来自最近一次检索候选），可选。
+            depends_on: 直接依赖的上游节点 ID 列表，可选。
+            parent_node_id: 父节点 ID，可选。
+
+        Returns:
+            包含状态、类型与节点 ID 的结果字典；失败时返回错误信息。
+        """
         precheck = _update_node_common(id, "action")
         if precheck:
             return precheck
@@ -856,6 +960,22 @@ def plan_workflow_structure_with_llm(
         depends_on: Optional[List[str]] = None,
         parent_node_id: Optional[str] = None,
     ) -> Mapping[str, Any]:
+        """更新已有 condition 节点的表达式或分支指向。
+
+        适用场景：修正条件表达式或调整 true/false 跳转目标。
+
+        Args:
+            id: 节点唯一标识。
+            display_name: 节点展示名称，可选。
+            params: 条件参数字典（expression），可选。
+            true_to_node: 条件为真时跳转的节点 ID 或 null，可选。
+            false_to_node: 条件为假时跳转的节点 ID 或 null，可选。
+            depends_on: 直接依赖的上游节点 ID 列表，可选。
+            parent_node_id: 父节点 ID，可选。
+
+        Returns:
+            包含状态、类型与节点 ID 的结果字典；失败时返回错误信息。
+        """
         precheck = _update_node_common(id, "condition")
         if precheck:
             return precheck
@@ -917,6 +1037,22 @@ def plan_workflow_structure_with_llm(
         depends_on: Optional[List[str]] = None,
         parent_node_id: Optional[str] = None,
     ) -> Mapping[str, Any]:
+        """更新已有 switch 节点的 case 或默认分支。
+
+        适用场景：补充/修正多分支路由规则或默认跳转。
+
+        Args:
+            id: 节点唯一标识。
+            display_name: 节点展示名称，可选。
+            params: switch 参数字典（source/field），可选。
+            cases: case 列表，可选。
+            default_to_node: 默认分支节点 ID 或 null，可选。
+            depends_on: 直接依赖的上游节点 ID 列表，可选。
+            parent_node_id: 父节点 ID，可选。
+
+        Returns:
+            包含状态、类型与节点 ID 的结果字典；失败时返回错误信息。
+        """
         precheck = _update_node_common(id, "switch")
         if precheck:
             return precheck
@@ -985,6 +1121,21 @@ def plan_workflow_structure_with_llm(
         depends_on: Optional[List[str]] = None,
         parent_node_id: Optional[str] = None,
     ) -> Mapping[str, Any]:
+        """更新已有 loop 节点的参数或子图。
+
+        适用场景：修正循环参数、子图节点集合或依赖关系。
+
+        Args:
+            id: 节点唯一标识。
+            display_name: 节点展示名称，可选。
+            params: loop 参数字典，可选。
+            sub_graph_nodes: 循环子图节点 ID 列表，可选。
+            depends_on: 直接依赖的上游节点 ID 列表，可选。
+            parent_node_id: 父节点 ID，可选。
+
+        Returns:
+            包含状态、类型与节点 ID 的结果字典；失败时返回错误信息。
+        """
         precheck = _update_node_common(id, "loop")
         if precheck:
             return precheck
@@ -1028,6 +1179,17 @@ def plan_workflow_structure_with_llm(
 
     @function_tool(strict_mode=False)
     def finalize_workflow(ready: bool = True, notes: Optional[str] = None) -> Mapping[str, Any]:
+        """触发覆盖度与依赖检查，并决定是否进入完成态。
+
+        适用场景：结构规划结束时提交当前 workflow 供系统校验。
+
+        Args:
+            ready: 是否声明结构已完成（仍可能因检查失败而继续）。
+            notes: 额外说明信息，可选。
+
+        Returns:
+            校验结果与反馈的字典，包含 coverage、workflow 与 should_continue 等字段。
+        """
         nonlocal latest_skeleton, latest_coverage
         skeleton, coverage = _run_coverage_check(
             nl_requirement=nl_requirement,
@@ -1067,6 +1229,13 @@ def plan_workflow_structure_with_llm(
 
     @function_tool(strict_mode=False)
     def dump_model() -> Mapping[str, Any]:
+        """导出当前 workflow 快照，便于调试或回显。
+
+        适用场景：需要查看当前构建器状态时调用。
+
+        Returns:
+            包含节点/边统计与 workflow 快照的结果字典。
+        """
         snapshot = _snapshot("dump_model")
         return {
             "status": "ok",
@@ -1083,6 +1252,17 @@ def plan_workflow_structure_with_llm(
 
     @function_tool(strict_mode=False)
     def submit_node_params(id: str, params: Dict[str, Any]) -> Mapping[str, Any]:
+        """提交当前节点的候选参数，供后续校验。
+
+        适用场景：结构/参数填充阶段先提交 params，再调用 validate_node_params。
+
+        Args:
+            id: 当前正在处理的节点 ID。
+            params: 待校验的参数字典。
+
+        Returns:
+            接收确认或错误信息的结果字典。
+        """
         nonlocal last_submitted_params
         if id != node.id:
             return _build_response(
@@ -1101,6 +1281,17 @@ def plan_workflow_structure_with_llm(
 
     @function_tool(strict_mode=False)
     def validate_node_params(id: str, params: Optional[Dict[str, Any]] = None) -> Mapping[str, Any]:
+        """校验当前节点参数并在通过后写入内存。
+
+        适用场景：提交参数后进行合法性检查并缓存通过的参数。
+
+        Args:
+            id: 当前正在处理的节点 ID。
+            params: 可选的参数字典；未提供时使用最近提交值。
+
+        Returns:
+            校验结果字典；若失败会返回错误列表。
+        """
         nonlocal validated_params, last_submitted_params
         if id != node.id:
             return _build_response(
