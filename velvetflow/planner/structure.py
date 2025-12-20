@@ -10,18 +10,8 @@ import os
 from collections import deque
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
-from openai import OpenAI
-
 from velvetflow.config import OPENAI_MODEL
-from velvetflow.logging_utils import (
-    log_debug,
-    log_event,
-    log_info,
-    log_llm_message,
-    log_llm_usage,
-    log_section,
-    log_warn,
-)
+from velvetflow.logging_utils import log_debug, log_event, log_info, log_section, log_warn
 from velvetflow.planner.agent_runtime import Agent, Runner, function_tool
 from velvetflow.planner.action_guard import ensure_registered_actions
 from velvetflow.planner.workflow_builder import (
@@ -376,79 +366,75 @@ def _prepare_skeleton_for_next_stage(
     return _attach_inferred_edges(skeleton)
 
 
-def _check_workflow_alignment(
-    *,
-    nl_requirement: str,
-    workflow: Mapping[str, Any],
-    model: str = OPENAI_MODEL,
+def _check_workflow_coverage_rule_based(
+    *, nl_requirement: str, workflow: Mapping[str, Any]
 ) -> Dict[str, Any]:
-    client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
-    system_prompt = (
-        "你是一名工作流审核员，需要判断 workflow 是否与用户需求完全对齐。\n"
-        "请按节点依赖关系从头到尾模拟执行：\n"
-        "1) 逐节点说明作用、上下游依赖、数据传递与变换。\n"
-        "2) 总结整体 workflow 的目标和完成的任务。\n"
-        "3) 对比总结结果与用户需求，判断是否完全一致。\n\n"
-        "输出 JSON（不要代码块），字段如下：\n"
-        "{\n"
-        "  \"is_aligned\": true/false,\n"
-        "  \"workflow_summary\": \"...\",\n"
-        "  \"mismatches\": [\"...\"]\n"
-        "}\n"
-        "mismatches 为空表示完全一致。"
-    )
+    requirement = nl_requirement.lower()
+    nodes = workflow.get("nodes") if isinstance(workflow.get("nodes"), list) else []
+    node_texts: list[str] = []
+    for node in nodes:
+        if not isinstance(node, Mapping):
+            continue
+        parts = [
+            str(node.get("id", "")),
+            str(node.get("type", "")),
+            str(node.get("display_name", "")),
+            str(node.get("action_id", "")),
+        ]
+        node_texts.append(" ".join(parts).lower())
 
-    payload = {
-        "requirement": nl_requirement,
-        "workflow": workflow,
+    combined_nodes_text = " ".join(node_texts)
+    missing_points: list[str] = []
+
+    checks = [
+        (
+            "触发方式",
+            ["定时", "每天", "每周", "每月", "事件", "触发", "schedule", "cron"],
+            ["trigger", "schedule", "cron", "定时", "触发"],
+        ),
+        (
+            "数据读取/查询",
+            ["查询", "读取", "获取", "拉取", "检索", "扫描", "fetch", "query"],
+            ["查询", "读取", "获取", "检索", "query", "fetch", "list", "get"],
+        ),
+        (
+            "筛选/条件判断",
+            ["筛选", "过滤", "判断", "条件", "符合", "大于", "小于", "filter", "condition"],
+            ["condition", "switch", "filter", "筛选", "过滤", "判断"],
+        ),
+        (
+            "汇总/统计/总结",
+            ["汇总", "统计", "总结", "聚合", "报告", "aggregate", "summary", "report"],
+            ["汇总", "统计", "总结", "聚合", "报告", "summary", "report"],
+        ),
+        (
+            "通知/输出",
+            ["通知", "发送", "写入", "落库", "调用", "推送", "提醒", "生成"],
+            ["通知", "发送", "写入", "落库", "调用", "推送", "提醒", "生成", "notify"],
+        ),
+    ]
+
+    for label, requirement_keywords, node_keywords in checks:
+        if any(keyword in requirement for keyword in requirement_keywords):
+            if not any(keyword in combined_nodes_text for keyword in node_keywords):
+                missing_points.append(f"缺少对“{label}”的覆盖")
+
+    return {
+        "is_covered": not missing_points,
+        "missing_points": missing_points,
     }
 
-    resp = client.chat.completions.create(
-        model=model,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
-        ],
-    )
-    log_llm_usage(model, getattr(resp, "usage", None), operation="workflow_alignment")
-    if not resp.choices:
-        raise RuntimeError("workflow_alignment 未返回任何候选消息")
 
-    message = resp.choices[0].message
-    log_llm_message(model, message, operation="workflow_alignment")
-
-    content = message.content or ""
-    text = content.strip()
-    if text.startswith("```"):
-        text = text.strip("`")
-        if "\n" in text:
-            first_line, rest = text.split("\n", 1)
-            if first_line.strip().lower().startswith("json"):
-                text = rest
-
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        log_warn("[workflow_alignment] 无法解析 JSON，视为未对齐。")
-        log_debug(content)
-        return {
-            "is_aligned": False,
-            "workflow_summary": "",
-            "mismatches": ["无法解析对齐检查结果"],
-        }
-
-
-def _build_alignment_feedback_message(
+def _build_coverage_feedback_message(
     *,
     nl_requirement: str,
     workflow: Mapping[str, Any],
-    alignment: Mapping[str, Any],
+    coverage: Mapping[str, Any],
 ) -> str:
     return (
-        "workflow 与需求存在不一致，请根据以下信息调整 workflow，并继续构建或修正：\n"
+        "workflow 覆盖度检查未通过，请根据以下信息调整 workflow，并继续构建或修正：\n"
         f"- requirement: {nl_requirement}\n"
-        f"- workflow_summary: {alignment.get('workflow_summary', '')}\n"
-        f"- mismatches: {json.dumps(alignment.get('mismatches', []) or [], ensure_ascii=False)}\n"
+        f"- missing_points: {json.dumps(coverage.get('missing_points', []) or [], ensure_ascii=False)}\n"
         "当前 workflow 供参考（含推导的 edges）：\n"
         f"{json.dumps(workflow, ensure_ascii=False)}"
     )
@@ -1849,21 +1835,21 @@ def plan_workflow_structure_with_llm(
             latest_skeleton = _prepare_skeleton_for_next_stage(
                 builder=builder, action_registry=action_registry, search_service=search_service
             )
-        alignment = _check_workflow_alignment(
+        coverage = _check_workflow_coverage_rule_based(
             nl_requirement=nl_requirement,
             workflow=latest_skeleton,
         )
-        if alignment.get("is_aligned", False):
+        if coverage.get("is_covered", False):
             break
 
         if alignment_rounds >= max_alignment_rounds:
-            log_warn("[Planner] workflow 对齐检查未通过，已达到最大重试次数。")
+            log_warn("[Planner] workflow 覆盖度检查未通过，已达到最大重试次数。")
             break
 
-        run_input = _build_alignment_feedback_message(
+        run_input = _build_coverage_feedback_message(
             nl_requirement=nl_requirement,
             workflow=latest_skeleton,
-            alignment=alignment,
+            coverage=coverage,
         )
         alignment_rounds += 1
 
