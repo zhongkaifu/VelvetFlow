@@ -268,6 +268,18 @@ class BindingContext:
                 f"[binding] 自动补全 loop 引用 '{src_path}' -> '{inferred_path}'"
             )
             resolved_path = inferred_path
+        else:
+            inferred_path = self._infer_loop_reference_path(resolved_path)
+            if inferred_path != resolved_path:
+                try:
+                    self._validate_result_reference(inferred_path)
+                except ValueError:
+                    pass
+                else:
+                    log_warn(
+                        f"[binding] 自动补全 loop 引用 '{src_path}' -> '{inferred_path}'"
+                    )
+                    resolved_path = inferred_path
 
         data = self._get_from_context(resolved_path)
         agg_spec = binding.get("__agg__", "identity")
@@ -597,19 +609,40 @@ class BindingContext:
             if not loop_schema:
                 raise ValueError(f"__from__ 引用的 loop 节点 '{node_id}' 未定义 exports")
             field_path = parts[2:]
+            export_schema = (
+                loop_schema.get("properties", {}).get("exports")
+                if isinstance(loop_schema, Mapping)
+                else None
+            )
+
             if field_path and field_path[0] == "exports":
                 field_path = field_path[1:]
+                export_schema = export_schema or {}
+
             if (
                 field_path
                 and field_path[-1] == "count"
-                and self._schema_has_path(loop_schema, field_path[:-1])
+                and (
+                    self._schema_has_path(loop_schema, field_path[:-1])
+                    or (
+                        isinstance(export_schema, Mapping)
+                        and self._schema_has_path(export_schema, field_path[:-1])
+                    )
+                )
             ):
                 return
 
-            if not self._schema_has_path(loop_schema, field_path):
-                raise ValueError(
-                    f"__from__ 路径 '{src_path}' 引用了 loop '{node_id}' 输出中不存在的字段"
-                )
+            if self._schema_has_path(loop_schema, field_path):
+                return
+
+            if isinstance(export_schema, Mapping) and self._schema_has_path(
+                export_schema, field_path
+            ):
+                return
+
+            raise ValueError(
+                f"__from__ 路径 '{src_path}' 引用了 loop '{node_id}' 输出中不存在的字段"
+            )
             return
 
         # 控制节点（condition/start/end 等）也允许被引用，缺少 action_id 时跳过 schema 校验
@@ -712,7 +745,17 @@ class BindingContext:
             rest = parts[2:]
             node = self._nodes.get(first_key)
             if node and node.type == "loop" and rest and rest[0] == "exports":
-                rest = rest[1:]
+                if isinstance(cur, Mapping) and "exports" in cur:
+                    cur = cur["exports"]
+                    resolved_parts.append("exports")
+                    rest = rest[1:]
+                elif isinstance(cur, Mapping):
+                    resolved_parts.append("exports")
+                    rest = rest[1:]
+                else:
+                    raise KeyError(
+                        "result_of.%s.exports: 上游 loop 结果缺少 exports" % first_key
+                    )
         else:
             context = {f"result_of.{nid}": value for nid, value in self.results.items()}
             if parts[0] not in context:
@@ -981,6 +1024,19 @@ def eval_node_params(node: Node, ctx: BindingContext) -> Dict[str, Any]:
             stripped_template = normalized_templates.strip()
             if stripped_template.startswith("{{") and stripped_template.endswith("}}"):
                 inner = stripped_template[2:-2].strip()
+                normalized_inner = normalize_reference_path(inner)
+                qualified_inner = ctx._qualify_context_path(normalized_inner)
+                head = qualified_inner.split(".", 1)[0] if qualified_inner else ""
+                if (
+                    head in ctx.loop_ctx
+                    or head == ctx.loop_id
+                    or qualified_inner.startswith("loop.")
+                    or qualified_inner.startswith("result_of.")
+                ):
+                    try:
+                        return ctx.get_value(qualified_inner)
+                    except Exception:
+                        pass
                 try:
                     rendered = eval_jinja_expression(inner, ctx.build_jinja_context())
                     if isinstance(rendered, Undefined):
