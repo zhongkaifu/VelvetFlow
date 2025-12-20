@@ -419,8 +419,19 @@ def _run_coverage_check(
     action_registry: List[Dict[str, Any]],
     search_service: HybridActionSearchService,
 ) -> Dict[str, Any]:
+    log_info("[StructurePlanner] 覆盖度检查开始")
     skeleton = _prepare_skeleton_for_coverage(
         builder=builder, action_registry=action_registry, search_service=search_service
+    )
+    log_info(
+        "[StructurePlanner] 覆盖度检查输入快照",
+        json.dumps(
+            {
+                "node_count": len(skeleton.get("nodes") or []),
+                "edge_count": len(skeleton.get("edges") or []),
+            },
+            ensure_ascii=False,
+        ),
     )
 
     coverage = check_requirement_coverage_with_llm(
@@ -438,6 +449,16 @@ def _run_coverage_check(
 
     log_event("coverage_check", {"coverage": coverage})
     log_json("覆盖度检查结果", coverage)
+    log_info(
+        "[StructurePlanner] 覆盖度检查结束",
+        json.dumps(
+            {
+                "is_covered": coverage.get("is_covered", False),
+                "missing_points_count": len(coverage.get("missing_points") or []),
+            },
+            ensure_ascii=False,
+        ),
+    )
     return skeleton, coverage
 
 
@@ -1307,6 +1328,18 @@ def plan_workflow_structure_with_llm(
             )
 
         should_continue = not ready or not is_covered or needs_dependency_review
+        log_info(
+            "[StructurePlanner] finalize_workflow 结果",
+            json.dumps(
+                {
+                    "ready": ready,
+                    "is_covered": is_covered,
+                    "needs_dependency_review": needs_dependency_review,
+                    "should_continue": should_continue,
+                },
+                ensure_ascii=False,
+            ),
+        )
         finalized_state["done"] = not should_continue
         _snapshot("finalize")
         return {
