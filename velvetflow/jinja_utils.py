@@ -5,6 +5,7 @@ import json
 import re
 from datetime import datetime, date as date_cls
 from functools import lru_cache
+import operator
 from typing import Any, Mapping
 
 from collections.abc import Mapping as MappingABC
@@ -72,6 +73,8 @@ def get_jinja_env() -> Environment:
 
 
 _CONST_STR_TMPL = re.compile(r"^\s*\{\{\s*(['\"])(.*)\1\s*\}\}\s*$", re.DOTALL)
+_NUMERIC_INT_RE = re.compile(r"^-?\d+$")
+_NUMERIC_FLOAT_RE = re.compile(r"^-?\d+\.\d+$")
 
 
 def render_jinja_string_constants(value: Any) -> Any:
@@ -132,7 +135,7 @@ def eval_jinja_expr(expr: str, context: Mapping[str, Any]) -> Any:
 
     env = get_jinja_env()
     compiled = env.compile_expression(expr)
-    return compiled(**_prepare_context(context))
+    return _unwrap_value(compiled(**_prepare_context(context)))
 
 
 def render_jinja_template(template: str, context: Mapping[str, Any]) -> str:
@@ -155,11 +158,95 @@ class _AttrDict(dict):
             raise AttributeError(item) from exc
 
 
+class _AutoValue:
+    __slots__ = ("value",)
+
+    def __init__(self, value: Any) -> None:
+        self.value = value
+
+    def _unwrap(self, other: Any) -> Any:
+        return other.value if isinstance(other, _AutoValue) else other
+
+    def _coerce_numeric(self, value: Any) -> int | float | None:
+        if isinstance(value, (int, float)):
+            return value
+        if isinstance(value, str):
+            stripped = value.strip()
+            if _NUMERIC_INT_RE.match(stripped):
+                return int(stripped)
+            if _NUMERIC_FLOAT_RE.match(stripped):
+                return float(stripped)
+        return None
+
+    def _compare(self, other: Any, op: Any) -> bool:
+        left = self.value
+        right = self._unwrap(other)
+        left_num = self._coerce_numeric(left)
+        right_num = self._coerce_numeric(right)
+        if left_num is not None and right_num is not None:
+            return op(left_num, right_num)
+        try:
+            return op(left, right)
+        except TypeError:
+            return op(str(left), str(right))
+
+    def __eq__(self, other: Any) -> bool:
+        return self._compare(other, operator.eq)
+
+    def __ne__(self, other: Any) -> bool:
+        return self._compare(other, operator.ne)
+
+    def __lt__(self, other: Any) -> bool:
+        return self._compare(other, operator.lt)
+
+    def __le__(self, other: Any) -> bool:
+        return self._compare(other, operator.le)
+
+    def __gt__(self, other: Any) -> bool:
+        return self._compare(other, operator.gt)
+
+    def __ge__(self, other: Any) -> bool:
+        return self._compare(other, operator.ge)
+
+    def __bool__(self) -> bool:
+        return bool(self.value)
+
+    def __str__(self) -> str:
+        return str(self.value)
+
+    def __repr__(self) -> str:
+        return repr(self.value)
+
+    def __len__(self) -> int:
+        return len(self.value)
+
+    def __iter__(self) -> Any:
+        return iter(self.value)
+
+    def __getitem__(self, item: Any) -> Any:
+        return self.value[item]
+
+    def __getattr__(self, item: str) -> Any:
+        return getattr(self.value, item)
+
+
 def _wrap_value(value: Any) -> Any:
     if isinstance(value, MappingABC):
         return _AttrDict({k: _wrap_value(v) for k, v in value.items()})
     if isinstance(value, list):
         return [_wrap_value(v) for v in value]
+    if isinstance(value, str):
+        return _AutoValue(value)
+    return value
+
+
+def _unwrap_value(value: Any) -> Any:
+    if isinstance(value, _AutoValue):
+        return value.value
+    if isinstance(value, list):
+        return [_unwrap_value(v) for v in value]
+    if isinstance(value, MappingABC):
+        return {k: _unwrap_value(v) for k, v in value.items()}
     return value
 
 
