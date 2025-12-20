@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 from typing import Any, Dict, List, Optional
 
@@ -65,7 +66,7 @@ def run_llm_web_scraper(
 
 
 def search_and_crawl_with_goal(
-    goal: str,
+    goal: Any,
     *,
     search_limit: int = 5,
     max_pages: int = 40,
@@ -81,7 +82,7 @@ def search_and_crawl_with_goal(
 ) -> Dict[str, Any]:
     """Search the web for a goal, then crawl results with the LLM scraper."""
 
-    cleaned_goal = goal.strip()
+    cleaned_goal = _normalize_goal(goal)
     if not cleaned_goal:
         raise ValueError("goal must be a non-empty string")
 
@@ -131,6 +132,16 @@ def search_and_crawl_with_goal(
         "search_results": search_results,
         "crawl_result": crawl_result,
     }
+
+
+def _normalize_goal(goal: Any) -> str:
+    if isinstance(goal, str):
+        cleaned_goal = goal.strip()
+    elif isinstance(goal, (dict, list)):
+        cleaned_goal = json.dumps(goal, ensure_ascii=False)
+    else:
+        cleaned_goal = str(goal).strip()
+    return cleaned_goal
 
 
 def register_web_scraper_tools() -> None:
