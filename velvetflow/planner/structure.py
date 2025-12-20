@@ -482,6 +482,7 @@ def plan_workflow_structure_with_llm(
     builder = WorkflowBuilder()
     action_schemas = _build_action_schema_map(action_registry)
     last_action_candidates: List[str] = []
+    all_action_candidates: List[str] = []
     latest_skeleton: Dict[str, Any] = {}
     latest_coverage: Dict[str, Any] = {}
     finalized_state: Dict[str, bool] = {"done": False}
@@ -591,7 +592,11 @@ def plan_workflow_structure_with_llm(
             for a in actions_raw
             if a.get("action_id")
         ]
-        last_action_candidates[:] = [c["id"] for c in candidates]
+        candidate_ids = [c["id"] for c in candidates]
+        last_action_candidates[:] = candidate_ids
+        for action_id in candidate_ids:
+            if action_id not in all_action_candidates:
+                all_action_candidates.append(action_id)
         _emit_canvas_update("search_business_actions")
         return {"status": "ok", "query": query, "actions": actions_raw, "candidates": candidates}
 
@@ -651,12 +656,12 @@ def plan_workflow_structure_with_llm(
                 "parent_node_id": parent_node_id,
             },
         )
-        if not last_action_candidates:
+        if not all_action_candidates:
             return _build_validation_error("action 节点必须在调用 search_business_actions 之后创建。")
-        if action_id not in last_action_candidates:
+        if action_id not in all_action_candidates:
             return _build_validation_error(
-                "action_id 必须是最近一次 search_business_actions 返回的 candidates.id 之一。",
-                allowed_action_ids=last_action_candidates,
+                "action_id 必须是 search_business_actions 返回过的 candidates.id 之一。",
+                allowed_action_ids=all_action_candidates,
             )
         if parent_node_id is not None and not isinstance(parent_node_id, str):
             return _build_validation_error("parent_node_id 需要是字符串或 null。")
@@ -969,12 +974,12 @@ def plan_workflow_structure_with_llm(
         if parent_node_id is not None and not isinstance(parent_node_id, str):
             return _build_validation_error("parent_node_id 需要是字符串或 null。")
         if action_id is not None:
-            if not last_action_candidates:
+            if not all_action_candidates:
                 return _build_validation_error("更新 action_id 前请先调用 search_business_actions。")
-            if action_id not in last_action_candidates:
+            if action_id not in all_action_candidates:
                 return _build_validation_error(
-                    "action_id 必须是最近一次 search_business_actions 返回的 candidates.id 之一。",
-                    allowed_action_ids=last_action_candidates,
+                    "action_id 必须是 search_business_actions 返回过的 candidates.id 之一。",
+                    allowed_action_ids=all_action_candidates,
                 )
         if params is not None and not isinstance(params, Mapping):
             return _build_validation_error("action 节点的 params 需要是对象。")
