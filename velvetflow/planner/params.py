@@ -420,6 +420,17 @@ def fill_params_with_llm(
 
         @function_tool(strict_mode=False)
         def submit_node_params(id: str, params: Dict[str, Any]) -> Mapping[str, Any]:
+            """提交当前节点的参数草案，等待校验。
+
+            适用场景：参数补全阶段先提交，再调用 validate_node_params 校验。
+
+            Args:
+                id: 当前正在处理的节点 ID。
+                params: 待校验的参数字典。
+
+            Returns:
+                接收确认或错误信息的结果字典。
+            """
             nonlocal last_submitted_params
             if id != node.id:
                 return _build_response(
@@ -438,6 +449,17 @@ def fill_params_with_llm(
 
         @function_tool(strict_mode=False)
         def validate_node_params(id: str, params: Optional[Dict[str, Any]] = None) -> Mapping[str, Any]:
+            """校验当前节点参数并写入已填充结果。
+
+            适用场景：在提交参数后进行合法性验证与保存。
+
+            Args:
+                id: 当前正在处理的节点 ID。
+                params: 可选的参数字典；未提供时使用最近提交值。
+
+            Returns:
+                校验结果字典；若失败会返回错误列表。
+            """
             nonlocal validated_params, last_submitted_params
             if id != node.id:
                 return _build_response(

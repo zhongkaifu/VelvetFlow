@@ -647,36 +647,108 @@ def repair_workflow_with_llm(
 
     @function_tool(strict_mode=False)
     def fix_loop_body_references(node_id: str) -> Mapping[str, Any]:
+        """修复 loop 节点 body_subgraph 内部引用错误。
+
+        适用场景：循环内节点引用 loop.exports 或上游路径不合规时。
+
+        Args:
+            node_id: 需要修复的 loop 节点 ID。
+
+        Returns:
+            包含修复摘要与当前 workflow 的结果字典。
+        """
         return _apply_named_repair("fix_loop_body_references", {"node_id": node_id})
 
     @function_tool(strict_mode=False)
     def fill_action_required_params(node_id: str) -> Mapping[str, Any]:
+        """补全 action 节点缺失的必填参数。
+
+        适用场景：节点参数校验缺少必填项时自动修补。
+
+        Args:
+            node_id: 需要补全的 action 节点 ID。
+
+        Returns:
+            包含修复摘要与当前 workflow 的结果字典。
+        """
         return _apply_named_repair("fill_action_required_params", {"node_id": node_id})
 
     @function_tool(strict_mode=False)
     def update_node_field(node_id: str, field_path: str, value: Any) -> Mapping[str, Any]:
+        """更新节点指定字段路径的值。
+
+        适用场景：修正字段类型、表达式或分支指向等具体字段。
+
+        Args:
+            node_id: 需要更新的节点 ID。
+            field_path: 字段路径（点号分隔，例如 params.expression）。
+            value: 新值。
+
+        Returns:
+            包含修复摘要与当前 workflow 的结果字典。
+        """
         return _apply_named_repair(
             "update_node_field", {"node_id": node_id, "field_path": field_path, "value": value}
         )
 
     @function_tool(strict_mode=False)
     def normalize_binding_paths() -> Mapping[str, Any]:
+        """规范化所有节点的参数绑定路径。
+
+        适用场景：统一 Jinja 引用路径格式，修复旧 DSL 或路径缺失。
+
+        Returns:
+            包含修复摘要与当前 workflow 的结果字典。
+        """
         return _apply_named_repair("normalize_binding_paths", {})
 
     @function_tool(strict_mode=False)
     def replace_reference_paths(old: str, new: str, include_edges: bool = True) -> Mapping[str, Any]:
+        """批量替换 workflow 中的引用路径。
+
+        适用场景：字段路径变更，需要全量替换引用时。
+
+        Args:
+            old: 需要替换的旧路径。
+            new: 替换后的新路径。
+            include_edges: 是否同时更新 edges 引用。
+
+        Returns:
+            包含修复摘要与当前 workflow 的结果字典。
+        """
         return _apply_named_repair(
             "replace_reference_paths", {"old": old, "new": new, "include_edges": include_edges}
         )
 
     @function_tool(strict_mode=False)
     def drop_invalid_references(remove_edges: bool = True) -> Mapping[str, Any]:
+        """移除无法解析的引用或无效依赖。
+
+        适用场景：引用路径不存在或节点被删除导致的残留引用。
+
+        Args:
+            remove_edges: 是否同时删除失效 edges。
+
+        Returns:
+            包含修复摘要与当前 workflow 的结果字典。
+        """
         return _apply_named_repair("drop_invalid_references", {"remove_edges": remove_edges})
 
     @function_tool(strict_mode=False)
     def submit_repaired_workflow(
         workflow: Optional[Dict[str, Any]] = None, patch_text: Optional[str] = None
     ) -> Mapping[str, Any]:
+        """提交修复后的 workflow 或补丁结果。
+
+        适用场景：修复完成后，提交最终 workflow 供系统继续校验。
+
+        Args:
+            workflow: 完整 workflow 字典，可选。
+            patch_text: 针对当前 workflow 的补丁文本，可选。
+
+        Returns:
+            包含提交状态与 workflow 的结果字典。
+        """
         nonlocal working_workflow, finalized_workflow
 
         if patch_text and not workflow:
