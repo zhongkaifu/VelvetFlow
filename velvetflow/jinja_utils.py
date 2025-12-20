@@ -30,6 +30,12 @@ def get_jinja_env() -> Environment:
     env.globals.setdefault("now", datetime.now)
     env.filters.setdefault("tojson", lambda obj: json.dumps(obj, ensure_ascii=False))
     env.filters.setdefault("length", lambda obj: len(obj) if obj is not None else 0)
+    env.filters.setdefault(
+        "split",
+        lambda value, sep=",": []
+        if value is None or value == ""
+        else str(value).split(sep),
+    )
 
     def _format_date(value: Any, fmt: str = "yyyy-MM-dd") -> str:
         """A lightweight date filter compatible with the templated inputs we receive."""
