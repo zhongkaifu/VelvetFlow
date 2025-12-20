@@ -13,6 +13,7 @@ from velvetflow.config import OPENAI_MODEL
 from velvetflow.logging_utils import (
     log_debug,
     log_event,
+    log_info,
     log_json,
     log_section,
     log_warn,
@@ -493,6 +494,24 @@ def plan_workflow_structure_with_llm(
         except Exception:
             log_debug(f"[StructurePlanner] progress_callback {label} 调用失败，已忽略。")
 
+    def _log_tool_call(tool_name: str, payload: Mapping[str, Any] | None = None) -> None:
+        if payload:
+            log_info(
+                f"[StructurePlanner] tool={tool_name}",
+                json.dumps(payload, ensure_ascii=False),
+            )
+        else:
+            log_info(f"[StructurePlanner] tool={tool_name}")
+
+    def _emit_canvas_update(label: str, workflow_obj: Mapping[str, Any] | None = None) -> None:
+        if not progress_callback:
+            return
+        try:
+            snapshot = workflow_obj or _attach_inferred_edges(builder.to_workflow())
+            progress_callback(label, snapshot)
+        except Exception:
+            log_debug(f"[StructurePlanner] canvas callback {label} 调用失败，已忽略。")
+
     def _snapshot(label: str) -> Dict[str, Any]:
         nonlocal latest_skeleton
         workflow_snapshot = _attach_inferred_edges(builder.to_workflow())
@@ -560,6 +579,7 @@ def plan_workflow_structure_with_llm(
         Returns:
             包含检索状态、原始动作列表与精简候选信息的结果字典。
         """
+        _log_tool_call("search_business_actions", {"query": query, "top_k": top_k})
         actions_raw = search_service.search(query=query, top_k=int(top_k))
         candidates = [
             {
@@ -572,6 +592,7 @@ def plan_workflow_structure_with_llm(
             if a.get("action_id")
         ]
         last_action_candidates[:] = [c["id"] for c in candidates]
+        _emit_canvas_update("search_business_actions")
         return {"status": "ok", "query": query, "actions": actions_raw, "candidates": candidates}
 
     @function_tool(strict_mode=False)
@@ -587,6 +608,10 @@ def plan_workflow_structure_with_llm(
         Returns:
             包含状态与操作类型的结果字典。
         """
+        _log_tool_call(
+            "set_workflow_meta",
+            {"workflow_name": workflow_name, "description": description},
+        )
         builder.set_meta(workflow_name, description)
         _snapshot("meta_updated")
         return {"status": "ok", "type": "meta_set"}
@@ -617,6 +642,15 @@ def plan_workflow_structure_with_llm(
         Returns:
             包含状态、类型与节点 ID 的结果字典；失败时返回错误信息。
         """
+        _log_tool_call(
+            "add_action_node",
+            {
+                "id": id,
+                "action_id": action_id,
+                "display_name": display_name,
+                "parent_node_id": parent_node_id,
+            },
+        )
         if not last_action_candidates:
             return _build_validation_error("action 节点必须在调用 search_business_actions 之后创建。")
         if action_id not in last_action_candidates:
@@ -684,6 +718,15 @@ def plan_workflow_structure_with_llm(
         Returns:
             包含状态、类型与节点 ID 的结果字典；失败时返回错误信息。
         """
+        _log_tool_call(
+            "add_loop_node",
+            {
+                "id": id,
+                "loop_kind": loop_kind,
+                "item_alias": item_alias,
+                "parent_node_id": parent_node_id,
+            },
+        )
         if parent_node_id is not None and not isinstance(parent_node_id, str):
             return _build_validation_error("parent_node_id 需要是字符串或 null。")
         invalid_fields: List[str] = []
@@ -756,6 +799,15 @@ def plan_workflow_structure_with_llm(
         Returns:
             包含状态、类型与节点 ID 的结果字典；失败时返回错误信息。
         """
+        _log_tool_call(
+            "add_condition_node",
+            {
+                "id": id,
+                "true_to_node": true_to_node,
+                "false_to_node": false_to_node,
+                "parent_node_id": parent_node_id,
+            },
+        )
         if parent_node_id is not None and not isinstance(parent_node_id, str):
             return _build_validation_error("parent_node_id 需要是字符串或 null。")
         if true_to_node is not None and not isinstance(true_to_node, str):
@@ -817,6 +869,15 @@ def plan_workflow_structure_with_llm(
         Returns:
             包含状态、类型与节点 ID 的结果字典；失败时返回错误信息。
         """
+        _log_tool_call(
+            "add_switch_node",
+            {
+                "id": id,
+                "case_count": len(cases) if isinstance(cases, list) else None,
+                "default_to_node": default_to_node,
+                "parent_node_id": parent_node_id,
+            },
+        )
         if parent_node_id is not None and not isinstance(parent_node_id, str):
             return _build_validation_error("parent_node_id 需要是字符串或 null。")
         if not isinstance(cases, list):
@@ -898,6 +959,10 @@ def plan_workflow_structure_with_llm(
         Returns:
             包含状态、类型与节点 ID 的结果字典；失败时返回错误信息。
         """
+        _log_tool_call(
+            "update_action_node",
+            {"id": id, "action_id": action_id, "parent_node_id": parent_node_id},
+        )
         precheck = _update_node_common(id, "action")
         if precheck:
             return precheck
@@ -976,6 +1041,15 @@ def plan_workflow_structure_with_llm(
         Returns:
             包含状态、类型与节点 ID 的结果字典；失败时返回错误信息。
         """
+        _log_tool_call(
+            "update_condition_node",
+            {
+                "id": id,
+                "true_to_node": true_to_node,
+                "false_to_node": false_to_node,
+                "parent_node_id": parent_node_id,
+            },
+        )
         precheck = _update_node_common(id, "condition")
         if precheck:
             return precheck
@@ -1053,6 +1127,15 @@ def plan_workflow_structure_with_llm(
         Returns:
             包含状态、类型与节点 ID 的结果字典；失败时返回错误信息。
         """
+        _log_tool_call(
+            "update_switch_node",
+            {
+                "id": id,
+                "case_count": len(cases) if isinstance(cases, list) else None,
+                "default_to_node": default_to_node,
+                "parent_node_id": parent_node_id,
+            },
+        )
         precheck = _update_node_common(id, "switch")
         if precheck:
             return precheck
@@ -1136,6 +1219,10 @@ def plan_workflow_structure_with_llm(
         Returns:
             包含状态、类型与节点 ID 的结果字典；失败时返回错误信息。
         """
+        _log_tool_call(
+            "update_loop_node",
+            {"id": id, "parent_node_id": parent_node_id},
+        )
         precheck = _update_node_common(id, "loop")
         if precheck:
             return precheck
@@ -1190,6 +1277,7 @@ def plan_workflow_structure_with_llm(
         Returns:
             校验结果与反馈的字典，包含 coverage、workflow 与 should_continue 等字段。
         """
+        _log_tool_call("finalize_workflow", {"ready": ready, "notes": notes})
         nonlocal latest_skeleton, latest_coverage
         skeleton, coverage = _run_coverage_check(
             nl_requirement=nl_requirement,
@@ -1236,6 +1324,7 @@ def plan_workflow_structure_with_llm(
         Returns:
             包含节点/边统计与 workflow 快照的结果字典。
         """
+        _log_tool_call("dump_model")
         snapshot = _snapshot("dump_model")
         return {
             "status": "ok",
@@ -1263,6 +1352,7 @@ def plan_workflow_structure_with_llm(
         Returns:
             接收确认或错误信息的结果字典。
         """
+        _log_tool_call("submit_node_params", {"id": id})
         nonlocal last_submitted_params
         if id != node.id:
             return _build_response(
@@ -1277,6 +1367,7 @@ def plan_workflow_structure_with_llm(
             node_id=node.id,
             action_id=node.action_id,
         )
+        _emit_canvas_update("submit_node_params")
         return _build_response("received", message="已收到提交，请立即调用 validate_node_params。")
 
     @function_tool(strict_mode=False)
@@ -1292,6 +1383,7 @@ def plan_workflow_structure_with_llm(
         Returns:
             校验结果字典；若失败会返回错误列表。
         """
+        _log_tool_call("validate_node_params", {"id": id})
         nonlocal validated_params, last_submitted_params
         if id != node.id:
             return _build_response(
@@ -1316,10 +1408,12 @@ def plan_workflow_structure_with_llm(
         )
 
         if errors:
+            _emit_canvas_update("validate_node_params_failed")
             return _build_response("error", errors=errors)
 
         validated_params = params_to_check
         filled_params[node.id] = params_to_check
+        _emit_canvas_update("validate_node_params")
         return _build_response("ok", params=params_to_check)
 
     agent = Agent(

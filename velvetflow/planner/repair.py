@@ -12,7 +12,7 @@ from dataclasses import asdict
 import itertools
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from velvetflow.config import OPENAI_MODEL
 from velvetflow.logging_utils import (
@@ -463,6 +463,7 @@ def _repair_with_llm_and_fallback(
     search_service,
     reason: str,
     previous_attempts: Mapping[str, Sequence[str]] | None = None,
+    progress_callback: Callable[[str, Mapping[str, Any]], None] | None = None,
 ) -> Workflow:
     log_info(f"[AutoRepair] {reason}，将错误上下文提交给 LLM 尝试修复。")
 
@@ -495,6 +496,7 @@ def _repair_with_llm_and_fallback(
             error_summary=error_summary,
             previous_failed_attempts=previous_attempts,
             model=OPENAI_MODEL,
+            progress_callback=progress_callback,
         )
         repaired = Workflow.model_validate(repaired_raw)
         repaired = ensure_registered_actions(
@@ -550,6 +552,7 @@ def repair_workflow_with_llm(
     error_summary: str | None = None,
     previous_failed_attempts: Mapping[str, Sequence[str]] | None = None,
     model: str = OPENAI_MODEL,
+    progress_callback: Callable[[str, Mapping[str, Any]], None] | None = None,
 ) -> Dict[str, Any]:
     if not os.environ.get("OPENAI_API_KEY"):
         raise RuntimeError("请先设置 OPENAI_API_KEY 环境变量再进行自动修复。")
@@ -640,6 +643,23 @@ def repair_workflow_with_llm(
         payload.update(extra)
         return payload
 
+    def _log_tool_call(tool_name: str, payload: Mapping[str, Any] | None = None) -> None:
+        if payload:
+            log_info(
+                f"[WorkflowRepairer] tool={tool_name}",
+                json.dumps(payload, ensure_ascii=False),
+            )
+        else:
+            log_info(f"[WorkflowRepairer] tool={tool_name}")
+
+    def _emit_canvas_update(label: str, workflow_obj: Mapping[str, Any]) -> None:
+        if not progress_callback:
+            return
+        try:
+            progress_callback(label, workflow_obj)
+        except Exception:
+            log_debug(f"[WorkflowRepairer] progress_callback {label} 调用失败，已忽略。")
+
     def _apply_named_repair(tool_name: str, args: Mapping[str, Any]) -> Dict[str, Any]:
         nonlocal working_workflow
         patched_workflow, summary = apply_repair_tool(
@@ -665,7 +685,10 @@ def repair_workflow_with_llm(
         Returns:
             包含修复摘要与当前 workflow 的结果字典。
         """
-        return _apply_named_repair("fix_loop_body_references", {"node_id": node_id})
+        _log_tool_call("fix_loop_body_references", {"node_id": node_id})
+        result = _apply_named_repair("fix_loop_body_references", {"node_id": node_id})
+        _emit_canvas_update("fix_loop_body_references", result["workflow"])
+        return result
 
     @function_tool(strict_mode=False)
     def fill_action_required_params(node_id: str) -> Mapping[str, Any]:
@@ -679,7 +702,10 @@ def repair_workflow_with_llm(
         Returns:
             包含修复摘要与当前 workflow 的结果字典。
         """
-        return _apply_named_repair("fill_action_required_params", {"node_id": node_id})
+        _log_tool_call("fill_action_required_params", {"node_id": node_id})
+        result = _apply_named_repair("fill_action_required_params", {"node_id": node_id})
+        _emit_canvas_update("fill_action_required_params", result["workflow"])
+        return result
 
     @function_tool(strict_mode=False)
     def update_node_field(node_id: str, field_path: str, value: Any) -> Mapping[str, Any]:
@@ -695,9 +721,15 @@ def repair_workflow_with_llm(
         Returns:
             包含修复摘要与当前 workflow 的结果字典。
         """
-        return _apply_named_repair(
+        _log_tool_call(
+            "update_node_field",
+            {"node_id": node_id, "field_path": field_path},
+        )
+        result = _apply_named_repair(
             "update_node_field", {"node_id": node_id, "field_path": field_path, "value": value}
         )
+        _emit_canvas_update("update_node_field", result["workflow"])
+        return result
 
     @function_tool(strict_mode=False)
     def normalize_binding_paths() -> Mapping[str, Any]:
@@ -708,7 +740,10 @@ def repair_workflow_with_llm(
         Returns:
             包含修复摘要与当前 workflow 的结果字典。
         """
-        return _apply_named_repair("normalize_binding_paths", {})
+        _log_tool_call("normalize_binding_paths")
+        result = _apply_named_repair("normalize_binding_paths", {})
+        _emit_canvas_update("normalize_binding_paths", result["workflow"])
+        return result
 
     @function_tool(strict_mode=False)
     def replace_reference_paths(old: str, new: str, include_edges: bool = True) -> Mapping[str, Any]:
@@ -724,9 +759,15 @@ def repair_workflow_with_llm(
         Returns:
             包含修复摘要与当前 workflow 的结果字典。
         """
-        return _apply_named_repair(
+        _log_tool_call(
+            "replace_reference_paths",
+            {"old": old, "new": new, "include_edges": include_edges},
+        )
+        result = _apply_named_repair(
             "replace_reference_paths", {"old": old, "new": new, "include_edges": include_edges}
         )
+        _emit_canvas_update("replace_reference_paths", result["workflow"])
+        return result
 
     @function_tool(strict_mode=False)
     def drop_invalid_references(remove_edges: bool = True) -> Mapping[str, Any]:
@@ -740,7 +781,10 @@ def repair_workflow_with_llm(
         Returns:
             包含修复摘要与当前 workflow 的结果字典。
         """
-        return _apply_named_repair("drop_invalid_references", {"remove_edges": remove_edges})
+        _log_tool_call("drop_invalid_references", {"remove_edges": remove_edges})
+        result = _apply_named_repair("drop_invalid_references", {"remove_edges": remove_edges})
+        _emit_canvas_update("drop_invalid_references", result["workflow"])
+        return result
 
     @function_tool(strict_mode=False)
     def submit_repaired_workflow(
@@ -758,6 +802,10 @@ def repair_workflow_with_llm(
             包含提交状态与 workflow 的结果字典。
         """
         nonlocal working_workflow, finalized_workflow
+        _log_tool_call(
+            "submit_repaired_workflow",
+            {"has_workflow": bool(workflow), "has_patch_text": bool(patch_text)},
+        )
 
         if patch_text and not workflow:
             patched = _apply_patch_output(working_workflow, patch_text)
@@ -769,6 +817,7 @@ def repair_workflow_with_llm(
             working_workflow = workflow
 
         finalized_workflow = working_workflow
+        _emit_canvas_update("submit_repaired_workflow", working_workflow)
         return _build_response("ok", workflow=working_workflow)
 
     agent = Agent(
