@@ -25,7 +25,7 @@ from velvetflow.logging_utils import (
 from velvetflow.models import Node, PydanticValidationError, ValidationError, Workflow
 from velvetflow.planner.agent_runtime import Agent, Runner, function_tool
 from velvetflow.planner.action_guard import ensure_registered_actions
-from velvetflow.planner.repair_tools import apply_repair_tool, drop_invalid_references
+from velvetflow.planner.repair_tools import apply_repair_tool
 from velvetflow.verification import (
     generate_repair_suggestions,
     precheck_loop_body_graphs,
@@ -399,12 +399,13 @@ def apply_rule_based_repairs(
         workflow_raw, action_registry, errors=validation_errors
     )
     if any(err.code == "UNDEFINED_REFERENCE" for err in validation_errors):
-        patched_workflow, drop_summary = drop_invalid_references(patched_workflow)
-        if drop_summary.get("applied"):
-            log_info(
-                "[AutoRepair] 已清理指向缺失节点的引用。",
-                f"summary={drop_summary}",
-            )
+        patched_workflow, drop_summary = apply_repair_tool(
+            "drop_invalid_references", patched_workflow, remove_edges=True
+        )
+        log_info(
+            "[AutoRepair] UNDEFINED_REFERENCE 已自动清理，待提交给 LLM 分析。",
+            f"summary={drop_summary}",
+        )
     try:
         remaining_errors: List[ValidationError] = []
         remaining_errors.extend(precheck_loop_body_graphs(patched_workflow))
