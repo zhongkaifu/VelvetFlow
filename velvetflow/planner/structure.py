@@ -768,8 +768,20 @@ def plan_workflow_structure_with_llm(
             json.dumps(result, ensure_ascii=False),
         )
 
+    def _log_tool_status(tool_name: str, result: Mapping[str, Any]) -> None:
+        status = result.get("status") if isinstance(result, Mapping) else None
+        success = status not in {"error", "failed", "failure"}
+        log_info(
+            f"[StructurePlanner] tool_status={tool_name}",
+            json.dumps(
+                {"status": status or "unknown", "success": success},
+                ensure_ascii=False,
+            ),
+        )
+
     def _return_tool_result(tool_name: str, result: Mapping[str, Any]) -> Mapping[str, Any]:
         _log_tool_result(tool_name, result)
+        _log_tool_status(tool_name, result)
         return result
 
     def _emit_canvas_update(label: str, workflow_obj: Mapping[str, Any] | None = None) -> None:
@@ -1803,8 +1815,20 @@ def fill_params_with_llm(
             json.dumps(result, ensure_ascii=False),
         )
 
+    def _log_tool_status(tool_name: str, result: Mapping[str, Any]) -> None:
+        status = result.get("status") if isinstance(result, Mapping) else None
+        success = status not in {"error", "failed", "failure"}
+        log_info(
+            f"[ParamFiller] tool_status={tool_name}",
+            json.dumps(
+                {"status": status or "unknown", "success": success},
+                ensure_ascii=False,
+            ),
+        )
+
     def _return_tool_result(tool_name: str, result: Mapping[str, Any]) -> Mapping[str, Any]:
         _log_tool_result(tool_name, result)
+        _log_tool_status(tool_name, result)
         return result
 
     def _emit_canvas_update(
