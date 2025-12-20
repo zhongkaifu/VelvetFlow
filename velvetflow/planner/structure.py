@@ -1343,84 +1343,7 @@ def plan_workflow_structure_with_llm(
 
     validated_params: Dict[str, Any] | None = None
     last_submitted_params: Dict[str, Any] | None = None
-
-    @function_tool(strict_mode=False)
-    def submit_node_params(id: str, params: Dict[str, Any]) -> Mapping[str, Any]:
-        """提交当前节点的候选参数，供后续校验。
-
-        适用场景：结构/参数填充阶段先提交 params，再调用 validate_node_params。
-
-        Args:
-            id: 当前正在处理的节点 ID。
-            params: 待校验的参数字典。
-
-        Returns:
-            接收确认或错误信息的结果字典。
-        """
-        _log_tool_call("submit_node_params", {"id": id})
-        nonlocal last_submitted_params
-        if id != node.id:
-            return _build_response(
-                "error",
-                message="只能提交当前正在处理的节点。",
-                expected_id=node.id,
-            )
-        last_submitted_params = params
-        log_event(
-            "params_tool_result",
-            {"node_id": node.id, "tool_name": "submit_node_params", "params": params},
-            node_id=node.id,
-            action_id=node.action_id,
-        )
-        _emit_canvas_update("submit_node_params")
-        return _build_response("received", message="已收到提交，请立即调用 validate_node_params。")
-
-    @function_tool(strict_mode=False)
-    def validate_node_params(id: str, params: Optional[Dict[str, Any]] = None) -> Mapping[str, Any]:
-        """校验当前节点参数并在通过后写入内存。
-
-        适用场景：提交参数后进行合法性检查并缓存通过的参数。
-
-        Args:
-            id: 当前正在处理的节点 ID。
-            params: 可选的参数字典；未提供时使用最近提交值。
-
-        Returns:
-            校验结果字典；若失败会返回错误列表。
-        """
-        _log_tool_call("validate_node_params", {"id": id})
-        nonlocal validated_params, last_submitted_params
-        if id != node.id:
-            return _build_response(
-                "error",
-                message="只能校验当前节点。",
-                expected_id=node.id,
-            )
-
-        params_to_check = params if isinstance(params, dict) else last_submitted_params
-        if params_to_check is None:
-            return _build_response(
-                "error",
-                errors=["缺少待校验的 params（请先提交或在参数中提供 params）"],
-            )
-
-        errors = _validate_node_params(
-            node=node,
-            params=params_to_check,
-            upstream_nodes=upstream_nodes,
-            action_schemas=action_schemas,
-            binding_memory=binding_memory,
-        )
-
-        if errors:
-            _emit_canvas_update("validate_node_params_failed")
-            return _build_response("error", errors=errors)
-
-        validated_params = params_to_check
-        filled_params[node.id] = params_to_check
-        _emit_canvas_update("validate_node_params")
-        return _build_response("ok", params=params_to_check)
-
+    
     agent = Agent(
         name="WorkflowStructurePlanner",
         instructions=system_prompt,
@@ -1436,9 +1359,7 @@ def plan_workflow_structure_with_llm(
             update_switch_node,
             update_loop_node,
             finalize_workflow,
-            dump_model,
-            submit_node_params, 
-            validate_node_params
+            dump_model
         ],
         model=OPENAI_MODEL
     )
