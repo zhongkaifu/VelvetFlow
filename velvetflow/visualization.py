@@ -378,6 +378,7 @@ def _resolve_display_edges(workflow: Workflow) -> List[Edge]:
 
     resolved: List[Edge] = []
     existing: Set[Tuple[str, str, Optional[str]]] = set()
+    node_ids = {n.id for n in workflow.nodes}
 
     for edge in workflow.edges:
         if edge.from_node not in node_ids or edge.to_node not in node_ids:
@@ -391,8 +392,6 @@ def _resolve_display_edges(workflow: Workflow) -> List[Edge]:
             continue
         existing.add(key)
         resolved.append(edge)
-
-    node_ids = {n.id for n in workflow.nodes}
 
     for node in workflow.nodes:
         if node.type == "condition":
