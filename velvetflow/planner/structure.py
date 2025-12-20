@@ -485,6 +485,8 @@ def plan_workflow_structure_with_llm(
     all_action_candidates: List[str] = []
     latest_skeleton: Dict[str, Any] = {}
     latest_coverage: Dict[str, Any] = {}
+    latest_finalize_feedback: str = ""
+    latest_nodes_without_upstream: List[Mapping[str, Any]] = []
     finalized_state: Dict[str, bool] = {"done": False}
 
     def _emit_progress(label: str, workflow_obj: Mapping[str, Any]) -> None:
@@ -1283,7 +1285,7 @@ def plan_workflow_structure_with_llm(
             校验结果与反馈的字典，包含 coverage、workflow 与 should_continue 等字段。
         """
         _log_tool_call("finalize_workflow", {"ready": ready, "notes": notes})
-        nonlocal latest_skeleton, latest_coverage
+        nonlocal latest_skeleton, latest_coverage, latest_finalize_feedback, latest_nodes_without_upstream
         skeleton, coverage = _run_coverage_check(
             nl_requirement=nl_requirement,
             builder=builder,
@@ -1293,6 +1295,7 @@ def plan_workflow_structure_with_llm(
         latest_skeleton = skeleton
         latest_coverage = coverage
         nodes_without_upstream = _find_nodes_without_upstream(skeleton)
+        latest_nodes_without_upstream = nodes_without_upstream
         is_covered = bool(coverage.get("is_covered", False))
         needs_dependency_review = bool(nodes_without_upstream)
 
@@ -1308,6 +1311,7 @@ def plan_workflow_structure_with_llm(
 
         should_continue = not ready or not is_covered or needs_dependency_review
         finalized_state["done"] = not should_continue
+        latest_finalize_feedback = "\n\n".join(feedback_parts) if feedback_parts else "结构已通过覆盖度与依赖检查。"
         _snapshot("finalize")
         return {
             "status": "ok" if not should_continue else "needs_more_work",
@@ -1316,7 +1320,7 @@ def plan_workflow_structure_with_llm(
             "coverage": coverage,
             "nodes_without_upstream": nodes_without_upstream,
             "should_continue": should_continue,
-            "feedback": "\n\n".join(feedback_parts) if feedback_parts else "结构已通过覆盖度与依赖检查。",
+            "feedback": latest_finalize_feedback,
             "workflow": skeleton,
         }
 
@@ -1443,19 +1447,63 @@ def plan_workflow_structure_with_llm(
         model=OPENAI_MODEL
     )
 
-    total_rounds = max_rounds + max_coverage_refine_rounds + max_dependency_refine_rounds
     log_section("结构规划 - Agent SDK")
 
+    def _run_agent(input_payload: Any, max_turns: int) -> Any:
+        try:
+            return Runner.run_sync(agent, input_payload, max_turns=max_turns)  # type: ignore[arg-type]
+        except TypeError:
+            coro = Runner.run(agent, input_payload)  # type: ignore[call-arg]
+            return asyncio.run(coro) if asyncio.iscoroutine(coro) else coro
+
     run_input: Any = nl_requirement
-    try:
-        result = Runner.run_sync(agent, run_input, max_turns=total_rounds)  # type: ignore[arg-type]
-    except TypeError:
-        coro = Runner.run(agent, run_input)  # type: ignore[call-arg]
-        result = asyncio.run(coro) if asyncio.iscoroutine(coro) else coro
+    coverage_refine_rounds = 0
+    dependency_refine_rounds = 0
+    while True:
+        result = _run_agent(run_input, max_rounds)
+        if finalized_state.get("done"):
+            break
+
+        needs_coverage_refine = bool(latest_coverage) and not latest_coverage.get("is_covered", False)
+        needs_dependency_refine = bool(latest_nodes_without_upstream)
+        needs_finalize_call = not latest_coverage
+        can_refine = (
+            (needs_coverage_refine and coverage_refine_rounds < max_coverage_refine_rounds)
+            or (needs_dependency_refine and dependency_refine_rounds < max_dependency_refine_rounds)
+            or (needs_finalize_call and coverage_refine_rounds < max_coverage_refine_rounds)
+        )
+
+        if not can_refine:
+            break
+
+        if needs_coverage_refine or needs_finalize_call:
+            coverage_refine_rounds += 1
+        if needs_dependency_refine:
+            dependency_refine_rounds += 1
+
+        if needs_finalize_call:
+            latest_finalize_feedback = (
+                "尚未调用 finalize_workflow，请在结构规划完成后调用 finalize_workflow 以触发覆盖度与依赖检查。"
+            )
+
+        log_info(
+            "[StructurePlanner] 触发自动补全轮次",
+            json.dumps(
+                {
+                    "coverage_round": coverage_refine_rounds,
+                    "dependency_round": dependency_refine_rounds,
+                    "needs_finalize_call": needs_finalize_call,
+                },
+                ensure_ascii=False,
+            ),
+        )
+        run_input = f"{nl_requirement}\n\n[系统反馈]\n{latest_finalize_feedback}"
 
     if not finalized_state.get("done"):
         if latest_coverage and not latest_coverage.get("is_covered", False):
             log_warn("[Planner] 规划结束但覆盖度未通过，返回当前骨架。")
+        elif not latest_coverage:
+            log_warn("[Planner] 未调用 finalize_workflow，使用当前骨架继续后续阶段。")
         else:
             log_warn("[Planner] 未收到 finalize_workflow，使用当前骨架继续后续阶段。")
 
