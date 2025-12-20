@@ -8,10 +8,10 @@ import copy
 import json
 import os
 from collections import deque
-from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from velvetflow.config import OPENAI_MODEL
-from velvetflow.logging_utils import log_event
+from velvetflow.logging_utils import log_debug, log_event, log_info
 from velvetflow.planner.agent_runtime import Agent, Runner, function_tool
 from velvetflow.models import ALLOWED_PARAM_AGGREGATORS, Node, Workflow
 from velvetflow.planner.relations import get_referenced_nodes
@@ -329,6 +329,7 @@ def fill_params_with_llm(
     workflow_skeleton: Dict[str, Any],
     action_registry: List[Dict[str, Any]],
     model: str = OPENAI_MODEL,
+    progress_callback: Callable[[str, Mapping[str, Any]], None] | None = None,
 ) -> Dict[str, Any]:
     if not os.environ.get("OPENAI_API_KEY"):
         raise RuntimeError("请先设置 OPENAI_API_KEY 环境变量再进行参数补全。")
@@ -364,6 +365,41 @@ def fill_params_with_llm(
     }
 
     processed_node_ids: List[str] = []
+
+    def _log_tool_call(tool_name: str, payload: Mapping[str, Any] | None = None) -> None:
+        if payload:
+            log_info(
+                f"[ParamFiller] tool={tool_name}",
+                json.dumps(payload, ensure_ascii=False),
+            )
+        else:
+            log_info(f"[ParamFiller] tool={tool_name}")
+
+    def _emit_canvas_update(
+        label: str,
+        *,
+        params_override: Dict[str, Any] | None = None,
+        current_node_id: str | None = None,
+    ) -> None:
+        if not progress_callback:
+            return
+        try:
+            nodes_snapshot = []
+            for n in workflow.nodes:
+                data = n.model_dump(by_alias=True)
+                params_source = filled_params.get(n.id, n.params)
+                if params_override is not None and current_node_id == n.id:
+                    params_source = params_override
+                data["params"] = params_source
+                nodes_snapshot.append(data)
+            payload = {
+                "workflow_name": workflow.workflow_name,
+                "description": workflow.description,
+                "nodes": nodes_snapshot,
+            }
+            progress_callback(label, payload)
+        except Exception:
+            log_debug(f"[ParamFiller] progress_callback {label} 调用失败，已忽略。")
 
     for node_id in _traverse_order(workflow):
         node = nodes_by_id[node_id]
@@ -431,6 +467,7 @@ def fill_params_with_llm(
             Returns:
                 接收确认或错误信息的结果字典。
             """
+            _log_tool_call("submit_node_params", {"id": id})
             nonlocal last_submitted_params
             if id != node.id:
                 return _build_response(
@@ -444,6 +481,11 @@ def fill_params_with_llm(
                 {"node_id": node.id, "tool_name": "submit_node_params", "params": params},
                 node_id=node.id,
                 action_id=node.action_id,
+            )
+            _emit_canvas_update(
+                "submit_node_params",
+                params_override=params,
+                current_node_id=node.id,
             )
             return _build_response("received", message="已收到提交，请立即调用 validate_node_params。")
 
@@ -460,6 +502,7 @@ def fill_params_with_llm(
             Returns:
                 校验结果字典；若失败会返回错误列表。
             """
+            _log_tool_call("validate_node_params", {"id": id})
             nonlocal validated_params, last_submitted_params
             if id != node.id:
                 return _build_response(
@@ -484,10 +527,20 @@ def fill_params_with_llm(
             )
 
             if errors:
+                _emit_canvas_update(
+                    "validate_node_params_failed",
+                    params_override=params_to_check,
+                    current_node_id=node.id,
+                )
                 return _build_response("error", errors=errors)
 
             validated_params = params_to_check
             filled_params[node.id] = params_to_check
+            _emit_canvas_update(
+                "validate_node_params",
+                params_override=params_to_check,
+                current_node_id=node.id,
+            )
             return _build_response("ok", params=params_to_check)
 
         agent = Agent(

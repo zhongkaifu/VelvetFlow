@@ -856,6 +856,7 @@ def _ensure_actions_registered_or_repair(
     action_registry: List[Dict[str, Any]],
     search_service: HybridActionSearchService,
     reason: str,
+    progress_callback: Callable[[str, Mapping[str, Any]], None] | None = None,
 ) -> Workflow:
     """Ensure all action nodes reference a registered action, otherwise trigger repair.
 
@@ -914,6 +915,7 @@ def _ensure_actions_registered_or_repair(
         action_registry=action_registry,
         search_service=search_service,
         reason=reason,
+        progress_callback=progress_callback,
     )
     final_workflow = repaired if isinstance(repaired, Workflow) else Workflow.model_validate(repaired)
     return _attach_out_params_schema(final_workflow, actions_by_id)
@@ -974,12 +976,14 @@ def _validate_and_repair_workflow(
                     action_registry=action_registry,
                     search_service=search_service,
                     reason="Jinja 规范化后校验失败",
+                    progress_callback=progress_callback,
                 )
                 current_workflow = _ensure_actions_registered_or_repair(
                     current_workflow,
                     action_registry=action_registry,
                     search_service=search_service,
                     reason="Jinja 规范化修复后校验 action_id",
+                    progress_callback=progress_callback,
                 )
                 last_good_workflow = current_workflow
                 _emit_progress(f"{trace_event_prefix}_repair_round_{repair_round}", current_workflow)
@@ -1205,6 +1209,7 @@ def _validate_and_repair_workflow(
             search_service=search_service,
             reason=f"修复轮次 {repair_round + 1}",
             previous_attempts=previous_attempts,
+            progress_callback=progress_callback,
         )
         for key in current_errors_by_key:
             pending_attempts[key] = {
@@ -1216,6 +1221,7 @@ def _validate_and_repair_workflow(
             action_registry=action_registry,
             search_service=search_service,
             reason=f"修复轮次 {repair_round + 1} 后校验 action_id",
+            progress_callback=progress_callback,
         )
         last_good_workflow = current_workflow
         _emit_progress(f"{trace_event_prefix}_repair_round_{repair_round}", current_workflow)
@@ -1328,6 +1334,7 @@ def plan_workflow_with_two_pass(
                     action_registry=action_registry,
                     search_service=search_service,
                     reason="结构规划阶段校验失败",
+                    progress_callback=progress_callback,
                 )
             else:
                 try:
@@ -1345,6 +1352,7 @@ def plan_workflow_with_two_pass(
                         action_registry=action_registry,
                         search_service=search_service,
                         reason="结构规划阶段校验失败",
+                        progress_callback=progress_callback,
                     )
                 except Exception as e:  # noqa: BLE001
                     log_warn(
@@ -1356,6 +1364,7 @@ def plan_workflow_with_two_pass(
                         action_registry=action_registry,
                         search_service=search_service,
                         reason="结构规划阶段校验失败",
+                        progress_callback=progress_callback,
                     )
             if not isinstance(skeleton, Workflow):
                 payload = (
@@ -1381,6 +1390,7 @@ def plan_workflow_with_two_pass(
                 action_registry=action_registry,
                 search_service=search_service,
                 reason="结构规划后修正未注册的 action_id",
+                progress_callback=progress_callback,
             )
             last_good_workflow: Workflow = skeleton
             try:
@@ -1389,6 +1399,7 @@ def plan_workflow_with_two_pass(
                         workflow_skeleton=skeleton.model_dump(by_alias=True),
                         action_registry=action_registry,
                         model=OPENAI_MODEL,
+                        progress_callback=progress_callback,
                     )
             except Exception as err:  # noqa: BLE001
                 log_warn(
@@ -1402,12 +1413,14 @@ def plan_workflow_with_two_pass(
                     action_registry=action_registry,
                     search_service=search_service,
                     reason="参数补全异常，尝试直接基于 skeleton 修复",
+                    progress_callback=progress_callback,
                 )
                 current_workflow = _ensure_actions_registered_or_repair(
                     current_workflow,
                     action_registry=action_registry,
                     search_service=search_service,
                     reason="参数补全异常修复后校验 action_id",
+                    progress_callback=progress_callback,
                 )
                 last_good_workflow = current_workflow
                 completed_workflow_raw = current_workflow.model_dump(by_alias=True)
@@ -1423,12 +1436,14 @@ def plan_workflow_with_two_pass(
                         action_registry=action_registry,
                         search_service=search_service,
                         reason="补参结果校验失败",
+                        progress_callback=progress_callback,
                     )
                     current_workflow = _ensure_actions_registered_or_repair(
                         current_workflow,
                         action_registry=action_registry,
                         search_service=search_service,
                         reason="补参结果修复后校验 action_id",
+                        progress_callback=progress_callback,
                     )
                     last_good_workflow = current_workflow
                 else:
@@ -1439,6 +1454,7 @@ def plan_workflow_with_two_pass(
                             action_registry=action_registry,
                             search_service=search_service,
                             reason="参数补全后修正未注册的 action_id",
+                            progress_callback=progress_callback,
                         )
                         last_good_workflow = current_workflow
                     except PydanticValidationError as e:
@@ -1453,12 +1469,14 @@ def plan_workflow_with_two_pass(
                                 action_registry=action_registry,
                                 search_service=search_service,
                                 reason="补参结果校验失败",
+                                progress_callback=progress_callback,
                             )
                             current_workflow = _ensure_actions_registered_or_repair(
                                 current_workflow,
                                 action_registry=action_registry,
                                 search_service=search_service,
                                 reason="补参结果修复后校验 action_id",
+                                progress_callback=progress_callback,
                             )
                             last_good_workflow = current_workflow
                         else:
@@ -1474,12 +1492,14 @@ def plan_workflow_with_two_pass(
                             action_registry=action_registry,
                             search_service=search_service,
                             reason="补参结果校验失败",
+                            progress_callback=progress_callback,
                         )
                         current_workflow = _ensure_actions_registered_or_repair(
                             current_workflow,
                             action_registry=action_registry,
                             search_service=search_service,
                             reason="补参结果修复后校验 action_id",
+                            progress_callback=progress_callback,
                         )
                         last_good_workflow = current_workflow
             if progress_callback:
@@ -1555,6 +1575,7 @@ def update_workflow_with_two_pass(
                 action_registry=action_registry,
                 search_service=search_service,
                 reason="更新前的输入校验失败",
+                progress_callback=progress_callback,
             )
 
         base_workflow = _ensure_actions_registered_or_repair(
@@ -1562,6 +1583,7 @@ def update_workflow_with_two_pass(
             action_registry=action_registry,
             search_service=search_service,
             reason="更新前校验 action_id",
+            progress_callback=progress_callback,
         )
         last_good_workflow = base_workflow
 
@@ -1582,6 +1604,7 @@ def update_workflow_with_two_pass(
                 action_registry=action_registry,
                 search_service=search_service,
                 reason="更新结果校验失败",
+                progress_callback=progress_callback,
             )
         else:
             try:
@@ -1599,6 +1622,7 @@ def update_workflow_with_two_pass(
                     action_registry=action_registry,
                     search_service=search_service,
                     reason="更新结果校验失败",
+                    progress_callback=progress_callback,
                 )
 
         updated_workflow = _ensure_actions_registered_or_repair(
@@ -1606,6 +1630,7 @@ def update_workflow_with_two_pass(
             action_registry=action_registry,
             search_service=search_service,
             reason="更新结果校验 action_id",
+            progress_callback=progress_callback,
         )
         last_good_workflow = updated_workflow
 
