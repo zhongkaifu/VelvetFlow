@@ -69,6 +69,7 @@ def get_jinja_env() -> Environment:
         return dt.strftime(format_str)
 
     env.filters.setdefault("date", _format_date)
+    env.tests.setdefault("truthy", lambda value: bool(value))
     return env
 
 
@@ -128,6 +129,16 @@ def validate_jinja_expr(expr: Any, *, path: str = "expression") -> None:
             if isinstance(first_arg, nodes.Const) and isinstance(first_arg.value, str):
                 if first_arg.value not in env.filters:
                     raise ValueError(f"{path} 使用了未注册的过滤器: {first_arg.value}")
+        if filter_node.name in {"select", "reject"} and filter_node.args:
+            test_arg = filter_node.args[0]
+            if isinstance(test_arg, nodes.Const) and isinstance(test_arg.value, str):
+                if test_arg.value not in env.tests:
+                    raise ValueError(f"{path} 使用了未注册的测试: {test_arg.value}")
+        if filter_node.name in {"selectattr", "rejectattr"} and len(filter_node.args) >= 2:
+            test_arg = filter_node.args[1]
+            if isinstance(test_arg, nodes.Const) and isinstance(test_arg.value, str):
+                if test_arg.value not in env.tests:
+                    raise ValueError(f"{path} 使用了未注册的测试: {test_arg.value}")
 
 
 def eval_jinja_expr(expr: str, context: Mapping[str, Any]) -> Any:

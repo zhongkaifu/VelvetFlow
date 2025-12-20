@@ -5,7 +5,7 @@
 import re
 from typing import Any, Dict, List, Mapping, Optional
 
-from velvetflow.jinja_utils import get_jinja_env
+from velvetflow.jinja_utils import validate_jinja_expr
 from velvetflow.models import ValidationError
 from velvetflow.reference_utils import normalize_reference_path, parse_field_path
 from velvetflow.loop_dsl import loop_body_has_action
@@ -64,9 +64,8 @@ def _strip_jinja_filters(expr: str) -> str:
 
 
 def _validate_jinja_expression(expr: str, *, node_id: str | None, field: str, errors: List[ValidationError]) -> None:
-    env = get_jinja_env()
     try:
-        env.compile_expression(expr)
+        validate_jinja_expr(expr, path=field)
     except Exception as exc:  # pragma: no cover - defensive for unexpected parser errors
         errors.append(
             ValidationError(
