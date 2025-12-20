@@ -7,8 +7,10 @@ from velvetflow.planner.orchestrator import (
     plan_workflow_with_two_pass,
     update_workflow_with_two_pass,
 )
-from velvetflow.planner.structure import plan_workflow_structure_with_llm
-from velvetflow.planner.params import fill_params_with_llm
+from velvetflow.planner.structure import (
+    fill_params_with_llm,
+    plan_workflow_structure_with_llm,
+)
 from velvetflow.planner.repair import repair_workflow_with_llm
 from velvetflow.planner.update import update_workflow_with_llm
 from velvetflow.planner.relations import (

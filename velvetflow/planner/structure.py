@@ -7,14 +7,11 @@ import asyncio
 import copy
 import json
 import os
-from typing import Any, Callable, Dict, List, Mapping, Optional
+from collections import deque
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from velvetflow.config import OPENAI_MODEL
-from velvetflow.logging_utils import (
-    log_debug,
-    log_info,
-    log_section,
-)
+from velvetflow.logging_utils import log_debug, log_event, log_info, log_section
 from velvetflow.planner.agent_runtime import Agent, Runner, function_tool
 from velvetflow.planner.action_guard import ensure_registered_actions
 from velvetflow.planner.workflow_builder import (
@@ -23,8 +20,13 @@ from velvetflow.planner.workflow_builder import (
 )
 from velvetflow.loop_dsl import iter_workflow_and_loop_body_nodes
 from velvetflow.search import HybridActionSearchService
-from velvetflow.models import infer_edges_from_bindings
-from velvetflow.reference_utils import parse_field_path
+from velvetflow.models import ALLOWED_PARAM_AGGREGATORS, Node, Workflow, infer_edges_from_bindings
+from velvetflow.planner.relations import get_referenced_nodes
+from velvetflow.reference_utils import normalize_reference_path, parse_field_path
+from velvetflow.verification.validation import (
+    _check_array_item_field,
+    _check_output_path_against_schema,
+)
 from velvetflow.verification.binding_checks import _iter_template_references
 
 
@@ -364,6 +366,368 @@ def _prepare_skeleton_for_next_stage(
     return _attach_inferred_edges(skeleton)
 
 
+def _build_combined_prompt() -> str:
+    structure_prompt = (
+        "你是一个通用业务工作流编排助手。\n"
+        "【Workflow DSL 语法与语义（务必遵守）】\n"
+        "- workflow = {workflow_name, description, nodes: []}，只能返回合法 JSON（edges 会由系统基于节点绑定自动推导，不需要生成）。\n"
+        "- node 基本结构：{id, type, display_name, params, depends_on, action_id?, out_params_schema?, loop/subgraph/branches?}。\n"
+        "  type 仅允许 action/condition/loop/parallel。无需 start/end/exit 节点。\n"
+        "  action 节点必须填写 action_id（来自动作库）与 params；只有 action 节点允许 out_params_schema。\n"
+        "  condition 节点的 params 只能包含 expression（单个返回布尔值的 Jinja 表达式）；true_to_node/false_to_node 必须是节点顶层字段（字符串或 null），不得放入 params。\n"
+        "  loop 节点包含 loop_kind/iter/source/body_subgraph/exports，exports 的 value 必须引用 body_subgraph 节点字段（如 {{ result_of.node.field }}），循环外部只能引用 exports.<key>，body_subgraph 仅需 nodes 数组，不需要 entry/exit/edges。\n"
+        "  parallel 节点的 branches 为非空数组，每个元素包含 id/entry_node/sub_graph_nodes。\n"
+        "- params 内部必须直接使用 Jinja 表达式引用上游结果（如 {{ result_of.<node_id>.<field_path> }} 或 {{ loop.item.xxx }}），不再允许旧的 __from__/__agg__ DSL。"
+        "  你在规划阶段输出的每一个 params 值（包含 condition/switch/loop 节点）都会被 Jinja 引擎解析，任何非 Jinja2 语法的引用会被视为错误并触发自动修复，请严格遵循 Jinja 模板写法。"
+        "  其中 <node_id> 必须存在且字段需与上游 output_schema 或 loop.exports 对齐。\n"
+        "系统中有一个 Action Registry，包含大量业务动作，你只能通过 search_business_actions 查询。\n"
+        "构建方式：\n"
+        "1) 使用 set_workflow_meta 设置工作流名称和描述。\n"
+        "2) 当需要业务动作时，必须先用 search_business_actions 查询候选；add_action_node 的 action_id 必须取自最近一次 candidates.id。\n"
+        "3）当需要 condition/switch/loop 节点时，必须先用 add_condition_node/add_switch_node/add_loop_node 创建，params 中的表达式和引用需严格遵循 Jinja 模板写法；\n"
+        "4) 调用submit_node_params 为已创建的节点补充 params；\n"
+        "5) 调用validate_node_params 验证节点参数；\n"
+        "6) 如需修改已创建节点（补充 display_name/params/分支指向/父节点等），请调用 update_action_node 或 update_condition_node 并传入需要覆盖的字段列表；调用后务必检查上下游关联节点是否也需要同步更新以保持一致性。\n"
+        "7) condition 节点必须显式提供 true_to_node 和 false_to_node，值可以是节点 id（继续执行）或 null（表示该分支结束）；通过节点 params 中的输入/输出引用表达依赖关系，不需要显式绘制 edges。\n"
+        "8) 请为每个节点维护 depends_on（字符串数组），列出其直接依赖的上游节点；当节点被 condition.true_to_node/false_to_node 指向时，必须将该 condition 节点加入目标节点的 depends_on。\n"
+        "9) 当结构完成时继续补全所有节点的 params，并确保通过 validate_node_params。\n\n"
+        "特别注意：只有 action 节点需要 out_params_schema，condition 节点没有该属性；out_params_schema 的格式应为 {\"参数名\": \"类型\"}，仅需列出业务 action 输出参数的名称与类型，不要添加额外描述或示例。\n\n"
+        "【非常重要的原则】\n"        
+        "1. 你必须严格围绕当前对话中的自然语言需求来设计 workflow：\n"
+        "   - 触发方式（定时 / 事件 / 手动）\n"
+        "   - 数据查询/读取\n"
+        "   - 筛选/过滤条件\n"
+        "   - 聚合/统计/总结\n"
+        "   - 通知 / 写入 / 落库 / 调用下游系统\n"        
+        "2. 循环节点的内部数据只能通过 loop.exports 暴露给外部，下游引用循环结果时必须使用 result_of.<loop_id>.exports.<key>，禁止直接引用 body 子图的节点。\n"
+        "3. loop.exports 应定义在 params.exports 下，请勿写在 body_subgraph 内；body_subgraph 仅包含 nodes 数组，无需 entry/exit/edges。\n"
+        "4. 允许嵌套循环，但需要通过 parent_node_id 或 sub_graph_nodes 明确将子循环纳入父循环的 body_subgraph；"
+        "   外部节点引用循环内部数据时仍需通过 loop.exports，而不是直接指向子图节点。\n\n"
+        "你必须确保工作流结构能够覆盖用户自然语言需求中的每个子任务，而不是只覆盖前半部分：\n"
+        "例如，如果需求包含：触发 + 查询 + 筛选 + 总结 + 通知，你不能只实现触发 + 查询，\n"
+        "必须在结构里显式包含筛选、总结、通知等对应节点和数据流。"
+    )
+    param_prompt = (
+        "【参数补全规则】\n"
+        "你是一个工作流参数补全助手。一次只处理一个节点，请根据给定的 arg_schema 补齐当前节点的 params。\n"
+        "必须通过工具提交与校验：先调用 submit_node_params 提交补全结果，再调用 validate_node_params 校验，收到校验错误要重新分析并再次提交。\n"
+        "当某个字段需要引用其他节点的输出时，必须直接写成 Jinja 表达式或模板字符串，例如 {{ result_of.<node_id>.<field> }}，"
+        "node_id 只能来自 allowed_node_ids，field 必须存在于该节点的 output_schema。禁止再使用旧的 __from__/__agg__ 绑定 DSL。\n"
+        "你的所有 params 值都会直接交给 Jinja2 引擎解析，任何非 Jinja 语法（包括残留的绑定对象或伪代码）都会被视为错误并触发自动修复，请务必输出可被 Jinja 渲染的字符串或字面量。\n"
+        "循环场景下可使用 loop.item/loop.index 以及 loop.exports.* 暴露的字段，依然通过 Jinja 表达式引用，禁止直接引用 loop body 的节点。\n"
+        "引用 loop.exports 结构时必须指向 exports 内部的具体字段或子结构，不能只写 result_of.<loop_id>.exports。\n"
+        "loop.exports 的每个键会收集每轮迭代的结果形成列表，每个 exports value 必须引用 body_subgraph 节点字段，如 {{ result_of.<body_node>.<field> }}。\n"
+        "所有节点的 params 不得为空；如无明显默认值，需要分析上下游语义后调用工具补全。\n"
+        "聚合/筛选/格式化也请用 Jinja 过滤器或表达式完成（例如 {{ result_of.a.items | selectattr('score', '>', 80) | list | length }} 或 {{ result_of.a.items | map(attribute='name') | join(', ') }}），不要再输出带 __agg__ 的对象。"
+    )
+    return f"{structure_prompt}\n\n{param_prompt}"
+
+
+def _find_start_nodes_for_params(workflow: Workflow) -> List[str]:
+    starts = [n.id for n in workflow.nodes if n.type == "start"]
+    if starts:
+        return starts
+
+    to_ids = {e.to_node for e in workflow.edges}
+    candidates = [n.id for n in workflow.nodes if n.id not in to_ids]
+    if candidates:
+        return candidates
+
+    return [workflow.nodes[0].id] if workflow.nodes else []
+
+
+def _traverse_order(workflow: Workflow) -> List[str]:
+    """按 start -> downstream 的顺序遍历，保证上游节点先被处理。"""
+
+    adj: Dict[str, List[str]] = {}
+    for e in workflow.edges:
+        adj.setdefault(e.from_node, []).append(e.to_node)
+
+    visited: set[str] = set()
+    order: List[str] = []
+    dq: deque[str] = deque(_find_start_nodes_for_params(workflow))
+
+    while dq:
+        nid = dq.popleft()
+        if nid in visited:
+            continue
+        visited.add(nid)
+        order.append(nid)
+        for nxt in adj.get(nid, []):
+            if nxt not in visited:
+                dq.append(nxt)
+
+    for node in workflow.nodes:
+        if node.id not in visited:
+            order.append(node.id)
+
+    return order
+
+
+def _looks_like_entity_key(field_name: str) -> bool:
+    lower = field_name.lower()
+    return any(token in lower for token in ["id", "code", "key", "uuid"])
+
+
+def _extract_binding_sources(
+    obj: Any, *, path_prefix: str = "params"
+) -> List[Tuple[str, str]]:
+    """Return all bindings within a params object as (path, __from__) pairs."""
+
+    bindings: List[Tuple[str, str]] = []
+
+    if isinstance(obj, dict):
+        if isinstance(obj.get("__from__"), str):
+            bindings.append(
+                (path_prefix, normalize_reference_path(obj["__from__"]))
+            )
+        for k, v in obj.items():
+            child_prefix = f"{path_prefix}.{k}"
+            bindings.extend(_extract_binding_sources(v, path_prefix=child_prefix))
+    elif isinstance(obj, list):
+        for idx, item in enumerate(obj):
+            bindings.extend(
+                _extract_binding_sources(item, path_prefix=f"{path_prefix}[{idx}]")
+            )
+
+    return bindings
+
+
+def _build_binding_memory(
+    filled_params: Mapping[str, Mapping[str, Any]], processed_node_ids: Sequence[str]
+) -> Dict[str, str]:
+    """Track key entity bindings from already补全的节点，供跨节点一致性检查使用。"""
+
+    memory: Dict[str, str] = {}
+
+    for nid in processed_node_ids:
+        params = filled_params.get(nid)
+        if not isinstance(params, Mapping):
+            continue
+        for path, source in _extract_binding_sources(params):
+            field = path.split(".")[-1]
+            if _looks_like_entity_key(field) and field not in memory:
+                memory[field] = source
+
+    return memory
+
+
+def _summarize_output_fields_from_schema(
+    schema: Mapping[str, Any] | None,
+) -> List[str]:
+    if not isinstance(schema, Mapping):
+        return []
+    props = schema.get("properties")
+    if isinstance(props, Mapping):
+        return [k for k in props.keys() if isinstance(k, str)]
+    return []
+
+
+def _summarize_node_outputs(
+    node: Node, action_schemas: Mapping[str, Dict[str, Any]]
+) -> List[str]:
+    if node.type == "loop":
+        exports = node.params.get("exports") if isinstance(node.params, Mapping) else {}
+        fields: List[str] = []
+        if isinstance(exports, Mapping):
+            fields.extend([k for k in exports.keys() if isinstance(k, str)])
+        return fields
+
+    if not node.action_id:
+        return []
+    schema = getattr(node, "out_params_schema", None) or action_schemas.get(
+        node.action_id, {}
+    ).get("output_schema")
+    return _summarize_output_fields_from_schema(schema)
+
+
+def _build_global_context(
+    *,
+    workflow: Workflow,
+    action_schemas: Mapping[str, Dict[str, Any]],
+    filled_params: Mapping[str, Mapping[str, Any]],
+    processed_node_ids: Sequence[str],
+    binding_memory: Mapping[str, str],
+) -> Dict[str, Any]:
+    upstream_map: Dict[str, List[str]] = {}
+    for e in workflow.edges:
+        upstream_map.setdefault(e.to_node, []).append(e.from_node)
+
+    node_summaries: List[Dict[str, Any]] = []
+    for n in workflow.nodes:
+        schema = action_schemas.get(n.action_id, {}) if n.action_id else {}
+        node_summaries.append(
+            {
+                "id": n.id,
+                "type": n.type,
+                "action_id": n.action_id,
+                "display_name": n.display_name,
+                "domain": schema.get("domain"),
+                "out_params_schema": getattr(n, "out_params_schema", None)
+                or schema.get("output_schema"),
+                "output_fields": _summarize_node_outputs(n, action_schemas),
+                "arg_required_fields": (
+                    schema.get("arg_schema", {}).get("required")
+                    if isinstance(schema.get("arg_schema"), Mapping)
+                    else None
+                ),
+                "upstream": upstream_map.get(n.id, []),
+                "params_snapshot": filled_params.get(n.id)
+                if n.id in processed_node_ids
+                else None,
+            }
+        )
+
+    return {
+        "workflow": {
+            "name": workflow.workflow_name,
+            "description": workflow.description,
+        },
+        "node_summaries": node_summaries,
+        "entity_binding_hints": [
+            {"field": field, "source": src} for field, src in binding_memory.items()
+        ],
+    }
+
+
+def _collect_binding_issues(
+    params: Dict[str, Any],
+    upstream_nodes: List[Node],
+    action_schemas: Dict[str, Dict[str, Any]],
+    binding_memory: Mapping[str, str] | None = None,
+) -> List[str]:
+    """Validate __from__ / field references against upstream schemas.
+
+    The function only checks bindings that point to ``result_of.<node_id>``
+    sources. When a binding or its nested pipeline/count_if field refers to a
+    missing node or field, the issue is returned as a human-readable string so
+    that the caller can surface it early and trigger automated repair tools.
+    """
+
+    nodes_by_id: Dict[str, Dict[str, Any]] = {
+        n.id: n.model_dump(by_alias=True) for n in upstream_nodes
+    }
+    actions_by_id = {aid: schema for aid, schema in action_schemas.items()}
+
+    issues: List[str] = []
+
+    def _walk(obj: Any, path_prefix: str = "params") -> None:
+        if isinstance(obj, dict):
+            if "__from__" in obj:
+                src = normalize_reference_path(obj.get("__from__"))
+                schema_err = _check_output_path_against_schema(
+                    src, nodes_by_id, actions_by_id
+                )
+                if schema_err:
+                    issues.append(f"{path_prefix}: {schema_err}")
+
+                field_name = path_prefix.split(".")[-1]
+                remembered = (binding_memory or {}).get(field_name)
+                if remembered and normalize_reference_path(remembered) != src:
+                    issues.append(
+                        f"{path_prefix}: 字段 {field_name} 需要与之前的绑定保持一致（之前来源 {remembered}，当前 {src}）。"
+                    )
+
+                agg = obj.get("__agg__")
+                if agg is not None and agg not in ALLOWED_PARAM_AGGREGATORS:
+                    issues.append(
+                        f"{path_prefix}: __agg__ 取值非法（{agg}），可选值：{', '.join(ALLOWED_PARAM_AGGREGATORS)}。"
+                    )
+
+                field_checks: List[tuple[str, str]] = []
+                if agg == "count_if":
+                    fld = obj.get("field")
+                    if isinstance(fld, str):
+                        field_checks.append(("count_if.field", fld))
+                if agg == "pipeline":
+                    steps = obj.get("steps")
+                    if isinstance(steps, list):
+                        for idx, step in enumerate(steps):
+                            if not isinstance(step, dict):
+                                continue
+                            if step.get("op") == "filter" and isinstance(
+                                step.get("field"), str
+                            ):
+                                field_checks.append(
+                                    (
+                                        f"pipeline.steps[{idx}].field",
+                                        step["field"],
+                                    )
+                                )
+
+                for field_label, fld in field_checks:
+                    item_err = _check_array_item_field(
+                        src, fld, nodes_by_id, actions_by_id
+                    )
+                    if item_err:
+                        issues.append(f"{path_prefix}.{field_label}: {item_err}")
+
+            for k, v in obj.items():
+                new_prefix = f"{path_prefix}.{k}" if path_prefix else k
+                _walk(v, new_prefix)
+
+        elif isinstance(obj, list):
+            for idx, v in enumerate(obj):
+                _walk(v, f"{path_prefix}[{idx}]")
+
+    _walk(params)
+
+    return issues
+
+
+def _validate_node_params(
+    *,
+    node: Node,
+    params: Dict[str, Any],
+    upstream_nodes: List[Node],
+    action_schemas: Dict[str, Dict[str, Any]],
+    binding_memory: Mapping[str, str] | None = None,
+) -> List[str]:
+    """Validate a single node's params after every tool submission.
+
+    The checks cover:
+    - required/unknown fields against the node's arg_schema when available
+    - binding legality for result_of references via ``_collect_binding_issues``
+    """
+
+    errors: List[str] = []
+
+    if not isinstance(params, dict):
+        return ["params 必须是对象"]
+
+    schema = action_schemas.get(node.action_id or "", {}).get("arg_schema", {})
+    required_fields = []
+    properties = None
+    allow_additional = True
+
+    if isinstance(schema, dict):
+        required_fields = schema.get("required") or []
+        properties = (
+            schema.get("properties") if isinstance(schema.get("properties"), dict) else None
+        )
+        allow_additional = bool(schema.get("additionalProperties", True))
+
+    for field in required_fields:
+        if field not in params:
+            errors.append(f"缺少必填字段 {field}")
+
+    if isinstance(properties, dict) and not allow_additional:
+        for field in params:
+            if field not in properties:
+                errors.append(f"参数 {field} 未在 arg_schema 中定义")
+
+    errors.extend(
+        _collect_binding_issues(
+            params,
+            upstream_nodes=upstream_nodes,
+            action_schemas=action_schemas,
+            binding_memory=binding_memory,
+        )
+    )
+
+    return errors
+
+
 
 def plan_workflow_structure_with_llm(
     nl_requirement: str,
@@ -413,46 +777,7 @@ def plan_workflow_structure_with_llm(
         latest_skeleton = workflow_snapshot
         _emit_progress(label, workflow_snapshot)
         return workflow_snapshot
-    system_prompt = (
-        "你是一个通用业务工作流编排助手。\n"
-        "【Workflow DSL 语法与语义（务必遵守）】\n"
-        "- workflow = {workflow_name, description, nodes: []}，只能返回合法 JSON（edges 会由系统基于节点绑定自动推导，不需要生成）。\n"
-        "- node 基本结构：{id, type, display_name, params, depends_on, action_id?, out_params_schema?, loop/subgraph/branches?}。\n"
-        "  type 仅允许 action/condition/loop/parallel。无需 start/end/exit 节点。\n"
-        "  action 节点必须填写 action_id（来自动作库）与 params；只有 action 节点允许 out_params_schema。\n"
-        "  condition 节点的 params 只能包含 expression（单个返回布尔值的 Jinja 表达式）；true_to_node/false_to_node 必须是节点顶层字段（字符串或 null），不得放入 params。\n"
-        "  loop 节点包含 loop_kind/iter/source/body_subgraph/exports，exports 的 value 必须引用 body_subgraph 节点字段（如 {{ result_of.node.field }}），循环外部只能引用 exports.<key>，body_subgraph 仅需 nodes 数组，不需要 entry/exit/edges。\n"
-        "  parallel 节点的 branches 为非空数组，每个元素包含 id/entry_node/sub_graph_nodes。\n"
-        "- params 内部必须直接使用 Jinja 表达式引用上游结果（如 {{ result_of.<node_id>.<field_path> }} 或 {{ loop.item.xxx }}），不再允许旧的 __from__/__agg__ DSL。"
-        "  你在规划阶段输出的每一个 params 值（包含 condition/switch/loop 节点）都会被 Jinja 引擎解析，任何非 Jinja2 语法的引用会被视为错误并触发自动修复，请严格遵循 Jinja 模板写法。"
-        "  其中 <node_id> 必须存在且字段需与上游 output_schema 或 loop.exports 对齐。\n"
-        "系统中有一个 Action Registry，包含大量业务动作，你只能通过 search_business_actions 查询。\n"
-        "构建方式：\n"
-        "1) 使用 set_workflow_meta 设置工作流名称和描述。\n"
-        "2) 当需要业务动作时，必须先用 search_business_actions 查询候选；add_action_node 的 action_id 必须取自最近一次 candidates.id。\n"
-        "3）当需要 condition/switch/loop 节点时，必须先用 add_condition_node/add_switch_node/add_loop_node 创建，params 中的表达式和引用需严格遵循 Jinja 模板写法；\n"
-        "4) 调用submit_node_params 为已创建的节点补充 params；\n"
-        "5) 调用validate_node_params 验证节点参数；\n"
-        "6) 如需修改已创建节点（补充 display_name/params/分支指向/父节点等），请调用 update_action_node 或 update_condition_node 并传入需要覆盖的字段列表；调用后务必检查上下游关联节点是否也需要同步更新以保持一致性。\n"
-        "7) condition 节点必须显式提供 true_to_node 和 false_to_node，值可以是节点 id（继续执行）或 null（表示该分支结束）；通过节点 params 中的输入/输出引用表达依赖关系，不需要显式绘制 edges。\n"
-        "8) 请为每个节点维护 depends_on（字符串数组），列出其直接依赖的上游节点；当节点被 condition.true_to_node/false_to_node 指向时，必须将该 condition 节点加入目标节点的 depends_on。\n"
-        "9) 当结构完成时停止调用工具，等待进入参数填充阶段。\n\n"
-        "特别注意：只有 action 节点需要 out_params_schema，condition 节点没有该属性；out_params_schema 的格式应为 {\"参数名\": \"类型\"}，仅需列出业务 action 输出参数的名称与类型，不要添加额外描述或示例。\n\n"
-        "【非常重要的原则】\n"        
-        "1. 你必须严格围绕当前对话中的自然语言需求来设计 workflow：\n"
-        "   - 触发方式（定时 / 事件 / 手动）\n"
-        "   - 数据查询/读取\n"
-        "   - 筛选/过滤条件\n"
-        "   - 聚合/统计/总结\n"
-        "   - 通知 / 写入 / 落库 / 调用下游系统\n"        
-        "2. 循环节点的内部数据只能通过 loop.exports 暴露给外部，下游引用循环结果时必须使用 result_of.<loop_id>.exports.<key>，禁止直接引用 body 子图的节点。\n"
-        "3. loop.exports 应定义在 params.exports 下，请勿写在 body_subgraph 内；body_subgraph 仅包含 nodes 数组，无需 entry/exit/edges。\n"
-        "4. 允许嵌套循环，但需要通过 parent_node_id 或 sub_graph_nodes 明确将子循环纳入父循环的 body_subgraph；"
-        "   外部节点引用循环内部数据时仍需通过 loop.exports，而不是直接指向子图节点。\n\n"
-        "你必须确保工作流结构能够覆盖用户自然语言需求中的每个子任务，而不是只覆盖前半部分：\n"
-        "例如，如果需求包含：触发 + 查询 + 筛选 + 总结 + 通知，你不能只实现触发 + 查询，\n"
-        "必须在结构里显式包含筛选、总结、通知等对应节点和数据流。"
-    )
+    system_prompt = _build_combined_prompt()
 
     def _build_validation_error(message: str, **extra: Any) -> Dict[str, Any]:
         payload = {"status": "error", "message": message}
@@ -1182,8 +1507,125 @@ def plan_workflow_structure_with_llm(
             "workflow": snapshot,
         }
 
-    validated_params: Dict[str, Any] | None = None
-    last_submitted_params: Dict[str, Any] | None = None
+    filled_params: Dict[str, Dict[str, Any]] = {
+        nid: copy.deepcopy(node.get("params", {}))
+        for nid, node in builder.nodes.items()
+        if isinstance(node, Mapping)
+    }
+    last_submitted_params: Dict[str, Dict[str, Any]] = {}
+    validated_node_ids: List[str] = []
+
+    def _build_workflow_for_params() -> Workflow:
+        workflow_dict = _attach_inferred_edges(builder.to_workflow())
+        return Workflow.model_validate(workflow_dict)
+
+    def _build_param_context(node_id: str) -> Dict[str, Any]:
+        workflow = _build_workflow_for_params()
+        nodes_by_id = {n.id: n for n in workflow.nodes}
+        node = nodes_by_id.get(node_id)
+        if not node:
+            return {}
+
+        upstream_nodes = get_referenced_nodes(workflow, node_id)
+        allowed_node_ids = [n.id for n in upstream_nodes]
+        binding_memory = _build_binding_memory(filled_params, validated_node_ids)
+        global_context = _build_global_context(
+            workflow=workflow,
+            action_schemas=action_schemas,
+            filled_params=filled_params,
+            processed_node_ids=validated_node_ids,
+            binding_memory=binding_memory,
+        )
+        upstream_context = []
+        for n in upstream_nodes:
+            action_schema = action_schemas.get(n.action_id, {}) if n.action_id else {}
+            upstream_context.append(
+                {
+                    "id": n.id,
+                    "type": n.type,
+                    "action_id": n.action_id,
+                    "output_schema": action_schema.get("output_schema"),
+                    "params": filled_params.get(n.id, n.params),
+                }
+            )
+        target_action_schema = action_schemas.get(node.action_id, {}) if node.action_id else {}
+        return {
+            "target_node": {
+                "id": node.id,
+                "type": node.type,
+                "action_id": node.action_id,
+                "display_name": node.display_name,
+                "existing_params": filled_params.get(node.id, node.params),
+            },
+            "arg_schema": target_action_schema.get("arg_schema"),
+            "allowed_node_ids": allowed_node_ids,
+            "allowed_upstream_nodes": upstream_context,
+            "global_context": global_context,
+        }
+
+    @function_tool(strict_mode=False)
+    def get_param_context(id: str) -> Mapping[str, Any]:
+        """获取指定节点的参数补全上下文。"""
+        _log_tool_call("get_param_context", {"id": id})
+        if not isinstance(id, str) or id not in builder.nodes:
+            return {"status": "error", "message": "节点不存在，无法获取参数上下文。"}
+        payload = _build_param_context(id)
+        if not payload:
+            return {"status": "error", "message": "无法生成参数上下文。"}
+        return {"status": "ok", "payload": payload}
+
+    @function_tool(strict_mode=False)
+    def submit_node_params(id: str, params: Dict[str, Any]) -> Mapping[str, Any]:
+        """提交指定节点的参数草案，等待校验。"""
+        _log_tool_call("submit_node_params", {"id": id})
+        if not isinstance(id, str) or id not in builder.nodes:
+            return {"status": "error", "message": "节点不存在，无法提交参数。"}
+        if not isinstance(params, Mapping):
+            return {"status": "error", "message": "params 需要是对象。"}
+        last_submitted_params[id] = dict(params)
+        log_event(
+            "params_tool_result",
+            {"node_id": id, "tool_name": "submit_node_params", "params": params},
+            node_id=id,
+            action_id=builder.nodes.get(id, {}).get("action_id"),
+        )
+        return {"status": "received", "message": "已收到提交，请调用 validate_node_params。"}
+
+    @function_tool(strict_mode=False)
+    def validate_node_params(id: str, params: Optional[Dict[str, Any]] = None) -> Mapping[str, Any]:
+        """校验指定节点参数并写入已填充结果。"""
+        _log_tool_call("validate_node_params", {"id": id})
+        if not isinstance(id, str) or id not in builder.nodes:
+            return {"status": "error", "message": "节点不存在，无法校验。"}
+        params_to_check = params if isinstance(params, dict) else last_submitted_params.get(id)
+        if params_to_check is None:
+            return {"status": "error", "errors": ["缺少待校验的 params（请先提交或在参数中提供 params）"]}
+
+        workflow = _build_workflow_for_params()
+        nodes_by_id = {n.id: n for n in workflow.nodes}
+        node = nodes_by_id.get(id)
+        if not node:
+            return {"status": "error", "errors": ["节点不存在于当前 workflow。"]}
+
+        upstream_nodes = get_referenced_nodes(workflow, id)
+        binding_memory = _build_binding_memory(filled_params, validated_node_ids)
+        errors = _validate_node_params(
+            node=node,
+            params=params_to_check,
+            upstream_nodes=upstream_nodes,
+            action_schemas=action_schemas,
+            binding_memory=binding_memory,
+        )
+
+        if errors:
+            return {"status": "error", "errors": errors}
+
+        filled_params[id] = dict(params_to_check)
+        if id not in validated_node_ids:
+            validated_node_ids.append(id)
+        builder.update_node(id, params=dict(params_to_check))
+        _snapshot(f"validate_params_{id}")
+        return {"status": "ok", "params": params_to_check}
     
     agent = Agent(
         name="WorkflowStructurePlanner",
@@ -1199,6 +1641,9 @@ def plan_workflow_structure_with_llm(
             update_condition_node,
             update_switch_node,
             update_loop_node,
+            get_param_context,
+            submit_node_params,
+            validate_node_params,
             dump_model,
         ],
         model=OPENAI_MODEL
@@ -1221,4 +1666,227 @@ def plan_workflow_structure_with_llm(
     return latest_skeleton
 
 
-__all__ = ["plan_workflow_structure_with_llm"]
+def fill_params_with_llm(
+    workflow_skeleton: Dict[str, Any],
+    action_registry: List[Dict[str, Any]],
+    model: str = OPENAI_MODEL,
+    progress_callback: Callable[[str, Mapping[str, Any]], None] | None = None,
+) -> Dict[str, Any]:
+    if not os.environ.get("OPENAI_API_KEY"):
+        raise RuntimeError("请先设置 OPENAI_API_KEY 环境变量再进行参数补全。")
+
+    action_schemas = {}
+    for a in action_registry:
+        aid = a["action_id"]
+        action_schemas[aid] = {
+            "name": a.get("name", ""),
+            "description": a.get("description", ""),
+            "domain": a.get("domain", ""),
+            "arg_schema": a.get("arg_schema"),
+            "output_schema": a.get("output_schema"),
+        }
+
+    system_prompt = _build_combined_prompt()
+
+    workflow = Workflow.model_validate(workflow_skeleton)
+    nodes_by_id: Dict[str, Node] = {n.id: n for n in workflow.nodes}
+    filled_params: Dict[str, Dict[str, Any]] = {
+        n.id: copy.deepcopy(n.params) for n in workflow.nodes
+    }
+
+    processed_node_ids: List[str] = []
+
+    def _log_tool_call(tool_name: str, payload: Mapping[str, Any] | None = None) -> None:
+        if payload:
+            log_info(
+                f"[ParamFiller] tool={tool_name}",
+                json.dumps(payload, ensure_ascii=False),
+            )
+        else:
+            log_info(f"[ParamFiller] tool={tool_name}")
+
+    def _emit_canvas_update(
+        label: str,
+        *,
+        params_override: Dict[str, Any] | None = None,
+        current_node_id: str | None = None,
+    ) -> None:
+        if not progress_callback:
+            return
+        try:
+            nodes_snapshot = []
+            for n in workflow.nodes:
+                data = n.model_dump(by_alias=True)
+                params_source = filled_params.get(n.id, n.params)
+                if params_override is not None and current_node_id == n.id:
+                    params_source = params_override
+                data["params"] = params_source
+                nodes_snapshot.append(data)
+            payload = {
+                "workflow_name": workflow.workflow_name,
+                "description": workflow.description,
+                "nodes": nodes_snapshot,
+            }
+            progress_callback(label, payload)
+        except Exception:
+            log_debug(f"[ParamFiller] progress_callback {label} 调用失败，已忽略。")
+
+    for node_id in _traverse_order(workflow):
+        node = nodes_by_id[node_id]
+        upstream_nodes = get_referenced_nodes(workflow, node_id)
+        allowed_node_ids = [n.id for n in upstream_nodes]
+
+        binding_memory = _build_binding_memory(
+            filled_params, processed_node_ids
+        )
+
+        global_context = _build_global_context(
+            workflow=workflow,
+            action_schemas=action_schemas,
+            filled_params=filled_params,
+            processed_node_ids=processed_node_ids,
+            binding_memory=binding_memory,
+        )
+
+        upstream_context = []
+        for n in upstream_nodes:
+            action_schema = action_schemas.get(n.action_id, {}) if n.action_id else {}
+            upstream_context.append(
+                {
+                    "id": n.id,
+                    "type": n.type,
+                    "action_id": n.action_id,
+                    "output_schema": action_schema.get("output_schema"),
+                    "params": filled_params.get(n.id, n.params),
+                }
+            )
+
+        target_action_schema = action_schemas.get(node.action_id, {}) if node.action_id else {}
+        user_payload = {
+            "target_node": {
+                "id": node.id,
+                "type": node.type,
+                "action_id": node.action_id,
+                "display_name": node.display_name,
+                "existing_params": filled_params[node.id],
+            },
+            "arg_schema": target_action_schema.get("arg_schema"),
+            "allowed_node_ids": allowed_node_ids,
+            "allowed_upstream_nodes": upstream_context,
+            "global_context": global_context,
+        }
+
+        validated_params: Dict[str, Any] | None = None
+        last_submitted_params: Dict[str, Any] | None = None
+
+        def _build_response(status: str, **extra: Any) -> Dict[str, Any]:
+            payload = {"status": status}
+            payload.update(extra)
+            return payload
+
+        @function_tool(strict_mode=False)
+        def submit_node_params(id: str, params: Dict[str, Any]) -> Mapping[str, Any]:
+            """提交当前节点的参数草案，等待校验。"""
+            _log_tool_call("submit_node_params", {"id": id})
+            nonlocal last_submitted_params
+            if id != node.id:
+                return _build_response(
+                    "error",
+                    message="只能提交当前正在处理的节点。",
+                    expected_id=node.id,
+                )
+            last_submitted_params = params
+            log_event(
+                "params_tool_result",
+                {"node_id": node.id, "tool_name": "submit_node_params", "params": params},
+                node_id=node.id,
+                action_id=node.action_id,
+            )
+            _emit_canvas_update(
+                "submit_node_params",
+                params_override=params,
+                current_node_id=node.id,
+            )
+            return _build_response("received", message="已收到提交，请立即调用 validate_node_params。")
+
+        @function_tool(strict_mode=False)
+        def validate_node_params(id: str, params: Optional[Dict[str, Any]] = None) -> Mapping[str, Any]:
+            """校验当前节点参数并写入已填充结果。"""
+            _log_tool_call("validate_node_params", {"id": id})
+            nonlocal validated_params, last_submitted_params
+            if id != node.id:
+                return _build_response(
+                    "error",
+                    message="只能校验当前节点。",
+                    expected_id=node.id,
+                )
+
+            params_to_check = params if isinstance(params, dict) else last_submitted_params
+            if params_to_check is None:
+                return _build_response(
+                    "error",
+                    errors=["缺少待校验的 params（请先提交或在参数中提供 params）"],
+                )
+
+            errors = _validate_node_params(
+                node=node,
+                params=params_to_check,
+                upstream_nodes=upstream_nodes,
+                action_schemas=action_schemas,
+                binding_memory=binding_memory,
+            )
+
+            if errors:
+                _emit_canvas_update(
+                    "validate_node_params_failed",
+                    params_override=params_to_check,
+                    current_node_id=node.id,
+                )
+                return _build_response("error", errors=errors)
+
+            validated_params = params_to_check
+            filled_params[node.id] = params_to_check
+            _emit_canvas_update(
+                "validate_node_params",
+                params_override=params_to_check,
+                current_node_id=node.id,
+            )
+            return _build_response("ok", params=params_to_check)
+
+        agent = Agent(
+            name="WorkflowPlanner",
+            instructions=system_prompt,
+            tools=[submit_node_params, validate_node_params],
+            model=model,
+        )
+
+        run_input: Any = json.dumps(user_payload, ensure_ascii=False)
+        try:
+            Runner.run_sync(agent, run_input, max_turns=8)
+        except TypeError:
+            coro = Runner.run(agent, run_input)  # type: ignore[call-arg]
+            result = coro if not asyncio.iscoroutine(coro) else asyncio.run(coro)
+            _ = result
+
+        if validated_params is None:
+            raise ValueError(f"节点 {node.id} 的参数补全未通过校验，请检查工具调用返回。")
+
+        processed_node_ids.append(node.id)
+
+    completed_nodes = []
+    for node in workflow.nodes:
+        data = node.model_dump(by_alias=True)
+        data["params"] = filled_params.get(node.id, node.params)
+        completed_nodes.append(data)
+
+    completed_workflow = {
+        "workflow_name": workflow.workflow_name,
+        "description": workflow.description,
+        "nodes": completed_nodes,
+        "edges": [e.model_dump(by_alias=True) for e in workflow.edges],
+    }
+
+    return completed_workflow
+
+
+__all__ = ["plan_workflow_structure_with_llm", "fill_params_with_llm"]
