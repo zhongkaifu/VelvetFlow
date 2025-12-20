@@ -532,6 +532,7 @@ def plan_workflow_structure_with_llm(
     latest_finalize_feedback: str = ""
     latest_nodes_without_upstream: List[Mapping[str, Any]] = []
     latest_isolated_nodes: List[Mapping[str, Any]] = []
+    latest_finalize_called = False
     finalized_state: Dict[str, bool] = {"done": False}
 
     def _emit_progress(label: str, workflow_obj: Mapping[str, Any]) -> None:
@@ -1335,12 +1336,14 @@ def plan_workflow_structure_with_llm(
         nonlocal latest_finalize_feedback
         nonlocal latest_nodes_without_upstream
         nonlocal latest_isolated_nodes
+        nonlocal latest_finalize_called
         skeleton, coverage = _run_coverage_check(
             nl_requirement=nl_requirement,
             builder=builder,
             action_registry=action_registry,
             search_service=search_service,
         )
+        latest_finalize_called = True
         latest_skeleton = skeleton
         latest_coverage = coverage
         nodes_without_upstream = _find_nodes_without_upstream(skeleton)
@@ -1523,7 +1526,7 @@ def plan_workflow_structure_with_llm(
 
         needs_coverage_refine = bool(latest_coverage) and not latest_coverage.get("is_covered", False)
         needs_dependency_refine = bool(latest_nodes_without_upstream) or bool(latest_isolated_nodes)
-        needs_finalize_call = not latest_coverage
+        needs_finalize_call = not latest_finalize_called
         can_refine = (
             (needs_coverage_refine and coverage_refine_rounds < max_coverage_refine_rounds)
             or (needs_dependency_refine and dependency_refine_rounds < max_dependency_refine_rounds)
