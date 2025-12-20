@@ -125,6 +125,26 @@ def tokenize_keywords(s: str) -> List[str]:
     return list(dict.fromkeys([t.lower() for t in toks]))
 
 
+def parse_json_response(raw: str) -> Optional[dict]:
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except Exception:
+        pass
+    stripped = raw.strip()
+    if stripped.startswith("```"):
+        stripped = re.sub(r"^```(?:json)?", "", stripped, flags=re.IGNORECASE).strip()
+        stripped = re.sub(r"```$", "", stripped).strip()
+    match = re.search(r"\{.*\}", stripped, re.S)
+    if not match:
+        return None
+    try:
+        return json.loads(match.group(0))
+    except Exception:
+        return None
+
+
 # ============================================================
 # HTML -> Clean Markdown
 # ============================================================
@@ -414,20 +434,15 @@ class DeltaSummarizer:
                 {"role": "user", "content": json.dumps(prompt, ensure_ascii=False)},
             ],
             temperature=0.1,
+            response_format={"type": "json_object"},
         )
 
         raw = resp.choices[0].message.content or ""
         log_llm_io("SUMMARY_DELTA", {"goal": goal, "page_url": page_url, "current_summary": prompt["current_summary"]}, raw)
 
-        m = re.search(r"\{.*\}", raw, re.S)
-        if not m:
+        delta = parse_json_response(raw)
+        if not delta:
             log("[SUMMARY] delta invalid JSON; skip")
-            return
-
-        try:
-            delta = json.loads(m.group(0))
-        except Exception as e:
-            log(f"[SUMMARY] delta parse error: {e}")
             return
 
         # Apply merge in Python (the actual fix)
@@ -474,15 +489,16 @@ class SummarySelfCritic:
                 {"role": "user", "content": json.dumps(prompt, ensure_ascii=False)},
             ],
             temperature=0.1,
+            response_format={"type": "json_object"},
         )
         raw = resp.choices[0].message.content or ""
         log_llm_io("SELF_CRITIC", {"goal": goal, "summary_head": summary_md[:1200]}, raw)
 
-        m = re.search(r"\{.*\}", raw, re.S)
-        if not m:
+        parsed = parse_json_response(raw)
+        if not parsed:
             return SummaryCritique(goal_status="unclear", missing_information=["invalid JSON"], contradictions=[], confidence=0.2)
         try:
-            return SummaryCritique(**json.loads(m.group(0)))
+            return SummaryCritique(**parsed)
         except Exception:
             return SummaryCritique(goal_status="unclear", missing_information=["parse error"], contradictions=[], confidence=0.2)
 
@@ -520,15 +536,16 @@ class SummaryDrivenURLScorer:
                 {"role": "user", "content": json.dumps(prompt, ensure_ascii=False)},
             ],
             temperature=0.1,
+            response_format={"type": "json_object"},
         )
         raw = resp.choices[0].message.content or ""
         log_llm_io("URL_SCORER", prompt, raw)
 
-        m = re.search(r"\{.*\}", raw, re.S)
-        if not m:
+        parsed = parse_json_response(raw)
+        if not parsed:
             return []
         try:
-            parsed = URLScoringResponse(**json.loads(m.group(0)))
+            parsed = URLScoringResponse(**parsed)
         except Exception:
             return []
         return sorted(parsed.scores, key=lambda x: x.score, reverse=True)[:top_k]
@@ -569,15 +586,16 @@ class EvidenceAwareAnswerGenerator:
                 {"role": "user", "content": json.dumps(prompt, ensure_ascii=False)},
             ],
             temperature=0.2,
+            response_format={"type": "json_object"},
         )
         raw = resp.choices[0].message.content or ""
         log_llm_io("ANSWER", {"goal": goal, "evidence_count": len(items)}, raw)
 
-        m = re.search(r"\{.*\}", raw, re.S)
-        if not m:
+        parsed = parse_json_response(raw)
+        if not parsed:
             return AnswerWithCitations(answer_markdown="无法生成答案：LLM 未返回有效 JSON。", warnings=["invalid JSON"])
         try:
-            return AnswerWithCitations(**json.loads(m.group(0)))
+            return AnswerWithCitations(**parsed)
         except Exception:
             return AnswerWithCitations(answer_markdown="无法生成答案：JSON 解析失败。", warnings=["parse error"])
 
