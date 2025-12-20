@@ -366,79 +366,6 @@ def _prepare_skeleton_for_next_stage(
     return _attach_inferred_edges(skeleton)
 
 
-def _check_workflow_coverage_rule_based(
-    *, nl_requirement: str, workflow: Mapping[str, Any]
-) -> Dict[str, Any]:
-    requirement = nl_requirement.lower()
-    nodes = workflow.get("nodes") if isinstance(workflow.get("nodes"), list) else []
-    node_texts: list[str] = []
-    for node in nodes:
-        if not isinstance(node, Mapping):
-            continue
-        parts = [
-            str(node.get("id", "")),
-            str(node.get("type", "")),
-            str(node.get("display_name", "")),
-            str(node.get("action_id", "")),
-        ]
-        node_texts.append(" ".join(parts).lower())
-
-    combined_nodes_text = " ".join(node_texts)
-    missing_points: list[str] = []
-
-    checks = [
-        (
-            "触发方式",
-            ["定时", "每天", "每周", "每月", "事件", "触发", "schedule", "cron"],
-            ["trigger", "schedule", "cron", "定时", "触发"],
-        ),
-        (
-            "数据读取/查询",
-            ["查询", "读取", "获取", "拉取", "检索", "扫描", "fetch", "query"],
-            ["查询", "读取", "获取", "检索", "query", "fetch", "list", "get"],
-        ),
-        (
-            "筛选/条件判断",
-            ["筛选", "过滤", "判断", "条件", "符合", "大于", "小于", "filter", "condition"],
-            ["condition", "switch", "filter", "筛选", "过滤", "判断"],
-        ),
-        (
-            "汇总/统计/总结",
-            ["汇总", "统计", "总结", "聚合", "报告", "aggregate", "summary", "report"],
-            ["汇总", "统计", "总结", "聚合", "报告", "summary", "report"],
-        ),
-        (
-            "通知/输出",
-            ["通知", "发送", "写入", "落库", "调用", "推送", "提醒", "生成"],
-            ["通知", "发送", "写入", "落库", "调用", "推送", "提醒", "生成", "notify"],
-        ),
-    ]
-
-    for label, requirement_keywords, node_keywords in checks:
-        if any(keyword in requirement for keyword in requirement_keywords):
-            if not any(keyword in combined_nodes_text for keyword in node_keywords):
-                missing_points.append(f"缺少对“{label}”的覆盖")
-
-    return {
-        "is_covered": not missing_points,
-        "missing_points": missing_points,
-    }
-
-
-def _build_coverage_feedback_message(
-    *,
-    nl_requirement: str,
-    workflow: Mapping[str, Any],
-    coverage: Mapping[str, Any],
-) -> str:
-    return (
-        "workflow 覆盖度检查未通过，请根据以下信息调整 workflow，并继续构建或修正：\n"
-        f"- requirement: {nl_requirement}\n"
-        f"- missing_points: {json.dumps(coverage.get('missing_points', []) or [], ensure_ascii=False)}\n"
-        "当前 workflow 供参考（含推导的 edges）：\n"
-        f"{json.dumps(workflow, ensure_ascii=False)}"
-    )
-
 
 def _build_combined_prompt() -> str:
     structure_prompt = (
@@ -807,7 +734,6 @@ def plan_workflow_structure_with_llm(
     search_service: HybridActionSearchService,
     action_registry: List[Dict[str, Any]],
     max_rounds: int = 100,
-    max_alignment_rounds: int = 2,
     progress_callback: Callable[[str, Mapping[str, Any]], None] | None = None,
 ) -> Dict[str, Any]:
     if not os.environ.get("OPENAI_API_KEY"):
@@ -1826,32 +1752,11 @@ def plan_workflow_structure_with_llm(
             if asyncio.iscoroutine(coro):
                 asyncio.run(coro)
 
-    run_input: Any = nl_requirement
-    alignment_rounds = 0
-
-    while True:
-        _run_agent(run_input)
-        if not latest_skeleton:
-            latest_skeleton = _prepare_skeleton_for_next_stage(
-                builder=builder, action_registry=action_registry, search_service=search_service
-            )
-        coverage = _check_workflow_coverage_rule_based(
-            nl_requirement=nl_requirement,
-            workflow=latest_skeleton,
+    _run_agent(nl_requirement)
+    if not latest_skeleton:
+        latest_skeleton = _prepare_skeleton_for_next_stage(
+            builder=builder, action_registry=action_registry, search_service=search_service
         )
-        if coverage.get("is_covered", False):
-            break
-
-        if alignment_rounds >= max_alignment_rounds:
-            log_warn("[Planner] workflow 覆盖度检查未通过，已达到最大重试次数。")
-            break
-
-        run_input = _build_coverage_feedback_message(
-            nl_requirement=nl_requirement,
-            workflow=latest_skeleton,
-            coverage=coverage,
-        )
-        alignment_rounds += 1
 
     return latest_skeleton
 
