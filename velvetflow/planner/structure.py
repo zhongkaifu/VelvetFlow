@@ -371,21 +371,40 @@ def _prepare_skeleton_for_coverage(
     return _attach_inferred_edges(skeleton)
 
 
-def _find_nodes_without_upstream(workflow: Mapping[str, Any]) -> List[Dict[str, Any]]:
-    nodes = workflow.get("nodes") if isinstance(workflow.get("nodes"), list) else []
-    inferred_edges = infer_edges_from_bindings(nodes)
+def _summarize_node(node: Mapping[str, Any]) -> Dict[str, Any]:
+    return {
+        "id": node.get("id"),
+        "type": node.get("type"),
+        "action_id": node.get("action_id") if isinstance(node.get("action_id"), str) else None,
+        "display_name": node.get("display_name"),
+    }
 
-    indegree = {}
+
+def _build_degree_maps(nodes: List[Mapping[str, Any]]) -> tuple[Dict[str, int], Dict[str, int]]:
+    inferred_edges = infer_edges_from_bindings(nodes)
+    indegree: Dict[str, int] = {}
+    outdegree: Dict[str, int] = {}
     for node in nodes:
         if isinstance(node, Mapping) and isinstance(node.get("id"), str):
             indegree[node["id"]] = 0
+            outdegree[node["id"]] = 0
 
     for edge in inferred_edges:
         if not isinstance(edge, Mapping):
             continue
+        source = edge.get("from")
         target = edge.get("to")
+        if isinstance(source, str) and source in outdegree:
+            outdegree[source] += 1
         if isinstance(target, str) and target in indegree:
             indegree[target] += 1
+
+    return indegree, outdegree
+
+
+def _find_nodes_without_upstream(workflow: Mapping[str, Any]) -> List[Dict[str, Any]]:
+    nodes = workflow.get("nodes") if isinstance(workflow.get("nodes"), list) else []
+    indegree, _ = _build_degree_maps(nodes)
 
     dangling: List[Dict[str, Any]] = []
     for node in nodes:
@@ -398,18 +417,29 @@ def _find_nodes_without_upstream(workflow: Mapping[str, Any]) -> List[Dict[str, 
             continue
 
         if indegree.get(node_id, 0) == 0:
-            dangling.append(
-                {
-                    "id": node_id,
-                    "type": node_type,
-                    "action_id": node.get("action_id")
-                    if isinstance(node.get("action_id"), str)
-                    else None,
-                    "display_name": node.get("display_name"),
-                }
-            )
+            dangling.append(_summarize_node(node))
 
     return dangling
+
+
+def _find_isolated_nodes(workflow: Mapping[str, Any]) -> List[Dict[str, Any]]:
+    nodes = workflow.get("nodes") if isinstance(workflow.get("nodes"), list) else []
+    indegree, outdegree = _build_degree_maps(nodes)
+
+    isolated: List[Dict[str, Any]] = []
+    for node in nodes:
+        if not isinstance(node, Mapping):
+            continue
+
+        node_id = node.get("id")
+        node_type = node.get("type")
+        if not isinstance(node_id, str) or not isinstance(node_type, str):
+            continue
+
+        if indegree.get(node_id, 0) == 0 and outdegree.get(node_id, 0) == 0:
+            isolated.append(_summarize_node(node))
+
+    return isolated
 
 
 def _run_coverage_check(
@@ -467,6 +497,20 @@ def _build_dependency_feedback_message(
         f"{json.dumps(workflow, ensure_ascii=False)}"
     )
 
+
+def _build_isolated_nodes_feedback_message(
+    *, workflow: Mapping[str, Any], isolated_nodes: List[Mapping[str, Any]]
+) -> str:
+    return (
+        "检测到以下节点没有任何入度与出度（孤立节点），"
+        "请判断它们是否应该挂接到现有 DAG 中；"
+        "如果可以，请使用规划工具更新节点的 depends_on 或相关参数以建立依赖；"
+        "如果确认需要保留独立节点，请在 finalize_workflow.notes 中说明原因。\n"
+        f"- isolated_nodes: {json.dumps(isolated_nodes, ensure_ascii=False)}\n"
+        "当前 workflow 供参考（含推导的 edges）：\n"
+        f"{json.dumps(workflow, ensure_ascii=False)}"
+    )
+
 def plan_workflow_structure_with_llm(
     nl_requirement: str,
     search_service: HybridActionSearchService,
@@ -487,6 +531,7 @@ def plan_workflow_structure_with_llm(
     latest_coverage: Dict[str, Any] = {}
     latest_finalize_feedback: str = ""
     latest_nodes_without_upstream: List[Mapping[str, Any]] = []
+    latest_isolated_nodes: List[Mapping[str, Any]] = []
     finalized_state: Dict[str, bool] = {"done": False}
 
     def _emit_progress(label: str, workflow_obj: Mapping[str, Any]) -> None:
@@ -1285,7 +1330,13 @@ def plan_workflow_structure_with_llm(
             校验结果与反馈的字典，包含 coverage、workflow 与 should_continue 等字段。
         """
         _log_tool_call("finalize_workflow", {"ready": ready, "notes": notes})
-        nonlocal latest_skeleton, latest_coverage, latest_finalize_feedback, latest_nodes_without_upstream
+        nonlocal (
+            latest_skeleton,
+            latest_coverage,
+            latest_finalize_feedback,
+            latest_nodes_without_upstream,
+            latest_isolated_nodes,
+        )
         skeleton, coverage = _run_coverage_check(
             nl_requirement=nl_requirement,
             builder=builder,
@@ -1295,9 +1346,12 @@ def plan_workflow_structure_with_llm(
         latest_skeleton = skeleton
         latest_coverage = coverage
         nodes_without_upstream = _find_nodes_without_upstream(skeleton)
+        isolated_nodes = _find_isolated_nodes(skeleton)
         latest_nodes_without_upstream = nodes_without_upstream
+        latest_isolated_nodes = isolated_nodes
         is_covered = bool(coverage.get("is_covered", False))
         needs_dependency_review = bool(nodes_without_upstream)
+        needs_isolated_review = bool(isolated_nodes)
 
         feedback_parts: List[str] = []
         if not is_covered:
@@ -1308,8 +1362,12 @@ def plan_workflow_structure_with_llm(
             feedback_parts.append(
                 _build_dependency_feedback_message(workflow=skeleton, nodes_without_upstream=nodes_without_upstream)
             )
+        if isolated_nodes:
+            feedback_parts.append(
+                _build_isolated_nodes_feedback_message(workflow=skeleton, isolated_nodes=isolated_nodes)
+            )
 
-        should_continue = not ready or not is_covered or needs_dependency_review
+        should_continue = not ready or not is_covered or needs_dependency_review or needs_isolated_review
         finalized_state["done"] = not should_continue
         latest_finalize_feedback = "\n\n".join(feedback_parts) if feedback_parts else "结构已通过覆盖度与依赖检查。"
         _snapshot("finalize")
@@ -1319,6 +1377,7 @@ def plan_workflow_structure_with_llm(
             "notes": notes,
             "coverage": coverage,
             "nodes_without_upstream": nodes_without_upstream,
+            "isolated_nodes": isolated_nodes,
             "should_continue": should_continue,
             "feedback": latest_finalize_feedback,
             "workflow": skeleton,
@@ -1465,7 +1524,7 @@ def plan_workflow_structure_with_llm(
             break
 
         needs_coverage_refine = bool(latest_coverage) and not latest_coverage.get("is_covered", False)
-        needs_dependency_refine = bool(latest_nodes_without_upstream)
+        needs_dependency_refine = bool(latest_nodes_without_upstream) or bool(latest_isolated_nodes)
         needs_finalize_call = not latest_coverage
         can_refine = (
             (needs_coverage_refine and coverage_refine_rounds < max_coverage_refine_rounds)
