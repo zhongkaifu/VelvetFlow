@@ -1330,13 +1330,11 @@ def plan_workflow_structure_with_llm(
             校验结果与反馈的字典，包含 coverage、workflow 与 should_continue 等字段。
         """
         _log_tool_call("finalize_workflow", {"ready": ready, "notes": notes})
-        nonlocal (
-            latest_skeleton,
-            latest_coverage,
-            latest_finalize_feedback,
-            latest_nodes_without_upstream,
-            latest_isolated_nodes,
-        )
+        nonlocal latest_skeleton
+        nonlocal latest_coverage
+        nonlocal latest_finalize_feedback
+        nonlocal latest_nodes_without_upstream
+        nonlocal latest_isolated_nodes
         skeleton, coverage = _run_coverage_check(
             nl_requirement=nl_requirement,
             builder=builder,
