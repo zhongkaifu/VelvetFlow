@@ -4,7 +4,7 @@
 """Tool definitions for parameter completion via LLM tool-calling.
 
 This module exposes a single helper to build a per-node tool schema that
-mirrors the Workflow DSL. It is used by :mod:`velvetflow.planner.params`
+mirrors the Workflow DSL. It is used by :mod:`velvetflow.planner.structure`
 so that the model must emit structured tool calls instead of free-form
 JSON text when filling node parameters.
 """
