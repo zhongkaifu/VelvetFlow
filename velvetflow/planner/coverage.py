@@ -79,7 +79,6 @@ def check_requirement_coverage_with_llm(
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
             ],
-            temperature=0.1,
         )
     log_llm_usage(model, getattr(resp, "usage", None), operation="coverage_check")
     if not resp.choices:
