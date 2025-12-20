@@ -597,8 +597,6 @@ class BindingContext:
             if not loop_schema:
                 raise ValueError(f"__from__ 引用的 loop 节点 '{node_id}' 未定义 exports")
             field_path = parts[2:]
-            if field_path and field_path[0] == "exports":
-                field_path = field_path[1:]
             if (
                 field_path
                 and field_path[-1] == "count"
@@ -711,7 +709,14 @@ class BindingContext:
             resolved_parts.extend(["result_of", str(first_key)])
             rest = parts[2:]
             node = self._nodes.get(first_key)
-            if node and node.type == "loop" and rest and rest[0] == "exports":
+            if (
+                node
+                and node.type == "loop"
+                and rest
+                and rest[0] == "exports"
+                and isinstance(cur, dict)
+                and "exports" not in cur
+            ):
                 rest = rest[1:]
         else:
             context = {f"result_of.{nid}": value for nid, value in self.results.items()}
@@ -981,10 +986,26 @@ def eval_node_params(node: Node, ctx: BindingContext) -> Dict[str, Any]:
             stripped_template = normalized_templates.strip()
             if stripped_template.startswith("{{") and stripped_template.endswith("}}"):
                 inner = stripped_template[2:-2].strip()
+                normalized_inner = normalize_reference_path(inner)
+                qualified_inner = ctx._qualify_context_path(normalized_inner)
+                head = qualified_inner.split(".", 1)[0]
+                if re.match(r"^[A-Za-z_][\w.\[\]*]*$", normalized_inner) and (
+                    head in ctx.loop_ctx
+                    or head == ctx.loop_id
+                    or qualified_inner.startswith("loop.")
+                    or qualified_inner.startswith("result_of.")
+                ):
+                    try:
+                        return ctx.get_value(qualified_inner)
+                    except Exception:
+                        pass
                 try:
                     rendered = eval_jinja_expression(inner, ctx.build_jinja_context())
                     if isinstance(rendered, Undefined):
-                        return None
+                        try:
+                            return ctx.get_value(qualified_inner)
+                        except Exception:
+                            return None
                     return rendered
                 except Exception:
                     pass
