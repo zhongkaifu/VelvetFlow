@@ -10,8 +10,18 @@ import os
 from collections import deque
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
+from openai import OpenAI
+
 from velvetflow.config import OPENAI_MODEL
-from velvetflow.logging_utils import log_debug, log_event, log_info, log_section
+from velvetflow.logging_utils import (
+    log_debug,
+    log_event,
+    log_info,
+    log_llm_message,
+    log_llm_usage,
+    log_section,
+    log_warn,
+)
 from velvetflow.planner.agent_runtime import Agent, Runner, function_tool
 from velvetflow.planner.action_guard import ensure_registered_actions
 from velvetflow.planner.workflow_builder import (
@@ -364,6 +374,84 @@ def _prepare_skeleton_for_next_stage(
         skeleton, action_registry=action_registry, search_service=search_service
     )
     return _attach_inferred_edges(skeleton)
+
+
+def _check_workflow_alignment(
+    *,
+    nl_requirement: str,
+    workflow: Mapping[str, Any],
+    model: str = OPENAI_MODEL,
+) -> Dict[str, Any]:
+    client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+    system_prompt = (
+        "你是一名工作流审核员，需要判断 workflow 是否与用户需求完全对齐。\n"
+        "请按节点依赖关系从头到尾模拟执行：\n"
+        "1) 逐节点说明作用、上下游依赖、数据传递与变换。\n"
+        "2) 总结整体 workflow 的目标和完成的任务。\n"
+        "3) 对比总结结果与用户需求，判断是否完全一致。\n\n"
+        "输出 JSON（不要代码块），字段如下：\n"
+        "{\n"
+        "  \"is_aligned\": true/false,\n"
+        "  \"workflow_summary\": \"...\",\n"
+        "  \"mismatches\": [\"...\"]\n"
+        "}\n"
+        "mismatches 为空表示完全一致。"
+    )
+
+    payload = {
+        "requirement": nl_requirement,
+        "workflow": workflow,
+    }
+
+    resp = client.chat.completions.create(
+        model=model,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+        ],
+    )
+    log_llm_usage(model, getattr(resp, "usage", None), operation="workflow_alignment")
+    if not resp.choices:
+        raise RuntimeError("workflow_alignment 未返回任何候选消息")
+
+    message = resp.choices[0].message
+    log_llm_message(model, message, operation="workflow_alignment")
+
+    content = message.content or ""
+    text = content.strip()
+    if text.startswith("```"):
+        text = text.strip("`")
+        if "\n" in text:
+            first_line, rest = text.split("\n", 1)
+            if first_line.strip().lower().startswith("json"):
+                text = rest
+
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        log_warn("[workflow_alignment] 无法解析 JSON，视为未对齐。")
+        log_debug(content)
+        return {
+            "is_aligned": False,
+            "workflow_summary": "",
+            "mismatches": ["无法解析对齐检查结果"],
+        }
+
+
+def _build_alignment_feedback_message(
+    *,
+    nl_requirement: str,
+    workflow: Mapping[str, Any],
+    alignment: Mapping[str, Any],
+) -> str:
+    return (
+        "workflow 与需求存在不一致，请根据以下信息调整 workflow，并继续构建或修正：\n"
+        f"- requirement: {nl_requirement}\n"
+        f"- workflow_summary: {alignment.get('workflow_summary', '')}\n"
+        f"- mismatches: {json.dumps(alignment.get('mismatches', []) or [], ensure_ascii=False)}\n"
+        "当前 workflow 供参考（含推导的 edges）：\n"
+        f"{json.dumps(workflow, ensure_ascii=False)}"
+    )
 
 
 def _build_combined_prompt() -> str:
@@ -734,6 +822,7 @@ def plan_workflow_structure_with_llm(
     search_service: HybridActionSearchService,
     action_registry: List[Dict[str, Any]],
     max_rounds: int = 100,
+    max_alignment_rounds: int = 2,
     progress_callback: Callable[[str, Mapping[str, Any]], None] | None = None,
 ) -> Dict[str, Any]:
     if not os.environ.get("OPENAI_API_KEY"):
@@ -1755,17 +1844,40 @@ def plan_workflow_structure_with_llm(
 
     log_section("结构规划 - Agent SDK")
 
-    try:
-        Runner.run_sync(agent, nl_requirement, max_turns=max_rounds)  # type: ignore[arg-type]
-    except TypeError:
-        coro = Runner.run(agent, nl_requirement)  # type: ignore[call-arg]
-        if asyncio.iscoroutine(coro):
-            asyncio.run(coro)
+    def _run_agent(prompt: Any) -> None:
+        try:
+            Runner.run_sync(agent, prompt, max_turns=max_rounds)  # type: ignore[arg-type]
+        except TypeError:
+            coro = Runner.run(agent, prompt)  # type: ignore[call-arg]
+            if asyncio.iscoroutine(coro):
+                asyncio.run(coro)
 
-    if not latest_skeleton:
-        latest_skeleton = _prepare_skeleton_for_next_stage(
-            builder=builder, action_registry=action_registry, search_service=search_service
+    run_input: Any = nl_requirement
+    alignment_rounds = 0
+
+    while True:
+        _run_agent(run_input)
+        if not latest_skeleton:
+            latest_skeleton = _prepare_skeleton_for_next_stage(
+                builder=builder, action_registry=action_registry, search_service=search_service
+            )
+        alignment = _check_workflow_alignment(
+            nl_requirement=nl_requirement,
+            workflow=latest_skeleton,
         )
+        if alignment.get("is_aligned", False):
+            break
+
+        if alignment_rounds >= max_alignment_rounds:
+            log_warn("[Planner] workflow 对齐检查未通过，已达到最大重试次数。")
+            break
+
+        run_input = _build_alignment_feedback_message(
+            nl_requirement=nl_requirement,
+            workflow=latest_skeleton,
+            alignment=alignment,
+        )
+        alignment_rounds += 1
 
     return latest_skeleton
 
