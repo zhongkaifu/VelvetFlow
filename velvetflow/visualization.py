@@ -12,6 +12,7 @@ from typing import Dict, List, Optional, Set, Tuple, Mapping
 from PIL import Image, ImageDraw, ImageFont
 
 from velvetflow.models import Edge, Node, Workflow
+from velvetflow.logging_utils import log_warn
 from velvetflow.action_registry import get_action_by_id
 
 RGB = Tuple[int, int, int]
@@ -253,6 +254,8 @@ def _topological_levels(workflow: Workflow, edges: List[Edge]) -> Dict[str, int]
     adjacency: Dict[str, List[str]] = {n.id: [] for n in workflow.nodes}
     indegree: Dict[str, int] = {n.id: 0 for n in workflow.nodes}
     for edge in edges:
+        if edge.from_node not in adjacency or edge.to_node not in indegree:
+            continue
         adjacency[edge.from_node].append(edge.to_node)
         indegree[edge.to_node] += 1
 
@@ -305,6 +308,8 @@ def _build_edge_maps(nodes: List[Node], edges: List[Edge]) -> Tuple[Dict[str, Li
     incoming: Dict[str, List[str]] = {n.id: [] for n in nodes}
     outgoing: Dict[str, List[str]] = {n.id: [] for n in nodes}
     for edge in edges:
+        if edge.to_node not in incoming or edge.from_node not in outgoing:
+            continue
         incoming[edge.to_node].append(edge.from_node)
         outgoing[edge.from_node].append(edge.to_node)
     return incoming, outgoing
@@ -373,15 +378,20 @@ def _resolve_display_edges(workflow: Workflow) -> List[Edge]:
 
     resolved: List[Edge] = []
     existing: Set[Tuple[str, str, Optional[str]]] = set()
+    node_ids = {n.id for n in workflow.nodes}
 
     for edge in workflow.edges:
+        if edge.from_node not in node_ids or edge.to_node not in node_ids:
+            log_warn(
+                "[visualization] 跳过不存在节点的边: "
+                f"{edge.from_node} -> {edge.to_node}"
+            )
+            continue
         key = (edge.from_node, edge.to_node, edge.condition)
         if key in existing:
             continue
         existing.add(key)
         resolved.append(edge)
-
-    node_ids = {n.id for n in workflow.nodes}
 
     for node in workflow.nodes:
         if node.type == "condition":

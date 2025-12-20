@@ -592,6 +592,7 @@ def drop_invalid_references(
 
     removed_bindings: List[Dict[str, Any]] = []
     removed_edges: List[Dict[str, Any]] = []
+    removed_branches: List[Dict[str, Any]] = []
     changed = False
 
     def _clean(obj: Any, path: str = "params") -> Any:
@@ -633,6 +634,56 @@ def drop_invalid_references(
 
     patched = _clean(patched)
 
+    for node in nodes:
+        if not isinstance(node, MutableMapping):
+            continue
+        ntype = node.get("type")
+        if ntype == "condition":
+            for branch_field in ("true_to_node", "false_to_node"):
+                target = node.get(branch_field)
+                if isinstance(target, str) and target not in node_ids:
+                    removed_branches.append(
+                        {
+                            "node_id": node.get("id"),
+                            "field": branch_field,
+                            "target": target,
+                        }
+                    )
+                    node[branch_field] = None
+                    changed = True
+        elif ntype == "switch":
+            cases = node.get("cases") if isinstance(node.get("cases"), list) else []
+            cleaned_cases = []
+            for idx, case in enumerate(cases):
+                if not isinstance(case, Mapping):
+                    continue
+                target = case.get("to_node")
+                if isinstance(target, str) and target not in node_ids:
+                    removed_branches.append(
+                        {
+                            "node_id": node.get("id"),
+                            "field": f"cases[{idx}].to_node",
+                            "target": target,
+                        }
+                    )
+                    changed = True
+                    continue
+                cleaned_cases.append(case)
+            if cleaned_cases or "cases" in node:
+                node["cases"] = cleaned_cases
+            if "default_to_node" in node:
+                default_target = node.get("default_to_node")
+                if isinstance(default_target, str) and default_target not in node_ids:
+                    removed_branches.append(
+                        {
+                            "node_id": node.get("id"),
+                            "field": "default_to_node",
+                            "target": default_target,
+                        }
+                    )
+                    node["default_to_node"] = None
+                    changed = True
+
     if remove_edges:
         edges = []
         for edge in patched.get("edges", []) or []:
@@ -652,6 +703,7 @@ def drop_invalid_references(
         "applied": changed,
         "removed_bindings": removed_bindings,
         "removed_edges": removed_edges,
+        "removed_branches": removed_branches,
         "reason": None if changed else "未发现指向缺失节点的引用",
     }
     return patched, summary

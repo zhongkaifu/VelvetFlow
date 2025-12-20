@@ -9,7 +9,7 @@ from typing import Any, Mapping
 
 from collections.abc import Mapping as MappingABC
 
-from jinja2 import Environment, StrictUndefined, TemplateError
+from jinja2 import Environment, StrictUndefined, TemplateError, nodes
 
 
 @lru_cache(maxsize=1)
@@ -99,9 +99,26 @@ def validate_jinja_expr(expr: Any, *, path: str = "expression") -> None:
 
     env = get_jinja_env()
     try:
-        env.parse(f"{{{{ {expr} }}}}")
+        parsed = env.parse(f"{{{{ {expr} }}}}")
     except TemplateError as exc:  # pragma: no cover - syntax errors are surfaced to callers
         raise ValueError(f"{path} 不是合法的 Jinja 表达式: {exc}") from exc
+
+    def _iter_filter_nodes(node: nodes.Node) -> list[nodes.Filter]:
+        found: list[nodes.Filter] = []
+        if isinstance(node, nodes.Filter):
+            found.append(node)
+        for child in node.iter_child_nodes():
+            found.extend(_iter_filter_nodes(child))
+        return found
+
+    for filter_node in _iter_filter_nodes(parsed):
+        if filter_node.name not in env.filters:
+            raise ValueError(f"{path} 使用了未注册的过滤器: {filter_node.name}")
+        if filter_node.name == "map" and filter_node.args:
+            first_arg = filter_node.args[0]
+            if isinstance(first_arg, nodes.Const) and isinstance(first_arg.value, str):
+                if first_arg.value not in env.filters:
+                    raise ValueError(f"{path} 使用了未注册的过滤器: {first_arg.value}")
 
 
 def eval_jinja_expr(expr: str, context: Mapping[str, Any]) -> Any:

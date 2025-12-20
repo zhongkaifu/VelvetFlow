@@ -398,6 +398,14 @@ def apply_rule_based_repairs(
     patched_workflow, _suggestions = generate_repair_suggestions(
         workflow_raw, action_registry, errors=validation_errors
     )
+    if any(err.code == "UNDEFINED_REFERENCE" for err in validation_errors):
+        patched_workflow, drop_summary = apply_repair_tool(
+            "drop_invalid_references", patched_workflow, remove_edges=True
+        )
+        log_info(
+            "[AutoRepair] UNDEFINED_REFERENCE 已自动清理，待提交给 LLM 分析。",
+            f"summary={drop_summary}",
+        )
     try:
         remaining_errors: List[ValidationError] = []
         remaining_errors.extend(precheck_loop_body_graphs(patched_workflow))
