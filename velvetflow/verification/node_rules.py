@@ -270,6 +270,18 @@ def _validate_nodes_recursive(
                     ),
                 )
             )
+        if ntype == "action" and (not isinstance(action_id, str) or not action_id.strip()):
+            errors.append(
+                ValidationError(
+                    code="MISSING_REQUIRED_PARAM",
+                    node_id=nid,
+                    field="action_id",
+                    message=(
+                        "action 节点的 action_id 不能为空，请将该错误信息、节点信息及上下文提交给 LLM 分析，"
+                        "并使用可用工具补齐正确的 action_id。"
+                    ),
+                )
+            )
 
         empty_fields = list(_iter_empty_param_fields(params))
         for path in empty_fields:
@@ -312,7 +324,11 @@ def _validate_nodes_recursive(
                         code="UNKNOWN_ACTION_ID",
                         node_id=nid,
                         field="action_id",
-                        message=f"节点 '{nid}' 的 action_id '{action_id}' 不在 Action Registry 中。",
+                        message=(
+                            f"节点 '{nid}' 的 action_id '{action_id}' 不在 Action Registry 中。"
+                            "请将错误信息与节点上下文提交给 LLM，使用工具搜索合适的业务工具，"
+                            "并将匹配的 action_id 应用到该节点。"
+                        ),
                     )
                 )
             else:
