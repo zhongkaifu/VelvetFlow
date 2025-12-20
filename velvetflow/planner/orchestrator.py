@@ -39,7 +39,7 @@ from velvetflow.logging_utils import (
 from velvetflow.models import PydanticValidationError, ValidationError, Workflow
 from velvetflow.loop_dsl import index_loop_body_nodes, iter_workflow_and_loop_body_nodes
 from velvetflow.planner.action_guard import ensure_registered_actions
-from velvetflow.planner.params import fill_params_with_llm
+from velvetflow.planner.structure import fill_params_with_llm
 from velvetflow.planner.repair import (
     _convert_pydantic_errors,
     _make_failure_validation_error,
@@ -1312,7 +1312,6 @@ def plan_workflow_with_two_pass(
                     search_service=search_service,
                     action_registry=action_registry,
                     max_rounds=max_rounds,
-                    max_coverage_refine_rounds=2,
                     progress_callback=progress_callback,
                 )
             log_section("第一阶段结果：Workflow Skeleton")
