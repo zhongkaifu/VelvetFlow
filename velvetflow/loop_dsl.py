@@ -8,8 +8,8 @@ from typing import Any, Dict, Iterable, Mapping, Optional
 def build_loop_output_schema(loop_params: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
     """Construct a virtual output schema for a loop node based on exports.
 
-    The schema is an "object" with optional `items` and `aggregates` properties,
-    derived from the loop's exports specification.
+    The schema exposes ``exports`` as an object whose keys map to arrays that
+    collect per-iteration values.
     """
 
     if not isinstance(loop_params, Mapping):
@@ -24,37 +24,19 @@ def build_loop_output_schema(loop_params: Mapping[str, Any]) -> Optional[Dict[st
         "loop_kind": {"type": "string"},
     }
 
-    items_spec = exports.get("items")
-    if isinstance(items_spec, Mapping):
-        fields = items_spec.get("fields") if isinstance(items_spec.get("fields"), list) else []
-        item_props = {f: {} for f in fields if isinstance(f, str)}
-        properties["items"] = {
-            "type": "array",
-            "items": {"type": "object", "properties": item_props},
-        }
+    export_props: Dict[str, Any] = {}
+    for key, value in exports.items():
+        if not isinstance(key, str):
+            continue
+        if not isinstance(value, str):
+            continue
+        export_props[key] = {"type": "array", "items": {}}
 
-    aggregates_spec = exports.get("aggregates")
-    if isinstance(aggregates_spec, list):
-        agg_props = {}
-        for agg in aggregates_spec:
-            if not isinstance(agg, Mapping):
-                continue
-
-            name = agg.get("name")
-            kind = (agg.get("kind") or "").lower() if isinstance(agg.get("kind"), str) else ""
-
-            if not isinstance(name, str):
-                continue
-
-            agg_schema: Dict[str, Any] = {}
-            if kind in {"count", "count_if"}:
-                agg_schema["type"] = "integer"
-            elif kind in {"sum", "avg", "max", "min"}:
-                agg_schema["type"] = "number"
-
-            agg_props[name] = agg_schema
-
-        properties["aggregates"] = {"type": "object", "properties": agg_props}
+    properties["exports"] = {
+        "type": "object",
+        "properties": export_props,
+        "additionalProperties": True,
+    }
 
     return {"type": "object", "properties": properties} if properties else None
 

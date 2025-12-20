@@ -93,17 +93,17 @@ def test_binding_context_resolves_count_field():
     )
     ctx = BindingContext(
         workflow,
-        {"loop_check_temperature": {"aggregates": {"high": 2, "normal": 5}}},
+        {"loop_check_temperature": {"exports": {"high": [1, 2]}}},
     )
 
-    assert ctx.get_value("result_of.loop_check_temperature.aggregates.count") == 2
+    assert ctx.get_value("result_of.loop_check_temperature.exports.high.count") == 2
 
     node = Node(
         id="generate_warning_report",
         type="action",
         action_id="hr.record_health_event.v1",
         params={
-            "abnormal_count": "${result_of.loop_check_temperature.aggregates.count}",
+            "abnormal_count": "${result_of.loop_check_temperature.exports.high.count}",
         },
     )
 

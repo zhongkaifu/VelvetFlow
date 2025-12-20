@@ -63,7 +63,7 @@ def test_model_validation_rejects_missing_body_subgraph():
                 "type": "loop",
                 "params": {
                     "loop_kind": "for_each",
-                    "source": "result_of.loop_check_temperature.exports.items",
+                    "source": "result_of.loop_check_temperature.exports.employee_ids",
                     "item_alias": "warning_employee",
                 },
             }
@@ -85,7 +85,7 @@ def test_exports_disallowed_outside_loop_body():
                 "action_id": "common.search_news.v1",
                 "params": {
                     "query": "AI",
-                    "exports": {"items": {"from_node": "search_news", "fields": ["results"]}},
+                    "exports": {"items": "{{ result_of.search_news.results }}"},
                 },
             }
         ],
@@ -131,13 +131,7 @@ def test_stringified_binding_referencing_loop_body_is_flagged():
                         "entry": "summarize_news",
                         "exit": "exit",
                     },
-                    "exports": {
-                        "items": {
-                            "from_node": "summarize_news",
-                            "fields": ["summary"],
-                            "mode": "collect",
-                        }
-                    },
+                    "exports": {"items": "{{ result_of.summarize_news.summary }}"},
                 },
             },
             {
@@ -292,7 +286,7 @@ def test_loop_body_nodes_should_not_reference_loop_exports():
                                 "action_id": "common.summarize.v1",
                                 "params": {
                                     "text": {
-                                        "__from__": "result_of.loop_summarize_news.exports.items"
+                                        "__from__": "result_of.loop_summarize_news.exports.summaries"
                                     }
                                 },
                             },
@@ -302,9 +296,7 @@ def test_loop_body_nodes_should_not_reference_loop_exports():
                         "entry": "summarize_news",
                         "exit": "exit",
                     },
-                    "exports": {
-                        "items": {"from_node": "summarize_news", "fields": ["summary"]},
-                    },
+                    "exports": {"summaries": "{{ result_of.summarize_news.summary }}"},
                 },
             },
         ],
@@ -426,4 +418,3 @@ def test_index_loop_body_nodes_includes_nested_loops():
 
     assert mapping["inner_loop"] == "outer_loop"
     assert mapping["inner_action"] == "inner_loop"
-
