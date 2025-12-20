@@ -473,12 +473,11 @@ def _build_combined_prompt() -> str:
         "1) 使用 set_workflow_meta 设置工作流名称和描述。\n"
         "2) 当需要业务动作时，必须先用 search_business_actions 查询候选；add_action_node 的 action_id 必须取自最近一次 candidates.id。\n"
         "3）当需要 condition/switch/loop 节点时，必须先用 add_condition_node/add_switch_node/add_loop_node 创建，params 中的表达式和引用需严格遵循 Jinja 模板写法；\n"
-        "4) 调用submit_node_params 为已创建的节点补充 params；\n"
-        "5) 调用validate_node_params 验证节点参数；\n"
+        "4) 调用 update_node_params 为已创建的节点补充并校验 params；\n"
         "6) 如需修改已创建节点（补充 display_name/params/分支指向/父节点等），请调用 update_action_node 或 update_condition_node 并传入需要覆盖的字段列表；调用后务必检查上下游关联节点是否也需要同步更新以保持一致性。\n"
         "7) condition 节点必须显式提供 true_to_node 和 false_to_node，值可以是节点 id（继续执行）或 null（表示该分支结束）；通过节点 params 中的输入/输出引用表达依赖关系，不需要显式绘制 edges。\n"
         "8) 请为每个节点维护 depends_on（字符串数组），列出其直接依赖的上游节点；当节点被 condition.true_to_node/false_to_node 指向时，必须将该 condition 节点加入目标节点的 depends_on。\n"
-        "9) 当结构完成时继续补全所有节点的 params，并确保通过 validate_node_params。\n\n"
+        "9) 当结构完成时继续补全所有节点的 params，并确保 update_node_params 校验通过。\n\n"
         "特别注意：只有 action 节点需要 out_params_schema，condition 节点没有该属性；out_params_schema 的格式应为 {\"参数名\": \"类型\"}，仅需列出业务 action 输出参数的名称与类型，不要添加额外描述或示例。\n\n"
         "【非常重要的原则】\n"        
         "1. 你必须严格围绕当前对话中的自然语言需求来设计 workflow：\n"
@@ -498,7 +497,7 @@ def _build_combined_prompt() -> str:
     param_prompt = (
         "【参数补全规则】\n"
         "你是一个工作流参数补全助手。一次只处理一个节点，请根据给定的 arg_schema 补齐当前节点的 params。\n"
-        "必须通过工具提交与校验：先调用 submit_node_params 提交补全结果，再调用 validate_node_params 校验，收到校验错误要重新分析并再次提交。\n"
+        "必须通过工具提交与校验：调用 update_node_params 提交补全结果并校验，收到校验错误要重新分析并再次提交。\n"
         "当某个字段需要引用其他节点的输出时，必须直接写成 Jinja 表达式或模板字符串，例如 {{ result_of.<node_id>.<field> }}，"
         "node_id 只能来自 allowed_node_ids，field 必须存在于该节点的 output_schema。禁止再使用旧的 __from__/__agg__ 绑定 DSL。\n"
         "你的所有 params 值都会直接交给 Jinja2 引擎解析，任何非 Jinja 语法（包括残留的绑定对象或伪代码）都会被视为错误并触发自动修复，请务必输出可被 Jinja 渲染的字符串或字面量。\n"
@@ -1694,7 +1693,6 @@ def plan_workflow_structure_with_llm(
         for nid, node in builder.nodes.items()
         if isinstance(node, Mapping)
     }
-    last_submitted_params: Dict[str, Dict[str, Any]] = {}
     validated_node_ids: List[str] = []
 
     def _build_workflow_for_params() -> Workflow:
@@ -1760,65 +1758,48 @@ def plan_workflow_structure_with_llm(
         return _return_tool_result("get_param_context", result)
 
     @function_tool(strict_mode=False)
-    def submit_node_params(id: str, params: Dict[str, Any]) -> Mapping[str, Any]:
-        """提交指定节点的参数草案，等待校验。"""
-        _log_tool_call("submit_node_params", {"id": id})
+    def update_node_params(id: str, params: Dict[str, Any]) -> Mapping[str, Any]:
+        """更新并校验指定节点参数。"""
+        _log_tool_call("update_node_params", {"id": id})
         if not isinstance(id, str) or id not in builder.nodes:
-            result = {"status": "error", "message": "节点不存在，无法提交参数。"}
-            return _return_tool_result("submit_node_params", result)
+            result = {"status": "error", "message": "节点不存在，无法更新参数。"}
+            return _return_tool_result("update_node_params", result)
         if not isinstance(params, Mapping):
             result = {"status": "error", "message": "params 需要是对象。"}
-            return _return_tool_result("submit_node_params", result)
-        last_submitted_params[id] = dict(params)
-        log_event(
-            "params_tool_result",
-            {"node_id": id, "tool_name": "submit_node_params", "params": params},
-            node_id=id,
-            action_id=builder.nodes.get(id, {}).get("action_id"),
-        )
-        result = {"status": "received", "message": "已收到提交，请调用 validate_node_params。"}
-        return _return_tool_result("submit_node_params", result)
-
-    @function_tool(strict_mode=False)
-    def validate_node_params(id: str, params: Optional[Dict[str, Any]] = None) -> Mapping[str, Any]:
-        """校验指定节点参数并写入已填充结果。"""
-        _log_tool_call("validate_node_params", {"id": id})
-        if not isinstance(id, str) or id not in builder.nodes:
-            result = {"status": "error", "message": "节点不存在，无法校验。"}
-            return _return_tool_result("validate_node_params", result)
-        params_to_check = params if isinstance(params, dict) else last_submitted_params.get(id)
-        if params_to_check is None:
-            result = {"status": "error", "errors": ["缺少待校验的 params（请先提交或在参数中提供 params）"]}
-            return _return_tool_result("validate_node_params", result)
+            return _return_tool_result("update_node_params", result)
 
         workflow = _build_workflow_for_params()
         nodes_by_id = {n.id: n for n in workflow.nodes}
         node = nodes_by_id.get(id)
         if not node:
             result = {"status": "error", "errors": ["节点不存在于当前 workflow。"]}
-            return _return_tool_result("validate_node_params", result)
+            return _return_tool_result("update_node_params", result)
 
         upstream_nodes = get_referenced_nodes(workflow, id)
         binding_memory = _build_binding_memory(filled_params, validated_node_ids)
         errors = _validate_node_params(
             node=node,
-            params=params_to_check,
+            params=dict(params),
             upstream_nodes=upstream_nodes,
             action_schemas=action_schemas,
             binding_memory=binding_memory,
         )
 
         if errors:
-            result = {"status": "error", "errors": errors}
-            return _return_tool_result("validate_node_params", result)
+            result = {
+                "status": "error",
+                "errors": errors,
+                "hint": "参数未通过校验，未更新 workflow，请根据错误修正后再提交。",
+            }
+            return _return_tool_result("update_node_params", result)
 
-        filled_params[id] = dict(params_to_check)
+        filled_params[id] = dict(params)
         if id not in validated_node_ids:
             validated_node_ids.append(id)
-        builder.update_node(id, params=dict(params_to_check))
+        builder.update_node(id, params=dict(params))
         _snapshot(f"validate_params_{id}")
-        result = {"status": "ok", "params": params_to_check}
-        return _return_tool_result("validate_node_params", result)
+        result = {"status": "ok", "params": params}
+        return _return_tool_result("update_node_params", result)
     
     agent = Agent(
         name="WorkflowStructurePlanner",
@@ -1835,8 +1816,7 @@ def plan_workflow_structure_with_llm(
             update_switch_node,
             update_loop_node,
             get_param_context,
-            submit_node_params,
-            validate_node_params,
+            update_node_params,
             dump_model,
         ],
         model=OPENAI_MODEL
@@ -2014,65 +1994,29 @@ def fill_params_with_llm(
             "global_context": global_context,
         }
 
-        validated_params: Dict[str, Any] | None = None
-        last_submitted_params: Dict[str, Any] | None = None
-
         def _build_response(status: str, **extra: Any) -> Dict[str, Any]:
             payload = {"status": status}
             payload.update(extra)
             return payload
 
         @function_tool(strict_mode=False)
-        def submit_node_params(id: str, params: Dict[str, Any]) -> Mapping[str, Any]:
-            """提交当前节点的参数草案，等待校验。"""
-            _log_tool_call("submit_node_params", {"id": id})
-            nonlocal last_submitted_params
+        def update_node_params(id: str, params: Dict[str, Any]) -> Mapping[str, Any]:
+            """更新当前节点参数并校验。"""
+            _log_tool_call("update_node_params", {"id": id})
             if id != node.id:
                 result = _build_response(
                     "error",
-                    message="只能提交当前正在处理的节点。",
+                    message="只能更新当前正在处理的节点。",
                     expected_id=node.id,
                 )
-                return _return_tool_result("submit_node_params", result)
-            last_submitted_params = params
-            log_event(
-                "params_tool_result",
-                {"node_id": node.id, "tool_name": "submit_node_params", "params": params},
-                node_id=node.id,
-                action_id=node.action_id,
-            )
-            _emit_canvas_update(
-                "submit_node_params",
-                params_override=params,
-                current_node_id=node.id,
-            )
-            result = _build_response("received", message="已收到提交，请立即调用 validate_node_params。")
-            return _return_tool_result("submit_node_params", result)
-
-        @function_tool(strict_mode=False)
-        def validate_node_params(id: str, params: Optional[Dict[str, Any]] = None) -> Mapping[str, Any]:
-            """校验当前节点参数并写入已填充结果。"""
-            _log_tool_call("validate_node_params", {"id": id})
-            nonlocal validated_params, last_submitted_params
-            if id != node.id:
-                result = _build_response(
-                    "error",
-                    message="只能校验当前节点。",
-                    expected_id=node.id,
-                )
-                return _return_tool_result("validate_node_params", result)
-
-            params_to_check = params if isinstance(params, dict) else last_submitted_params
-            if params_to_check is None:
-                result = _build_response(
-                    "error",
-                    errors=["缺少待校验的 params（请先提交或在参数中提供 params）"],
-                )
-                return _return_tool_result("validate_node_params", result)
+                return _return_tool_result("update_node_params", result)
+            if not isinstance(params, Mapping):
+                result = _build_response("error", errors=["params 必须是对象"])
+                return _return_tool_result("update_node_params", result)
 
             errors = _validate_node_params(
                 node=node,
-                params=params_to_check,
+                params=dict(params),
                 upstream_nodes=upstream_nodes,
                 action_schemas=action_schemas,
                 binding_memory=binding_memory,
@@ -2080,27 +2024,30 @@ def fill_params_with_llm(
 
             if errors:
                 _emit_canvas_update(
-                    "validate_node_params_failed",
-                    params_override=params_to_check,
+                    "update_node_params_failed",
+                    params_override=params,
                     current_node_id=node.id,
                 )
-                result = _build_response("error", errors=errors)
-                return _return_tool_result("validate_node_params", result)
+                result = _build_response(
+                    "error",
+                    errors=errors,
+                    hint="参数未通过校验，未更新 workflow，请根据错误修正后再提交。",
+                )
+                return _return_tool_result("update_node_params", result)
 
-            validated_params = params_to_check
-            filled_params[node.id] = params_to_check
+            filled_params[node.id] = dict(params)
             _emit_canvas_update(
-                "validate_node_params",
-                params_override=params_to_check,
+                "update_node_params",
+                params_override=params,
                 current_node_id=node.id,
             )
-            result = _build_response("ok", params=params_to_check)
-            return _return_tool_result("validate_node_params", result)
+            result = _build_response("ok", params=params)
+            return _return_tool_result("update_node_params", result)
 
         agent = Agent(
             name="WorkflowPlanner",
             instructions=system_prompt,
-            tools=[submit_node_params, validate_node_params],
+            tools=[update_node_params],
             model=model,
         )
 
@@ -2112,7 +2059,7 @@ def fill_params_with_llm(
             result = coro if not asyncio.iscoroutine(coro) else asyncio.run(coro)
             _ = result
 
-        if validated_params is None:
+        if node.id not in filled_params or not isinstance(filled_params.get(node.id), Mapping):
             raise ValueError(f"节点 {node.id} 的参数补全未通过校验，请检查工具调用返回。")
 
         processed_node_ids.append(node.id)
