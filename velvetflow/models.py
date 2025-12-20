@@ -752,27 +752,31 @@ class Workflow:
                 normalize_reference_path(source) if isinstance(source, str) else None
             )
             if isinstance(normalized_source, str):
-                from velvetflow.verification.binding_checks import (
-                    _get_output_schema_at_path,
-                )
-
-                schema = _get_output_schema_at_path(
-                    normalized_source,
-                    nodes_by_id,
-                    actions_by_id,
-                    loop_body_parents,
-                )
-                actual_type = schema.get("type") if isinstance(schema, Mapping) else None
-                if actual_type not in {"array"}:
-                    errors.append(
-                        {
-                            "loc": ("nodes", idx, "params", "source"),
-                            "msg": (
-                                "loop 节点的 source 应该引用数组/序列"
-                                f"，但解析到的类型为 {actual_type or '未知'}，路径: {normalized_source}"
-                            ),
-                        }
+                if not (
+                    normalized_source == "loop"
+                    or normalized_source.startswith(("loop.", "loop_ctx."))
+                ):
+                    from velvetflow.verification.binding_checks import (
+                        _get_output_schema_at_path,
                     )
+
+                    schema = _get_output_schema_at_path(
+                        normalized_source,
+                        nodes_by_id,
+                        actions_by_id,
+                        loop_body_parents,
+                    )
+                    actual_type = schema.get("type") if isinstance(schema, Mapping) else None
+                    if actual_type not in {"array"}:
+                        errors.append(
+                            {
+                                "loc": ("nodes", idx, "params", "source"),
+                                "msg": (
+                                    "loop 节点的 source 应该引用数组/序列"
+                                    f"，但解析到的类型为 {actual_type or '未知'}，路径: {normalized_source}"
+                                ),
+                            }
+                        )
 
             try:
                 Workflow.model_validate(
