@@ -7,7 +7,7 @@
   - `workflow_name`：可选字符串，默认 `unnamed_workflow`。
   - `description`：可选描述文本。
   - `nodes`：必填数组，包含任意数量的节点对象；边由参数引用或显式分支字段自动推导，不要求手写。
-- **隐式 edges**：运行时通过参数绑定和条件/循环/多分支出口推导，`Workflow.edges` 会返回标准化的 `from_node`/`to_node`/`condition` 结构，便于可视化或校验。
+- **隐式 edges**：运行时通过参数绑定和条件/循环/多分支出口推导，`Workflow.edges` 会返回标准化的 `from_node`/`to_node`/`condition` 结构，便于可视化或校验；`workflow_parser.py` 在校验时若发现缺失 edges 会给出可恢复的提示。
 
 ### 最小可运行示例
 ```json
@@ -34,7 +34,7 @@
       "type": "action",
       "action_id": "crm.send_newsletter",
       "params": {
-        "audience": {"__from__": "result_of.search_users.items"},
+        "audience": "{{ result_of.search_users.items }}",
         "template_id": "spring_launch"
       }
     },
@@ -52,9 +52,10 @@
 - `params`：节点专属参数，结构取决于节点类型。
 
 ### 参数绑定 DSL 速览
-- `{"__from__": "result_of.<node_id>.<field>"}`：从上游节点输出取值。
-- 聚合：`"__agg__": "identity|count|count_if|join|filter_map|format_join|pipeline"`，可配合 `field`、`op`、`value`、`map_field` 等字段完成筛选/映射。
-- 模板：params 字符串支持 Jinja 表达式，校验/执行时会折叠常量并报出语法错误。
+- **Jinja 模板（推荐）**：`"{{ result_of.<node_id>.<field> }}"` 直接引用上游输出，规划阶段默认使用该风格。
+- **Legacy 绑定对象**：`{"__from__": "result_of.<node_id>.<field>"}` 与 `__agg__` 仍可用于手写/迁移 DSL，但规划阶段会提示修复。
+- **聚合**：`"__agg__": "identity|count|count_if|join|filter_map|format_join|pipeline"`，可配合 `field`、`op`、`value`、`map_field` 等字段完成筛选/映射。
+- **模板语法校验**：params 字符串支持 Jinja 表达式，校验/执行时会折叠常量并报出语法错误。
 
 ## 节点类型与示例
 ### 1. `start` / `end`
@@ -100,7 +101,7 @@
 {
   "id": "route_channel",
   "type": "switch",
-  "params": {"source": "result_of.detect_user.preferences", "field": "channel"},
+  "params": {"source": "{{ result_of.detect_user.preferences }}", "field": "channel"},
   "cases": [
     {"match": ["email", "newsletter"], "to_node": "send_email"},
     {"match": "sms", "to_node": "send_sms"}
@@ -126,7 +127,7 @@
   "type": "loop",
   "params": {
     "loop_kind": "for_each",
-    "source": "result_of.list_invoices.items",
+    "source": "{{ result_of.list_invoices.items }}",
     "item_alias": "invoice",
     "body_subgraph": {
       "nodes": [
@@ -196,7 +197,7 @@
       "type": "loop",
       "params": {
         "loop_kind": "for_each",
-        "source": "result_of.search_orders.items",
+        "source": "{{ result_of.search_orders.items }}",
         "item_alias": "order",
         "body_subgraph": {
           "nodes": [
@@ -223,7 +224,7 @@
       "type": "action",
       "depends_on": ["for_each_order"],
       "action_id": "finance.sync_erp",
-      "params": {"orders": {"__from__": "result_of.for_each_order.exports.orders"}}
+      "params": {"orders": "{{ result_of.for_each_order.exports.orders }}"}
     },
     {"id": "end", "type": "end"}
   ]
