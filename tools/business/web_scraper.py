@@ -6,6 +6,8 @@ import json
 import os
 from typing import Any, Dict, List, Optional
 
+from openai import OpenAI
+
 from tools.base import Tool
 from tools.registry import call_registered_tool, get_registered_tool, register_tool
 
@@ -69,6 +71,7 @@ def search_and_crawl_with_goal(
     goal: Any,
     *,
     search_limit: int = 5,
+    max_rewrite_attempts: int = 3,
     max_pages: int = 40,
     same_domain_only: bool = True,
     concurrency: int = 2,
@@ -88,15 +91,29 @@ def search_and_crawl_with_goal(
 
     search_tool = get_registered_tool("search_web")
     if search_tool:
-        search_output = search_tool(query=cleaned_goal, limit=search_limit)
+        search_fn = search_tool
     else:  # pragma: no cover - fallback when registry is not initialized
         from tools.builtin import search_web as builtin_search_web
 
-        search_output = builtin_search_web(query=cleaned_goal, limit=search_limit)
+        search_fn = builtin_search_web
 
-    search_results = search_output.get("results") if isinstance(search_output, dict) else None
-    if not isinstance(search_results, list):
-        raise RuntimeError("web search did not return a valid results list")
+    query = cleaned_goal
+    search_results: Optional[List[Any]] = None
+    for attempt in range(max_rewrite_attempts + 1):
+        search_output = search_fn(query=query, limit=search_limit)
+        search_results = search_output.get("results") if isinstance(search_output, dict) else None
+        if not isinstance(search_results, list):
+            raise RuntimeError("web search did not return a valid results list")
+        if search_results:
+            break
+        if attempt >= max_rewrite_attempts:
+            break
+        query = _rewrite_search_query(
+            query=query,
+            goal=cleaned_goal,
+            llm_model=llm_model,
+            openai_api_key=openai_api_key,
+        )
 
     seed_urls: List[str] = []
     seen: set[str] = set()
@@ -127,7 +144,7 @@ def search_and_crawl_with_goal(
     )
 
     return {
-        "query": cleaned_goal,
+        "query": query,
         "seed_urls": seed_urls,
         "search_results": search_results,
         "crawl_result": crawl_result,
@@ -142,6 +159,49 @@ def _normalize_goal(goal: Any) -> str:
     else:
         cleaned_goal = str(goal).strip()
     return cleaned_goal
+
+
+def _rewrite_search_query(
+    *,
+    query: str,
+    goal: str,
+    llm_model: str,
+    openai_api_key: Optional[str],
+) -> str:
+    api_key = openai_api_key or os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        raise ValueError("Missing OpenAI API key. Provide `openai_api_key` or set env OPENAI_API_KEY.")
+    client = OpenAI(api_key=api_key)
+    system_prompt = (
+        "You are a search query rewriter.\n"
+        "Given the user goal and current query, produce a rewritten query that uses alternative phrasing, synonyms, "
+        "or narrower terms to improve search results.\n"
+        "Return JSON only: {\"rewritten_query\": \"...\"}."
+    )
+    response = client.chat.completions.create(
+        model=llm_model,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {
+                "role": "user",
+                "content": json.dumps(
+                    {"goal": goal, "current_query": query, "language": "zh-CN"},
+                    ensure_ascii=False,
+                ),
+            },
+        ],
+        response_format={"type": "json_object"},
+        temperature=0.2,
+    )
+    raw = response.choices[0].message.content or ""
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        parsed = {}
+    rewritten = str(parsed.get("rewritten_query", "")).strip()
+    if not rewritten:
+        return query
+    return rewritten
 
 
 def register_web_scraper_tools() -> None:
@@ -191,6 +251,7 @@ def register_web_scraper_tools() -> None:
                 "properties": {
                     "goal": {"type": "string"},
                     "search_limit": {"type": "integer", "default": 5},
+                    "max_rewrite_attempts": {"type": "integer", "default": 3},
                     "max_pages": {"type": "integer", "default": 40},
                     "same_domain_only": {"type": "boolean", "default": True},
                     "concurrency": {"type": "integer", "default": 2},
