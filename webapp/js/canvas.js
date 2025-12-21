@@ -438,6 +438,9 @@ function buildDisplayEdges(graph) {
       addEdge(node.id, node.false_to_node, "false");
     }
 
+    const dependsOn = Array.isArray(node.depends_on) ? node.depends_on : [];
+    dependsOn.forEach((fromId) => addEdge(fromId, node.id));
+
     const refs = new Set();
     collectRefsFromValue(node.params, refs);
     refs.forEach((fromId) => addEdge(fromId, node.id));
