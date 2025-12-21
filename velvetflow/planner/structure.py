@@ -370,6 +370,20 @@ def _prepare_skeleton_for_next_stage(
 def _build_combined_prompt() -> str:
     structure_prompt = (
         "你是一个通用业务工作流编排助手。\n"
+        "首先请将用户的自然语言需求拆解为结构化清单，并调用 plan_user_requirement 进行保存；\n"
+        "拆解格式必须为：\n"
+        "{\n"
+        "  \"requirements\": [\n"
+        "    {\n"
+        "      \"description\": \"Task description\",\n"
+        "      \"intent\": \"The intention of this task\",\n"
+        "      \"inputs\": [\"A list of input of this task\"],\n"
+        "      \"constraints\": [\"the list of constraints that this task must obey\"]\n"
+        "    }\n"
+        "  ],\n"
+        "  \"assumptions\": [\"The assumptions of user's requirement\"]\n"
+        "}\n"
+        "后续如需回顾需求拆解，请随时调用 get_user_requirement。\n"
         "【Workflow DSL 语法与语义（务必遵守）】\n"
         "- workflow = {workflow_name, description, nodes: []}，只能返回合法 JSON（edges 会由系统基于节点绑定自动推导，不需要生成）。\n"
         "- node 基本结构：{id, type, display_name, params, depends_on, action_id?, out_params_schema?, loop/subgraph/branches?}。\n"
@@ -405,7 +419,9 @@ def _build_combined_prompt() -> str:
         "   外部节点引用循环内部数据时仍需通过 loop.exports，而不是直接指向子图节点。\n\n"
         "你必须确保工作流结构能够覆盖用户自然语言需求中的每个子任务，而不是只覆盖前半部分：\n"
         "例如，如果需求包含：触发 + 查询 + 筛选 + 总结 + 通知，你不能只实现触发 + 查询，\n"
-        "必须在结构里显式包含筛选、总结、通知等对应节点和数据流。"
+        "必须在结构里显式包含筛选、总结、通知等对应节点和数据流。\n"
+        "当工作流结构完成后，请使用已保存的需求拆解逐条对比 workflow，确认每个 requirement 都有对应节点与输出；\n"
+        "若未全部满足，请指出缺失需求并继续补齐，直到全部满足或明确说明无法满足并请求用户调整需求。"
     )
     param_prompt = (
         "【参数补全规则】\n"
@@ -806,12 +822,75 @@ def plan_workflow_structure_with_llm(
         payload.update(extra)
         return payload
 
+    parsed_requirement: Dict[str, Any] | None = None
+
     @function_tool(strict_mode=False)
-    def review_user_requirement() -> Mapping[str, Any]:
-        """回显用户需求，便于再次检查与规划."""
-        _log_tool_call("review_user_requirement")
-        result = {"status": "ok", "requirement": nl_requirement}
-        return _return_tool_result("review_user_requirement", result)
+    def plan_user_requirement(payload: Mapping[str, Any]) -> Mapping[str, Any]:
+        """保存解析后的用户需求拆解，供后续规划与校验。
+
+        payload 格式必须为：
+        {
+          "requirements": [
+            {
+              "description": "...",
+              "intent": "...",
+              "inputs": ["..."],
+              "constraints": ["..."]
+            }
+          ],
+          "assumptions": ["..."]
+        }
+        """
+        nonlocal parsed_requirement
+        _log_tool_call("plan_user_requirement", payload)
+        requirements = payload.get("requirements")
+        assumptions = payload.get("assumptions")
+        if not isinstance(requirements, list):
+            result = {
+                "status": "error",
+                "message": "requirements 必须是列表。",
+            }
+            return _return_tool_result("plan_user_requirement", result)
+        if assumptions is not None and not isinstance(assumptions, list):
+            result = {
+                "status": "error",
+                "message": "assumptions 必须是字符串列表。",
+            }
+            return _return_tool_result("plan_user_requirement", result)
+        for idx, item in enumerate(requirements):
+            if not isinstance(item, Mapping):
+                result = {
+                    "status": "error",
+                    "message": f"requirements[{idx}] 必须是对象。",
+                }
+                return _return_tool_result("plan_user_requirement", result)
+            for key in ("description", "intent", "inputs", "constraints"):
+                if key not in item:
+                    result = {
+                        "status": "error",
+                        "message": f"requirements[{idx}] 缺少字段 {key}。",
+                    }
+                    return _return_tool_result("plan_user_requirement", result)
+        normalized_payload = {
+            "requirements": list(requirements),
+            "assumptions": list(assumptions or []),
+        }
+        parsed_requirement = normalized_payload
+        result = {"status": "ok", "requirement": normalized_payload}
+        return _return_tool_result("plan_user_requirement", result)
+
+    @function_tool(strict_mode=False)
+    def get_user_requirement() -> Mapping[str, Any]:
+        """获取已保存的用户需求拆解，便于回顾与校验."""
+        _log_tool_call("get_user_requirement")
+        if not parsed_requirement:
+            result = {
+                "status": "error",
+                "message": "尚未保存需求拆解，请先调用 plan_user_requirement。",
+            }
+            return _return_tool_result("get_user_requirement", result)
+        result = {"status": "ok", "requirement": parsed_requirement}
+        return _return_tool_result("get_user_requirement", result)
 
     @function_tool(strict_mode=False)
     def search_business_actions(query: str, top_k: int = 5) -> Mapping[str, Any]:
@@ -1724,7 +1803,8 @@ def plan_workflow_structure_with_llm(
         name="WorkflowStructurePlanner",
         instructions=system_prompt,
         tools=[
-            review_user_requirement,
+            plan_user_requirement,
+            get_user_requirement,
             search_business_actions,
             set_workflow_meta,
             add_action_node,
