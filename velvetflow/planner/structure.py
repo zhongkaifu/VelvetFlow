@@ -759,6 +759,7 @@ def plan_workflow_structure_with_llm(
     action_schemas = _build_action_schema_map(action_registry)
     last_action_candidates: List[str] = []
     all_action_candidates: List[str] = []
+    all_action_candidates_info: List[Dict[str, Any]] = []
     latest_skeleton: Dict[str, Any] = {}
 
     def _emit_progress(label: str, workflow_obj: Mapping[str, Any]) -> None:
@@ -922,6 +923,11 @@ def plan_workflow_structure_with_llm(
         for action_id in candidate_ids:
             if action_id not in all_action_candidates:
                 all_action_candidates.append(action_id)
+        for candidate in candidates:
+            if candidate["id"] and all(
+                existing["id"] != candidate["id"] for existing in all_action_candidates_info
+            ):
+                all_action_candidates_info.append(candidate)
         _emit_canvas_update("search_business_actions")
         result = {
             "status": "ok",
@@ -930,6 +936,16 @@ def plan_workflow_structure_with_llm(
             "candidates": candidates,
         }
         return _return_tool_result("search_business_actions", result)
+
+    @function_tool(strict_mode=False)
+    def list_retrieved_business_action() -> Mapping[str, Any]:
+        """列出当前已获取的业务动作候选信息。"""
+        _log_tool_call("list_retrieved_business_action")
+        result = {
+            "status": "ok",
+            "actions": list(all_action_candidates_info),
+        }
+        return _return_tool_result("list_retrieved_business_action", result)
 
     @function_tool(strict_mode=False)
     def set_workflow_meta(workflow_name: str, description: Optional[str] = None) -> Mapping[str, Any]:
@@ -1806,6 +1822,7 @@ def plan_workflow_structure_with_llm(
             plan_user_requirement,
             get_user_requirement,
             search_business_actions,
+            list_retrieved_business_action,
             set_workflow_meta,
             add_action_node,
             add_loop_node,
