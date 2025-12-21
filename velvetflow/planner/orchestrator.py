@@ -149,7 +149,6 @@ def _check_requirement_alignment(
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
         ],
-        temperature=0.2,
     )
 
     log_llm_usage(model, getattr(resp, "usage", None), operation="requirement_alignment")
