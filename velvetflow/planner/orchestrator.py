@@ -19,7 +19,11 @@ workflow 结构和参数的两阶段推理，然后在必要时向 LLM 提供错
 返回值统一为 `Workflow` 对象，调用方无需关心 LLM 返回的原始 JSON 格式。
 """
 
+import json
+import os
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence
+
+from openai import OpenAI
 
 from velvetflow.config import OPENAI_MODEL
 from velvetflow.logging_utils import (
@@ -30,6 +34,7 @@ from velvetflow.logging_utils import (
     log_event,
     log_info,
     log_json,
+    log_llm_message,
     log_llm_usage,
     log_section,
     log_success,
@@ -106,6 +111,124 @@ def _is_empty_fallback_workflow(workflow: Workflow) -> bool:
     """Return True if we only have the synthetic empty fallback workflow."""
 
     return workflow.workflow_name == "fallback_workflow" and not workflow.nodes
+
+
+def _parse_llm_json_response(content: str) -> Dict[str, Any]:
+    text = (content or "").strip()
+    if text.startswith("```"):
+        text = text.strip("`")
+        if "\n" in text:
+            first_line, rest = text.split("\n", 1)
+            if first_line.strip().lower().startswith("json"):
+                text = rest
+    return json.loads(text)
+
+
+def _check_requirement_alignment(
+    nl_requirement: str,
+    workflow: Workflow,
+    *,
+    model: str = OPENAI_MODEL,
+) -> Dict[str, Any]:
+    client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+    system_prompt = (
+        "你是需求对齐检查助手。\n"
+        "任务：\n"
+        "1) 将用户需求拆解为 requirements 列表（id, description, intent, inputs, constraints）；\n"
+        "2) 对照当前 workflow JSON，判断每项是否已被节点或输出覆盖；\n"
+        "3) 输出 JSON：{requirements:[...], missing:[{id, description, reason}]}\n"
+        "只返回 JSON，不要输出多余说明。"
+    )
+    user_payload = {
+        "requirement": nl_requirement,
+        "workflow": workflow.model_dump(by_alias=True),
+    }
+    resp = client.chat.completions.create(
+        model=model,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
+        ],
+    )
+
+    log_llm_usage(model, getattr(resp, "usage", None), operation="requirement_alignment")
+
+    if not resp.choices:
+        raise RuntimeError("requirement_alignment 未返回任何候选消息")
+
+    message = resp.choices[0].message
+    log_llm_message(model, message, operation="requirement_alignment")
+    return _parse_llm_json_response(message.content or "")
+
+
+def _build_missing_requirement_prompt(missing: Sequence[Any], nl_requirement: str) -> str:
+    lines: List[str] = []
+    for item in missing:
+        if isinstance(item, Mapping):
+            desc = item.get("description") or item.get("requirement") or item.get("text")
+            entry_id = item.get("id")
+            if desc and entry_id:
+                lines.append(f"- {entry_id}: {desc}")
+            elif desc:
+                lines.append(f"- {desc}")
+            else:
+                lines.append(f"- {json.dumps(item, ensure_ascii=False)}")
+        else:
+            lines.append(f"- {item}")
+    if not lines:
+        return ""
+    missing_block = "\n".join(lines)
+    return (
+        f"{nl_requirement}\n\n"
+        "以下是与当前 workflow 对齐后仍未满足的需求，请在现有 workflow 基础上补齐：\n"
+        f"{missing_block}"
+    )
+
+
+def _align_workflow_to_requirements(
+    workflow: Workflow,
+    *,
+    nl_requirement: str,
+    action_registry: List[Dict[str, Any]],
+    search_service: HybridActionSearchService,
+    max_repair_rounds: int,
+    model: str = OPENAI_MODEL,
+    max_alignment_rounds: int = 3,
+    progress_callback: Callable[[str, Mapping[str, Any]], None] | None = None,
+) -> Workflow:
+    current_workflow = workflow
+    for round_id in range(max_alignment_rounds + 1):
+        try:
+            alignment = _check_requirement_alignment(
+                nl_requirement, current_workflow, model=model
+            )
+        except Exception as exc:  # noqa: BLE001
+            log_warn(f"[requirement_alignment] 检查失败，跳过对齐：{exc}")
+            return current_workflow
+
+        missing = alignment.get("missing") or []
+        if not missing:
+            return current_workflow
+        if round_id == max_alignment_rounds:
+            log_warn("[requirement_alignment] 达到最大对齐轮次，返回当前 workflow。")
+            return current_workflow
+
+        requirement_text = _build_missing_requirement_prompt(missing, nl_requirement)
+        if not requirement_text:
+            return current_workflow
+
+        current_workflow = update_workflow_with_two_pass(
+            existing_workflow=current_workflow.model_dump(by_alias=True),
+            requirement=requirement_text,
+            search_service=search_service,
+            action_registry=action_registry,
+            max_repair_rounds=max_repair_rounds,
+            model=model,
+            progress_callback=progress_callback,
+            align_requirements=False,
+        )
+
+    return current_workflow
 
 
 def _schemas_compatible(expected: Optional[Mapping[str, Any]], actual: Optional[Mapping[str, Any]]) -> bool:
@@ -1244,6 +1367,7 @@ def plan_workflow_with_two_pass(
     *,
     max_rounds: int = 10,
     max_repair_rounds: int = 3,
+    max_alignment_rounds: int = 3,
     trace_context: TraceContext | None = None,
     trace_id: str | None = None,
     progress_callback: Callable[[str, Mapping[str, Any]], None] | None = None,
@@ -1263,6 +1387,8 @@ def plan_workflow_with_two_pass(
     max_repair_rounds:
         参数补全后进入校验 + 自修复的最大轮次，超过后返回最后通过校验的
         版本。
+    max_alignment_rounds:
+        需求对齐检查允许的最大轮次，超过后返回当前 workflow。
 
     返回
     ----
@@ -1404,6 +1530,17 @@ def plan_workflow_with_two_pass(
                 progress_callback=progress_callback,
             )
 
+            if not _is_empty_fallback_workflow(planned_workflow):
+                planned_workflow = _align_workflow_to_requirements(
+                    planned_workflow,
+                    nl_requirement=nl_requirement,
+                    action_registry=action_registry,
+                    search_service=search_service,
+                    max_repair_rounds=max_repair_rounds,
+                    max_alignment_rounds=max_alignment_rounds,
+                    progress_callback=progress_callback,
+                )
+
         if not _is_empty_fallback_workflow(planned_workflow):
             return planned_workflow
 
@@ -1426,7 +1563,9 @@ def update_workflow_with_two_pass(
     action_registry: List[Dict[str, Any]],
     *,
     max_repair_rounds: int = 3,
+    max_alignment_rounds: int = 3,
     model: str = OPENAI_MODEL,
+    align_requirements: bool = True,
     trace_context: TraceContext | None = None,
     trace_id: str | None = None,
     progress_callback: Callable[[str, Mapping[str, Any]], None] | None = None,
@@ -1526,13 +1665,27 @@ def update_workflow_with_two_pass(
             except Exception:
                 log_debug("[update_workflow_with_two_pass] progress_callback 更新阶段调用失败，已忽略。")
 
-        return _validate_and_repair_workflow(
+        updated_workflow = _validate_and_repair_workflow(
             updated_workflow,
             action_registry=action_registry,
             search_service=search_service,
             max_repair_rounds=max_repair_rounds,
             last_good_workflow=last_good_workflow,
             trace_event_prefix="update",
+            progress_callback=progress_callback,
+        )
+
+        if not align_requirements:
+            return updated_workflow
+
+        return _align_workflow_to_requirements(
+            updated_workflow,
+            nl_requirement=requirement,
+            action_registry=action_registry,
+            search_service=search_service,
+            max_repair_rounds=max_repair_rounds,
+            max_alignment_rounds=max_alignment_rounds,
+            model=model,
             progress_callback=progress_callback,
         )
 
