@@ -1,10 +1,11 @@
 # 进阶指南
 
 ## Agent SDK 与规划工具
-- 结构规划、参数补全与修复均基于 OpenAI Agent SDK 的 `Agent`/`Runner`/`function_tool` 运行，`planner/agent_runtime.py` 统一导出依赖，便于在云端 Agent 与本地兼容层之间切换。【F:velvetflow/planner/agent_runtime.py†L4-L26】【F:velvetflow/planner/structure.py†L1134-L1163】
-- 结构规划工具在 `plan_workflow_structure_with_llm` 内联定义，借助闭包维护 `WorkflowBuilder`、动作候选集与覆盖度反馈，并在 finalize 时自动补齐 edges/depends_on；节点 params 会按节点类型或 action schema 过滤无关字段，降低 Agent 生成的噪声。【F:velvetflow/planner/structure.py†L603-L829】【F:velvetflow/planner/workflow_builder.py†L20-L160】【F:velvetflow/planner/workflow_builder.py†L179-L222】
-- 参数补全过程按拓扑逐节点调用 `submit_node_params`/`validate_node_params`，在校验通过前不会写入结果，且会携带跨节点的绑定记忆以保持实体 ID/引用一致性。【F:velvetflow/planner/params.py†L195-L233】【F:velvetflow/planner/params.py†L430-L491】
+- 结构规划与参数补全基于 OpenAI Agent SDK 的 `Agent`/`Runner`/`function_tool` 运行，`planner/agent_runtime.py` 统一导出依赖，便于在云端 Agent 与本地兼容层之间切换。【F:velvetflow/planner/agent_runtime.py†L4-L26】【F:velvetflow/planner/structure.py†L1134-L1163】
+- 结构规划工具在 `plan_workflow_structure_with_llm` 内联定义，借助闭包维护 `WorkflowBuilder` 与动作候选集，并自动补齐 edges/depends_on；节点 params 会按节点类型或 action schema 过滤无关字段，降低 Agent 生成的噪声。【F:velvetflow/planner/structure.py†L603-L829】【F:velvetflow/planner/workflow_builder.py†L20-L222】
+- 参数补全通过 `update_node_params` 工具逐节点校验，工具 schema 来自 `params_tools.py`，要求使用 Jinja 表达式引用上游输出，并携带跨节点绑定记忆确保实体 ID 一致性。【F:velvetflow/planner/params_tools.py†L1-L193】【F:velvetflow/planner/structure.py†L1706-L1817】
 - 修复阶段 Agent 可选择命名修复工具或提交补丁文本，未提交最终版本时会使用工作副本兜底，确保始终返回可序列化的 workflow。【F:velvetflow/planner/repair.py†L616-L756】
+- 需求对齐检查由 `requirement_alignment.py` 驱动，在规划完成后检测缺口并调用更新管线补齐。【F:velvetflow/planner/requirement_alignment.py†L18-L80】【F:velvetflow/planner/orchestrator.py†L1460-L1494】
 
 ## 检索与模型调优
 - 调整混合检索权重：`velvetflow/search.py` 的 `FeatureRanker` 允许通过 `feature_weights`、`keyword_weight`、`embedding_weight` 微调关键信号。
@@ -27,5 +28,5 @@
 - parallel 占位：`parallel` 节点目前主要用于 UI 分组与可视化，不会触发真正的并发调度；如需控制实际执行顺序，请使用 `depends_on` 与绑定推导。
 
 ## 可观测性与日志
-- 规划阶段：`planner/structure.py` 会记录每次 tool-calling、覆盖度缺失与 LLM 返回，便于复现失败案例。
+- 规划阶段：`planner/structure.py` 会记录每次 tool-calling、需求拆解与 LLM 返回，便于复现失败案例。
 - 执行阶段：`velvetflow/logging_utils.py` 提供结构化事件日志，配合 run_manager 可以收集指标（节点数、结果数、异步请求 ID）。
