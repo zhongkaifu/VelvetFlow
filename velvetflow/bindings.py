@@ -1106,6 +1106,10 @@ def eval_node_params(node: Node, ctx: BindingContext) -> Dict[str, Any]:
                 nonlocal replaced
                 raw_path = match.group(1) or match.group(2) or match.group(3)
                 normalized_path = normalize_reference_path(raw_path)
+                try:
+                    parse_field_path(normalized_path)
+                except Exception:
+                    return match.group(0)
                 qualified_path = ctx._qualify_context_path(normalized_path)
                 head = qualified_path.split(".", 1)[0]
                 if (
