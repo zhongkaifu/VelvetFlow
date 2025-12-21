@@ -420,8 +420,7 @@ def _build_combined_prompt() -> str:
         "你必须确保工作流结构能够覆盖用户自然语言需求中的每个子任务，而不是只覆盖前半部分：\n"
         "例如，如果需求包含：触发 + 查询 + 筛选 + 总结 + 通知，你不能只实现触发 + 查询，\n"
         "必须在结构里显式包含筛选、总结、通知等对应节点和数据流。\n"
-        "当工作流结构完成后，请使用已保存的需求拆解逐条对比 workflow，确认每个 requirement 都有对应节点与输出；\n"
-        "若未全部满足，请指出缺失需求并继续补齐，直到全部满足或明确说明无法满足并请求用户调整需求。"
+        "当工作流结构完成后，请确保整体结构覆盖全部子任务。"
     )
     param_prompt = (
         "【参数补全规则】\n"
@@ -751,7 +750,8 @@ def plan_workflow_structure_with_llm(
     action_registry: List[Dict[str, Any]],
     max_rounds: int = 100,
     progress_callback: Callable[[str, Mapping[str, Any]], None] | None = None,
-) -> Dict[str, Any]:
+    return_requirement: bool = False,
+) -> Dict[str, Any] | tuple[Dict[str, Any], Dict[str, Any] | None]:
     if not os.environ.get("OPENAI_API_KEY"):
         raise RuntimeError("请先设置 OPENAI_API_KEY 环境变量再进行结构规划。")
 
@@ -1855,6 +1855,8 @@ def plan_workflow_structure_with_llm(
             builder=builder, action_registry=action_registry, search_service=search_service
         )
 
+    if return_requirement:
+        return latest_skeleton, parsed_requirement
     return latest_skeleton
 
 
