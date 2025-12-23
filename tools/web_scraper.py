@@ -560,6 +560,32 @@ class EvidenceAwareAnswerGenerator:
         self.client = AsyncOpenAI(api_key=api_key)
         self.model = model
 
+    def _coerce_answer_payload(self, parsed: Any) -> AnswerWithCitations:
+        if not isinstance(parsed, dict):
+            return AnswerWithCitations(
+                answer_markdown="无法生成答案：JSON 解析失败。",
+                warnings=["parse error"],
+            )
+        answer_markdown = parsed.get("answer_markdown")
+        if not answer_markdown:
+            answer_markdown = parsed.get("answer") or parsed.get("content") or ""
+        if not isinstance(answer_markdown, str):
+            answer_markdown = str(answer_markdown or "")
+
+        warnings = parsed.get("warnings", [])
+        if isinstance(warnings, str):
+            warnings = [warnings]
+        elif not isinstance(warnings, list):
+            warnings = [str(warnings)]
+        warnings = [str(warning) for warning in warnings if str(warning).strip()]
+
+        if not answer_markdown.strip():
+            return AnswerWithCitations(
+                answer_markdown="无法生成答案：JSON 解析失败。",
+                warnings=warnings or ["parse error"],
+            )
+        return AnswerWithCitations(answer_markdown=answer_markdown, warnings=warnings)
+
     async def generate(self, goal: str, state: SummarizerState) -> AnswerWithCitations:
         system = (
             "You are an evidence-grounded answer writer.\n"
@@ -597,7 +623,7 @@ class EvidenceAwareAnswerGenerator:
         try:
             return AnswerWithCitations(**parsed)
         except Exception:
-            return AnswerWithCitations(answer_markdown="无法生成答案：JSON 解析失败。", warnings=["parse error"])
+            return self._coerce_answer_payload(parsed)
 
 
 # ============================================================
