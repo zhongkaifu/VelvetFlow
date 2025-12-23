@@ -861,6 +861,14 @@ def apply_repair_tool(
         patched, summary = drop_invalid_references(
             workflow, remove_edges=bool(args.get("remove_edges", True))
         )
+    elif tool_name == "align_loop_body_alias_references":
+        patched, summary = align_loop_body_alias_references(
+            workflow, action_registry=action_registry
+        )
+    elif tool_name == "fix_missing_loop_exports_items":
+        patched, summary = fix_missing_loop_exports_items(
+            workflow, errors=list(validation_errors)
+        )
     else:
         patched, summary = workflow, {"applied": False, "reason": f"未知工具 {tool_name}"}
 
