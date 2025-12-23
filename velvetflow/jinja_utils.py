@@ -29,7 +29,11 @@ def get_jinja_env() -> Environment:
         lstrip_blocks=True,
     )
     env.globals.setdefault("now", datetime.now)
-    env.filters.setdefault("tojson", lambda obj: json.dumps(obj, ensure_ascii=False))
+    env.filters["tojson"] = lambda obj: json.dumps(
+        obj,
+        ensure_ascii=False,
+        default=str,
+    )
     env.filters.setdefault("length", lambda obj: len(obj) if obj is not None else 0)
     env.filters.setdefault(
         "split",
