@@ -371,7 +371,11 @@ _ERROR_TYPE_PROMPTS: Dict[str, str] = {
     "UNKNOWN_PARAM": "移除或重命名 params 中未在 arg_schema 声明的字段，使其与 schema 对齐。示例：action schema 仅接受 prompt/temperature，应删除意外出现的 max_token 字段。",
     "DISCONNECTED_GRAPH": "连接无入度/出度节点，确保每个节点都位于可达路径上。示例：为孤立的 summary 节点添加来自前置生成节点的边，并把结果导向下游汇总节点。",
     "INVALID_EDGE": "修复边的 from/to 以引用存在的节点，并保持条件字段合法。示例：若 edge.to 指向不存在的 node-3，可改为实际存在的 reviewer 节点。",
-    "SCHEMA_MISMATCH": "调整绑定字段或聚合方式，使类型与上游 output_schema/arg_schema 兼容。示例：如果上游输出是 list 而当前节点期望 string，可改为 join 列表或选择单个元素。",
+    "SCHEMA_MISMATCH": (
+        "对照 action arg_schema 与上游 output_schema 修正引用路径或类型；若为 list->string 用 join/first，"
+        "object->string 选择单字段或 tojson，loop 外部引用需补 result_of.<loop_id>.exports.<key>，"
+        "loop 体内引用请使用 item_alias 或 loop.item.<field>（与 item_alias 保持一致）。"
+    ),
     "INVALID_SCHEMA": "按 DSL 结构补齐/修正字段类型（nodes/edges/params），避免 JSON 结构缺失。示例：在 workflow 缺少 edges 字段时补空数组，并确保 nodes 为列表。",
     "INVALID_LOOP_BODY": "补齐 loop.body_subgraph.nodes（至少一个 action），并确保 exports 使用 {key: Jinja表达式} 结构引用 body_subgraph 节点字段。",
     "STATIC_RULES_SUMMARY": "遵循静态规则摘要中的提示逐项修复，优先处理连通性和 schema 不匹配。示例：按摘要要求先修复未连接的边，再补齐缺失的必填参数。",
@@ -618,6 +622,9 @@ def repair_workflow_with_llm(
    - 仅输出 Jinja 表达式或字面量，禁止回退到 __from__/__agg__ 对象；
    - 聚合/过滤/拼接逻辑请直接写在 Jinja 表达式或过滤器里，并确保字段路径与上游 schema 对齐；
    - 常见错误：下游引用缺少 exports 段，请补齐 result_of.<loop_id>.exports.<key>。
+   - SCHEMA_MISMATCH 优先处理顺序（提升效率）：① 对照 action_schemas[action_id].arg_schema 确认目标字段类型；
+     ② 根据上游 output_schema 调整引用路径（缺字段时改为存在的字段，必要时添加 .exports 或 item_alias）；
+     ③ 若类型不匹配，使用 Jinja 过滤器/索引进行转换（如 list -> string 使用 join/first，object -> string 选择单字段或 tojson）。
 
  7. 修改范围尽量最小化：
     - 当有多种修复方式时，优先选择改动最小、语义最接近原意的方案（如只改一个字段名，而不是重写整个 params）。
@@ -627,12 +634,12 @@ def repair_workflow_with_llm(
     - 系统会在有限轮次内重新校验；如果你忽略任何一条 validation_error，流程将直接进入下一轮甚至终止。
     - 请逐条对照 validation_errors，把所有问题修到为 0 再输出结果，避免留存隐患。
 
- 9. 输出要求：
+  9. 输出要求：
     - 保持顶层结构：workflow_name/description/nodes 不变（仅节点内部内容可调整，edges 由系统推导）；
     - 节点的 id/type 不变；
     - 必须使用工具链完成修改与提交：通过修复工具调整 workflow，最终调用 submit_repaired_workflow 返回结果（可直接传 workflow 或 patch_text）。
     - 避免直接输出自然语言或 Markdown 代码块，所有修改需通过工具完成。
- 10. 可用工具：当你需要结构化修改时，优先调用提供的工具（无 LLM 依赖、结果确定），包含 fix_loop_body_references/fill_action_required_params/update_node_field/normalize_binding_paths/replace_reference_paths/drop_invalid_references/submit_repaired_workflow。
+ 10. 可用工具：当你需要结构化修改时，优先调用提供的工具（无 LLM 依赖、结果确定），包含 fix_loop_body_references/fill_action_required_params/update_node_field/normalize_binding_paths/replace_reference_paths/drop_invalid_references/align_loop_body_alias_references/fix_missing_loop_exports_items/submit_repaired_workflow。
 """
 
     working_workflow: Dict[str, Any] = broken_workflow
@@ -746,6 +753,34 @@ def repair_workflow_with_llm(
         return result
 
     @function_tool(strict_mode=False)
+    def align_loop_body_alias_references() -> Mapping[str, Any]:
+        """对齐 loop body 中引用到当前 item_alias。
+
+        适用场景：loop 体内引用了旧 alias 或直接使用了已失效的 alias 名称。
+
+        Returns:
+            包含修复摘要与当前 workflow 的结果字典。
+        """
+        _log_tool_call("align_loop_body_alias_references")
+        result = _apply_named_repair("align_loop_body_alias_references", {})
+        _emit_canvas_update("align_loop_body_alias_references", result["workflow"])
+        return result
+
+    @function_tool(strict_mode=False)
+    def fix_missing_loop_exports_items() -> Mapping[str, Any]:
+        """补齐 loop.exports 缺失的引用路径段。
+
+        适用场景：引用 loop 输出时缺少 exports 段，触发 SCHEMA_MISMATCH。
+
+        Returns:
+            包含修复摘要与当前 workflow 的结果字典。
+        """
+        _log_tool_call("fix_missing_loop_exports_items")
+        result = _apply_named_repair("fix_missing_loop_exports_items", {})
+        _emit_canvas_update("fix_missing_loop_exports_items", result["workflow"])
+        return result
+
+    @function_tool(strict_mode=False)
     def replace_reference_paths(old: str, new: str, include_edges: bool = True) -> Mapping[str, Any]:
         """批量替换 workflow 中的引用路径。
 
@@ -830,6 +865,8 @@ def repair_workflow_with_llm(
             normalize_binding_paths,
             replace_reference_paths,
             drop_invalid_references,
+            align_loop_body_alias_references,
+            fix_missing_loop_exports_items,
             submit_repaired_workflow,
         ],
         model=model,
