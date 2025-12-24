@@ -7,6 +7,8 @@ def test_validate_jinja_expr_allows_registered_filters_and_tests():
     # Should not raise when using built-in filters and tests
     validate_jinja_expr("items | map('length') | select('truthy') | list", path="expr")
     validate_jinja_expr("result.value | length > 0")
+    validate_jinja_expr("values | selectattr('enabled', 'truthy') | map('date', 'yyyy/MM/dd') | list")
+    validate_jinja_expr("data.items | rejectattr('archived') | map(attribute='name') | join(', ')")
 
 
 def test_validate_jinja_expr_rejects_empty_or_non_string():
@@ -19,6 +21,20 @@ def test_validate_jinja_expr_rejects_empty_or_non_string():
 def test_validate_jinja_expr_rejects_invalid_syntax():
     with pytest.raises(ValueError, match="不是合法的 Jinja 表达式"):
         validate_jinja_expr("foo(", path="invalid")
+
+
+@pytest.mark.parametrize(
+    "expr",
+    [
+        "(price > 0) and (category == 'book')",
+        "user.get('name') if user else 'anonymous'",
+        "config['threshold'] | default(10)",
+        "(items | map(attribute='value') | list) is sequence",
+        "(items | select('truthy') | list) | length >= 1",
+    ],
+)
+def test_validate_jinja_expr_supports_varied_jinja_expression_features(expr: str):
+    validate_jinja_expr(expr)
 
 
 def test_validate_jinja_expr_rejects_unknown_filters_and_tests():
