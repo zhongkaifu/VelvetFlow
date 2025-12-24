@@ -5,7 +5,7 @@ function openNodeDialog(node, context = getTabContext()) {
     return;
   }
   if (node.type !== "action") {
-    addChatMessage("当前仅支持编辑 action 或 condition 节点的参数。", "agent");
+    addChatMessage("Only action or condition node parameters can be edited right now.", "agent");
     return;
   }
 
@@ -23,13 +23,13 @@ function openNodeDialog(node, context = getTabContext()) {
 
   const title = document.createElement("div");
   title.className = "modal__title";
-  title.textContent = `编辑节点：${node.display_name || node.action_id || node.id}`;
+  title.textContent = `Edit node: ${node.display_name || node.action_id || node.id}`;
   dialog.appendChild(title);
 
   const idRow = document.createElement("div");
   idRow.className = "modal__row";
   const idLabel = document.createElement("label");
-  idLabel.textContent = "节点 ID";
+  idLabel.textContent = "Node ID";
   const idInput = document.createElement("input");
   idInput.className = "modal__input";
   idInput.value = node.id || "";
@@ -42,7 +42,7 @@ function openNodeDialog(node, context = getTabContext()) {
   const actionRow = document.createElement("div");
   actionRow.className = "modal__row";
   const actionLabel = document.createElement("label");
-  actionLabel.textContent = "业务工具 (action_id)";
+  actionLabel.textContent = "Business tool (action_id)";
   const actionSelect = document.createElement("select");
   actionSelect.className = "modal__select";
   const actions = Object.values(actionCatalog).length
@@ -61,7 +61,7 @@ function openNodeDialog(node, context = getTabContext()) {
 
   const inputsHeader = document.createElement("div");
   inputsHeader.className = "modal__subtitle";
-  inputsHeader.textContent = "输入参数 (引用 result_of.* 或常量)";
+  inputsHeader.textContent = "Input params (use result_of.* or literals)";
   dialog.appendChild(inputsHeader);
 
   const inputsContainer = document.createElement("div");
@@ -70,7 +70,7 @@ function openNodeDialog(node, context = getTabContext()) {
 
   const outputsHeader = document.createElement("div");
   outputsHeader.className = "modal__subtitle";
-  outputsHeader.textContent = "输出参数";
+  outputsHeader.textContent = "Output params";
   dialog.appendChild(outputsHeader);
 
   const outputsContainer = document.createElement("div");
@@ -126,15 +126,15 @@ function openNodeDialog(node, context = getTabContext()) {
   const deleteBtn = document.createElement("button");
   deleteBtn.type = "button";
   deleteBtn.className = "button button--danger";
-  deleteBtn.textContent = "删除节点";
+  deleteBtn.textContent = "Delete node";
   const cancelBtn = document.createElement("button");
   cancelBtn.type = "button";
   cancelBtn.className = "button button--ghost";
-  cancelBtn.textContent = "取消";
+  cancelBtn.textContent = "Cancel";
   const saveBtn = document.createElement("button");
   saveBtn.type = "button";
   saveBtn.className = "button button--primary";
-  saveBtn.textContent = "保存并刷新";
+  saveBtn.textContent = "Save and refresh";
   actionsRow.appendChild(deleteBtn);
   actionsRow.appendChild(cancelBtn);
   actionsRow.appendChild(saveBtn);
@@ -172,13 +172,13 @@ function openNodeDialog(node, context = getTabContext()) {
     rebuildEdgesFromBindings(updatedGraph);
     context.saveGraph(updatedGraph);
     render(currentTab);
-    appendLog(`节点 ${node.id} 已更新并重新绘制`);
-    logWorkflowSnapshot(currentWorkflow, "节点参数更新后的 DAG");
+    appendLog(`Node ${node.id} updated and re-rendered`);
+    logWorkflowSnapshot(currentWorkflow, "DAG after node params update");
     close();
   });
 
   deleteBtn.addEventListener("click", () => {
-    const confirmed = window.confirm(`确认删除节点 ${node.display_name || node.id} 吗？`);
+    const confirmed = window.confirm(`Delete node ${node.display_name || node.id}?`);
     if (!confirmed) return;
     removeNodeFromGraph(node.id, context);
     close();
@@ -196,13 +196,13 @@ function openConditionDialog(node, context = getTabContext()) {
 
   const title = document.createElement("div");
   title.className = "modal__title";
-  title.textContent = `编辑条件节点：${node.display_name || node.id}`;
+  title.textContent = `Edit condition node: ${node.display_name || node.id}`;
   dialog.appendChild(title);
 
   const idRow = document.createElement("div");
   idRow.className = "modal__row";
   const idLabel = document.createElement("label");
-  idLabel.textContent = "节点 ID";
+  idLabel.textContent = "Node ID";
   const idInput = document.createElement("input");
   idInput.className = "modal__input";
   idInput.value = node.id || "";
@@ -215,7 +215,7 @@ function openConditionDialog(node, context = getTabContext()) {
   const nameRow = document.createElement("div");
   nameRow.className = "modal__row";
   const nameLabel = document.createElement("label");
-  nameLabel.textContent = "显示名称";
+  nameLabel.textContent = "Display name";
   const nameInput = document.createElement("input");
   nameInput.className = "modal__input";
   nameInput.value = node.display_name || "";
@@ -225,7 +225,7 @@ function openConditionDialog(node, context = getTabContext()) {
 
   const branchHeader = document.createElement("div");
   branchHeader.className = "modal__subtitle";
-  branchHeader.textContent = "条件分支指向 (true/false_to_node)";
+  branchHeader.textContent = "Condition branches (true/false_to_node)";
   dialog.appendChild(branchHeader);
 
   const branchGrid = document.createElement("div");
@@ -240,7 +240,7 @@ function openConditionDialog(node, context = getTabContext()) {
   const createBranchField = (label, value, name) => {
     const field = document.createElement("label");
     field.className = "modal__field";
-    field.innerHTML = `<div class="modal__field-label">${label}<span class="modal__hint">可填节点 id 或留空表示结束</span></div>`;
+    field.innerHTML = `<div class="modal__field-label">${label}<span class="modal__hint">Enter a node id or leave blank to end</span></div>`;
     const input = document.createElement("input");
     input.className = "modal__input";
     input.name = name;
@@ -268,7 +268,7 @@ function openConditionDialog(node, context = getTabContext()) {
 
   const paramsHeader = document.createElement("div");
   paramsHeader.className = "modal__subtitle";
-  paramsHeader.textContent = "条件参数 (支持 result_of.* 引用或常量)";
+  paramsHeader.textContent = "Condition params (supports result_of.* or literals)";
   dialog.appendChild(paramsHeader);
 
   const paramsContainer = document.createElement("div");
@@ -278,7 +278,7 @@ function openConditionDialog(node, context = getTabContext()) {
   const addParamBtn = document.createElement("button");
   addParamBtn.type = "button";
   addParamBtn.className = "button button--ghost";
-  addParamBtn.textContent = "新增参数";
+  addParamBtn.textContent = "Add parameter";
 
   const paramRows = [];
 
@@ -288,12 +288,12 @@ function openConditionDialog(node, context = getTabContext()) {
 
     const keyInput = document.createElement("input");
     keyInput.className = "modal__input";
-    keyInput.placeholder = "参数名";
+    keyInput.placeholder = "Parameter name";
     keyInput.value = key;
 
     const valueInput = document.createElement("textarea");
     valueInput.className = "modal__input modal__textarea";
-    valueInput.placeholder = "参数值，支持 JSON 或 result_of.* 引用";
+    valueInput.placeholder = "Parameter value, supports JSON or result_of.* reference";
     valueInput.value = value;
 
     row.appendChild(keyInput);
@@ -314,15 +314,15 @@ function openConditionDialog(node, context = getTabContext()) {
   const deleteBtn = document.createElement("button");
   deleteBtn.type = "button";
   deleteBtn.className = "button button--danger";
-  deleteBtn.textContent = "删除节点";
+  deleteBtn.textContent = "Delete node";
   const cancelBtn = document.createElement("button");
   cancelBtn.type = "button";
   cancelBtn.className = "button button--ghost";
-  cancelBtn.textContent = "取消";
+  cancelBtn.textContent = "Cancel";
   const saveBtn = document.createElement("button");
   saveBtn.type = "button";
   saveBtn.className = "button button--primary";
-  saveBtn.textContent = "保存条件";
+  saveBtn.textContent = "Save condition";
   actionsRow.appendChild(deleteBtn);
   actionsRow.appendChild(cancelBtn);
   actionsRow.appendChild(saveBtn);
@@ -375,13 +375,13 @@ function openConditionDialog(node, context = getTabContext()) {
     rebuildEdgesFromBindings(updatedGraph);
     context.saveGraph(updatedGraph);
     render(currentTab);
-    appendLog(`条件节点 ${node.id} 已更新`);
-    logWorkflowSnapshot(currentWorkflow, "条件节点更新后的 DAG");
+    appendLog(`Condition node ${node.id} updated`);
+    logWorkflowSnapshot(currentWorkflow, "DAG after condition update");
     close();
   });
 
   deleteBtn.addEventListener("click", () => {
-    const confirmed = window.confirm(`确认删除条件节点 ${node.display_name || node.id} 吗？`);
+    const confirmed = window.confirm(`Delete condition node ${node.display_name || node.id}?`);
     if (!confirmed) return;
     removeNodeFromGraph(node.id, context);
     close();

@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -13,8 +13,8 @@
         <img src="/logo.jpg" alt="VelvetFlow logo" class="logo" />
         <div>
           <div class="eyebrow">VelvetFlow Agent Playground</div>
-          <h1>可视化 Workflow Builder</h1>
-          <p class="subtitle">用自然语言描述需求，自动构建、修改并运行可视化 DAG。</p>
+          <h1>Visual Workflow Builder</h1>
+          <p class="subtitle">Describe your needs in natural language to automatically build, modify, and run a visual DAG.</p>
         </div>
       </div>
     </header>
@@ -23,7 +23,7 @@
       <section class="canvas-panel">
         <div class="tab-bar" role="tablist">
           <button class="tab" data-tab="json" role="tab" aria-selected="false">Workflow JSON</button>
-          <button class="tab tab--active" data-tab="visual" role="tab" aria-selected="true">流程图视图</button>
+          <button class="tab tab--active" data-tab="visual" role="tab" aria-selected="true">Flowchart View</button>
         </div>
         <div class="tab-content tab-content--hidden" data-view="json">
           <div class="editor">
@@ -31,13 +31,13 @@
               <h3>Workflow JSON</h3>
               <div class="editor__actions">
                 <input id="loadWorkflowFile" type="file" accept="application/json" class="visually-hidden" />
-                <button id="loadWorkflow" class="button button--ghost">从文件加载</button>
-                <button id="saveWorkflow" class="button button--ghost">保存到文件</button>
-                <button id="resetWorkflow" class="button button--ghost">重置</button>
-                <button id="applyWorkflow" class="button">应用修改</button>
+                <button id="loadWorkflow" class="button button--ghost">Load from File</button>
+                <button id="saveWorkflow" class="button button--ghost">Save to File</button>
+                <button id="resetWorkflow" class="button button--ghost">Reset</button>
+                <button id="applyWorkflow" class="button">Apply Changes</button>
               </div>
             </div>
-            <p class="muted">您可以直接编辑 DAG，VelvetFlow 会重新渲染画布。</p>
+            <p class="muted">You can edit the DAG directly and VelvetFlow will re-render the canvas.</p>
             <textarea id="workflowEditor" spellcheck="false" aria-label="workflow json"></textarea>
           </div>
         </div>
@@ -45,42 +45,42 @@
           <div class="canvas-wrapper">
             <div class="canvas-toolbar">
               <div class="canvas-toolbar__group">
-                <button type="button" class="icon-button" id="zoomOut" aria-label="缩小">−</button>
+                <button type="button" class="icon-button" id="zoomOut" aria-label="Zoom out">−</button>
                 <span class="canvas-toolbar__label" id="zoomValue">100%</span>
-                <button type="button" class="icon-button" id="zoomIn" aria-label="放大">＋</button>
+                <button type="button" class="icon-button" id="zoomIn" aria-label="Zoom in">＋</button>
               </div>
-              <button type="button" class="button button--ghost" id="resetView">重置视图</button>
+              <button type="button" class="button button--ghost" id="resetView">Reset View</button>
             </div>
             <div id="canvasHost">
               <canvas id="workflowCanvas" width="1080" height="620" aria-label="workflow canvas"></canvas>
-              <p class="muted tab-hint">提示：在画布空白处右键添加节点，双击节点可编辑参数或跳转循环子图；编辑弹窗内可删除节点。</p>
+              <p class="muted tab-hint">Hint: Right-click on blank canvas space to add nodes. Double-click nodes to edit parameters or jump into loop subgraphs; you can delete nodes in the edit dialog.</p>
             </div>
-            <div id="addNodeMenu" class="context-menu hidden" role="dialog" aria-modal="true" aria-label="添加节点">
+            <div id="addNodeMenu" class="context-menu hidden" role="dialog" aria-modal="true" aria-label="Add node">
               <div class="context-menu__header">
-                <h4>添加新节点</h4>
-                <button type="button" class="context-menu__close" aria-label="关闭" id="closeAddNodeMenu">×</button>
+                <h4>Add a New Node</h4>
+                <button type="button" class="context-menu__close" aria-label="Close" id="closeAddNodeMenu">×</button>
               </div>
               <label class="context-menu__field">
-                <span>节点类型</span>
+                <span>Node type</span>
                 <select id="addNodeType" class="context-menu__input">
-                  <option value="action" selected>动作 (action)</option>
-                  <option value="condition">条件 (condition)</option>
-                  <option value="loop">循环 (loop)</option>
+                  <option value="action" selected>Action</option>
+                  <option value="condition">Condition</option>
+                  <option value="loop">Loop</option>
                 </select>
               </label>
               <label class="context-menu__field">
-                <span>显示名称（可选）</span>
-                <input id="addNodeName" class="context-menu__input" placeholder="例如：审批节点" />
+                <span>Display name (optional)</span>
+                <input id="addNodeName" class="context-menu__input" placeholder="Example: Approval step" />
               </label>
               <label class="context-menu__field" id="addNodeActionRow">
-                <span>业务工具 (action_id)</span>
-                <select id="addNodeActionSelect" class="context-menu__input" aria-label="选择业务工具"></select>
+                <span>Business tool (action_id)</span>
+                <select id="addNodeActionSelect" class="context-menu__input" aria-label="Select business tool"></select>
               </label>
               <div class="context-menu__actions">
-                <button type="button" class="button button--ghost" id="cancelAddNode">取消</button>
-                <button type="button" class="button button--primary" id="confirmAddNode">添加节点</button>
+                <button type="button" class="button button--ghost" id="cancelAddNode">Cancel</button>
+                <button type="button" class="button button--primary" id="confirmAddNode">Add node</button>
               </div>
-              <p class="muted context-menu__hint">提示：节点会自动布局，若需要拖动可按住节点移动位置。</p>
+              <p class="muted context-menu__hint">Hint: Nodes are auto-laid out; drag a node to reposition it.</p>
             </div>
           </div>
         </div>
@@ -89,20 +89,20 @@
       <section class="chat-panel">
         <div class="panel__header">
           <div>
-            <h2>VelvetFlow Agent 对话框</h2>
-            <p class="muted">输入自然语言需求以构建或迭代 workflow，构建进度会实时展示。</p>
+            <h2>VelvetFlow Agent Console</h2>
+            <p class="muted">Enter your requirements in natural language to build or iterate on a workflow. Progress is shown in real time.</p>
           </div>
-          <div class="status" id="statusIndicator">等待输入</div>
+          <div class="status" id="statusIndicator">Waiting for input</div>
         </div>
         <div class="chat-log" id="chatLog" aria-live="polite"></div>
         <form id="chatForm" class="chat-input" autocomplete="off">
-          <label class="visually-hidden" for="userInput">需求输入</label>
-          <textarea id="userInput" placeholder="例如：为新员工入职构建流程，包含账号申请、设备分配和审批" required></textarea>
+          <label class="visually-hidden" for="userInput">Requirement input</label>
+          <textarea id="userInput" placeholder="Example: Build an onboarding workflow covering account requests, device assignment, and approvals" required></textarea>
           <div class="chat-actions">
-            <button type="button" id="editHelp" class="button button--ghost" title="如何修改现有 workflow">修改说明</button>
+            <button type="button" id="editHelp" class="button button--ghost" title="How to edit an existing workflow">Edit guidance</button>
             <div class="chat-actions__group">
-              <button type="submit" class="button button--primary">构建工作流</button>
-              <button type="button" id="runWorkflow" class="button button--primary">运行 workflow</button>
+              <button type="submit" class="button button--primary">Build workflow</button>
+              <button type="button" id="runWorkflow" class="button button--primary">Run workflow</button>
             </div>
           </div>
         </form>

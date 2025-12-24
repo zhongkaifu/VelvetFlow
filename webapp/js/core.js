@@ -61,7 +61,7 @@ let viewState = { scale: 1, offset: { x: 0, y: 0 } };
 async function loadActionCatalog() {
   try {
     const resp = await fetch("/api/actions");
-    if (!resp.ok) throw new Error(`加载业务工具失败: ${resp.status}`);
+    if (!resp.ok) throw new Error(`Failed to load business tools: ${resp.status}`);
     const data = await resp.json();
     actionCatalog = (data || []).reduce((acc, action) => {
       if (action && action.action_id) acc[action.action_id] = action;
@@ -69,7 +69,7 @@ async function loadActionCatalog() {
     }, {});
     populateActionSelect();
   } catch (error) {
-    appendLog(`业务工具清单加载失败：${error.message}`);
+    appendLog(`Failed to load action catalog: ${error.message}`);
   }
 }
 
@@ -238,13 +238,13 @@ function appendLog(text) {
   scrollChatToBottom();
 }
 
-function logWorkflowSnapshot(workflow = currentWorkflow, reason = "最新") {
+function logWorkflowSnapshot(workflow = currentWorkflow, reason = "latest") {
   if (!workflow) return;
   try {
     const payload = JSON.stringify(normalizeWorkflow(workflow), null, 2);
     appendLog(`${reason} workflow DAG：\n${payload}`);
   } catch (error) {
-    appendLog(`workflow 序列化失败：${error.message}`);
+    appendLog(`Workflow serialization failed: ${error.message}`);
   }
 }
 
@@ -252,7 +252,7 @@ function renderLogs(logs = [], echoToChat = false) {
   logs.forEach((line) => {
     appendLog(line);
     if (echoToChat) {
-      addChatMessage(`流程更新：${line}`, "agent");
+      addChatMessage(`Workflow update: ${line}`, "agent");
     }
   });
 }
@@ -325,7 +325,7 @@ function refreshLoopTabLabel(tabId, loopNode) {
   const tab = tabs.find((t) => t.dataset.tab === tabId);
   if (!tab || !loopNode) return;
   const display = loopNode.display_name || loopNode.id;
-  tab.innerHTML = `子图: ${display}<button class="tab__close" aria-label="关闭子图">×</button>`;
+  tab.innerHTML = `Subgraph: ${display}<button class="tab__close" aria-label="Close subgraph">×</button>`;
   const closeBtn = tab.querySelector(".tab__close");
   if (closeBtn) {
     closeBtn.addEventListener("click", (evt) => {
@@ -343,7 +343,7 @@ function renderLoopInspector(tabId) {
 
   const found = findLoopNode(tabId.replace("loop:", ""));
   if (!found || !found.node) {
-    inspector.innerHTML = "<p class=\"muted\">未找到对应的循环节点，可能已被删除。</p>";
+    inspector.innerHTML = "<p class=\"muted\">No matching loop node found. It may have been deleted.</p>";
     return;
   }
 
@@ -370,17 +370,17 @@ function renderLoopInspector(tabId) {
 
   const title = document.createElement("div");
   title.className = "loop-inspector__title";
-  title.textContent = `循环节点：${loopNode.display_name || loopNode.id}`;
+  title.textContent = `Loop node: ${loopNode.display_name || loopNode.id}`;
   inspector.appendChild(title);
 
   const helper = document.createElement("p");
   helper.className = "muted";
-  helper.textContent = "上方为循环子图，您可以在此编辑节点；下方可调整循环节点的名称、循环来源与导出字段。";
+  helper.textContent = "The loop subgraph is above for editing nodes; adjust loop name, source, and exports below.";
   inspector.appendChild(helper);
 
   const idField = document.createElement("label");
   idField.className = "loop-inspector__field";
-  idField.innerHTML = '<span>节点 ID</span>';
+  idField.innerHTML = '<span>Node ID</span>';
   const idInput = document.createElement("input");
   idInput.type = "text";
   idInput.className = "modal__input";
@@ -392,7 +392,7 @@ function renderLoopInspector(tabId) {
 
   const nameField = document.createElement("label");
   nameField.className = "loop-inspector__field";
-  nameField.innerHTML = '<span>显示名称</span>';
+  nameField.innerHTML = '<span>Display name</span>';
   const nameInput = document.createElement("input");
   nameInput.type = "text";
   nameInput.className = "modal__input";
@@ -420,10 +420,10 @@ function renderLoopInspector(tabId) {
     return field;
   };
 
-  paramsGrid.appendChild(createField("循环类型 (loop_kind)", loopKind, "例如：for_each", "loop_kind"));
-  paramsGrid.appendChild(createField("循环数据来源 (iter/source)", iterPath, "如 result_of.fetch.items", "iter"));
-  paramsGrid.appendChild(createField("条件字段 (condition，可选)", conditionPath, "可选：用于 while/条件循环", "condition"));
-  paramsGrid.appendChild(createField("循环项别名 (item_alias)", itemAlias, "如 item/user", "item_alias"));
+  paramsGrid.appendChild(createField("Loop type (loop_kind)", loopKind, "e.g. for_each", "loop_kind"));
+  paramsGrid.appendChild(createField("Loop data source (iter/source)", iterPath, "e.g. result_of.fetch.items", "iter"));
+  paramsGrid.appendChild(createField("Condition field (condition, optional)", conditionPath, "Optional: for while/conditional loops", "condition"));
+  paramsGrid.appendChild(createField("Loop item alias (item_alias)", itemAlias, "e.g. item/user", "item_alias"));
 
   paramsSection.appendChild(paramsGrid);
   inspector.appendChild(paramsSection);
@@ -433,12 +433,12 @@ function renderLoopInspector(tabId) {
 
   const exportsTitle = document.createElement("div");
   exportsTitle.className = "loop-inspector__title";
-  exportsTitle.textContent = "循环输出 (exports)";
+  exportsTitle.textContent = "Loop outputs (exports)";
   exportsSection.appendChild(exportsTitle);
 
   const itemsHeader = document.createElement("div");
   itemsHeader.className = "loop-inspector__subtitle";
-  itemsHeader.textContent = "逐项输出 (items)";
+  itemsHeader.textContent = "Per-item outputs (items)";
   exportsSection.appendChild(itemsHeader);
 
   const itemsList = document.createElement("div");
@@ -452,12 +452,12 @@ function renderLoopInspector(tabId) {
     const header = document.createElement("div");
     header.className = "loop-export-card__header";
     const titleLabel = document.createElement("span");
-    titleLabel.textContent = "采集条目";
+    titleLabel.textContent = "Collection item";
     const removeBtn = document.createElement("button");
     removeBtn.type = "button";
     removeBtn.className = "icon-button";
     removeBtn.textContent = "×";
-    removeBtn.title = "移除该条目";
+    removeBtn.title = "Remove this item";
     removeBtn.addEventListener("click", () => row.remove());
     header.appendChild(titleLabel);
     header.appendChild(removeBtn);
@@ -466,14 +466,14 @@ function renderLoopInspector(tabId) {
     const fields = document.createElement("div");
     fields.className = "loop-export-card__fields";
 
-    const fromField = createField("来自节点 (from_node)", item.from_node || "", "body_subgraph 中的节点 id", "from_node");
+    const fromField = createField("From node (from_node)", item.from_node || "", "Node id inside body_subgraph", "from_node");
     const fieldsField = createField(
-      "导出字段 (fields)",
+      "Export fields (fields)",
       Array.isArray(item.fields) ? item.fields.join(", ") : item.fields || "",
-      "以逗号分隔的字段名",
+      "Comma-separated field names",
       "fields",
     );
-    const modeField = createField("收集方式 (mode)", item.mode || "collect", "collect/first/last 等", "mode");
+    const modeField = createField("Collection mode (mode)", item.mode || "collect", "collect/first/last, etc.", "mode");
 
     fieldsField.querySelector("input").dataset.commaList = "true";
     modeField.querySelector("input").dataset.modeField = "true";
@@ -491,7 +491,7 @@ function renderLoopInspector(tabId) {
   const addItemBtn = document.createElement("button");
   addItemBtn.type = "button";
   addItemBtn.className = "button button--ghost";
-  addItemBtn.textContent = "添加 items 输出";
+  addItemBtn.textContent = "Add items output";
   addItemBtn.addEventListener("click", () => itemsList.appendChild(createItemRow()));
 
   exportsSection.appendChild(itemsList);
@@ -499,7 +499,7 @@ function renderLoopInspector(tabId) {
 
   const aggregatesHeader = document.createElement("div");
   aggregatesHeader.className = "loop-inspector__subtitle";
-  aggregatesHeader.textContent = "聚合输出 (aggregates)";
+  aggregatesHeader.textContent = "Aggregate outputs (aggregates)";
   exportsSection.appendChild(aggregatesHeader);
 
   const aggregatesList = document.createElement("div");
@@ -513,12 +513,12 @@ function renderLoopInspector(tabId) {
     const header = document.createElement("div");
     header.className = "loop-export-card__header";
     const titleLabel = document.createElement("span");
-    titleLabel.textContent = "聚合规则";
+    titleLabel.textContent = "Aggregation rule";
     const removeBtn = document.createElement("button");
     removeBtn.type = "button";
     removeBtn.className = "icon-button";
     removeBtn.textContent = "×";
-    removeBtn.title = "移除聚合";
+    removeBtn.title = "Remove aggregate";
     removeBtn.addEventListener("click", () => row.remove());
     header.appendChild(titleLabel);
     header.appendChild(removeBtn);
@@ -526,10 +526,10 @@ function renderLoopInspector(tabId) {
 
     const fields = document.createElement("div");
     fields.className = "loop-export-card__fields";
-    fields.appendChild(createField("来自节点 (from_node)", agg.from_node || "", "body_subgraph 中的节点 id", "from_node"));
-    fields.appendChild(createField("字段/表达式 (field)", agg.field || "", "如 total/score", "field"));
-    fields.appendChild(createField("聚合操作 (op)", agg.op || "", "sum/avg/count 等", "op"));
-    fields.appendChild(createField("输出别名 (alias)", agg.alias || "", "聚合结果名称", "alias"));
+    fields.appendChild(createField("From node (from_node)", agg.from_node || "", "Node id inside body_subgraph", "from_node"));
+    fields.appendChild(createField("Field/expression (field)", agg.field || "", "e.g. total/score", "field"));
+    fields.appendChild(createField("Aggregation op (op)", agg.op || "", "sum/avg/count, etc.", "op"));
+    fields.appendChild(createField("Output alias (alias)", agg.alias || "", "Name of aggregated result", "alias"));
     row.appendChild(fields);
 
     return row;
@@ -540,7 +540,7 @@ function renderLoopInspector(tabId) {
   const addAggregateBtn = document.createElement("button");
   addAggregateBtn.type = "button";
   addAggregateBtn.className = "button button--ghost";
-  addAggregateBtn.textContent = "添加聚合输出";
+  addAggregateBtn.textContent = "Add aggregate output";
   addAggregateBtn.addEventListener("click", () => aggregatesList.appendChild(createAggregateRow()));
 
   exportsSection.appendChild(aggregatesList);
@@ -548,7 +548,7 @@ function renderLoopInspector(tabId) {
 
   const hint = document.createElement("div");
   hint.className = "modal__hint";
-  hint.textContent = "提示：body_subgraph 会与上方子图保持同步；exports.items/aggregates 将用于循环外部的数据引用。";
+  hint.textContent = "Hint: body_subgraph stays in sync with the subgraph above; exports.items/aggregates are referenced outside the loop.";
   exportsSection.appendChild(hint);
 
   inspector.appendChild(exportsSection);
@@ -558,17 +558,17 @@ function renderLoopInspector(tabId) {
   const deleteBtn = document.createElement("button");
   deleteBtn.type = "button";
   deleteBtn.className = "button button--danger";
-  deleteBtn.textContent = "删除循环节点";
+  deleteBtn.textContent = "Delete loop node";
   const saveBtn = document.createElement("button");
   saveBtn.type = "button";
   saveBtn.className = "button button--primary";
-  saveBtn.textContent = "保存循环参数";
+  saveBtn.textContent = "Save loop parameters";
   actions.appendChild(deleteBtn);
   actions.appendChild(saveBtn);
   inspector.appendChild(actions);
 
   deleteBtn.addEventListener("click", () => {
-    const confirmed = window.confirm("确认删除该循环节点及其子图？此操作不可恢复。");
+    const confirmed = window.confirm("Delete this loop node and its subgraph? This cannot be undone.");
     if (!confirmed) return;
     deleteLoopNode(loopNode.id);
   });
@@ -661,9 +661,9 @@ function renderLoopInspector(tabId) {
       updateEditor();
       markTabDirty(tabId, false);
       render(tabId);
-      appendLog(`已保存循环 ${found.node.id} 的参数并同步到 workflow JSON`);
+      appendLog(`Saved parameters for loop ${found.node.id} and synced to workflow JSON`);
     } catch (error) {
-      window.alert(`保存失败：${error.message}`);
+      window.alert(`Save failed: ${error.message}`);
     }
   });
 }
@@ -682,7 +682,7 @@ function ensureLoopTab(loopNode) {
   tabButton.dataset.tab = tabId;
   tabButton.setAttribute("role", "tab");
   tabButton.setAttribute("aria-selected", "false");
-  tabButton.innerHTML = `子图: ${loopNode.display_name || loopNode.id}<button class="tab__close" aria-label="关闭子图">×</button>`;
+  tabButton.innerHTML = `Subgraph: ${loopNode.display_name || loopNode.id}<button class="tab__close" aria-label="Close subgraph">×</button>`;
   tabButton.addEventListener("click", handleTabClick);
 
   const tabContent = document.createElement("div");
@@ -693,7 +693,7 @@ function ensureLoopTab(loopNode) {
 
   const loopHeader = document.createElement("div");
   loopHeader.className = "loop-tab__header";
-  loopHeader.innerHTML = `<div><h3>循环子图：${loopNode.display_name || loopNode.id}</h3><p class="muted">上半部分为循环子图，双击子节点可打开对应编辑弹窗。</p></div>`;
+  loopHeader.innerHTML = `<div><h3>Loop subgraph: ${loopNode.display_name || loopNode.id}</h3><p class="muted">The top area shows the loop subgraph; double-click a child node to open its edit dialog.</p></div>`;
 
   const loopBody = document.createElement("div");
   loopBody.className = "loop-tab__body";
@@ -702,7 +702,7 @@ function ensureLoopTab(loopNode) {
   canvasSlot.className = "loop-tab__canvas";
   canvasSlot.dataset.canvasSlot = "true";
   canvasSlot.innerHTML =
-    '<p class="muted tab-hint">提示：在子图画布空白处右键添加节点，双击节点可编辑或继续打开子循环。</p>';
+    '<p class="muted tab-hint">Hint: Right-click blank space in the subgraph canvas to add nodes. Double-click nodes to edit or open nested loops.</p>';
 
   const inspector = document.createElement("div");
   inspector.className = "loop-tab__inspector";
@@ -727,7 +727,7 @@ function closeLoopTab(tabId) {
   if (!tabId || !tabId.startsWith("loop:")) return;
   const dirty = tabDirtyFlags[tabId];
   if (dirty) {
-    const confirmClose = window.confirm("子图节点已修改，确认已保存并关闭吗？选择取消可继续编辑。");
+    const confirmClose = window.confirm("Subgraph nodes have changed. Confirm save and close? Choose Cancel to keep editing.");
     if (!confirmClose) return;
   }
 
@@ -958,8 +958,8 @@ function addNodeToCurrentGraph(options = {}) {
   clearPositionCaches(context.tabKey || currentTab);
   render(currentTab);
   if (addNodeNameInput) addNodeNameInput.value = "";
-  appendLog(`已添加 ${type} 节点：${newNode.id}`);
-  logWorkflowSnapshot(currentWorkflow, "新增节点后");
+  appendLog(`Added ${type} node: ${newNode.id}`);
+  logWorkflowSnapshot(currentWorkflow, "after adding node");
 }
 
 function positionAddMenu(event) {
@@ -1018,8 +1018,8 @@ function removeNodeFromGraph(nodeId, context = getTabContext(currentTab)) {
     closeLoopTab(`loop:${nodeId}`);
   }
   render(currentTab);
-  appendLog(`已删除节点：${nodeId}`);
-  logWorkflowSnapshot(currentWorkflow, "删除节点后");
+  appendLog(`Deleted node: ${nodeId}`);
+  logWorkflowSnapshot(currentWorkflow, "after deleting node");
 }
 
 function deleteLoopNode(loopId) {
@@ -1039,6 +1039,6 @@ function deleteLoopNode(loopId) {
   closeLoopTab(`loop:${loopId}`);
   updateEditor();
   render(currentTab);
-  appendLog(`已删除循环节点：${loopId}`);
-  logWorkflowSnapshot(currentWorkflow, "删除循环节点后");
+  appendLog(`Deleted loop node: ${loopId}`);
+  logWorkflowSnapshot(currentWorkflow, "after deleting loop node");
 }
