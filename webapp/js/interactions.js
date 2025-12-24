@@ -8,7 +8,7 @@ function buildRequirementWithSupplements() {
     lines.push(planningContext.baseRequirement.trim());
   }
   planningContext.supplements.forEach((item, idx) => {
-    lines.push(`补充信息 ${idx + 1}：${item}`);
+    lines.push(`Supplement ${idx + 1}: ${item}`);
   });
   return lines.join("\n\n");
 }
@@ -30,7 +30,7 @@ async function handleChatSubmit(event) {
   if (awaitingSupplement) {
     planningContext.supplements.push(text);
     awaitingSupplement = false;
-    addChatMessage("已收到补充信息，将结合现有需求重新规划。", "agent");
+    addChatMessage("Supplement received. Re-planning with the existing requirement.", "agent");
   } else {
     planningContext = { baseRequirement: text, supplements: [] };
   }
@@ -43,10 +43,10 @@ async function handleChatSubmit(event) {
     lastSuggestions = toolGapSuggestions.length ? toolGapSuggestions : result.suggestions || [];
     const hints = lastSuggestions.length
       ? lastSuggestions.map((item, idx) => `${idx + 1}. ${item}`).join("\n")
-      : "可以补充触发时机、输入/输出格式、过滤条件或成功指标。";
+      : "You can add trigger timing, input/output formats, filter rules, or success criteria.";
     const intro = result.toolGapMessage
       ? `${result.toolGapMessage}\n`
-      : "为了更好地规划流程，请再提供一些细节：\n";
+      : "Please share a few more details to improve the plan:\n";
     addChatMessage(`${intro}${hints}`, "agent");
   } else {
     resetPlanningContext();
@@ -65,11 +65,11 @@ function refreshWorkflowCanvases() {
   targets.forEach((tabId) => render(tabId));
 }
 
-function applyWorkflowObject(payload, sourceLabel = "编辑器") {
+function applyWorkflowObject(payload, sourceLabel = "editor") {
   try {
     const parsed = typeof payload === "string" ? JSON.parse(payload) : payload;
     if (!parsed || !parsed.nodes) {
-      throw new Error("workflow 需要包含 nodes 数组");
+      throw new Error("workflow must include a nodes array");
     }
     currentWorkflow = normalizeWorkflow(parsed);
     lastRunResults = {};
@@ -77,16 +77,16 @@ function applyWorkflowObject(payload, sourceLabel = "编辑器") {
     closeAllLoopTabs(true);
     updateEditor();
     refreshWorkflowCanvases();
-    appendLog(`已应用${sourceLabel}修改并刷新画布`);
-    logWorkflowSnapshot(currentWorkflow, `${sourceLabel}提供的最新 DAG`);
-    addChatMessage(`收到${sourceLabel}修改，Canvas 已同步更新。`, "agent");
+    appendLog(`Applied ${sourceLabel} changes and refreshed the canvas`);
+    logWorkflowSnapshot(currentWorkflow, `Latest DAG from ${sourceLabel}`);
+    addChatMessage(`Received ${sourceLabel} changes. Canvas has been updated.`, "agent");
   } catch (error) {
-    appendLog(`解析失败：${error.message}`);
+    appendLog(`Failed to parse workflow: ${error.message}`);
   }
 }
 
 function applyWorkflowFromEditor() {
-  applyWorkflowObject(workflowEditor.value, "编辑器");
+  applyWorkflowObject(workflowEditor.value, "editor");
 }
 
 function resetWorkflow() {
@@ -96,8 +96,8 @@ function resetWorkflow() {
   lastRunResults = {};
   updateEditor();
   refreshWorkflowCanvases();
-  appendLog("已重置为空 workflow");
-  logWorkflowSnapshot(currentWorkflow, "重置后的 DAG");
+  appendLog("Reset to an empty workflow");
+  logWorkflowSnapshot(currentWorkflow, "DAG after reset");
 }
 
 function switchToTab(tabId) {
@@ -282,7 +282,7 @@ function stopDragging() {
 
 function showEditHelp() {
   addChatMessage(
-    "您可以在左侧 JSON 文本框中编辑节点或边，例如增加节点 {id: 'notify', type: 'action', display_name: '通知'} 并添加 {from_node: 'enable_access', to_node: 'notify'}，点击“应用修改”刷新。",
+    "You can edit nodes or edges in the JSON editor on the left. For example, add a node {id: 'notify', type: 'action', display_name: 'notification'} and an edge {from_node: 'enable_access', to_node: 'notify'}, then click 'Apply Changes' to refresh.",
     "agent",
   );
 }
@@ -297,7 +297,7 @@ function handleWorkflowFileChange(event) {
   const reader = new FileReader();
   reader.onload = (e) => {
     const content = e?.target?.result;
-    applyWorkflowObject(content, "文件");
+    applyWorkflowObject(content, "file");
     if (loadWorkflowInput) loadWorkflowInput.value = "";
   };
   reader.readAsText(file, "utf-8");
@@ -312,7 +312,7 @@ function saveWorkflowToFile() {
   anchor.download = `${currentWorkflow.workflow_name || "workflow"}.json`;
   anchor.click();
   URL.revokeObjectURL(url);
-  appendLog("已导出 workflow JSON 到文件");
+  appendLog("Exported workflow JSON to file");
 }
 
 chatForm.addEventListener("submit", handleChatSubmit);
@@ -376,7 +376,7 @@ let hasShownWelcome = false;
 
 function showWelcomeMessage() {
   if (hasShownWelcome) return;
-  addChatMessage("你好，我是 VelvetFlow Agent，请描述你的业务需求。", "agent");
+  addChatMessage("Hi, I'm the VelvetFlow Agent. Please describe your business requirement.", "agent");
   if (userInput) {
     userInput.focus();
   }
@@ -390,7 +390,7 @@ function bootstrapApp() {
   updateEditor();
   updateZoomLabel();
   render();
-  appendLog("当前 workflow 为空，请输入需求开始规划或自行编辑 JSON。");
+  appendLog("The current workflow is empty. Enter a requirement to start planning or edit the JSON directly.");
   showWelcomeMessage();
 }
 

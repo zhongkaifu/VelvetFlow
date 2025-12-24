@@ -4,13 +4,13 @@ async function streamEvents(url, options, onEvent) {
     const detail = await response.json().catch(() => ({}));
     const hint =
       [404, 405, 501].includes(response.status)
-        ? "后端 API 未启动，请运行 `python webapp/server.py` 后再试。"
+        ? "The backend API is not running. Please run `python webapp/server.py` and try again."
         : "";
     throw new Error(detail.detail || detail.message || hint || response.statusText);
   }
 
   if (!response.body) {
-    throw new Error("当前浏览器不支持流式响应");
+    throw new Error("This browser does not support streaming responses");
   }
 
   const reader = response.body.getReader();
@@ -30,7 +30,7 @@ async function streamEvents(url, options, onEvent) {
       try {
         onEvent(JSON.parse(payload));
       } catch (error) {
-        console.warn("无法解析流式消息", payload, error);
+        console.warn("Failed to parse streaming message", payload, error);
       }
     }
   }
@@ -56,10 +56,10 @@ function maybeApplyWorkflowFromEvent(workflow, sourceLabel, logSnapshot = false)
   updateEditor();
   refreshWorkflowCanvases();
   if (sourceLabel) {
-    appendLog(`${sourceLabel} 更新了 workflow，画布已刷新`);
+    appendLog(`${sourceLabel} updated the workflow; canvas refreshed`);
   }
   if (logSnapshot) {
-    logWorkflowSnapshot(currentWorkflow, `${sourceLabel || "实时"} workflow DAG`);
+    logWorkflowSnapshot(currentWorkflow, `${sourceLabel || "live"} workflow DAG`);
   }
   return true;
 }
@@ -70,9 +70,9 @@ function isEmptyWorkflow(workflow) {
 }
 
 async function requestPlan(requirement) {
-  setStatus("规划中", "warning");
-  appendLog(`收到需求：${requirement}`);
-  addChatMessage(`已收到需求：“${requirement}”，开始规划/校验/修复。`, "agent");
+  setStatus("Planning", "warning");
+  appendLog(`Received requirement: ${requirement}`);
+  addChatMessage(`Received requirement: “${requirement}”. Starting planning/validation/repair.`, "agent");
   try {
     const existingWorkflow =
       currentWorkflow && Array.isArray(currentWorkflow.nodes) && currentWorkflow.nodes.length > 0
@@ -80,11 +80,11 @@ async function requestPlan(requirement) {
         : null;
 
     if (existingWorkflow) {
-      addChatMessage("将基于当前流程进行更新与自修复，保持节点和连线同步。", "agent");
+      addChatMessage("Will update and self-repair based on the current workflow while keeping nodes and edges aligned.", "agent");
     } else {
-      addChatMessage("将从零开始构建全新 workflow，并进行自动校验与修复。", "agent");
+      addChatMessage("Will build a brand-new workflow from scratch with automatic validation and repair.", "agent");
     }
-    addChatMessage("正在调用 VelvetFlow Planner，请稍候，处理中间状态……", "agent");
+    addChatMessage("Calling the VelvetFlow Planner. Please wait while intermediate states are processed...", "agent");
 
     let streamError = null;
     let finalWorkflow = null;
@@ -105,18 +105,18 @@ async function requestPlan(requirement) {
         const latestWorkflow = extractWorkflowFromEvent(event);
         if (event.type === "log" && event.message) {
           appendLog(event.message);
-          addChatMessage(`流程更新：${event.message}`, "agent");
+          addChatMessage(`Workflow update: ${event.message}`, "agent");
           if (latestWorkflow) {
-            maybeApplyWorkflowFromEvent(latestWorkflow, "规划日志", true);
+            maybeApplyWorkflowFromEvent(latestWorkflow, "Planning log", true);
           }
         } else if (event.type === "snapshot" || event.type === "partial") {
           if (latestWorkflow) {
-            const sourceLabel = event.stage ? `规划阶段：${event.stage}` : "规划快照";
+            const sourceLabel = event.stage ? `Planning stage: ${event.stage}` : "Planning snapshot";
             maybeApplyWorkflowFromEvent(latestWorkflow, sourceLabel, true);
           }
           if (typeof event.progress === "number") {
             const percent = Math.round(event.progress * 100);
-            setStatus(`构建中 ${percent}%`, "warning");
+            setStatus(`Building ${percent}%`, "warning");
           }
         } else if (event.type === "result" && latestWorkflow) {
           finalWorkflow = normalizeWorkflow(latestWorkflow);
@@ -125,7 +125,7 @@ async function requestPlan(requirement) {
           finalToolGapSuggestions = Array.isArray(event.tool_gap_suggestions) ? event.tool_gap_suggestions : [];
           needsMoreDetail = Boolean(event.needs_more_detail);
         } else if (event.type === "error") {
-          streamError = event.message || "未知错误";
+          streamError = event.message || "Unknown error";
         }
       },
     );
@@ -134,7 +134,7 @@ async function requestPlan(requirement) {
       throw new Error(streamError);
     }
     if (!finalWorkflow) {
-      throw new Error("未收到构建结果");
+      throw new Error("Did not receive a build result");
     }
 
     const empty = isEmptyWorkflow(finalWorkflow);
@@ -145,17 +145,17 @@ async function requestPlan(requirement) {
       currentWorkflow = finalWorkflow;
       updateEditor();
       refreshWorkflowCanvases();
-      setStatus("构建完成", "success");
-      addChatMessage("已完成 DAG 规划与校验，可在画布上查看并继续修改。", "agent");
+      setStatus("Build completed", "success");
+      addChatMessage("Finished DAG planning and validation. You can review and keep editing on the canvas.", "agent");
     } else {
-      setStatus("待补充需求", "warning");
+      setStatus("Waiting for more detail", "warning");
       const hintSource = finalToolGapSuggestions.length ? finalToolGapSuggestions : finalSuggestions;
       const hints = hintSource && hintSource.length
         ? hintSource.map((item, idx) => `${idx + 1}. ${item}`).join("\n")
-        : "请补充数据来源、触发时机、关键判断或输出方式等具体细节。";
+        : "Please add specifics such as data sources, trigger timing, key checks, or how results should be delivered.";
       const intro = finalToolGapMessage
         ? `${finalToolGapMessage}\n`
-        : "当前需求还需要更多上下文才能规划清晰的流程，请补充更具体的限制或目标。\n";
+        : "The current requirement needs more context to plan a clear flow. Please add more concrete constraints or goals.\n";
       addChatMessage(
         `${intro}${hints}`,
         "agent",
@@ -170,17 +170,17 @@ async function requestPlan(requirement) {
       toolGapSuggestions: finalToolGapSuggestions,
     };
   } catch (error) {
-    setStatus("构建失败", "danger");
-    appendLog(`规划失败: ${error.message}`);
-    addChatMessage(`规划失败：${error.message}，请检查 OPENAI_API_KEY 是否已配置。`, "agent");
+    setStatus("Build failed", "danger");
+    appendLog(`Planning failed: ${error.message}`);
+    addChatMessage(`Planning failed: ${error.message}. Please check whether OPENAI_API_KEY is configured.`, "agent");
     return { workflow: null, suggestions: [], needsMoreDetail: false };
   }
 }
 
 async function requestRun() {
-  setStatus("运行中", "warning");
-  addChatMessage("开始执行 workflow，实时同步运行日志。", "agent");
-  appendLog("开始执行当前 workflow ...");
+  setStatus("Running", "warning");
+  addChatMessage("Started executing the workflow. Streaming run logs in real time.", "agent");
+  appendLog("Starting execution of the current workflow ...");
   try {
     let streamError = null;
     let finalResult = null;
@@ -199,16 +199,16 @@ async function requestRun() {
         if (event.type === "log" && event.message) {
           appendLog(event.message);
           if (latestWorkflow) {
-            maybeApplyWorkflowFromEvent(latestWorkflow, "运行日志");
+            maybeApplyWorkflowFromEvent(latestWorkflow, "Run log");
           }
         } else if (event.type === "result") {
           finalResult = event.result || {};
           finalStatus = event.status || "completed";
           if (latestWorkflow) {
-            maybeApplyWorkflowFromEvent(latestWorkflow, "运行结果");
+            maybeApplyWorkflowFromEvent(latestWorkflow, "Run result");
           }
         } else if (event.type === "error") {
-          streamError = event.message || "未知错误";
+          streamError = event.message || "Unknown error";
         }
       },
     );
@@ -217,17 +217,17 @@ async function requestRun() {
       throw new Error(streamError);
     }
     if (!finalResult) {
-      throw new Error("未收到运行结果");
+      throw new Error("Did not receive a run result");
     }
 
-    setStatus(finalStatus === "completed" ? "运行完成" : "挂起等待回调", "success");
+    setStatus(finalStatus === "completed" ? "Run completed" : "Suspended and waiting for callback", "success");
     lastRunResults = finalResult;
     render(currentTab);
-    appendLog(`运行结果: ${finalStatus}`);
-    addChatMessage(`执行状态：${finalStatus}。结果：${JSON.stringify(finalResult, null, 2)}`, "agent");
+    appendLog(`Run result: ${finalStatus}`);
+    addChatMessage(`Execution status: ${finalStatus}. Result: ${JSON.stringify(finalResult, null, 2)}`, "agent");
   } catch (error) {
-    setStatus("运行失败", "danger");
-    appendLog(`运行失败: ${error.message}`);
-    addChatMessage(`执行失败：${error.message}`, "agent");
+    setStatus("Run failed", "danger");
+    appendLog(`Run failed: ${error.message}`);
+    addChatMessage(`Execution failed: ${error.message}`, "agent");
   }
 }

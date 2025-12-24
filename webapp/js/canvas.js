@@ -1,15 +1,15 @@
 function estimateNodeHeight(node) {
   const { inputs, outputs, toolLabel, runtimeInputs, runtimeOutputs } = describeNode(node);
   const contentLines = [];
-  if (toolLabel) contentLines.push(`工具: ${toolLabel}`);
-  contentLines.push(`入参: ${inputs.length ? inputs.join(", ") : "-"}`);
-  contentLines.push(`出参: ${outputs.length ? outputs.join(", ") : "-"}`);
+  if (toolLabel) contentLines.push(`Tool: ${toolLabel}`);
+  contentLines.push(`Inputs: ${inputs.length ? inputs.join(", ") : "-"}`);
+  contentLines.push(`Outputs: ${outputs.length ? outputs.join(", ") : "-"}`);
 
   if (runtimeInputs !== undefined) {
-    contentLines.push(`运行入参: ${summarizeValue(runtimeInputs)}`);
+    contentLines.push(`Runtime inputs: ${summarizeValue(runtimeInputs)}`);
   }
   if (runtimeOutputs !== undefined && Object.keys(runtimeOutputs).length > 0) {
-    contentLines.push(`运行结果: ${summarizeValue(runtimeOutputs)}`);
+    contentLines.push(`Runtime outputs: ${summarizeValue(runtimeOutputs)}`);
   }
 
   const wrappedLines = contentLines.flatMap((line) => wrapText(line, NODE_WIDTH - 28, "15px Inter"));
@@ -249,7 +249,7 @@ function syncPositions(workflow, tabId) {
 function deriveExecutionStyle(runInfo) {
   if (!runInfo) {
     return {
-      label: "未执行",
+      label: "Not executed",
       fill: "rgba(255, 255, 255, 0.04)",
       stroke: "rgba(255, 255, 255, 0.12)",
       badgeBg: "rgba(148, 163, 184, 0.18)",
@@ -275,7 +275,7 @@ function deriveExecutionStyle(runInfo) {
 
   if (hasError) {
     return {
-      label: "执行错误",
+      label: "Execution error",
       fill: "rgba(248, 113, 113, 0.12)",
       stroke: "rgba(248, 113, 113, 0.9)",
       badgeBg: "rgba(248, 113, 113, 0.2)",
@@ -286,7 +286,7 @@ function deriveExecutionStyle(runInfo) {
   }
 
   return {
-    label: "已执行",
+    label: "Executed",
     fill: "rgba(74, 222, 128, 0.14)",
     stroke: "rgba(34, 197, 94, 0.9)",
     badgeBg: "rgba(74, 222, 128, 0.16)",
@@ -303,15 +303,15 @@ function drawNode(node, pos, mode) {
   const runInfo = lastRunResults[node.id];
   const executionStyle = deriveExecutionStyle(runInfo);
   const contentLines = [];
-  if (toolLabel) contentLines.push(`工具: ${toolLabel}`);
-  contentLines.push(`入参: ${inputs.length ? inputs.join(", ") : "-"}`);
-  contentLines.push(`出参: ${outputs.length ? outputs.join(", ") : "-"}`);
+  if (toolLabel) contentLines.push(`Tool: ${toolLabel}`);
+  contentLines.push(`Inputs: ${inputs.length ? inputs.join(", ") : "-"}`);
+  contentLines.push(`Outputs: ${outputs.length ? outputs.join(", ") : "-"}`);
 
   if (runtimeInputs !== undefined) {
-    contentLines.push(`运行入参: ${summarizeValue(runtimeInputs)}`);
+    contentLines.push(`Runtime inputs: ${summarizeValue(runtimeInputs)}`);
   }
   if (runtimeOutputs !== undefined && Object.keys(runtimeOutputs).length > 0) {
-    contentLines.push(`运行结果: ${summarizeValue(runtimeOutputs)}`);
+    contentLines.push(`Runtime outputs: ${summarizeValue(runtimeOutputs)}`);
   }
 
   const wrappedLines = contentLines.flatMap((line) => wrapText(line, width - 28, "15px Inter"));
@@ -490,7 +490,7 @@ function drawWatermark() {
   ctx.save();
   ctx.fillStyle = "rgba(124, 58, 237, 0.12)";
   ctx.font = "48px Inter";
-  ctx.fillText("VelvetFlow 可视化", 32, workflowCanvas.height - 32);
+  ctx.fillText("VelvetFlow Visualization", 32, workflowCanvas.height - 32);
   ctx.restore();
 }
 
