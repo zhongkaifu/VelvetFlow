@@ -97,6 +97,92 @@ def _attach_inferred_edges(workflow: Dict[str, Any]) -> Dict[str, Any]:
     return attach_condition_branches(copied)
 
 
+def _hydrate_builder_from_workflow(
+    *, builder: WorkflowBuilder, workflow: Mapping[str, Any]
+) -> None:
+    """Load an existing workflow DAG into a mutable ``WorkflowBuilder``.
+
+    This allows the planner to continue expanding an already constructed
+    workflow instead of always starting from scratch.
+    """
+
+    if not isinstance(workflow, Mapping):
+        return
+
+    name = workflow.get("workflow_name")
+    description = workflow.get("description")
+    if isinstance(name, str):
+        builder.workflow_name = name
+    if isinstance(description, str):
+        builder.description = description
+
+    visited: set[str] = set()
+
+    def _normalize_loop_params(params: Mapping[str, Any] | None) -> tuple[dict, list]:
+        if not isinstance(params, Mapping):
+            return {}, []
+
+        params_copy = copy.deepcopy(params)
+        body = params_copy.get("body_subgraph")
+
+        if isinstance(body, Mapping):
+            body_nodes = body.get("nodes") if isinstance(body.get("nodes"), list) else []
+            params_copy["body_subgraph"] = {k: v for k, v in body.items() if k != "nodes"}
+            params_copy["body_subgraph"].setdefault("nodes", [])
+        elif isinstance(body, list):
+            body_nodes = body
+            params_copy["body_subgraph"] = {"nodes": []}
+        else:
+            body_nodes = []
+            if "body_subgraph" in params_copy:
+                params_copy["body_subgraph"] = {"nodes": []}
+
+        return params_copy, list(body_nodes or [])
+
+    def _walk(nodes: Sequence[Any] | None, parent_id: str | None = None) -> None:
+        for node in nodes or []:
+            if not isinstance(node, Mapping):
+                continue
+
+            node_id = node.get("id")
+            node_type = node.get("type")
+            if not isinstance(node_id, str) or not isinstance(node_type, str):
+                continue
+            if node_id in visited:
+                continue
+
+            visited.add(node_id)
+            params = node.get("params") if isinstance(node.get("params"), Mapping) else node.get("params")
+            depends_on = node.get("depends_on") if isinstance(node.get("depends_on"), list) else None
+            inferred_parent = parent_id or (node.get("parent_node_id") if isinstance(node.get("parent_node_id"), str) else None)
+
+            body_nodes: list[Any] = []
+            params_to_use: Mapping[str, Any] | None = None
+
+            if node_type == "loop":
+                params_to_use, body_nodes = _normalize_loop_params(params if isinstance(params, Mapping) else {})
+
+            builder.add_node(
+                node_id=node_id,
+                node_type=node_type,
+                action_id=node.get("action_id") if isinstance(node.get("action_id"), str) else None,
+                display_name=node.get("display_name") if isinstance(node.get("display_name"), str) else node.get("display_name"),
+                params=params_to_use if node_type == "loop" else (copy.deepcopy(params) if isinstance(params, Mapping) else params),
+                out_params_schema=node.get("out_params_schema") if isinstance(node.get("out_params_schema"), Mapping) else None,
+                true_to_node=node.get("true_to_node") if isinstance(node.get("true_to_node"), str) else node.get("true_to_node"),
+                false_to_node=node.get("false_to_node") if isinstance(node.get("false_to_node"), str) else node.get("false_to_node"),
+                cases=node.get("cases") if isinstance(node.get("cases"), list) else None,
+                default_to_node=node.get("default_to_node") if isinstance(node.get("default_to_node"), str) else node.get("default_to_node"),
+                parent_node_id=inferred_parent,
+                depends_on=depends_on,
+            )
+
+            if node_type == "loop" and body_nodes:
+                _walk(body_nodes, parent_id=node_id)
+
+    _walk(workflow.get("nodes"))
+
+
 def _normalize_sub_graph_nodes(
     raw: Any, *, builder: WorkflowBuilder
 ) -> tuple[List[str], Optional[Dict[str, Any]]]:
@@ -751,12 +837,15 @@ def plan_workflow_structure_with_llm(
     action_registry: List[Dict[str, Any]],
     max_rounds: int = 100,
     progress_callback: Callable[[str, Mapping[str, Any]], None] | None = None,
+    existing_workflow: Mapping[str, Any] | None = None,
     return_requirement: bool = False,
 ) -> Dict[str, Any] | tuple[Dict[str, Any], Dict[str, Any] | None]:
     if not os.environ.get("OPENAI_API_KEY"):
         raise RuntimeError("请先设置 OPENAI_API_KEY 环境变量再进行结构规划。")
 
     builder = WorkflowBuilder()
+    if existing_workflow:
+        _hydrate_builder_from_workflow(builder=builder, workflow=existing_workflow)
     action_schemas = _build_action_schema_map(action_registry)
     last_action_candidates: List[str] = []
     all_action_candidates: List[str] = []
