@@ -178,3 +178,66 @@ def test_hydrate_builder_preserves_branches_and_edges():
     assert any(node.get("id") == "send_one" for node in loop_body_nodes)
     assert "send_one" in all_nodes
     assert set(all_nodes["send_one"].get("depends_on", [])) == {"prepare_email"}
+
+
+def test_hydrate_builder_handles_condition_nodes_in_loop_body():
+    existing_workflow = {
+        "workflow_name": "conditions",
+        "description": "loop with condition branches",
+        "nodes": [
+            {
+                "id": "start",
+                "type": "action",
+                "action_id": "demo.start",
+                "params": {"ready": True},
+            },
+            {
+                "id": "loop_cond",
+                "type": "loop",
+                "params": {
+                    "loop_kind": "sequential",
+                    "body_subgraph": {
+                        "nodes": [
+                            {
+                                "id": "gate",
+                                "type": "condition",
+                                "params": {"expression": "{{ result_of.start.ready }}"},
+                            },
+                            {"id": "branch_true", "type": "action", "action_id": "demo.true"},
+                            {"id": "branch_false", "type": "action", "action_id": "demo.false"},
+                        ],
+                        "entry": "gate",
+                    },
+                },
+            },
+        ],
+        "edges": [
+            {"from": "start", "to": "loop_cond"},
+            {"from": "start", "to": "gate"},
+            {"from": "gate", "to": "branch_true", "condition": True},
+            {"from": "gate", "to": "branch_false", "condition": False},
+        ],
+    }
+
+    builder = WorkflowBuilder()
+    _hydrate_builder_from_workflow(builder=builder, workflow=existing_workflow)
+
+    workflow = builder.to_workflow()
+    loop_node = _find(workflow["nodes"], "loop_cond")
+    body_nodes = (loop_node.get("params") or {}).get("body_subgraph", {}).get("nodes") or []
+
+    assert not any(node.get("id") == "gate" for node in workflow["nodes"])
+
+    gate = _find(body_nodes, "gate")
+    true_branch = _find(body_nodes, "branch_true")
+    false_branch = _find(body_nodes, "branch_false")
+
+    assert gate.get("params") == {"expression": "{{ result_of.start.ready }}"}
+    assert gate.get("true_to_node") == "branch_true"
+    assert gate.get("false_to_node") == "branch_false"
+    assert gate.get("depends_on") == ["start"]
+
+    assert true_branch.get("parent_node_id") == "loop_cond"
+    assert false_branch.get("parent_node_id") == "loop_cond"
+    assert true_branch.get("depends_on") == ["gate"]
+    assert false_branch.get("depends_on") == ["gate"]

@@ -45,11 +45,10 @@ def attach_condition_branches(workflow: Dict[str, Any]) -> Dict[str, Any]:
     """
 
     copied = {**workflow}
-    nodes = copied.get("nodes") if isinstance(copied.get("nodes"), list) else []
     edges = copied.get("edges") if isinstance(copied.get("edges"), list) else []
 
     node_lookup: Dict[str, Mapping[str, Any]] = {}
-    for node in nodes:
+    for node in iter_workflow_and_loop_body_nodes(copied):
         if isinstance(node, Mapping):
             node_lookup[str(node.get("id"))] = node
 
