@@ -19,6 +19,9 @@ from validate_workflow import _load_action_registry
 
 
 def _resolve_requirement(args: argparse.Namespace) -> str:
+    """Resolve the user's requirement from either CLI flags or a file."""
+
+    # Prefer direct CLI input first, fall back to file content if provided.
     requirement = args.requirement or ""
     if args.requirement_file:
         try:
@@ -26,20 +29,29 @@ def _resolve_requirement(args: argparse.Namespace) -> str:
         except FileNotFoundError:
             print(f"找不到需求文件: {args.requirement_file}", file=sys.stderr)
             sys.exit(2)
+
+    # The planner requires a non-empty natural language requirement to operate.
     if not requirement:
         print("请通过 --requirement 或 --requirement-file 提供自然语言需求。", file=sys.stderr)
         sys.exit(2)
+
     return requirement
 
 
 def _save_workflow(path: Path, workflow: Workflow) -> None:
+    """Persist the updated workflow to disk in a readable JSON format."""
+
     normalized = workflow.model_dump(by_alias=True)
+
+    # Keep the JSON UTF-8 encoded and pretty-printed so users can diff it easily.
     path.write_text(
         json.dumps(normalized, ensure_ascii=False, indent=2), encoding="utf-8"
     )
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Entry point for the CLI updater."""
+
     parser = argparse.ArgumentParser(
         description="Update a workflow JSON based on a natural language requirement",
     )
@@ -72,10 +84,24 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="用于更新的 OpenAI 模型名称（默认使用 velvetflow.config.OPENAI_MODEL）",
     )
+    parser.add_argument(
+        "--max-rounds",
+        type=int,
+        default=100,
+        help="结构规划阶段的最大迭代轮次（默认: 100）",
+    )
+    parser.add_argument(
+        "--max-repair-rounds",
+        type=int,
+        default=3,
+        help="LLM 修复阶段的最大迭代轮次（默认: 3）",
+    )
     args = parser.parse_args(argv)
 
+    # Parse requirement from CLI/file input before reading the workflow file.
     requirement = _resolve_requirement(args)
 
+    # Load the workflow JSON that needs to be updated.
     try:
         workflow_raw = json.loads(args.workflow.read_text(encoding="utf-8"))
     except FileNotFoundError:
@@ -85,6 +111,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"workflow 文件不是合法 JSON: {exc}", file=sys.stderr)
         return 2
 
+    # Initialize planner dependencies: action registry and semantic search.
     try:
         action_registry = _load_action_registry(args.action_registry)
     except Exception as exc:  # noqa: BLE001 - CLI convenience
@@ -97,19 +124,23 @@ def main(argv: list[str] | None = None) -> int:
         print(f"构建动作检索服务失败: {exc}", file=sys.stderr)
         return 2
 
+    # Route updates through the orchestrator, which handles structure planning,
+    # parameter completion, and repair in a single two-pass pipeline.
     try:
         updated_workflow = update_workflow_with_two_pass(
             existing_workflow=workflow_raw,
             requirement=requirement,
             search_service=search_service,
             action_registry=action_registry,
-            max_repair_rounds=3,
+            max_rounds=args.max_rounds,
+            max_repair_rounds=args.max_repair_rounds,
             model=args.model or OPENAI_MODEL,
         )
     except Exception as exc:  # noqa: BLE001 - surface model/IO issues
         print(f"更新 workflow 失败: {exc}", file=sys.stderr)
         return 2
 
+    # Persist the successful result and surface a friendly message.
     _save_workflow(args.output, updated_workflow)
     print(f"更新完成并已保存到 {args.output}")
     return 0
