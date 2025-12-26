@@ -1,4 +1,5 @@
 async function streamEvents(url, options, onEvent) {
+  // Open a streaming HTTP request and decode server-sent chunks line-by-line.
   const response = await fetch(url, options);
   if (!response.ok) {
     const detail = await response.json().catch(() => ({}));
@@ -13,6 +14,7 @@ async function streamEvents(url, options, onEvent) {
     throw new Error("当前浏览器不支持流式响应");
   }
 
+  // Read the body as a stream so intermediate planner snapshots can be shown.
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
@@ -37,6 +39,7 @@ async function streamEvents(url, options, onEvent) {
 }
 
 function extractWorkflowFromEvent(event) {
+  // Different endpoints name the workflow payload differently; normalize here.
   if (!event) return null;
   if (event.workflow) return event.workflow;
   if (event.full_workflow) return event.full_workflow;
@@ -46,6 +49,7 @@ function extractWorkflowFromEvent(event) {
 }
 
 function maybeApplyWorkflowFromEvent(workflow, sourceLabel, logSnapshot = false) {
+  // Refresh the UI only when the incoming workflow differs from the last one.
   if (!workflow) return false;
   const normalized = normalizeWorkflow(workflow);
   const previous = currentWorkflow ? JSON.stringify(currentWorkflow) : "";
@@ -70,6 +74,7 @@ function isEmptyWorkflow(workflow) {
 }
 
 async function requestPlan(requirement) {
+  // Planner entrypoint: decide whether to plan from scratch or update in place.
   setStatus("规划中", "warning");
   appendLog(`收到需求：${requirement}`);
   addChatMessage(`已收到需求：“${requirement}”，开始规划/校验/修复。`, "agent");
@@ -79,6 +84,8 @@ async function requestPlan(requirement) {
         ? currentWorkflow
         : null;
 
+    // Route to the update endpoint when a DAG already exists so server uses the
+    // two-pass updater instead of rebuilding from scratch.
     const targetEndpoint = existingWorkflow ? "/api/update/stream" : "/api/plan/stream";
 
     if (existingWorkflow) {

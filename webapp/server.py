@@ -94,6 +94,10 @@ _search_service: HybridActionSearchService | None = None
 
 
 def _get_search_service() -> HybridActionSearchService:
+    """Lazily construct a shared search service for planner endpoints."""
+
+    # Building the default service may hit disk/network, so reuse a singleton
+    # across requests.
     global _search_service
     if _search_service is None:
         _search_service = build_default_search_service()
@@ -101,6 +105,9 @@ def _get_search_service() -> HybridActionSearchService:
 
 
 def _is_empty_workflow(workflow: Workflow | Dict[str, Any]) -> bool:
+    """Check whether a workflow contains any nodes regardless of object type."""
+
+    # Accept either Pydantic object or raw dict payloads from the API body.
     nodes = getattr(workflow, "nodes", None)
     if nodes is None and isinstance(workflow, dict):
         nodes = workflow.get("nodes")
@@ -108,6 +115,8 @@ def _is_empty_workflow(workflow: Workflow | Dict[str, Any]) -> bool:
 
 
 def _summarize_workflow(requirement: str, workflow_dict: Dict[str, Any]):
+    """Derive UI suggestions/tool-gap hints from a workflow result."""
+
     suggestions: List[str] = []
     tool_gap_message = None
     tool_gap_suggestions: List[str] = []
@@ -127,12 +136,17 @@ def _run_planner_for_request(
     *,
     progress_callback: Callable[[str, Mapping[str, Any]], None] | None = None,
 ):
+    """Dispatch a planning or updating request based on presence of a DAG."""
+
+    # Basic input validation before calling into planner logic.
     if not req.requirement.strip():
         raise HTTPException(status_code=400, detail="requirement 不能为空")
 
     if require_existing and not req.existing_workflow:
         raise HTTPException(status_code=400, detail="existing_workflow 不能为空")
 
+    # When an existing workflow is provided, route through the updater to
+    # preserve and extend the current DAG. Otherwise, build a fresh plan.
     if req.existing_workflow:
         return update_workflow_with_two_pass(
             existing_workflow=req.existing_workflow,

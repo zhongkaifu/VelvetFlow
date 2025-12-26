@@ -127,12 +127,17 @@ def _run_requirement_alignment_loop(
     max_repair_rounds: int,
     progress_callback: Callable[[str, Mapping[str, Any]], None] | None = None,
 ) -> Workflow:
+    """Iteratively align missing requirement items by rerunning the updater."""
+
+    # The requirement planner may return structured requirement hints; bail early
+    # when none are present to avoid unnecessary LLM calls.
     requirements = (
         requirement_plan.get("requirements") if isinstance(requirement_plan, Mapping) else None
     )
     if not isinstance(requirements, list) or not requirements:
         return workflow
 
+    # Track last round's fingerprint to stop when the planner cannot make progress.
     current_workflow = workflow
     previous_missing: Optional[str] = None
 
@@ -143,6 +148,8 @@ def _run_requirement_alignment_loop(
         )
         if not missing:
             return current_workflow
+
+        # Avoid infinite loops when the missing set stays the same.
         missing_fingerprint = json.dumps(missing, ensure_ascii=False, sort_keys=True)
         if previous_missing == missing_fingerprint:
             log_warn("[RequirementAlign] 连续轮次缺失项一致，停止对齐循环。")
@@ -1342,6 +1349,8 @@ def plan_workflow_with_two_pass(
       保证调用方始终获得一个合法的 `Workflow` 实例。
     """
 
+    # Allow one restart with a fresh trace context if parameter completion fails,
+    # so downstream callers still get a valid workflow instead of an exception.
     restart_attempted = False
 
     while True:
@@ -1507,6 +1516,8 @@ def update_workflow_with_two_pass(
     through incremental changes plus validation-driven self-repair.
     """
 
+    # Reuse upstream trace context if provided so logs stay correlated; otherwise
+    # create a dedicated span for this update run.
     context = trace_context or TraceContext.create(trace_id=trace_id, span_name="update_orchestrator")
     with use_trace_context(context):
         log_event(
@@ -1522,6 +1533,8 @@ def update_workflow_with_two_pass(
             base_workflow = Workflow.model_validate(existing_workflow)
         except PydanticValidationError as e:
             log_warn("[update_workflow_with_two_pass] 输入 workflow 校验失败，进入修复流程。")
+            # Input DSL might come from hand edits; repair it first so the planner
+            # can safely continue from a validated baseline.
             validation_errors = _convert_pydantic_errors(existing_workflow, e) or [
                 _make_failure_validation_error(str(e))
             ]
@@ -1554,6 +1567,8 @@ def update_workflow_with_two_pass(
                 return_requirement=True,
             )
 
+        # Sanity-check loop bodies early so repair prompts include missing IDs
+        # before the more expensive validation steps run.
         precheck_errors = precheck_loop_body_graphs(updated_raw)
         if precheck_errors:
             log_warn(
@@ -1574,6 +1589,7 @@ def update_workflow_with_two_pass(
                 log_warn(
                     "[update_workflow_with_two_pass] 结构规划阶段校验失败，将错误交给 LLM 修复后继续。"
                 )
+                # Convert schema errors into a friendly shape before retrying via LLM.
                 validation_errors = _convert_pydantic_errors(updated_raw, e) or [
                     _make_failure_validation_error(str(e))
                 ]
@@ -1619,6 +1635,8 @@ def update_workflow_with_two_pass(
             except Exception:
                 log_debug("[update_workflow_with_two_pass] progress_callback 更新阶段调用失败，已忽略。")
 
+        # Reuse the same validation/repair pipeline to ensure params and bindings
+        # are executable after structural updates.
         return _validate_and_repair_workflow(
             updated_workflow,
             action_registry=action_registry,
