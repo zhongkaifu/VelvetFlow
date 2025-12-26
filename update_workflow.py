@@ -72,6 +72,18 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="用于更新的 OpenAI 模型名称（默认使用 velvetflow.config.OPENAI_MODEL）",
     )
+    parser.add_argument(
+        "--max-rounds",
+        type=int,
+        default=100,
+        help="结构规划阶段的最大迭代轮次（默认: 100）",
+    )
+    parser.add_argument(
+        "--max-repair-rounds",
+        type=int,
+        default=3,
+        help="LLM 修复阶段的最大迭代轮次（默认: 3）",
+    )
     args = parser.parse_args(argv)
 
     requirement = _resolve_requirement(args)
@@ -103,7 +115,8 @@ def main(argv: list[str] | None = None) -> int:
             requirement=requirement,
             search_service=search_service,
             action_registry=action_registry,
-            max_repair_rounds=3,
+            max_rounds=args.max_rounds,
+            max_repair_rounds=args.max_repair_rounds,
             model=args.model or OPENAI_MODEL,
         )
     except Exception as exc:  # noqa: BLE001 - surface model/IO issues

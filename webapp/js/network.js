@@ -79,6 +79,8 @@ async function requestPlan(requirement) {
         ? currentWorkflow
         : null;
 
+    const targetEndpoint = existingWorkflow ? "/api/update/stream" : "/api/plan/stream";
+
     if (existingWorkflow) {
       addChatMessage("将基于当前流程进行更新与自修复，保持节点和连线同步。", "agent");
     } else {
@@ -94,7 +96,7 @@ async function requestPlan(requirement) {
     let needsMoreDetail = false;
 
     await streamEvents(
-      "/api/plan/stream",
+      targetEndpoint,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
