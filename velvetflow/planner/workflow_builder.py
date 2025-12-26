@@ -180,19 +180,54 @@ class WorkflowBuilder:
         # 深拷贝节点，避免在转换过程中污染 builder 内部状态。
         node_copies: list[Dict[str, Any]] = [copy.deepcopy(n) for n in self.nodes.values()]
         loop_lookup: Dict[str, Dict[str, Any]] = {}
+        branch_lookup: Dict[str, Dict[str, Any]] = {}
 
         for node in node_copies:
             node_id = node.get("id")
             if not isinstance(node_id, str):
                 continue
-            if node.get("type") == "loop":
+            node_type = node.get("type")
+
+            if node_type == "loop":
                 loop_lookup[node_id] = node
+            if node_type == "parallel":
+                params = node.get("params") if isinstance(node.get("params"), dict) else {}
+                node["params"] = params
+
+                branches = params.get("branches") if isinstance(params.get("branches"), list) else []
+                normalized_branches: list[Dict[str, Any]] = []
+
+                for branch in branches:
+                    if not isinstance(branch, Mapping):
+                        continue
+
+                    branch_copy = copy.deepcopy(branch)
+                    branch_id = branch_copy.get("id") if isinstance(branch_copy.get("id"), str) else None
+                    branch_copy["sub_graph_nodes"] = (
+                        list(branch_copy.get("sub_graph_nodes") or [])
+                        if isinstance(branch_copy.get("sub_graph_nodes"), list)
+                        else []
+                    )
+
+                    if branch_id:
+                        branch_lookup[f"{node_id}:{branch_id}"] = branch_copy
+
+                    normalized_branches.append(branch_copy)
+
+                params["branches"] = normalized_branches
 
         root_nodes: list[Dict[str, Any]] = []
 
         for node in node_copies:
             parent_id = node.get("parent_node_id") if isinstance(node.get("parent_node_id"), str) else None
+            branch_parent = branch_lookup.get(parent_id) if parent_id else None
             parent_loop = loop_lookup.get(parent_id) if parent_id else None
+
+            if branch_parent is not None:
+                branch_parent_nodes = branch_parent.get("sub_graph_nodes") if isinstance(branch_parent.get("sub_graph_nodes"), list) else []
+                branch_parent["sub_graph_nodes"] = branch_parent_nodes
+                branch_parent_nodes.append(node)
+                continue
 
             if parent_loop:
                 params = parent_loop.get("params") if isinstance(parent_loop.get("params"), dict) else {}

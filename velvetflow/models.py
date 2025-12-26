@@ -196,7 +196,9 @@ def infer_edges_from_bindings(nodes: Iterable[Any]) -> List[Dict[str, Any]]:
                     parts = ref.split(".")
                     if len(parts) >= 2 and parts[1]:
                         yield parts[1]
-            for v in value.values():
+            for key, v in value.items():
+                if key in {"nodes", "sub_graph_nodes"}:
+                    continue
                 yield from _collect_refs(v)
         elif isinstance(value, list):
             for item in value:

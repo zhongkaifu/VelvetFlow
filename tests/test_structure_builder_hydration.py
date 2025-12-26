@@ -6,6 +6,30 @@ def _find(nodes, node_id):
     return next(node for node in nodes if node.get("id") == node_id)
 
 
+def _collect_all_nodes(workflow):
+    found = {}
+
+    def _walk(nodes):
+        for node in nodes or []:
+            if not isinstance(node, dict):
+                continue
+            nid = node.get("id")
+            if isinstance(nid, str):
+                found[nid] = node
+
+            if node.get("type") == "loop":
+                body_nodes = (node.get("params") or {}).get("body_subgraph", {}).get("nodes") or []
+                _walk(body_nodes)
+
+            if node.get("type") == "parallel":
+                branches = (node.get("params") or {}).get("branches") or []
+                for branch in branches:
+                    _walk(branch.get("sub_graph_nodes"))
+
+    _walk(workflow.get("nodes") or [])
+    return found
+
+
 def test_hydrate_builder_reconstructs_existing_workflow():
     existing_workflow = {
         "workflow_name": "demo",
@@ -59,3 +83,98 @@ def test_hydrate_builder_reconstructs_existing_workflow():
     child_node = _find(body_nodes, "child")
     assert child_node.get("depends_on") == ["start"]
     assert loop_node.get("params", {}).get("exports") == {"items": "{{ result_of.child.status }}"}
+
+
+def test_hydrate_builder_preserves_branches_and_edges():
+    existing_workflow = {
+        "workflow_name": "branches",
+        "description": "with parallel branches",
+        "nodes": [
+            {"id": "start", "type": "action", "action_id": "demo.start", "params": {"message": "hi"}},
+            {
+                "id": "check",
+                "type": "condition",
+                "params": {"expression": "{{ result_of.start.message != '' }}"},
+            },
+            {
+                "id": "route",
+                "type": "switch",
+                "params": {"source": "{{ result_of.start }}", "field": "channel"},
+                "cases": [{"case": "email", "to_node": "parallel_group"}],
+                "default_to_node": "fallback",
+            },
+            {"id": "fallback", "type": "action", "action_id": "demo.fallback"},
+            {
+                "id": "parallel_group",
+                "type": "parallel",
+                "params": {
+                    "branches": [
+                        {
+                            "id": "email",
+                            "entry_node": "prepare_email",
+                            "sub_graph_nodes": [
+                                {
+                                    "id": "prepare_email",
+                                    "type": "action",
+                                    "action_id": "demo.prepare_email",
+                                    "params": {"subject": "{{ result_of.start.message }}"},
+                                },
+                                {
+                                    "id": "loop_email",
+                                    "type": "loop",
+                                    "params": {
+                                        "loop_kind": "for_each",
+                                        "source": "{{ result_of.start.recipients }}",
+                                        "item_alias": "user",
+                                        "body_subgraph": {
+                                            "nodes": [
+                                                {
+                                                    "id": "send_one",
+                                                    "type": "action",
+                                                    "action_id": "demo.send_email",
+                                                    "params": {
+                                                        "user": "{{ loop.user }}",
+                                                        "content": "{{ result_of.prepare_email.body }}",
+                                                    },
+                                                }
+                                            ]
+                                        },
+                                    },
+                                },
+                            ],
+                        }
+                    ]
+                },
+            },
+        ],
+        "edges": [
+            {"from": "start", "to": "check"},
+            {"from": "check", "to": "route", "condition": True},
+            {"from": "route", "to": "parallel_group", "condition": "email"},
+            {"from": "route", "to": "fallback", "condition": "default"},
+        ],
+    }
+
+    builder = WorkflowBuilder()
+    _hydrate_builder_from_workflow(builder=builder, workflow=existing_workflow)
+
+    workflow = builder.to_workflow()
+    nodes = workflow["nodes"]
+    all_nodes = _collect_all_nodes(workflow)
+
+    assert workflow["workflow_name"] == "branches"
+    assert _find(nodes, "check").get("true_to_node") == "route"
+    assert set(_find(nodes, "route").get("depends_on")) == {"check", "start"}
+    assert _find(nodes, "parallel_group").get("depends_on") == ["route"]
+
+    parallel_node = _find(nodes, "parallel_group")
+    branches = (parallel_node.get("params") or {}).get("branches", [])
+    assert branches and isinstance(branches[0].get("sub_graph_nodes"), list)
+    assert any(node.get("id") == "prepare_email" for node in branches[0].get("sub_graph_nodes"))
+
+    loop_node = next(node for node in branches[0].get("sub_graph_nodes") if node.get("id") == "loop_email")
+    loop_body_nodes = (loop_node.get("params") or {}).get("body_subgraph", {}).get("nodes") or []
+
+    assert any(node.get("id") == "send_one" for node in loop_body_nodes)
+    assert "send_one" in all_nodes
+    assert set(all_nodes["send_one"].get("depends_on", [])) == {"prepare_email"}

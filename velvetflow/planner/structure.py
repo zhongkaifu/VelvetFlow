@@ -20,7 +20,13 @@ from velvetflow.planner.workflow_builder import (
 )
 from velvetflow.loop_dsl import iter_workflow_and_loop_body_nodes
 from velvetflow.search import HybridActionSearchService
-from velvetflow.models import ALLOWED_PARAM_AGGREGATORS, Node, Workflow, infer_edges_from_bindings
+from velvetflow.models import (
+    ALLOWED_PARAM_AGGREGATORS,
+    Node,
+    Workflow,
+    infer_depends_on_from_edges,
+    infer_edges_from_bindings,
+)
 from velvetflow.planner.relations import get_referenced_nodes
 from velvetflow.reference_utils import normalize_reference_path, parse_field_path
 from velvetflow.verification.validation import (
@@ -109,8 +115,10 @@ def _hydrate_builder_from_workflow(
     if not isinstance(workflow, Mapping):
         return
 
-    name = workflow.get("workflow_name")
-    description = workflow.get("description")
+    hydrated_workflow = attach_condition_branches(copy.deepcopy(workflow))
+
+    name = hydrated_workflow.get("workflow_name")
+    description = hydrated_workflow.get("description")
     if isinstance(name, str):
         builder.workflow_name = name
     if isinstance(description, str):
@@ -139,6 +147,35 @@ def _hydrate_builder_from_workflow(
 
         return params_copy, list(body_nodes or [])
 
+    def _normalize_parallel_params(params: Mapping[str, Any] | None) -> tuple[dict, list[tuple[str, list[Any]]]]:
+        if not isinstance(params, Mapping):
+            return {}, []
+
+        params_copy = copy.deepcopy(params)
+        branches = params_copy.get("branches") if isinstance(params_copy.get("branches"), list) else []
+        branch_nodes: list[tuple[str, list[Any]]] = []
+        normalized_branches: list[dict] = []
+
+        for branch in branches or []:
+            if not isinstance(branch, Mapping):
+                continue
+
+            branch_copy = copy.deepcopy(branch)
+            sub_nodes = branch_copy.get("sub_graph_nodes") if isinstance(branch_copy.get("sub_graph_nodes"), list) else []
+            branch_copy["sub_graph_nodes"] = []
+
+            branch_id = branch_copy.get("id") if isinstance(branch_copy.get("id"), str) else None
+            if branch_id:
+                branch_nodes.append((branch_id, list(sub_nodes)))
+
+            normalized_branches.append(branch_copy)
+
+        params_copy["branches"] = normalized_branches
+        return params_copy, branch_nodes
+
+    edges = hydrated_workflow.get("edges") if isinstance(hydrated_workflow.get("edges"), list) else []
+    depends_on_map = infer_depends_on_from_edges(iter_workflow_and_loop_body_nodes(hydrated_workflow), edges)
+
     def _walk(nodes: Sequence[Any] | None, parent_id: str | None = None) -> None:
         for node in nodes or []:
             if not isinstance(node, Mapping):
@@ -153,14 +190,23 @@ def _hydrate_builder_from_workflow(
 
             visited.add(node_id)
             params = node.get("params") if isinstance(node.get("params"), Mapping) else node.get("params")
-            depends_on = node.get("depends_on") if isinstance(node.get("depends_on"), list) else None
+            depends_on = (
+                node.get("depends_on")
+                if isinstance(node.get("depends_on"), list)
+                else depends_on_map.get(node_id)
+                if depends_on_map
+                else None
+            )
             inferred_parent = parent_id or (node.get("parent_node_id") if isinstance(node.get("parent_node_id"), str) else None)
 
             body_nodes: list[Any] = []
+            branch_nodes: list[tuple[str, list[Any]]] = []
             params_to_use: Mapping[str, Any] | None = None
 
             if node_type == "loop":
                 params_to_use, body_nodes = _normalize_loop_params(params if isinstance(params, Mapping) else {})
+            elif node_type == "parallel":
+                params_to_use, branch_nodes = _normalize_parallel_params(params if isinstance(params, Mapping) else {})
 
             builder.add_node(
                 node_id=node_id,
@@ -179,8 +225,11 @@ def _hydrate_builder_from_workflow(
 
             if node_type == "loop" and body_nodes:
                 _walk(body_nodes, parent_id=node_id)
+            elif node_type == "parallel" and branch_nodes:
+                for branch_id, nodes_in_branch in branch_nodes:
+                    _walk(nodes_in_branch, parent_id=f"{node_id}:{branch_id}")
 
-    _walk(workflow.get("nodes"))
+    _walk(hydrated_workflow.get("nodes"))
 
 
 def _normalize_sub_graph_nodes(

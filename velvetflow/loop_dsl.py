@@ -143,6 +143,16 @@ def iter_workflow_and_loop_body_nodes(workflow: Mapping[str, Any]) -> Iterable[M
                 if isinstance(body_nodes, list):
                     yield from _iter_nodes(body_nodes)
 
+            if node.get("type") == "parallel":
+                params = node.get("params") or {}
+                branches = params.get("branches") if isinstance(params.get("branches"), list) else []
+                for branch in branches:
+                    if not isinstance(branch, Mapping):
+                        continue
+                    sub_nodes = branch.get("sub_graph_nodes")
+                    if isinstance(sub_nodes, list):
+                        yield from _iter_nodes(sub_nodes)
+
     nodes = workflow.get("nodes") if isinstance(workflow, Mapping) else []
     yield from _iter_nodes(nodes or [])
 
