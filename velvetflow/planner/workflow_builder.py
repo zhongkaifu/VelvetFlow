@@ -71,6 +71,13 @@ def attach_condition_branches(workflow: Dict[str, Any]) -> Dict[str, Any]:
         elif cond_label == "false":
             source_node.setdefault("false_to_node", to_node)
 
+    # condition 节点必须包含 true_to_node/false_to_node 字段，即便没有明确的分支流向，
+    # 也应以 null 表示分支结束，避免下游执行/校验阶段缺失必填字段。
+    for node in node_lookup.values():
+        if node.get("type") == "condition":
+            node.setdefault("true_to_node", None)
+            node.setdefault("false_to_node", None)
+
     _attach_depends_on(copied)
     return copied
 

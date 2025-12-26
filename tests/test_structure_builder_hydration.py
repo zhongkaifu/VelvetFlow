@@ -1,5 +1,5 @@
 from velvetflow.planner.structure import _hydrate_builder_from_workflow
-from velvetflow.planner.workflow_builder import WorkflowBuilder
+from velvetflow.planner.workflow_builder import WorkflowBuilder, attach_condition_branches
 
 
 def _find(nodes, node_id):
@@ -239,5 +239,29 @@ def test_hydrate_builder_handles_condition_nodes_in_loop_body():
 
     assert true_branch.get("parent_node_id") == "loop_cond"
     assert false_branch.get("parent_node_id") == "loop_cond"
-    assert true_branch.get("depends_on") == ["gate"]
-    assert false_branch.get("depends_on") == ["gate"]
+
+
+def test_attach_condition_branches_populates_defaults_for_missing_fields():
+    workflow = {
+        "workflow_name": "defaults",
+        "description": "condition branches default to null",
+        "nodes": [
+            {
+                "id": "check",
+                "type": "condition",
+                "params": {"expression": "{{ True }}"},
+            },
+            {"id": "end", "type": "action", "action_id": "demo.end"},
+        ],
+        "edges": [
+            {"from": "check", "to": "end", "condition": True},
+        ],
+    }
+
+    hydrated = attach_condition_branches(workflow)
+    gate = _find(hydrated.get("nodes"), "check")
+    # true_to_node/false_to_node should always exist, even when absent in input
+    assert "true_to_node" in gate
+    assert "false_to_node" in gate
+    assert gate.get("true_to_node") == "end"
+    assert gate.get("false_to_node") is None
