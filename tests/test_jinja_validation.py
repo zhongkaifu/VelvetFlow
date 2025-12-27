@@ -47,3 +47,13 @@ def test_condition_field_literal_wrapped_as_jinja():
     assert errors == []
     assert summary.get("applied") in {False, None}
     assert normalized["nodes"][0]["params"]["expression"] == "{{ result_of.some_loop.exports.items | length > 0 }}"
+
+
+def test_missing_jinja_expression_is_wrapped():
+    workflow = _workflow({"target": "result_of.source.items | length > 0"})
+
+    normalized, summary, errors = normalize_params_to_jinja(workflow)
+
+    assert errors == []
+    assert summary["applied"] is True
+    assert normalized["nodes"][0]["params"]["target"] == "{{ result_of.source.items | length > 0 }}"

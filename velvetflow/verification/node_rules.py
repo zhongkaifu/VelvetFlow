@@ -258,6 +258,19 @@ def _validate_nodes_recursive(
                 )
             )
 
+        if ntype == "action" and (not isinstance(action_id, str) or not action_id.strip()):
+            errors.append(
+                ValidationError(
+                    code="MISSING_ACTION_ID",
+                    node_id=nid,
+                    field="action_id",
+                    message=(
+                        "action 节点缺少 action_id，无法匹配可执行动作。"
+                        "请将错误信息、节点信息、上下文信息提交给 LLM 分析，并使用工具进行修复。"
+                    ),
+                )
+            )
+
         if ntype == "action" and (not isinstance(params, Mapping) or len(params) == 0):
             errors.append(
                 ValidationError(

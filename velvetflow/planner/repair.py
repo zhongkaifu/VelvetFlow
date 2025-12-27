@@ -867,3 +867,4 @@ __all__ = [
     "apply_rule_based_repairs",
     "repair_workflow_with_llm",
 ]
+    "MISSING_ACTION_ID": "action 节点必须补齐 action_id，选择与 display_name/上下文最匹配的已注册动作，并同步更新 params。示例：将缺失 action_id 的发送邮件节点补为 comms.send_email 并补齐收件人字段。",
