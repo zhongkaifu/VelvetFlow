@@ -16,7 +16,7 @@ _SIMPLE_PATH_RE = re.compile(r"^(result_of|loop)\.[A-Za-z_][\w.]*$")
 
 
 def _normalize_jinja_expr(value: Any) -> Tuple[Any, bool]:
-    """Normalize legacy binding/value formats into Jinja-friendly strings."""
+    """Normalize binding/value formats into Jinja-friendly strings."""
 
     if (
         isinstance(value, Mapping)
@@ -121,9 +121,9 @@ def normalize_params_to_jinja(
 ) -> Tuple[Dict[str, Any], Dict[str, Any], List[ValidationError]]:
     """Normalize *all* node params to Jinja and validate syntax.
 
-    - Converts legacy ``__from__`` bindings or裸露的 ``result_of``/``loop`` 路径
+    - Converts ``__from__`` bindings or裸露的 ``result_of``/``loop`` 路径
       to标准的 ``"{{ ... }}"`` 模板字符串；
-    - 标记任何 ``__agg__``/``__from__`` DSL 遗留字段为 Jinja 违规，促使
+    - 标记任何 ``__agg__``/``__from__`` DSL 字段为 Jinja 违规，促使
       自动/LLM 修复；
     - 使用 Jinja 解析器校验所有字符串，确保最终结构对引擎可解析。
     """

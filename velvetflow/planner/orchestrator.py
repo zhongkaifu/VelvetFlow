@@ -1110,7 +1110,7 @@ def _validate_and_repair_workflow(
             action_registry=action_registry,
         )
 
-        # Some validation passes (e.g., legacy type coercion) may be skipped; ensure the
+        # Some validation passes (e.g., optional type coercion) may be skipped; ensure the
         # error accumulator is initialized even when those phases are absent to avoid
         # NameError crashes.
         coercion_errors: List[ValidationError] = []

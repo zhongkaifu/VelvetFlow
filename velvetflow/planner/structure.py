@@ -483,7 +483,7 @@ def _ensure_loop_items_fields(
     loop_node: Mapping[str, Any],
     action_schemas: Mapping[str, Mapping[str, Any]],
 ) -> Dict[str, Any]:
-    """Placeholder for legacy API; returns exports unchanged."""
+    """Placeholder pass-through for loop exports."""
 
     return dict(exports)
 
