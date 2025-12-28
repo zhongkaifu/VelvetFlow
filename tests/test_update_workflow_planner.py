@@ -87,3 +87,60 @@ def test_update_workflow_uses_existing_graph(monkeypatch):
     summarize = next(node for node in result_nodes if node.get("id") == "summarize")
     assert summarize.get("depends_on") == ["start"]
     assert summarize.get("params", {}).get("source") == "{{ result_of.start.message }}"
+
+
+def test_update_workflow_sanitizes_legacy_bindings(monkeypatch):
+    base_workflow = {
+        "workflow_name": "demo",
+        "description": "existing dag",
+        "nodes": [
+            {
+                "id": "start",
+                "type": "action",
+                "action_id": "demo.start",
+                "display_name": "Start",
+                "params": {"message": {"__from__": "result_of.seed.value"}},
+            }
+        ],
+    }
+
+    captured_existing = {}
+
+    def _fake_plan(
+        *,
+        nl_requirement,
+        search_service,
+        action_registry,
+        max_rounds,
+        progress_callback,
+        existing_workflow,
+        return_requirement,
+    ):
+        captured_existing["value"] = copy.deepcopy(existing_workflow)
+        return existing_workflow, {"requirements": [{"description": nl_requirement}]}
+
+    monkeypatch.setattr(orchestrator, "plan_workflow_structure_with_llm", _fake_plan)
+    monkeypatch.setattr(
+        orchestrator,
+        "_ensure_actions_registered_or_repair",
+        lambda workflow, **_: Workflow.model_validate(workflow)
+        if isinstance(workflow, dict)
+        else workflow,
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "_validate_and_repair_workflow",
+        lambda current_workflow, **__: current_workflow,
+    )
+
+    updated = update_workflow_with_two_pass(
+        existing_workflow=base_workflow,
+        requirement="noop",
+        search_service=_DummySearch(),
+        action_registry=[{"action_id": "demo.start", "params_schema": {}}],
+        max_rounds=1,
+        max_repair_rounds=0,
+    )
+
+    assert captured_existing["value"]["nodes"][0]["params"]["message"] == "{{ result_of.seed.value }}"
+    assert updated.model_dump(by_alias=True)["nodes"][0]["params"]["message"] == "{{ result_of.seed.value }}"

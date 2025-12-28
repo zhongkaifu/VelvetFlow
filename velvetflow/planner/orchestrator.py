@@ -40,6 +40,7 @@ from velvetflow.logging_utils import (
 from velvetflow.models import PydanticValidationError, ValidationError, Workflow
 from velvetflow.loop_dsl import index_loop_body_nodes, iter_workflow_and_loop_body_nodes
 from velvetflow.planner.action_guard import ensure_registered_actions
+from velvetflow.planner.legacy_cleanup import LegacyBindingError, strip_legacy_bindings_to_jinja
 from velvetflow.planner.repair import (
     _convert_pydantic_errors,
     _make_failure_validation_error,
@@ -1530,16 +1531,22 @@ def update_workflow_with_two_pass(
         )
 
         try:
-            base_workflow = Workflow.model_validate(existing_workflow)
+            sanitized_existing = strip_legacy_bindings_to_jinja(existing_workflow, path="workflow")
+        except LegacyBindingError as e:
+            log_error(f"[update_workflow_with_two_pass] {e}")
+            raise ValueError("更新失败：系统仅支持 Jinja 表达式，请移除 legacy __from__/__agg__ 绑定") from e
+
+        try:
+            base_workflow = Workflow.model_validate(sanitized_existing)
         except PydanticValidationError as e:
             log_warn("[update_workflow_with_two_pass] 输入 workflow 校验失败，进入修复流程。")
             # Input DSL might come from hand edits; repair it first so the planner
             # can safely continue from a validated baseline.
-            validation_errors = _convert_pydantic_errors(existing_workflow, e) or [
+            validation_errors = _convert_pydantic_errors(sanitized_existing, e) or [
                 _make_failure_validation_error(str(e))
             ]
             base_workflow = _repair_with_llm_and_fallback(
-                broken_workflow=existing_workflow if isinstance(existing_workflow, dict) else {},
+                broken_workflow=sanitized_existing if isinstance(sanitized_existing, dict) else {},
                 validation_errors=validation_errors,
                 action_registry=action_registry,
                 search_service=search_service,

@@ -18,6 +18,7 @@ from velvetflow.planner.workflow_builder import (
     WorkflowBuilder,
     attach_condition_branches,
 )
+from velvetflow.planner.legacy_cleanup import LegacyBindingError, strip_legacy_bindings_to_jinja
 from velvetflow.loop_dsl import iter_workflow_and_loop_body_nodes
 from velvetflow.search import HybridActionSearchService
 from velvetflow.models import (
@@ -894,7 +895,12 @@ def plan_workflow_structure_with_llm(
 
     builder = WorkflowBuilder()
     if existing_workflow:
-        _hydrate_builder_from_workflow(builder=builder, workflow=existing_workflow)
+        try:
+            normalized_existing = strip_legacy_bindings_to_jinja(existing_workflow, path="workflow")
+        except LegacyBindingError as e:
+            raise ValueError("结构规划失败：仅支持 Jinja 表达式，请移除 legacy 绑定语法") from e
+
+        _hydrate_builder_from_workflow(builder=builder, workflow=normalized_existing)
     action_schemas = _build_action_schema_map(action_registry)
     last_action_candidates: List[str] = []
     all_action_candidates: List[str] = []

@@ -105,7 +105,7 @@ VelvetFlow (repo root)
   - 本地修复涵盖 Jinja 规范化、类型对齐、`loop.exports` 补全、alias 对齐与绑定路径归一化，之后再由静态校验与多轮 LLM 修复保证可执行性。
   - 需求对齐会分析拆解后的 requirement 与现有 workflow 的映射，若仍有缺口会调用更新管线补齐节点或参数。
 - **DSL 模型与校验**：`models.py` 定义 Node/Edge/Workflow 的强类型模型（`model_validate`/`model_dump` 接口与 Pydantic 类似但不依赖其运行时），边由参数绑定与条件分支自动推导并在可视化/执行前归一化；校验涵盖节点类型、隐式连线合法性、loop 子图 Schema 等，并通过 `ValidationError` 统一描述错误。
-- **参数绑定 DSL**：`bindings.py` 支持 `__from__` 引用上游结果、`__agg__` 支持 `identity/count/count_if/format_join/filter_map/pipeline` 等聚合，同时也支持直接写 Jinja 模板；规划阶段会优先使用 Jinja 表达式并对残留的 `__agg__` 进行修复提示。
+- **参数绑定 DSL**：系统现已 **仅支持 Jinja 表达式**（例如 `"{{ result_of.node.field }}"`），任何 legacy 的 `__from__`/`__agg__` 绑定都会在入口处被拒绝或转换，以确保 planner/执行器处理的都是字符串模板。参数校验与类型推断集中在 `bindings.py`/`verification` 目录中完成。
 - **执行器**：`executor/` 包中的 `DynamicActionExecutor` 会先校验 action_id 是否在注册表中，再执行拓扑排序确保连通；支持 condition 节点（基于 `params.expression` 的 Jinja 表达式）与 loop 节点（`body_subgraph` + `params.exports` 逐轮收集结果），并结合 repo 根目录的 `simulation_data.json` 模拟动作返回。日志输出使用 `logging_utils.py`。
 - **可视化**：`visualization.py` 提供 `render_workflow_dag`，支持 Unicode 字体回退，将 Workflow 渲染为 JPEG DAG。
 - **Jinja 表达式支持**：`jinja_utils.py` 构建严格模式的 Jinja 环境并在校验/执行前把包裹在 `{{ }}` 的纯字面量折叠为常量，静态检查会提前阻止语法错误的模板，运行时也可以在条件/聚合里直接求值表达式。【F:velvetflow/jinja_utils.py†L8-L114】【F:velvetflow/verification/jinja_validation.py†L50-L189】【F:velvetflow/executor/conditions.py†L14-L114】

@@ -11,9 +11,9 @@
 - `velvetflow.models` 内置 `model_validate` 强类型校验节点字段、loop 子图完整性与引用合法性，失败时抛出统一的 `ValidationError`（接口形态与 Pydantic 类似但不依赖其运行时）。
 
 ## 绑定与上下文
-- **BindingContext** 会在执行时携带 `results` 字典与 loop 局部上下文，供后续节点通过 `__from__` 引用上游输出。
-- 聚合表达式 `__agg__` 支持 `identity`、`count`、`format_join`、`filter_map`、`pipeline` 等，引用路径会与动作/循环 schema 做兼容性检查。
-- 规划阶段更偏向使用 Jinja 模板字符串（如 `"{{ result_of.node.field }}"`），legacy 的 `__from__`/`__agg__` 仍可用于手写 DSL 或迁移历史流程。
+- **BindingContext** 会在执行时携带 `results` 字典与 loop 局部上下文，供后续节点通过 Jinja 模板引用上游输出（例如 `"{{ result_of.node.field }}"`）。
+- 绑定阶段仅接受 Jinja 表达式或字面量，legacy 的 `__from__`/`__agg__` 聚合语法已移除，聚合需求应在 Action 内或模板中自行实现。
+- 绑定解析与 Jinja 模板折叠由 `bindings.py` 和 `jinja_utils.py` 完成，确保在执行前暴露类型不一致或模板语法错误。
 - 绑定解析与 Jinja 模板折叠由 `bindings.py` 和 `jinja_utils.py` 完成，确保在执行前暴露类型不一致或模板语法错误。
 
 ## 规划与校验
