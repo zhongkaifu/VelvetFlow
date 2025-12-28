@@ -299,22 +299,9 @@ LLM / Agent SDK 相关节点说明：
 - 推导逻辑会去重并忽略自引用，所有自动生成的边都会在可视化与执行阶段生效。【F:velvetflow/models.py†L137-L246】【F:velvetflow/models.py†L441-L468】
 
 ### 参数绑定 DSL（params 内的占位符）
-执行器会对 `params` 里的绑定表达式进行解析与类型校验。规划阶段默认使用 **Jinja 模板**（例如 `"{{ result_of.node.field }}"`），同时仍兼容 legacy 的 `__from__`/`__agg__` 绑定对象，便于手写或迁移历史 DSL：
-
-```jsonc
-"some_param": {"__from__": "result_of.nodeA.output.field", "__agg__": "identity"}
-```
-
-常用能力：
-- `__from__`: 指向上游结果或循环上下文，形如 `result_of.<node_id>.<path>`。如果节点位于 loop 体内，还可以写 `loop.item`/`loop.index`/`loop.size`/`loop.accumulator` 或 `item_alias` 指定的别名。
-- `__agg__`: 聚合/变换方式，默认 `identity`。规划阶段会对残留的 `__agg__` 提示修复，但执行器与静态校验仍可识别。支持：
-  - `count` / `count_if`：统计列表长度，`count_if` 还能用 `field`+`op`+`value` 过滤。
-  - `join`: 直接用 `separator`（或 `sep`）把字符串列表拼接成一个字符串。
-  - `format_join`: 将列表/单值按 `format` 模板渲染并用 `sep` 拼接，`format` 中应直接写字段名占位符（如 `{name}`、`{score}`），不再支持 `{value}`。
-  - `filter_map`: 先过滤再映射/格式化，适合从列表提取子字段并合并成字符串。
-  - `pipeline`: 以 `steps` 数组串联多个 `filter`/`format_join` 变换，便于描述更复杂的处理链条。
+执行器只接受 **Jinja 模板** 形式的绑定（例如 `"{{ result_of.node.field }}"`），不再兼容 `__from__`/`__agg__` 等旧式对象绑定。常用能力：
 - 直接字符串路径：`"params": {"threshold": "loop.index"}` 这类纯字符串会在规划阶段自动包裹为 Jinja 模板（`{{ loop.index }}`）；解析失败会保留原值并在日志给出警告。
-- 绑定路径的有效性：`__from__` 引用动作输出时会根据动作的 `output_schema`/`arg_schema` 或 loop 的 `exports` 做静态校验，字段不存在会在执行前抛错，方便手动调试。【F:velvetflow/bindings.py†L18-L205】【F:velvetflow/bindings.py†L206-L341】
+- 绑定路径的有效性：引用动作输出时会根据动作的 `output_schema`/`arg_schema` 或 loop 的 `exports` 做静态校验，字段不存在会在执行前抛错，方便手动调试。【F:velvetflow/bindings.py†L18-L205】【F:velvetflow/bindings.py†L206-L341】
 - **Jinja 表达式与常量折叠**：
   - 参数、条件及聚合中的字符串可以写成 Jinja 表达式（如 `"{{ get('result_of.node.score') > 80 }}"`），校验阶段会先用严格模式 Jinja 解析语法并提示错误路径。
   - 对于 `"{{ 'action' }}"` 这类包裹字面量的模板，会在模型校验前折叠成普通字符串，避免字段类型被模板包裹后误判。【F:velvetflow/jinja_utils.py†L8-L114】【F:velvetflow/verification/jinja_validation.py†L50-L189】
@@ -322,10 +309,10 @@ LLM / Agent SDK 相关节点说明：
 
 ### 手动调试与排错建议
 1. **先跑校验**：使用 `python validate_workflow.py your_workflow.json --print-normalized`，可以立刻发现重复节点、边引用不存在、loop 子图 schema 不合法等问题。【F:validate_workflow.py†L1-L58】
-2. **检查绑定路径**：若报 `__from__` 相关错误，确认 `result_of.<node>.<field>` 中的节点是否存在且有对应字段；loop 节点需检查 `exports` 中是否声明了该字段。
+2. **检查绑定路径**：如果 Jinja 引用报错，确认 `result_of.<node>.<field>` 中的节点是否存在且有对应字段；loop 节点需检查 `exports` 中是否声明了该字段。
 
 ### 常见绑定警告示例
-- **引用了 loop 未导出的字段**：loop 节点的输出仅包含 `params.exports` 声明的字段，不会直接暴露子图节点的字段。示例中 `aggregate_summaries` 的 `text` 绑定写成 `{"__from__":"result_of.loop_each_news.summarize_news.summary","__agg__":"format_join","sep":"\n"}`，在解析时会因为 `loop_each_news` 的虚拟输出 Schema 中不存在 `summarize_news.summary` 而触发 `__from__ 路径 ... 引用了 loop 输出中不存在的字段` 的警告。应改为引用 loop 导出的数组：`{"__from__":"result_of.loop_each_news.exports.summary","__agg__":"format_join","sep":"\n"}`。
+- **引用了 loop 未导出的字段**：loop 节点的输出仅包含 `params.exports` 声明的字段，不会直接暴露子图节点的字段。引用 loop 内部节点字段会触发校验错误，应改为引用 loop 导出的数组（如 `result_of.loop_each_news.exports.summary`）。
 3. **最小化修改面**：调试时优先修改 `params` 中的绑定表达式或 condition 节点的跳转（`true_to_node`/`false_to_node`），避免破坏整体拓扑。
 4. **模拟执行观察输出**：用 `python execute_workflow.py --workflow-json your_workflow.json`，日志会标明每个节点解析后的参数值，便于确认聚合逻辑是否符合预期。
 5. **可视化辅助**：通过 `python render_workflow_image.py --workflow-json your_workflow.json --output tmp.jpg` 生成 DAG，快速核对节点/边连通性与显示名称。
