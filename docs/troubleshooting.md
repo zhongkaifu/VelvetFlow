@@ -5,7 +5,7 @@
 - **缺少 Agent SDK**：如果报 `No module named 'agents'` 或 Planner 无法导入 Agent/Runner，请额外执行 `pip install agents`（或 `uv add agents`），因为结构/补参/修复阶段依赖 OpenAI Agent SDK。
 - **未注册的 action_id**：规划或执行阶段报错时，检查 `tools/business_actions/` 是否存在该动作并重新构建索引；执行器启动时会提前失败以避免运行期出错。
 - **绑定路径不合法**：`ValidationError` 提示找不到引用路径时，确认上游节点的输出 Schema 是否包含该字段或在 loop.exports 中声明，并将参数写成 Jinja 模板（如 `{{ result_of.node.field }}`）。
-- **Jinja 表达式错误**：`INVALID_JINJA_EXPRESSION` 往往意味着 params 未使用合法的 `{{ ... }}` 模板或残留了 `__agg__` 绑定对象；建议改为 Jinja 表达式或在规划阶段让 Agent 修复。
+- **Jinja 表达式错误**：`INVALID_JINJA_EXPRESSION` 往往意味着 params 未使用合法的 `{{ ... }}` 模板；建议改为 Jinja 表达式或在规划阶段让 Agent 修复。
 - **DSL 语法/语义错误**：`SYNTAX_ERROR`/`GRAMMAR_VIOLATION` 表示 JSON 语法或 DSL 结构不满足 `workflow_parser.py` 的要求（例如缺少 `nodes`），可先按报错位置修正，再执行校验。
 - **异步节点无法恢复**：如果 `resume_from_suspension` 失败，确认 `suspension.json` 与回调结果的 `request_id` 一致，并确保结果文件包含 `status` 或业务返回体。
 - **loop 被跳过**：运行日志提示 `source_not_list` 时，检查 loop 的 `params.source` 是否指向数组/序列，必要时使用 Jinja 模板引用上游数组（如 `{{ result_of.search.items }}`）。

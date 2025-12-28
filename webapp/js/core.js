@@ -825,7 +825,6 @@ function extractOutputDefs(schema) {
 }
 
 function stringifyBinding(value) {
-  if (value && typeof value === "object" && value.__from__) return `{{ ${String(value.__from__)} }}`;
   if (value === null || value === undefined) return "";
   if (typeof value === "string") return value;
   try {

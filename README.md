@@ -209,7 +209,7 @@ VelvetFlow (repo root)
 2. **需求拆解 + 结构/参数构建（Agent）**：`plan_workflow_structure_with_llm` 内联工具先调用 `plan_user_requirement` 拆解需求，再用节点增删改与 `update_node_params` 构建骨架并补全 params（全部以 Jinja 表达式为主），边由绑定与分支指向自动推导。【F:velvetflow/planner/structure.py†L373-L1188】
 3. **初步校验与 Action Guard**：结构结果会先做 loop body 预检查并执行 `Workflow.model_validate`，随后进入 Action Guard；未注册/缺失的 `action_id` 会先尝试用混合检索一键替换，再将剩余问题交给 LLM 修复，确保进入后续校验阶段的动作都在白名单内。【F:velvetflow/planner/orchestrator.py†L104-L343】
 4. **Jinja 规范化与本地修复**：进入多轮本地修复，包括 Jinja 语法规范化、类型对齐、`loop.exports` 补全、alias 对齐与绑定路径归一化： 
-   - **条件/引用类型矫正**：根据 condition kind 需求与输出 Schema 自动转换数值/正则类型，并为绑定的 `__from__` 与目标 Schema 之间的类型不匹配提供自动包装或错误提示。【F:velvetflow/planner/orchestrator.py†L444-L580】
+   - **条件/引用类型矫正**：根据 condition kind 需求与输出 Schema 自动转换数值/正则类型，并为绑定引用与目标 Schema 之间的类型不匹配提供自动包装或错误提示。【F:velvetflow/planner/orchestrator.py†L444-L580】
    - **loop.exports 补全**：自动填充缺失的 `params.exports` 映射并规范化导出字段，避免循环节点留空导致 LLM 返工。【F:velvetflow/planner/orchestrator.py†L589-L662】
    - **Schema 感知修复**：移除动作 Schema 未定义的字段、为空字段写入默认值或尝试按类型转换，再进入正式校验；无法修复的错误会打包为 `ValidationError` 供后续 LLM 使用。【F:velvetflow/planner/repair_tools.py†L63-L215】【F:velvetflow/planner/orchestrator.py†L664-L817】
 5. **静态校验 + LLM 自修复循环**：`validate_completed_workflow` 会在每轮本地修复后运行，若仍有错误则将错误分布与上下文交给 `_repair_with_llm_and_fallback`，在限定轮次内迭代直至通过或返回最后一个合法版本。【F:velvetflow/planner/orchestrator.py†L664-L940】
@@ -238,7 +238,7 @@ flowchart TD
 LLM / Agent SDK 相关节点说明：
 - **结构规划 Agent**：基于自然语言需求先调用 `plan_user_requirement` 拆解任务，再通过节点增删改与 `update_node_params` 工具补全 params（Jinja 表达式为主）。`WorkflowBuilder` 会把推导出的 edges、condition 分支与 `depends_on` 写回骨架，方便下游校验共享上下文；节点字段也会按节点类型或 action schema 过滤无关字段，避免 Agent 生成不可识别的参数。【F:velvetflow/planner/structure.py†L373-L1188】【F:velvetflow/planner/workflow_builder.py†L20-L222】
 - **动作合法性守卫**：若发现 `action_id` 缺失或未注册，会先尝试基于 display_name/原 action_id 检索替换，再将剩余问题交给 LLM 修复，避免幻觉动作进入最终 Workflow。【F:velvetflow/planner/orchestrator.py†L104-L343】
-- **Jinja 规范化与参数一致性**：规划/校验阶段会将简单路径转换为 Jinja 字符串，并对残留的 `__agg__` 提示修复；参数补全阶段的 schema 约束来自 `params_tools.py`，确保节点 params 与动作 arg_schema 对齐。【F:velvetflow/planner/params_tools.py†L1-L193】【F:velvetflow/verification/jinja_validation.py†L10-L189】
+- **Jinja 规范化与参数一致性**：规划/校验阶段会将简单路径转换为 Jinja 字符串，并对非模板参数给出修复建议；参数补全阶段的 schema 约束来自 `params_tools.py`，确保节点 params 与动作 arg_schema 对齐。【F:velvetflow/planner/params_tools.py†L1-L193】【F:velvetflow/verification/jinja_validation.py†L10-L189】
 - **需求对齐检查**：对照拆解后的 requirements，检测 workflow 是否缺失关键步骤；如有缺口，触发 `update_workflow_with_two_pass` 继续补齐，并复用相同的校验/修复管线。【F:velvetflow/planner/orchestrator.py†L1460-L1494】【F:velvetflow/planner/requirement_alignment.py†L18-L80】
 - **自修复 Agent**：当静态校验或本地修复仍未通过时，使用当前 workflow 字典与 `ValidationError` 列表提示模型修复。Agent 可以调用命名修复工具（如替换引用、补必填参数、规范化绑定路径）或提交补丁文本，直至通过或达到 `max_repair_rounds`，并在过程中保留最近一次合法版本以确保可回退。【F:velvetflow/planner/repair.py†L616-L756】【F:velvetflow/planner/orchestrator.py†L664-L940】
 
@@ -299,7 +299,7 @@ LLM / Agent SDK 相关节点说明：
 - 推导逻辑会去重并忽略自引用，所有自动生成的边都会在可视化与执行阶段生效。【F:velvetflow/models.py†L137-L246】【F:velvetflow/models.py†L441-L468】
 
 ### 参数绑定 DSL（params 内的占位符）
-执行器只接受 **Jinja 模板** 形式的绑定（例如 `"{{ result_of.node.field }}"`），不再兼容 `__from__`/`__agg__` 等旧式对象绑定。常用能力：
+执行器只接受 **Jinja 模板** 形式的绑定（例如 `"{{ result_of.node.field }}"`）。常用能力：
 - 直接字符串路径：`"params": {"threshold": "loop.index"}` 这类纯字符串会在规划阶段自动包裹为 Jinja 模板（`{{ loop.index }}`）；解析失败会保留原值并在日志给出警告。
 - 绑定路径的有效性：引用动作输出时会根据动作的 `output_schema`/`arg_schema` 或 loop 的 `exports` 做静态校验，字段不存在会在执行前抛错，方便手动调试。【F:velvetflow/bindings.py†L18-L205】【F:velvetflow/bindings.py†L206-L341】
 - **Jinja 表达式与常量折叠**：

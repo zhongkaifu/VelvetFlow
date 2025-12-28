@@ -578,7 +578,7 @@ def repair_workflow_with_llm(
   condition 节点需包含返回布尔值的 params.expression（合法 Jinja 表达式），以及 true_to_node/false_to_node（字符串或 null）。
   loop 节点包含 loop_kind/iter/source/body_subgraph/exports，exports 的 value 必须引用 body_subgraph 节点字段（如 {{ result_of.node.field }}），循环外部只能引用 exports.<key>，body_subgraph 仅包含 nodes 数组。
   loop.body_subgraph 内不需要也不允许显式声明 edges、entry 或 exit 节点，如发现请直接删除。
-  - params 必须直接使用 Jinja 表达式引用上游结果（如 {{ result_of.<node_id>.<field_path> }} 或 {{ loop.item.xxx }}），不再允许 __from__/__agg__ DSL。
+  - params 必须直接使用 Jinja 表达式引用上游结果（如 {{ result_of.<node_id>.<field_path> }} 或 {{ loop.item.xxx }}），不得输出对象式绑定。
     <node_id> 必须存在且字段需与上游 output_schema 或 loop.exports 对齐。
   当前有一个 workflow JSON 和一组结构化校验错误 validation_errors。
   validation_errors 是 JSON 数组，元素包含 code/node_id/field/message。
@@ -615,7 +615,7 @@ def repair_workflow_with_llm(
  5. parallel 节点：branches 必须是非空数组。
 
 6. 参数绑定修复：
-   - 仅输出 Jinja 表达式或字面量，禁止回退到 __from__/__agg__ 对象；
+   - 仅输出 Jinja 表达式或字面量，禁止回退到对象式绑定；
    - 聚合/过滤/拼接逻辑请直接写在 Jinja 表达式或过滤器里，并确保字段路径与上游 schema 对齐；
    - 常见错误：下游引用缺少 exports 段，请补齐 result_of.<loop_id>.exports.<key>。
 

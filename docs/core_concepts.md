@@ -12,7 +12,7 @@
 
 ## 绑定与上下文
 - **BindingContext** 会在执行时携带 `results` 字典与 loop 局部上下文，供后续节点通过 Jinja 模板引用上游输出（例如 `"{{ result_of.node.field }}"`）。
-- 绑定阶段仅接受 Jinja 表达式或字面量，legacy 的 `__from__`/`__agg__` 聚合语法已移除，聚合需求应在 Action 内或模板中自行实现。
+- 绑定阶段仅接受 Jinja 表达式或字面量，聚合需求应在 Action 内或模板中自行实现。
 - 绑定解析与 Jinja 模板折叠由 `bindings.py` 和 `jinja_utils.py` 完成，确保在执行前暴露类型不一致或模板语法错误。
 - 绑定解析与 Jinja 模板折叠由 `bindings.py` 和 `jinja_utils.py` 完成，确保在执行前暴露类型不一致或模板语法错误。
 
