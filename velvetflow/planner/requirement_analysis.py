@@ -16,12 +16,15 @@ def _normalize_requirements_payload(payload: Mapping[str, Any]) -> Dict[str, Any
 
     The analyzer and planner share this helper to ensure every requirement item
     includes the expected fields and that status is always provided as a string
-    describing progress (例如 "未开始"/"进行中"/"已完成").
+    describing progress (例如 "未开始"/"进行中"/"已完成"), and that mapped nodes
+    are normalized as string arrays.
     """
 
     requirements = payload.get("requirements")
     if not isinstance(requirements, list):
         raise ValueError("requirements 必须是列表。")
+
+    normalized_items = []
 
     for idx, item in enumerate(requirements):
         if not isinstance(item, MutableMapping):
@@ -34,12 +37,26 @@ def _normalize_requirements_payload(payload: Mapping[str, Any]) -> Dict[str, Any
                 f"requirements[{idx}].status 必须是字符串，用于标记进度（如未开始/进行中/已完成）。"
             )
 
+        mapped_node = item.get("mapped_node", [])
+        if mapped_node is None:
+            mapped_node = []
+        if not isinstance(mapped_node, list) or any(
+            not isinstance(node_id, str) for node_id in mapped_node
+        ):
+            raise ValueError(
+                f"requirements[{idx}].mapped_node 必须是字符串数组，用于记录映射到的 workflow 节点 id。"
+            )
+
+        normalized_item = dict(item)
+        normalized_item["mapped_node"] = list(mapped_node)
+        normalized_items.append(normalized_item)
+
     assumptions = payload.get("assumptions", [])
     if assumptions is None:
         assumptions = []
 
     return {
-        "requirements": list(requirements),
+        "requirements": normalized_items,
         "assumptions": list(assumptions) if isinstance(assumptions, list) else [],
     }
 
@@ -55,7 +72,8 @@ def _build_requirement_prompt() -> str:
         "      \"intent\": \"The intention of this task\",\n"
         "      \"inputs\": [\"A list of input of this task\"],\n"
         "      \"constraints\": [\"the list of constraints that this task must obey\"],\n"
-        "      \"status\": \"未开始 / 进行中 / 已完成 / 其他有助提示\"\n"
+        "      \"status\": \"未开始 / 进行中 / 已完成 / 其他有助提示\",\n"
+        "      \"mapped_node\": [\"workflow 节点 id 列表，可为空\"]\n"
         "    }\n"
         "  ],\n"
         "  \"assumptions\": [\"The assumptions of user's requirement\"]\n"

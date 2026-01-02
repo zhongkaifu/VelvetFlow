@@ -31,8 +31,12 @@ def _fake_agent_run(agent, prompt, max_turns=None):
     agent.test_results = {}
 
     review_tool = next(t for t in agent.tools if getattr(t, "name", "") == "review_user_requirement")
+    update_tool = next(t for t in agent.tools if getattr(t, "name", "") == "update_user_requirement")
 
     agent.test_results["tool_names"] = [getattr(t, "name", "") for t in agent.tools]
+    agent.test_results["update"] = _invoke(
+        update_tool, {"index": 0, "status": "已完成", "mapped_node": []}
+    )
     agent.test_results["review"] = _invoke(review_tool, {})
 
 
@@ -56,7 +60,8 @@ def test_user_requirements_require_status_and_are_reviewable(monkeypatch):
                     "intent": "review",
                     "inputs": [],
                     "constraints": [],
-                    "status": "已完成",
+                    "status": "未开始",
+                    "mapped_node": [],
                 }
             ],
             "assumptions": [],
@@ -72,8 +77,11 @@ def test_user_requirements_require_status_and_are_reviewable(monkeypatch):
 
     assert "plan_user_requirement" not in test_results["tool_names"]
 
+    assert test_results["update"]["status"] == "ok"
+
     review_payload = test_results["review"]["requirement"]["requirements"][0]
     assert review_payload["status"] == "已完成"
+    assert review_payload.get("mapped_node") == []
 
     assert workflow.get("workflow_name") == "unnamed_workflow"
     assert workflow.get("nodes") == []
@@ -100,6 +108,7 @@ def test_planner_requires_completed_requirements(monkeypatch):
                         "inputs": ["query"],
                         "constraints": [],
                         "status": "进行中",
+                        "mapped_node": [],
                     }
                 ],
                 "assumptions": [],
