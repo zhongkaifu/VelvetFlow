@@ -2000,10 +2000,11 @@ def plan_workflow_structure_with_llm(
         return True
 
     def _run_agent(prompt: Any) -> None:
+        initial_prompt = prompt if isinstance(prompt, list) else [prompt]
         try:
-            Runner.run_sync(agent, prompt, max_turns=max_rounds)  # type: ignore[arg-type]
+            Runner.run_sync(agent, initial_prompt, max_turns=max_rounds)  # type: ignore[arg-type]
         except TypeError:
-            coro = Runner.run(agent, prompt)  # type: ignore[call-arg]
+            coro = Runner.run(agent, initial_prompt)  # type: ignore[call-arg]
             if asyncio.iscoroutine(coro):
                 asyncio.run(coro)
 
