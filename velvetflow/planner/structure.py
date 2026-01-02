@@ -513,12 +513,13 @@ def _build_combined_prompt() -> str:
         "      \"description\": \"Task description\",\n"
         "      \"intent\": \"The intention of this task\",\n"
         "      \"inputs\": [\"A list of input of this task\"],\n"
-        "      \"constraints\": [\"the list of constraints that this task must obey\"]\n"
+        "      \"constraints\": [\"the list of constraints that this task must obey\"],\n"
+        "      \"status\": \"未开始 / 进行中 / 已完成 / 其他有助提示\"\n"
         "    }\n"
         "  ],\n"
         "  \"assumptions\": [\"The assumptions of user's requirement\"]\n"
         "}\n"
-        "后续如需回顾需求拆解，请随时调用 get_user_requirement。\n"
+        "后续如需回顾需求拆解及每个子需求的状态，请随时调用 review_user_requirement 并根据状态调整规划。\n"
         "【Workflow DSL 语法与语义（务必遵守）】\n"
         "- workflow = {workflow_name, description, nodes: []}，只能返回合法 JSON（edges 会由系统基于节点绑定自动推导，不需要生成）。\n"
         "- node 基本结构：{id, type, display_name, params, depends_on, action_id?, out_params_schema?, loop/subgraph/branches?}。\n"
@@ -974,7 +975,8 @@ def plan_workflow_structure_with_llm(
               "description": "...",
               "intent": "...",
               "inputs": ["..."],
-              "constraints": ["..."]
+              "constraints": ["..."],
+              "status": "未开始/进行中/已完成等"
             }
           ],
           "assumptions": ["..."]
@@ -1003,13 +1005,19 @@ def plan_workflow_structure_with_llm(
                     "message": f"requirements[{idx}] 必须是对象。",
                 }
                 return _return_tool_result("plan_user_requirement", result)
-            for key in ("description", "intent", "inputs", "constraints"):
+            for key in ("description", "intent", "inputs", "constraints", "status"):
                 if key not in item:
                     result = {
                         "status": "error",
                         "message": f"requirements[{idx}] 缺少字段 {key}。",
                     }
                     return _return_tool_result("plan_user_requirement", result)
+            if not isinstance(item.get("status"), str):
+                result = {
+                    "status": "error",
+                    "message": f"requirements[{idx}].status 必须是字符串，用于标记进度（如未开始/进行中/已完成）。",
+                }
+                return _return_tool_result("plan_user_requirement", result)
         normalized_payload = {
             "requirements": list(requirements),
             "assumptions": list(assumptions or []),
@@ -1019,17 +1027,17 @@ def plan_workflow_structure_with_llm(
         return _return_tool_result("plan_user_requirement", result)
 
     @function_tool(strict_mode=False)
-    def get_user_requirement() -> Mapping[str, Any]:
-        """获取已保存的用户需求拆解，便于回顾与校验."""
-        _log_tool_call("get_user_requirement")
+    def review_user_requirement() -> Mapping[str, Any]:
+        """获取已保存的用户需求拆解与状态，便于回顾与校验。"""
+        _log_tool_call("review_user_requirement")
         if not parsed_requirement:
             result = {
                 "status": "error",
                 "message": "尚未保存需求拆解，请先调用 plan_user_requirement。",
             }
-            return _return_tool_result("get_user_requirement", result)
+            return _return_tool_result("review_user_requirement", result)
         result = {"status": "ok", "requirement": parsed_requirement}
-        return _return_tool_result("get_user_requirement", result)
+        return _return_tool_result("review_user_requirement", result)
 
     @function_tool(strict_mode=False)
     def search_business_actions(query: str, top_k: int = 5) -> Mapping[str, Any]:
@@ -1958,7 +1966,7 @@ def plan_workflow_structure_with_llm(
         instructions=system_prompt,
         tools=[
             plan_user_requirement,
-            get_user_requirement,
+            review_user_requirement,
             search_business_actions,
             list_retrieved_business_action,
             set_workflow_meta,
