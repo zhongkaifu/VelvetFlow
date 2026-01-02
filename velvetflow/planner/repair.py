@@ -630,19 +630,11 @@ def repair_workflow_with_llm(
  9. 输出要求：
     - 保持顶层结构：workflow_name/description/nodes 不变（仅节点内部内容可调整，edges 由系统推导）；
     - 节点的 id/type 不变；
-    - 必须使用工具链完成修改与提交：通过修复工具调整 workflow，最终调用 submit_repaired_workflow 返回结果（可直接传 workflow 或 patch_text）。
-    - 避免直接输出自然语言或 Markdown 代码块，所有修改需通过工具完成。
- 10. 可用工具：当你需要结构化修改时，优先调用提供的工具（无 LLM 依赖、结果确定），包含 fix_loop_body_references/fill_action_required_params/update_node_field/normalize_binding_paths/replace_reference_paths/drop_invalid_references/submit_repaired_workflow。
+    - 必须使用工具链完成修改：通过修复工具调整 workflow 并直接使用最新结果，避免自然语言或 Markdown 代码块。
+ 10. 可用工具：当你需要结构化修改时，优先调用提供的工具（无 LLM 依赖、结果确定），包含 fix_loop_body_references/fill_action_required_params/update_node_field/normalize_binding_paths/replace_reference_paths/drop_invalid_references。
 """
 
     working_workflow: Dict[str, Any] = broken_workflow
-    finalized_workflow: Optional[Dict[str, Any]] = None
-
-    def _build_response(status: str, **extra: Any) -> Dict[str, Any]:
-        payload = {"status": status}
-        payload.update(extra)
-        return payload
-
     def _log_tool_call(tool_name: str, payload: Mapping[str, Any] | None = None) -> None:
         if payload:
             log_info(
@@ -786,40 +778,6 @@ def repair_workflow_with_llm(
         _emit_canvas_update("drop_invalid_references", result["workflow"])
         return result
 
-    @function_tool(strict_mode=False)
-    def submit_repaired_workflow(
-        workflow: Optional[Dict[str, Any]] = None, patch_text: Optional[str] = None
-    ) -> Mapping[str, Any]:
-        """提交修复后的 workflow 或补丁结果。
-
-        适用场景：修复完成后，提交最终 workflow 供系统继续校验。
-
-        Args:
-            workflow: 完整 workflow 字典，可选。
-            patch_text: 针对当前 workflow 的补丁文本，可选。
-
-        Returns:
-            包含提交状态与 workflow 的结果字典。
-        """
-        nonlocal working_workflow, finalized_workflow
-        _log_tool_call(
-            "submit_repaired_workflow",
-            {"has_workflow": bool(workflow), "has_patch_text": bool(patch_text)},
-        )
-
-        if patch_text and not workflow:
-            patched = _apply_patch_output(working_workflow, patch_text)
-            if patched is None:
-                return _build_response("error", message="补丁无法应用，请返回合法的 workflow JSON 或有效补丁。")
-            working_workflow = patched
-
-        if workflow:
-            working_workflow = workflow
-
-        finalized_workflow = working_workflow
-        _emit_canvas_update("submit_repaired_workflow", working_workflow)
-        return _build_response("ok", workflow=working_workflow)
-
     agent = Agent(
         name="WorkflowRepairer",
         instructions=system_prompt,
@@ -830,7 +788,6 @@ def repair_workflow_with_llm(
             normalize_binding_paths,
             replace_reference_paths,
             drop_invalid_references,
-            submit_repaired_workflow,
         ],
         model=model,
     )
@@ -853,11 +810,7 @@ def repair_workflow_with_llm(
         result = coro if not asyncio.iscoroutine(coro) else asyncio.run(coro)
         _ = result
 
-    if finalized_workflow is None:
-        log_warn("[repair_workflow_with_llm] 未收到提交的最终 workflow，使用当前工作副本。")
-        finalized_workflow = working_workflow
-
-    return finalized_workflow
+    return working_workflow
 
 
 __all__ = [
