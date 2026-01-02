@@ -51,7 +51,6 @@ def check_missing_requirements(
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
         ],
-        temperature=0.2,
     )
 
     log_llm_usage(model, getattr(resp, "usage", None), operation="align_requirements")
