@@ -10,6 +10,7 @@ from openai import OpenAI
 
 from tools.base import Tool
 from tools.registry import call_registered_tool, get_registered_tool, register_tool
+from velvetflow.openai_utils import safe_chat_completion
 
 
 def run_llm_web_scraper(
@@ -178,7 +179,8 @@ def _rewrite_search_query(
         "or narrower terms to improve search results.\n"
         "Return JSON only: {\"rewritten_query\": \"...\"}."
     )
-    response = client.chat.completions.create(
+    response = safe_chat_completion(
+        client,
         model=llm_model,
         messages=[
             {"role": "system", "content": system_prompt},

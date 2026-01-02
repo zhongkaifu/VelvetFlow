@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Mapping
 from openai import OpenAI
 
 from velvetflow.config import OPENAI_MODEL
+from velvetflow.openai_utils import safe_chat_completion
 from velvetflow.logging_utils import log_llm_message, log_llm_usage
 
 
@@ -45,7 +46,8 @@ def check_missing_requirements(
         "workflow": workflow_raw,
     }
 
-    resp = client.chat.completions.create(
+    resp = safe_chat_completion(
+        client,
         model=model,
         messages=[
             {"role": "system", "content": system_prompt},
