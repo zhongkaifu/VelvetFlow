@@ -28,10 +28,7 @@ from velvetflow.models import (
     infer_edges_from_bindings,
 )
 from velvetflow.planner.relations import get_referenced_nodes
-from velvetflow.planner.requirement_analysis import (
-    _normalize_requirements_payload,
-    analyze_user_requirement,
-)
+from velvetflow.planner.requirement_analysis import analyze_user_requirement
 from velvetflow.reference_utils import normalize_reference_path, parse_field_path
 from velvetflow.verification.validation import (
     _check_array_item_field,
@@ -511,7 +508,7 @@ def _build_combined_prompt() -> str:
         "你是一个通用业务工作流编排助手。\n"
         "用户的自然语言需求已在前置步骤拆解为结构化清单，包含描述、意图、输入、约束与状态。\n"
         "构建过程中务必调用 review_user_requirement 检查每个子需求的状态，只有当所有需求状态均为“已完成”时，整体 workflow 才算完成；\n"
-        "如需补充或修改拆解与状态，可调用 plan_user_requirement 进行更新。\n"
+        "如需补充或修改拆解与状态，请在需求分析阶段更新结构化清单后重新执行规划。\n"
         "【Workflow DSL 语法与语义（务必遵守）】\n"
         "- workflow = {workflow_name, description, nodes: []}，只能返回合法 JSON（edges 会由系统基于节点绑定自动推导，不需要生成）。\n"
         "- node 基本结构：{id, type, display_name, params, depends_on, action_id?, out_params_schema?, loop/subgraph/branches?}。\n"
@@ -960,29 +957,13 @@ def plan_workflow_structure_with_llm(
         return payload
 
     @function_tool(strict_mode=False)
-    def plan_user_requirement(payload: Mapping[str, Any]) -> Mapping[str, Any]:
-        """保存或更新解析后的用户需求拆解，供后续规划与校验。"""
-
-        nonlocal parsed_requirement
-        _log_tool_call("plan_user_requirement", payload)
-        try:
-            normalized_payload = _normalize_requirements_payload(payload)
-        except ValueError as exc:
-            result = {"status": "error", "message": str(exc)}
-            return _return_tool_result("plan_user_requirement", result)
-
-        parsed_requirement = normalized_payload
-        result = {"status": "ok", "requirement": normalized_payload}
-        return _return_tool_result("plan_user_requirement", result)
-
-    @function_tool(strict_mode=False)
     def review_user_requirement() -> Mapping[str, Any]:
         """获取已保存的用户需求拆解与状态，便于回顾与校验。"""
         _log_tool_call("review_user_requirement")
         if not parsed_requirement:
             result = {
                 "status": "error",
-                "message": "尚未保存需求拆解，请先调用 plan_user_requirement。",
+                "message": "尚未提供结构化需求拆解，请确认需求分析步骤是否成功。",
             }
             return _return_tool_result("review_user_requirement", result)
         result = {"status": "ok", "requirement": parsed_requirement}
@@ -1914,7 +1895,6 @@ def plan_workflow_structure_with_llm(
         name="WorkflowStructurePlanner",
         instructions=system_prompt,
         tools=[
-            plan_user_requirement,
             review_user_requirement,
             search_business_actions,
             list_retrieved_business_action,
@@ -1969,7 +1949,7 @@ def plan_workflow_structure_with_llm(
     )
     if not _all_requirements_completed():
         raise ValueError(
-            "需求状态未全部为已完成。请使用 review_user_requirement 检查，并通过 plan_user_requirement 更新状态后再结束规划。"
+            "需求状态未全部为已完成。请使用 review_user_requirement 检查并在需求分析阶段更新状态后再结束规划。"
         )
     if not latest_skeleton:
         latest_skeleton = _prepare_skeleton_for_next_stage(
