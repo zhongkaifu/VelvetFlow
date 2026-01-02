@@ -13,6 +13,7 @@ from openai import OpenAI
 
 from velvetflow.config import OPENAI_MODEL
 from velvetflow.logging_utils import log_llm_message, log_llm_usage
+from velvetflow.openai_utils import safe_chat_completion
 from velvetflow.models import ValidationError
 
 
@@ -93,7 +94,8 @@ def update_workflow_with_llm(
         "validation_errors": errors_payload,
     }
 
-    resp = client.chat.completions.create(
+    resp = safe_chat_completion(
+        client,
         model=model,
         messages=[
             {"role": "system", "content": system_prompt},

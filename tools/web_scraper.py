@@ -61,6 +61,7 @@ import trafilatura
 from openai import AsyncOpenAI
 from pydantic import BaseModel, Field
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
+from velvetflow.openai_utils import async_safe_chat_completion
 
 
 # ============================================================
@@ -427,7 +428,8 @@ class DeltaSummarizer:
             },
         }
 
-        resp = await self.client.chat.completions.create(
+        resp = await async_safe_chat_completion(
+            self.client,
             model=self.model,
             messages=[
                 {"role": "system", "content": system},
@@ -482,7 +484,8 @@ class SummarySelfCritic:
                 "confidence": "0.0-1.0",
             },
         }
-        resp = await self.client.chat.completions.create(
+        resp = await async_safe_chat_completion(
+            self.client,
             model=self.model,
             messages=[
                 {"role": "system", "content": system},
@@ -529,7 +532,8 @@ class SummaryDrivenURLScorer:
             "candidates": candidates[:60],
             "schema": {"scores": [{"url": "string", "score": "0-100", "reason": "string"}]},
         }
-        resp = await self.client.chat.completions.create(
+        resp = await async_safe_chat_completion(
+            self.client,
             model=self.model,
             messages=[
                 {"role": "system", "content": system},
@@ -605,7 +609,8 @@ class EvidenceAwareAnswerGenerator:
             "evidence_items": items,
             "schema": {"answer_markdown": "string", "warnings": ["string"]},
         }
-        resp = await self.client.chat.completions.create(
+        resp = await async_safe_chat_completion(
+            self.client,
             model=self.model,
             messages=[
                 {"role": "system", "content": system},
