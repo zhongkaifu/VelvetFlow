@@ -519,7 +519,8 @@ def _build_combined_prompt() -> str:
         "  ],\n"
         "  \"assumptions\": [\"The assumptions of user's requirement\"]\n"
         "}\n"
-        "后续如需回顾需求拆解及每个子需求的状态，请随时调用 review_user_requirement 并根据状态调整规划。\n"
+        "构建过程中务必调用 review_user_requirement 检查每个子需求的状态，只有当所有需求状态均为“已完成”时，整体 workflow 才算完成。\n"
+        "如发现状态未达成，请结合 review_user_requirement 的结果更新或细化需求，并在修订后继续规划。\n"
         "【Workflow DSL 语法与语义（务必遵守）】\n"
         "- workflow = {workflow_name, description, nodes: []}，只能返回合法 JSON（edges 会由系统基于节点绑定自动推导，不需要生成）。\n"
         "- node 基本结构：{id, type, display_name, params, depends_on, action_id?, out_params_schema?, loop/subgraph/branches?}。\n"
@@ -1987,6 +1988,22 @@ def plan_workflow_structure_with_llm(
 
     log_section("结构规划 - Agent SDK")
 
+    def _all_requirements_completed() -> bool:
+        if not parsed_requirement:
+            return False
+
+        requirements = parsed_requirement.get("requirements")
+        if not isinstance(requirements, list) or not requirements:
+            return False
+
+        for item in requirements:
+            if not isinstance(item, Mapping):
+                return False
+            if item.get("status") != "已完成":
+                return False
+
+        return True
+
     def _run_agent(prompt: Any) -> None:
         try:
             Runner.run_sync(agent, prompt, max_turns=max_rounds)  # type: ignore[arg-type]
@@ -1996,6 +2013,14 @@ def plan_workflow_structure_with_llm(
                 asyncio.run(coro)
 
     _run_agent(nl_requirement)
+    if not parsed_requirement:
+        raise ValueError(
+            "未获取到用户需求拆解。请先调用 plan_user_requirement，并在完成规划前通过 review_user_requirement 确认所有需求状态。"
+        )
+    if not _all_requirements_completed():
+        raise ValueError(
+            "需求状态未全部为已完成。请使用 review_user_requirement 检查，并通过 plan_user_requirement 更新状态后再结束规划。"
+        )
     if not latest_skeleton:
         latest_skeleton = _prepare_skeleton_for_next_stage(
             builder=builder, action_registry=action_registry, search_service=search_service

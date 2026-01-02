@@ -53,19 +53,24 @@ def _fake_agent_run(agent, prompt, max_turns=None):
     }
     agent.test_results["missing_status"] = _invoke(plan_tool, missing_status_payload)
 
-    ok_payload = {
+    ok_pending_payload = {
         "requirements": [
             {
                 "description": "demo task",
                 "intent": "plan",
                 "inputs": ["query"],
                 "constraints": [],
-                "status": "未开始",
+                "status": "进行中",
             }
         ],
         "assumptions": ["none"],
     }
-    agent.test_results["ok"] = _invoke(plan_tool, copy.deepcopy(ok_payload))
+    agent.test_results["ok_pending"] = _invoke(plan_tool, copy.deepcopy(ok_pending_payload))
+
+    ok_done_payload = copy.deepcopy(ok_pending_payload)
+    ok_done_payload["requirements"][0]["status"] = "已完成"
+    agent.test_results["ok_done"] = _invoke(plan_tool, ok_done_payload)
+
     agent.test_results["review"] = _invoke(review_tool, {})
 
 
@@ -95,11 +100,48 @@ def test_user_requirements_require_status_and_are_reviewable(monkeypatch):
     assert test_results["missing_status"]["status"] == "error"
     assert "缺少字段 status" in test_results["missing_status"]["message"]
 
-    ok_requirement = test_results["ok"]["requirement"]["requirements"][0]
-    assert ok_requirement["status"] == "未开始"
+    ok_pending_requirement = test_results["ok_pending"]["requirement"]["requirements"][0]
+    assert ok_pending_requirement["status"] == "进行中"
 
     review_payload = test_results["review"]["requirement"]["requirements"][0]
-    assert review_payload["status"] == "未开始"
+    assert review_payload["status"] == "已完成"
 
     assert workflow.get("workflow_name") == "unnamed_workflow"
     assert workflow.get("nodes") == []
+
+
+def _fake_agent_run_without_completion(agent, prompt, max_turns=None):
+    """Simulate a planning run that never marks requirements as completed."""
+
+    structure.Runner.last_agent = agent  # type: ignore[attr-defined]
+
+    plan_tool = next(t for t in agent.tools if getattr(t, "name", "") == "plan_user_requirement")
+
+    incomplete_payload = {
+        "requirements": [
+            {
+                "description": "demo task",
+                "intent": "plan",
+                "inputs": ["query"],
+                "constraints": [],
+                "status": "进行中",
+            }
+        ],
+        "assumptions": [],
+    }
+
+    _invoke(plan_tool, incomplete_payload)
+
+
+def test_planner_requires_completed_requirements(monkeypatch):
+    monkeypatch.setattr(structure.Runner, "run_sync", _fake_agent_run_without_completion)
+
+    dummy_search = _DummySearch()
+
+    with pytest.raises(ValueError, match="需求状态未全部为已完成"):
+        plan_workflow_structure_with_llm(
+            nl_requirement="demo",
+            search_service=dummy_search,
+            action_registry=[],
+            max_rounds=1,
+        )
