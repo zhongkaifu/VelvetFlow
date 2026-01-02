@@ -535,14 +535,14 @@ def _build_streaming_response(req: PlanRequest, require_existing: bool = False) 
 async def plan_workflow_stream(req: PlanRequest) -> StreamingResponse:
     """Stream planning logs and the final workflow over SSE."""
 
-    return await _build_streaming_response(req)
+    return _build_streaming_response(req)
 
 
 @app.post("/api/update/stream")
 async def update_workflow_stream(req: PlanRequest) -> StreamingResponse:
     """Stream updates when users refine an existing workflow over SSE."""
 
-    return await _build_streaming_response(req, require_existing=True)
+    return _build_streaming_response(req, require_existing=True)
 
 
 @app.post("/api/run", response_model=RunResponse)
