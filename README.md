@@ -3,7 +3,7 @@
 
 VelvetFlow 是一个可复用的 LLM 驱动工作流规划与执行演示项目。项目包含混合检索、Agent 工具驱动的结构 + 参数补全、静态校验与自修复、参数绑定 DSL、可模拟执行器与 DAG 可视化，帮助从自然语言需求自动构建并运行业务流程。近期已将 Planner 全面迁移到 **OpenAI Agent SDK**（`agents.Agent`/`Runner`/`function_tool`），以便在同一套工具描述下同时适配云端 Agent 与本地调试场景。
 
-开篇先交代业务与交付价值：更少人工即可把文字需求变成可执行流程，内置安全审计、防御式修复与回滚路径，缩短 PoC 周期并提高交付确定性。随后的章节概述核心架构（混合检索、需求拆解、结构/参数补全、Action Guard、本地/LLM 修复、需求对齐、可视化与模拟执行器），再逐步下钻到项目结构、运行方式、规划与执行细节及 DSL 参考，既便于决策判断落地性，也方便工程师按步骤复刻实现。
+开篇先交代业务与交付价值：更少人工即可把文字需求变成可执行流程，内置安全审计、防御式修复与回滚路径，缩短 PoC 周期并提高交付确定性。随后的章节概述核心架构（混合检索、需求拆解、结构/参数补全、Action Guard、本地/LLM 修复、可视化与模拟执行器），再逐步下钻到项目结构、运行方式、规划与执行细节及 DSL 参考，既便于决策判断落地性，也方便工程师按步骤复刻实现。
 
 ## 文档与导航
 - [docs/quickstart.md](docs/quickstart.md)：三分钟完成安装、索引构建与示例运行。
@@ -28,10 +28,9 @@ flowchart LR
         P1 --> G[Action Guard\n未注册动作替换]
         G --> J[Jinja 规范化 + 本地修复]
         J --> R[静态校验 + LLM 修复]
-        R --> A[需求对齐\nrequirement_alignment + update_workflow]
     end
     subgraph exec[执行阶段]
-        A --> V[可视化/持久化]
+        R --> V[可视化/持久化]
         V --> E[DynamicActionExecutor]
         E -->|拓扑执行| N[节点调度\ncondition/loop/switch]
         N -->|同步完成| C[结果聚合]
@@ -77,7 +76,6 @@ VelvetFlow (repo root)
 │   │   ├── workflow_builder.py  # 规划期的可变骨架构建器，附带隐式 edges/depends_on
 │   │   ├── structure.py         # 结构规划 Agent（需求拆解 + 节点构建 + 参数补全）
 │   │   ├── params_tools.py      # 参数补全的工具 Schema（强制 Jinja 参数）
-│   │   ├── requirement_alignment.py # 需求对齐检查与缺口补齐
 │   │   ├── repair.py            # 自修复 Agent，支持补丁与命名修复工具
 │   │   ├── orchestrator.py      # 规划/更新的管线编排与多轮修复
 │   │   ├── action_guard.py / approval.py / relations.py / update.py 等辅助模块
@@ -99,11 +97,10 @@ VelvetFlow (repo root)
 - **Agent SDK 驱动的 Planner**：结构规划与参数补全在 `planner/structure.py` 内完成，Agent 先通过 `plan_user_requirement` 拆解需求，再使用节点增删改与 `update_node_params` 工具构建骨架并补全 params；`planner/agent_runtime.py` 集中导出 `Agent`/`Runner`/`function_tool`，确保同一套工具协议可在云端 Agent 与本地运行之间切换。
 - **业务动作注册表**：`action_registry.py` 从 `tools/business_actions/` 载入动作，自动补齐 `requires_approval` / `allowed_roles` 安全字段，并提供 `get_action_by_id` 查询。
 - **离线索引 + 在线混合检索**：`search_index.py` 使用 OpenAI `text-embedding-3-large` 将业务动作构建为关键词与 embedding 索引，可由 `./build_action_index.py` 独立运行生成；`search.py` 读取索引并使用 `FakeElasticsearch`（关键词计分）与基于 Faiss 的向量检索（余弦相似度）混合排序，在线检索阶段仅对 query 进行 OpenAI embedding 再与索引中已有的动作 embedding 做匹配，`HybridActionSearchService` 提供工作流规划阶段的工具召回。
-- **工作流规划 Orchestrator**：`planner/orchestrator.py` 实现 `plan_workflow_with_two_pass`，在结构规划完成后依次执行 Action Guard、Jinja 规范化与本地修复、静态校验与 LLM 修复，再通过 `requirement_alignment.py` 检测需求缺口并用 `update_workflow_with_two_pass` 迭代补齐：
+- **工作流规划 Orchestrator**：`planner/orchestrator.py` 实现 `plan_workflow_with_two_pass`，在结构规划完成后依次执行 Action Guard、Jinja 规范化与本地修复、静态校验与 LLM 修复：
   - 结构规划阶段内置需求拆解与节点/参数构建工具，loop body 引用缺失会在进入补全前先做预检查。
   - Action Guard 会对 `action_id` 做白名单校验，支持基于检索的一键替换与 LLM 修复。
   - 本地修复涵盖 Jinja 规范化、类型对齐、`loop.exports` 补全、alias 对齐与绑定路径归一化，之后再由静态校验与多轮 LLM 修复保证可执行性。
-  - 需求对齐会分析拆解后的 requirement 与现有 workflow 的映射，若仍有缺口会调用更新管线补齐节点或参数。
 - **DSL 模型与校验**：`models.py` 定义 Node/Edge/Workflow 的强类型模型（`model_validate`/`model_dump` 接口与 Pydantic 类似但不依赖其运行时），边由参数绑定与条件分支自动推导并在可视化/执行前归一化；校验涵盖节点类型、隐式连线合法性、loop 子图 Schema 等，并通过 `ValidationError` 统一描述错误。
   - **参数绑定 DSL**：系统现已 **仅支持 Jinja 表达式**（例如 `"{{ result_of.node.field }}"`），其他旧式结构化绑定不再被接收，确保 planner/执行器处理的都是字符串模板。参数校验与类型推断集中在 `bindings.py`/`verification` 目录中完成。
 - **执行器**：`executor/` 包中的 `DynamicActionExecutor` 会先校验 action_id 是否在注册表中，再执行拓扑排序确保连通；支持 condition 节点（基于 `params.expression` 的 Jinja 表达式）与 loop 节点（`body_subgraph` + `params.exports` 逐轮收集结果），并结合 repo 根目录的 `simulation_data.json` 模拟动作返回。日志输出使用 `logging_utils.py`。
@@ -213,8 +210,7 @@ VelvetFlow (repo root)
    - **loop.exports 补全**：自动填充缺失的 `params.exports` 映射并规范化导出字段，避免循环节点留空导致 LLM 返工。【F:velvetflow/planner/orchestrator.py†L589-L662】
    - **Schema 感知修复**：移除动作 Schema 未定义的字段、为空字段写入默认值或尝试按类型转换，再进入正式校验；无法修复的错误会打包为 `ValidationError` 供后续 LLM 使用。【F:velvetflow/planner/repair_tools.py†L63-L215】【F:velvetflow/planner/orchestrator.py†L664-L817】
 5. **静态校验 + LLM 自修复循环**：`validate_completed_workflow` 会在每轮本地修复后运行，若仍有错误则将错误分布与上下文交给 `_repair_with_llm_and_fallback`，在限定轮次内迭代直至通过或返回最后一个合法版本。【F:velvetflow/planner/orchestrator.py†L664-L940】
-6. **需求对齐补全**：规划器会调用 `requirement_alignment.py` 对照需求拆解结果，若仍有缺口则触发 `update_workflow_with_two_pass` 继续补齐节点或参数，再次走相同的校验/修复链路。【F:velvetflow/planner/orchestrator.py†L1460-L1494】【F:velvetflow/planner/requirement_alignment.py†L18-L80】
-7. **持久化与可视化**：通过校验后写出 `workflow_output.json`，并可用 `render_workflow_image.py` 生成 `workflow_dag.jpg`，同时日志保留所有 LLM 对话与自动修复记录便于审计。
+6. **持久化与可视化**：通过校验后写出 `workflow_output.json`，并可用 `render_workflow_image.py` 生成 `workflow_dag.jpg`，同时日志保留所有 LLM 对话与自动修复记录便于审计。
 
 下方流程图将关键输入/输出、自动修复节点与 LLM 交互标出：
 
@@ -228,8 +224,7 @@ flowchart TD
     F["Jinja 规范化 + 本地修复\n类型对齐、exports/alias 修复、路径归一化"] --> G
     G{{"LLM: 自修复 (_repair_with_llm_and_fallback)\n按需多轮"}} --> H
     F -->|仍有错误| G
-    H["静态校验 (validate_completed_workflow)\n输出: 完整 Workflow 模型"] --> I
-    I["需求对齐检查\nrequirement_alignment + update_workflow"] --> J["持久化与可视化\nworkflow_output.json + workflow_dag.jpg"]
+    H["静态校验 (validate_completed_workflow)\n输出: 完整 Workflow 模型"] --> J["持久化与可视化\nworkflow_output.json + workflow_dag.jpg"]
 
     classDef llm fill:#fff6e6,stroke:#e67e22,stroke-width:2px;
     class C,G llm;
@@ -239,7 +234,6 @@ LLM / Agent SDK 相关节点说明：
 - **结构规划 Agent**：基于自然语言需求先调用 `plan_user_requirement` 拆解任务，再通过节点增删改与 `update_node_params` 工具补全 params（Jinja 表达式为主）。`WorkflowBuilder` 会把推导出的 edges、condition 分支与 `depends_on` 写回骨架，方便下游校验共享上下文；节点字段也会按节点类型或 action schema 过滤无关字段，避免 Agent 生成不可识别的参数。【F:velvetflow/planner/structure.py†L373-L1188】【F:velvetflow/planner/workflow_builder.py†L20-L222】
 - **动作合法性守卫**：若发现 `action_id` 缺失或未注册，会先尝试基于 display_name/原 action_id 检索替换，再将剩余问题交给 LLM 修复，避免幻觉动作进入最终 Workflow。【F:velvetflow/planner/orchestrator.py†L104-L343】
 - **Jinja 规范化与参数一致性**：规划/校验阶段会将简单路径转换为 Jinja 字符串，并对非模板参数给出修复建议；参数补全阶段的 schema 约束来自 `params_tools.py`，确保节点 params 与动作 arg_schema 对齐。【F:velvetflow/planner/params_tools.py†L1-L193】【F:velvetflow/verification/jinja_validation.py†L10-L189】
-- **需求对齐检查**：对照拆解后的 requirements，检测 workflow 是否缺失关键步骤；如有缺口，触发 `update_workflow_with_two_pass` 继续补齐，并复用相同的校验/修复管线。【F:velvetflow/planner/orchestrator.py†L1460-L1494】【F:velvetflow/planner/requirement_alignment.py†L18-L80】
 - **自修复 Agent**：当静态校验或本地修复仍未通过时，使用当前 workflow 字典与 `ValidationError` 列表提示模型修复。Agent 可以调用命名修复工具（如替换引用、补必填参数、规范化绑定路径）或提交补丁文本，直至通过或达到 `max_repair_rounds`，并在过程中保留最近一次合法版本以确保可回退。【F:velvetflow/planner/repair.py†L616-L756】【F:velvetflow/planner/orchestrator.py†L664-L940】
 
 ### Agent 工具的设计与运行方式

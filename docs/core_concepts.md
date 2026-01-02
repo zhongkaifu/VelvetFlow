@@ -18,6 +18,6 @@
 
 ## 规划与校验
 - **基于 Agent SDK 的规划与修复**：`planner/structure.py` 使用 OpenAI Agent SDK 的 `Agent`/`Runner`/`function_tool` 先拆解需求，再构建节点并补全 params；`repair.py` 与 `update.py` 复用相同的工具协议做自修复与增量更新，依赖由 `planner/agent_runtime.py` 集中导出，便于在云端 Agent 或本地兼容层之间切换。
-- **需求拆解 + 对齐**：`plan_user_requirement` 将自然语言拆解为结构化清单，随后 `requirement_alignment.py` 会对照拆解结果检查 workflow 缺口，必要时触发更新管线补齐。
+- **需求拆解**：`plan_user_requirement` 将自然语言拆解为结构化清单，为后续的节点规划与校验提供上下文。
 - **Action Guard**：`planner/orchestrator.py` 在结构规划后检查缺失或未注册的 `action_id`，必要时基于混合检索自动替换并提示模型修复。
 - **静态校验与修复循环**：`workflow_parser.py`、`verification/validation.py`、`planner/repair_tools.py` 联合提供语法/语义校验与本地修复（填充默认值、删除未知字段、类型矫正），在必要时调用 Agent 修复，保证输出的 Workflow 可执行。

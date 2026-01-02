@@ -52,7 +52,6 @@ from velvetflow.planner.repair_tools import (
     normalize_binding_paths,
     _apply_local_repairs_for_unknown_params,
 )
-from velvetflow.planner.requirement_alignment import check_missing_requirements
 from velvetflow.planner.structure import plan_workflow_structure_with_llm
 from velvetflow.reference_utils import parse_field_path
 from velvetflow.verification import (
@@ -107,67 +106,6 @@ def _is_empty_fallback_workflow(workflow: Workflow) -> bool:
     """Return True if we only have the synthetic empty fallback workflow."""
 
     return workflow.workflow_name == "fallback_workflow" and not workflow.nodes
-
-
-def _format_missing_requirements(missing: Sequence[Mapping[str, Any]]) -> str:
-    payload = {"missing_requirements": list(missing)}
-    return (
-        "以下需求尚未在 workflow 中找到对应节点或输出，请在现有 workflow 上补齐：\n"
-        f"{json.dumps(payload, ensure_ascii=False, indent=2)}"
-    )
-
-
-def _run_requirement_alignment_loop(
-    workflow: Workflow,
-    requirement_plan: Mapping[str, Any] | None,
-    *,
-    action_registry: List[Dict[str, Any]],
-    search_service: HybridActionSearchService,
-    max_rounds: int,
-    max_repair_rounds: int,
-    progress_callback: Callable[[str, Mapping[str, Any]], None] | None = None,
-) -> Workflow:
-    """Iteratively align missing requirement items by rerunning the updater."""
-
-    # The requirement planner may return structured requirement hints; bail early
-    # when none are present to avoid unnecessary LLM calls.
-    requirements = (
-        requirement_plan.get("requirements") if isinstance(requirement_plan, Mapping) else None
-    )
-    if not isinstance(requirements, list) or not requirements:
-        return workflow
-
-    # Track last round's fingerprint to stop when the planner cannot make progress.
-    current_workflow = workflow
-    previous_missing: Optional[str] = None
-
-    for round_idx in range(max_rounds):
-        missing = check_missing_requirements(
-            current_workflow.model_dump(by_alias=True),
-            requirement_plan,
-        )
-        if not missing:
-            return current_workflow
-
-        # Avoid infinite loops when the missing set stays the same.
-        missing_fingerprint = json.dumps(missing, ensure_ascii=False, sort_keys=True)
-        if previous_missing == missing_fingerprint:
-            log_warn("[RequirementAlign] 连续轮次缺失项一致，停止对齐循环。")
-            return current_workflow
-        previous_missing = missing_fingerprint
-
-        requirement_text = _format_missing_requirements(missing)
-        current_workflow = update_workflow_with_two_pass(
-            existing_workflow=current_workflow.model_dump(by_alias=True),
-            requirement=requirement_text,
-            search_service=search_service,
-            action_registry=action_registry,
-            max_repair_rounds=max_repair_rounds,
-            progress_callback=progress_callback,
-        )
-
-    log_warn("[RequirementAlign] 对齐轮次已达到上限，返回当前 workflow。")
-    return current_workflow
 
 
 def _schemas_compatible(expected: Optional[Mapping[str, Any]], actual: Optional[Mapping[str, Any]]) -> bool:
@@ -1306,7 +1244,6 @@ def plan_workflow_with_two_pass(
     *,
     max_rounds: int = 10,
     max_repair_rounds: int = 3,
-    max_alignment_rounds: int = 3,
     trace_context: TraceContext | None = None,
     trace_id: str | None = None,
     progress_callback: Callable[[str, Mapping[str, Any]], None] | None = None,
@@ -1326,8 +1263,6 @@ def plan_workflow_with_two_pass(
     max_repair_rounds:
         参数补全后进入校验 + 自修复的最大轮次，超过后返回最后通过校验的
         版本。
-    max_alignment_rounds:
-        需求对齐检查的最大迭代次数，超过后返回当前对齐结果。
 
     返回
     ----
@@ -1373,13 +1308,12 @@ def plan_workflow_with_two_pass(
             )
 
             with child_span("structure_planning"):
-                skeleton_raw, requirement_plan = plan_workflow_structure_with_llm(
+                skeleton_raw = plan_workflow_structure_with_llm(
                     nl_requirement=nl_requirement,
                     search_service=search_service,
                     action_registry=action_registry,
                     max_rounds=max_rounds,
                     progress_callback=progress_callback,
-                    return_requirement=True,
                 )
             log_section("第一阶段结果：Workflow Skeleton")
             log_json("Workflow Skeleton", skeleton_raw)
@@ -1472,16 +1406,6 @@ def plan_workflow_with_two_pass(
                 progress_callback=progress_callback,
             )
 
-            planned_workflow = _run_requirement_alignment_loop(
-                planned_workflow,
-                requirement_plan,
-                action_registry=action_registry,
-                search_service=search_service,
-                max_rounds=max_alignment_rounds,
-                max_repair_rounds=max_repair_rounds,
-                progress_callback=progress_callback,
-            )
-
         if not _is_empty_fallback_workflow(planned_workflow):
             return planned_workflow
 
@@ -1557,14 +1481,13 @@ def update_workflow_with_two_pass(
         last_good_workflow = base_workflow
 
         with child_span("structure_planning"):
-            updated_raw, _ = plan_workflow_structure_with_llm(
+            updated_raw = plan_workflow_structure_with_llm(
                 nl_requirement=requirement,
                 search_service=search_service,
                 action_registry=action_registry,
                 max_rounds=max_rounds,
                 progress_callback=progress_callback,
                 existing_workflow=base_workflow.model_dump(by_alias=True),
-                return_requirement=True,
             )
 
         # Sanity-check loop bodies early so repair prompts include missing IDs

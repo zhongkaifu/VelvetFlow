@@ -35,7 +35,6 @@ def test_update_workflow_uses_existing_graph(monkeypatch):
         max_rounds,
         progress_callback,
         existing_workflow,
-        return_requirement,
     ):
         captured_existing["value"] = copy.deepcopy(existing_workflow)
         updated_nodes = list(existing_workflow.get("nodes", [])) + [
@@ -47,14 +46,11 @@ def test_update_workflow_uses_existing_graph(monkeypatch):
                 "depends_on": ["start"],
             }
         ]
-        return (
-            {
-                "workflow_name": existing_workflow.get("workflow_name", "unnamed_workflow"),
-                "description": existing_workflow.get("description", ""),
-                "nodes": updated_nodes,
-            },
-            {"requirements": [{"description": nl_requirement}]},
-        )
+        return {
+            "workflow_name": existing_workflow.get("workflow_name", "unnamed_workflow"),
+            "description": existing_workflow.get("description", ""),
+            "nodes": updated_nodes,
+        }
 
     monkeypatch.setattr(orchestrator, "plan_workflow_structure_with_llm", _fake_plan)
     monkeypatch.setattr(

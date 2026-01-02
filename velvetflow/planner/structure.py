@@ -887,8 +887,7 @@ def plan_workflow_structure_with_llm(
     max_rounds: int = 100,
     progress_callback: Callable[[str, Mapping[str, Any]], None] | None = None,
     existing_workflow: Mapping[str, Any] | None = None,
-    return_requirement: bool = False,
-) -> Dict[str, Any] | tuple[Dict[str, Any], Dict[str, Any] | None]:
+) -> Dict[str, Any]:
     if not os.environ.get("OPENAI_API_KEY"):
         raise RuntimeError("请先设置 OPENAI_API_KEY 环境变量再进行结构规划。")
 
@@ -1994,8 +1993,6 @@ def plan_workflow_structure_with_llm(
             builder=builder, action_registry=action_registry, search_service=search_service
         )
 
-    if return_requirement:
-        return latest_skeleton, parsed_requirement
     return latest_skeleton
 
 
