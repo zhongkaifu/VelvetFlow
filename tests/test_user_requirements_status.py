@@ -79,6 +79,25 @@ def _fake_key(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
 
 
+@pytest.fixture(autouse=True)
+def _fake_requirement_analysis(monkeypatch):
+    def _stub_analyze(nl_requirement: str, existing_workflow=None, max_rounds: int = 10):
+        return {
+            "requirements": [
+                {
+                    "description": "prefilled",
+                    "intent": "review",
+                    "inputs": [],
+                    "constraints": [],
+                    "status": "已完成",
+                }
+            ],
+            "assumptions": [],
+        }
+
+    monkeypatch.setattr(structure, "analyze_user_requirement", _stub_analyze)
+
+
 def test_user_requirements_require_status_and_are_reviewable(monkeypatch):
     # Patch the agent runner to avoid real model calls and to exercise the tools directly.
     monkeypatch.setattr(structure.Runner, "run_sync", _fake_agent_run)

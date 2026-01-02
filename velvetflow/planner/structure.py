@@ -28,6 +28,10 @@ from velvetflow.models import (
     infer_edges_from_bindings,
 )
 from velvetflow.planner.relations import get_referenced_nodes
+from velvetflow.planner.requirement_analysis import (
+    _normalize_requirements_payload,
+    analyze_user_requirement,
+)
 from velvetflow.reference_utils import normalize_reference_path, parse_field_path
 from velvetflow.verification.validation import (
     _check_array_item_field,
@@ -505,22 +509,9 @@ def _prepare_skeleton_for_next_stage(
 def _build_combined_prompt() -> str:
     structure_prompt = (
         "你是一个通用业务工作流编排助手。\n"
-        "首先请将用户的自然语言需求拆解为结构化清单，并调用 plan_user_requirement 进行保存；\n"
-        "拆解格式必须为：\n"
-        "{\n"
-        "  \"requirements\": [\n"
-        "    {\n"
-        "      \"description\": \"Task description\",\n"
-        "      \"intent\": \"The intention of this task\",\n"
-        "      \"inputs\": [\"A list of input of this task\"],\n"
-        "      \"constraints\": [\"the list of constraints that this task must obey\"],\n"
-        "      \"status\": \"未开始 / 进行中 / 已完成 / 其他有助提示\"\n"
-        "    }\n"
-        "  ],\n"
-        "  \"assumptions\": [\"The assumptions of user's requirement\"]\n"
-        "}\n"
-        "构建过程中务必调用 review_user_requirement 检查每个子需求的状态，只有当所有需求状态均为“已完成”时，整体 workflow 才算完成。\n"
-        "如发现状态未达成，请结合 review_user_requirement 的结果更新或细化需求，并在修订后继续规划。\n"
+        "用户的自然语言需求已在前置步骤拆解为结构化清单，包含描述、意图、输入、约束与状态。\n"
+        "构建过程中务必调用 review_user_requirement 检查每个子需求的状态，只有当所有需求状态均为“已完成”时，整体 workflow 才算完成；\n"
+        "如需补充或修改拆解与状态，可调用 plan_user_requirement 进行更新。\n"
         "【Workflow DSL 语法与语义（务必遵守）】\n"
         "- workflow = {workflow_name, description, nodes: []}，只能返回合法 JSON（edges 会由系统基于节点绑定自动推导，不需要生成）。\n"
         "- node 基本结构：{id, type, display_name, params, depends_on, action_id?, out_params_schema?, loop/subgraph/branches?}。\n"
@@ -534,7 +525,7 @@ def _build_combined_prompt() -> str:
         "  其中 <node_id> 必须存在且字段需与上游 output_schema 或 loop.exports 对齐。\n"
         "系统中有一个 Action Registry，包含大量业务动作，你只能通过 search_business_actions 查询。\n"
         "构建方式：\n"
-        "1) 第一步必须先调用 plan_user_requirement 保存需求拆解。\n"
+        "1) 使用 review_user_requirement 先检查已有的需求拆解与状态，确保规划覆盖所有任务。\n"
         "2) 使用 set_workflow_meta 设置工作流名称和描述。\n"
         "2) 当需要业务动作时，必须先用 search_business_actions 查询候选；add_action_node 的 action_id 必须取自最近一次 candidates.id。\n"
         "3）当需要 condition/switch/loop 节点时，必须先用 add_condition_node/add_switch_node/add_loop_node 创建，params 中的表达式和引用需严格遵循 Jinja 模板写法；\n"
@@ -896,6 +887,11 @@ def plan_workflow_structure_with_llm(
     builder = WorkflowBuilder()
     if existing_workflow:
         _hydrate_builder_from_workflow(builder=builder, workflow=existing_workflow)
+    parsed_requirement = analyze_user_requirement(
+        nl_requirement,
+        existing_workflow=existing_workflow,
+        max_rounds=max_rounds,
+    )
     action_schemas = _build_action_schema_map(action_registry)
     last_action_candidates: List[str] = []
     all_action_candidates: List[str] = []
@@ -963,66 +959,18 @@ def plan_workflow_structure_with_llm(
         payload.update(extra)
         return payload
 
-    parsed_requirement: Dict[str, Any] | None = None
-
     @function_tool(strict_mode=False)
     def plan_user_requirement(payload: Mapping[str, Any]) -> Mapping[str, Any]:
-        """保存解析后的用户需求拆解，供后续规划与校验。
+        """保存或更新解析后的用户需求拆解，供后续规划与校验。"""
 
-        payload 格式必须为：
-        {
-          "requirements": [
-            {
-              "description": "...",
-              "intent": "...",
-              "inputs": ["..."],
-              "constraints": ["..."],
-              "status": "未开始/进行中/已完成等"
-            }
-          ],
-          "assumptions": ["..."]
-        }
-        """
         nonlocal parsed_requirement
         _log_tool_call("plan_user_requirement", payload)
-        requirements = payload.get("requirements")
-        assumptions = payload.get("assumptions")
-        if not isinstance(requirements, list):
-            result = {
-                "status": "error",
-                "message": "requirements 必须是列表。",
-            }
+        try:
+            normalized_payload = _normalize_requirements_payload(payload)
+        except ValueError as exc:
+            result = {"status": "error", "message": str(exc)}
             return _return_tool_result("plan_user_requirement", result)
-        if assumptions is not None and not isinstance(assumptions, list):
-            result = {
-                "status": "error",
-                "message": "assumptions 必须是字符串列表。",
-            }
-            return _return_tool_result("plan_user_requirement", result)
-        for idx, item in enumerate(requirements):
-            if not isinstance(item, Mapping):
-                result = {
-                    "status": "error",
-                    "message": f"requirements[{idx}] 必须是对象。",
-                }
-                return _return_tool_result("plan_user_requirement", result)
-            for key in ("description", "intent", "inputs", "constraints", "status"):
-                if key not in item:
-                    result = {
-                        "status": "error",
-                        "message": f"requirements[{idx}] 缺少字段 {key}。",
-                    }
-                    return _return_tool_result("plan_user_requirement", result)
-            if not isinstance(item.get("status"), str):
-                result = {
-                    "status": "error",
-                    "message": f"requirements[{idx}].status 必须是字符串，用于标记进度（如未开始/进行中/已完成）。",
-                }
-                return _return_tool_result("plan_user_requirement", result)
-        normalized_payload = {
-            "requirements": list(requirements),
-            "assumptions": list(assumptions or []),
-        }
+
         parsed_requirement = normalized_payload
         result = {"status": "ok", "requirement": normalized_payload}
         return _return_tool_result("plan_user_requirement", result)
@@ -2012,11 +1960,13 @@ def plan_workflow_structure_with_llm(
             if asyncio.iscoroutine(coro):
                 asyncio.run(coro)
 
-    _run_agent(nl_requirement)
-    if not parsed_requirement:
-        raise ValueError(
-            "未获取到用户需求拆解。请先调用 plan_user_requirement，并在完成规划前通过 review_user_requirement 确认所有需求状态。"
-        )
+    _run_agent(
+        {
+            "nl_requirement": nl_requirement,
+            "user_requirements": parsed_requirement,
+            "existing_workflow": existing_workflow or {},
+        }
+    )
     if not _all_requirements_completed():
         raise ValueError(
             "需求状态未全部为已完成。请使用 review_user_requirement 检查，并通过 plan_user_requirement 更新状态后再结束规划。"
