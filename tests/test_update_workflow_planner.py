@@ -29,7 +29,7 @@ def test_update_workflow_uses_existing_graph(monkeypatch):
 
     def _fake_plan(
         *,
-        nl_requirement,
+        parsed_requirement,
         search_service,
         action_registry,
         max_rounds,
@@ -53,6 +53,22 @@ def test_update_workflow_uses_existing_graph(monkeypatch):
         }
 
     monkeypatch.setattr(orchestrator, "plan_workflow_structure_with_llm", _fake_plan)
+    monkeypatch.setattr(
+        orchestrator,
+        "analyze_user_requirement",
+        lambda requirement, existing_workflow=None, max_rounds=10: {
+            "requirements": [
+                {
+                    "description": requirement,
+                    "intent": "update",
+                    "inputs": [],
+                    "constraints": [],
+                    "status": "已完成",
+                }
+            ],
+            "assumptions": [],
+        },
+    )
     monkeypatch.setattr(
         orchestrator,
         "_ensure_actions_registered_or_repair",

@@ -28,7 +28,6 @@ from velvetflow.models import (
     infer_edges_from_bindings,
 )
 from velvetflow.planner.relations import get_referenced_nodes
-from velvetflow.planner.requirement_analysis import analyze_user_requirement
 from velvetflow.reference_utils import normalize_reference_path, parse_field_path
 from velvetflow.verification.validation import (
     _check_array_item_field,
@@ -871,7 +870,7 @@ def _validate_node_params(
 
 
 def plan_workflow_structure_with_llm(
-    nl_requirement: str,
+    parsed_requirement: Mapping[str, Any],
     search_service: HybridActionSearchService,
     action_registry: List[Dict[str, Any]],
     max_rounds: int = 100,
@@ -884,11 +883,6 @@ def plan_workflow_structure_with_llm(
     builder = WorkflowBuilder()
     if existing_workflow:
         _hydrate_builder_from_workflow(builder=builder, workflow=existing_workflow)
-    parsed_requirement = analyze_user_requirement(
-        nl_requirement,
-        existing_workflow=existing_workflow,
-        max_rounds=max_rounds,
-    )
     action_schemas = _build_action_schema_map(action_registry)
     last_action_candidates: List[str] = []
     all_action_candidates: List[str] = []
@@ -1941,11 +1935,7 @@ def plan_workflow_structure_with_llm(
                 asyncio.run(coro)
 
     _run_agent(
-        {
-            "nl_requirement": nl_requirement,
-            "user_requirements": parsed_requirement,
-            "existing_workflow": existing_workflow or {},
-        }
+        {"user_requirements": parsed_requirement, "existing_workflow": existing_workflow or {}}
     )
     if not _all_requirements_completed():
         raise ValueError(

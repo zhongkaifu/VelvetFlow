@@ -41,10 +41,15 @@ def _fake_key(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
 
 
-@pytest.fixture(autouse=True)
-def _fake_requirement_analysis(monkeypatch):
-    def _stub_analyze(nl_requirement: str, existing_workflow=None, max_rounds: int = 10):
-        return {
+def test_user_requirements_require_status_and_are_reviewable(monkeypatch):
+    # Patch the agent runner to avoid real model calls and to exercise the tools directly.
+    monkeypatch.setattr(structure.Runner, "run_sync", _fake_agent_run)
+
+    dummy_search = _DummySearch()
+    action_registry = []
+
+    workflow = plan_workflow_structure_with_llm(
+        parsed_requirement={
             "requirements": [
                 {
                     "description": "prefilled",
@@ -55,20 +60,7 @@ def _fake_requirement_analysis(monkeypatch):
                 }
             ],
             "assumptions": [],
-        }
-
-    monkeypatch.setattr(structure, "analyze_user_requirement", _stub_analyze)
-
-
-def test_user_requirements_require_status_and_are_reviewable(monkeypatch):
-    # Patch the agent runner to avoid real model calls and to exercise the tools directly.
-    monkeypatch.setattr(structure.Runner, "run_sync", _fake_agent_run)
-
-    dummy_search = _DummySearch()
-    action_registry = []
-
-    workflow = plan_workflow_structure_with_llm(
-        nl_requirement="demo",
+        },
         search_service=dummy_search,
         action_registry=action_registry,
         max_rounds=1,
@@ -96,27 +88,22 @@ def _fake_agent_run_without_completion(agent, prompt, max_turns=None):
 def test_planner_requires_completed_requirements(monkeypatch):
     monkeypatch.setattr(structure.Runner, "run_sync", _fake_agent_run_without_completion)
 
-    def _pending_requirement(nl_requirement: str, existing_workflow=None, max_rounds: int = 10):
-        return {
-            "requirements": [
-                {
-                    "description": "demo task",
-                    "intent": "plan",
-                    "inputs": ["query"],
-                    "constraints": [],
-                    "status": "进行中",
-                }
-            ],
-            "assumptions": [],
-        }
-
-    monkeypatch.setattr(structure, "analyze_user_requirement", _pending_requirement)
-
     dummy_search = _DummySearch()
 
     with pytest.raises(ValueError, match="需求状态未全部为已完成"):
         plan_workflow_structure_with_llm(
-            nl_requirement="demo",
+            parsed_requirement={
+                "requirements": [
+                    {
+                        "description": "demo task",
+                        "intent": "plan",
+                        "inputs": ["query"],
+                        "constraints": [],
+                        "status": "进行中",
+                    }
+                ],
+                "assumptions": [],
+            },
             search_service=dummy_search,
             action_registry=[],
             max_rounds=1,

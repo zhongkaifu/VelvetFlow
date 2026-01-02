@@ -45,6 +45,7 @@ from velvetflow.planner.repair import (
     _make_failure_validation_error,
     _repair_with_llm_and_fallback,
 )
+from velvetflow.planner.requirement_analysis import analyze_user_requirement
 from velvetflow.planner.repair_tools import (
     align_loop_body_alias_references,
     fill_loop_exports_defaults,
@@ -1284,6 +1285,11 @@ def plan_workflow_with_two_pass(
       保证调用方始终获得一个合法的 `Workflow` 实例。
     """
 
+    parsed_requirement = analyze_user_requirement(
+        nl_requirement,
+        max_rounds=max_rounds,
+    )
+
     # Allow one restart with a fresh trace context if parameter completion fails,
     # so downstream callers still get a valid workflow instead of an exception.
     restart_attempted = False
@@ -1309,7 +1315,7 @@ def plan_workflow_with_two_pass(
 
             with child_span("structure_planning"):
                 skeleton_raw = plan_workflow_structure_with_llm(
-                    nl_requirement=nl_requirement,
+                    parsed_requirement=parsed_requirement,
                     search_service=search_service,
                     action_registry=action_registry,
                     max_rounds=max_rounds,
@@ -1480,9 +1486,15 @@ def update_workflow_with_two_pass(
         )
         last_good_workflow = base_workflow
 
+        parsed_requirement = analyze_user_requirement(
+            requirement,
+            existing_workflow=base_workflow.model_dump(by_alias=True),
+            max_rounds=max_rounds,
+        )
+
         with child_span("structure_planning"):
             updated_raw = plan_workflow_structure_with_llm(
-                nl_requirement=requirement,
+                parsed_requirement=parsed_requirement,
                 search_service=search_service,
                 action_registry=action_registry,
                 max_rounds=max_rounds,
