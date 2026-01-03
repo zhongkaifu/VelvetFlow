@@ -41,3 +41,27 @@ def test_analyze_user_requirement_wraps_prompt_in_list(monkeypatch):
     }
     assert result["requirements"][0]["status"] == "未开始"
 
+
+def test_analyze_user_requirement_fallback_on_missing_tool_call(monkeypatch):
+    def fake_run_sync(agent, prompt, max_turns):
+        # Simulate an agent run that never invokes any tool
+        return None
+
+    monkeypatch.setattr(requirement_analysis.Runner, "run_sync", fake_run_sync)
+
+    result = requirement_analysis.analyze_user_requirement(
+        "check employees", existing_workflow={}
+    )
+
+    assert result["requirements"] == [
+        {
+            "description": "check employees",
+            "intent": "",
+            "inputs": [],
+            "constraints": [],
+            "status": "未开始",
+            "mapped_node": [],
+        }
+    ]
+    assert result["assumptions"] == []
+

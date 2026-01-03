@@ -168,7 +168,23 @@ def analyze_user_requirement(
     )
 
     if not parsed_requirement:
-        raise ValueError("未能解析用户需求，请重试或补充更多上下文。")
+        # Fallback: if the agent failed to call the tool, produce a minimal
+        # structured requirement so the workflow planner can proceed instead
+        # of surfacing an opaque parsing error to the user.
+        fallback_payload = {
+            "requirements": [
+                {
+                    "description": nl_requirement,
+                    "intent": "",
+                    "inputs": [],
+                    "constraints": [],
+                    "status": "未开始",
+                    "mapped_node": [],
+                }
+            ],
+            "assumptions": [],
+        }
+        parsed_requirement = _normalize_requirements_payload(fallback_payload)
 
     return parsed_requirement
 
