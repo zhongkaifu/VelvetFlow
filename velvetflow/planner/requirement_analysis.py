@@ -23,6 +23,8 @@ def _normalize_requirements_payload(payload: Mapping[str, Any]) -> Dict[str, Any
     requirements = payload.get("requirements")
     if not isinstance(requirements, list):
         raise ValueError("requirements 必须是列表。")
+    if len(requirements) == 0:
+        raise ValueError("requirements 至少需要包含一个子任务。")
 
     normalized_items = []
 

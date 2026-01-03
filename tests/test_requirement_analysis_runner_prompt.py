@@ -65,3 +65,30 @@ def test_analyze_user_requirement_fallback_on_missing_tool_call(monkeypatch):
     ]
     assert result["assumptions"] == []
 
+
+def test_analyze_user_requirement_fallback_on_empty_requirements(monkeypatch):
+    def fake_run_sync(agent, prompt, max_turns):  # pragma: no cover - behavior asserted
+        payload = {"requirements": [], "assumptions": []}
+        tool = agent.tools[0]
+        ctx = types.SimpleNamespace(run_input=[], message_history=[])
+        # Empty requirements should trigger a validation error and prevent parsing
+        asyncio.run(tool.on_invoke_tool(ctx, json.dumps({"payload": payload}, ensure_ascii=False)))
+
+    monkeypatch.setattr(requirement_analysis.Runner, "run_sync", fake_run_sync)
+
+    result = requirement_analysis.analyze_user_requirement(
+        "每日健康检查", existing_workflow={}
+    )
+
+    # Fallback should create a minimal requirement entry using the natural language text
+    assert result["requirements"] == [
+        {
+            "description": "每日健康检查",
+            "intent": "",
+            "inputs": [],
+            "constraints": [],
+            "status": "未开始",
+            "mapped_node": [],
+        }
+    ]
+
