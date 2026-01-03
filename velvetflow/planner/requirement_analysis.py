@@ -63,22 +63,26 @@ def _normalize_requirements_payload(payload: Mapping[str, Any]) -> Dict[str, Any
 
 def _build_requirement_prompt() -> str:
     return (
-        "你是一个需求分析助手，请将用户的自然语言需求拆解为结构化清单。\n"
-        "输出格式必须为：\n"
+        "你是一个需求分析助手，需要仔细阅读用户的自然语言需求，并把它拆分成便于构建工作流的结构化清单。\n"
+        "你的分析步骤：\n"
+        "1) 识别用户需求中的主要目标与子任务，补充必要的上下文假设。\n"
+        "2) 为每个子任务明确目的(intention)、需要的输入(inputs)、必须遵守的约束(constraints)、当前状态(status)，以及该子任务映射到的 workflow 节点 id 列表(mapped_node，可为空)。\n"
+        "3) 汇总全局假设或前置条件到 assumptions。\n"
+        "请务必调用工具返回以下 JSON 结构，字段含义必须完整且使用中文状态值：\n"
         "{\n"
         "  \"requirements\": [\n"
         "    {\n"
-        "      \"description\": \"Task description\",\n"
-        "      \"intent\": \"The intention of this task\",\n"
-        "      \"inputs\": [\"A list of input of this task\"],\n"
-        "      \"constraints\": [\"the list of constraints that this task must obey\"],\n"
+        "      \"description\": \"任务描述，概述子任务要做什么\",\n"
+        "      \"intent\": \"该子任务的目的或达成的价值\",\n"
+        "      \"inputs\": [\"完成该子任务需要的输入列表\"],\n"
+        "      \"constraints\": [\"执行该子任务必须遵循的约束\"],\n"
         "      \"status\": \"未开始 / 进行中 / 已完成 / 其他有助提示\",\n"
-        "      \"mapped_node\": [\"workflow 节点 id 列表，可为空\"]\n"
+        "      \"mapped_node\": [\"对应的 workflow 节点 id，可为空\"]\n"
         "    }\n"
         "  ],\n"
-        "  \"assumptions\": [\"The assumptions of user's requirement\"]\n"
+        "  \"assumptions\": [\"对需求的假设或注意事项\"]\n"
         "}\n"
-        "请根据上下文明确每个子需求的输入、约束与当前状态，便于后续构建工作流时持续复用。"
+        "如果提供了已有 workflow，请结合其中的节点来补全 mapped_node，并确保 status 准确反映当前进度。"
     )
 
 
