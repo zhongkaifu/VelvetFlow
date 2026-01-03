@@ -11,6 +11,7 @@ import os
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional
+from types import GeneratorType
 
 from jinja2 import Undefined
 from velvetflow.aggregation import (
@@ -53,10 +54,35 @@ class BindingContext:
         """Return a serializable snapshot of the binding context."""
 
         return {
-            "results": copy.deepcopy(self.results),
-            "loop_ctx": copy.deepcopy(self.loop_ctx),
+            "results": self._safe_deepcopy(self.results),
+            "loop_ctx": self._safe_deepcopy(self.loop_ctx),
             "loop_id": self.loop_id,
         }
+
+    def _safe_deepcopy(self, value: Any) -> Any:
+        """Deep copy workflow bindings while normalizing generators.
+
+        Action/tool implementations may accidentally return generator objects
+        inside their payloads. Standard :func:`copy.deepcopy` fails on generators
+        (``TypeError: cannot pickle 'generator' object``). This helper eagerly
+        materializes generators to lists and recursively copies collections so
+        checkpointing the binding context never crashes.
+        """
+
+        if isinstance(value, GeneratorType):
+            return list(value)
+        if isinstance(value, dict):
+            return {self._safe_deepcopy(k): self._safe_deepcopy(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [self._safe_deepcopy(v) for v in value]
+        if isinstance(value, tuple):
+            return tuple(self._safe_deepcopy(v) for v in value)
+        if isinstance(value, set):
+            return {self._safe_deepcopy(v) for v in value}
+        try:
+            return copy.deepcopy(value)
+        except Exception:
+            return value
 
     @classmethod
     def from_snapshot(
