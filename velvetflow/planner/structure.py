@@ -7,9 +7,11 @@ import asyncio
 import copy
 import json
 import os
+import re
 from collections import deque
 from typing import Any, Callable, Dict, List, Mapping, MutableMapping, Optional, Sequence, Tuple
 
+from jinja2 import Environment, TemplateSyntaxError
 from velvetflow.config import OPENAI_MODEL
 from velvetflow.logging_utils import log_debug, log_event, log_info, log_section, log_warn
 from velvetflow.planner.agent_runtime import Agent, Runner, function_tool
@@ -74,6 +76,96 @@ CONDITION_NODE_FIELDS = {
     "parent_node_id",
     "depends_on",
 }
+
+_JINJA_ENV = Environment()
+
+
+def _is_valid_jinja(template: str) -> bool:
+    try:
+        _JINJA_ENV.parse(template)
+        return True
+    except TemplateSyntaxError:
+        return False
+
+
+def _balance_quotes(text: str) -> str:
+    trimmed = text.strip()
+    single_count = trimmed.count("'")
+    double_count = trimmed.count('"')
+
+    if single_count % 2 == 1:
+        if not trimmed.startswith("'"):
+            trimmed = "'" + trimmed
+        if trimmed.count("'") % 2 == 1:
+            trimmed = trimmed + "'"
+
+    if double_count % 2 == 1:
+        if not trimmed.startswith('"'):
+            trimmed = '"' + trimmed
+        if trimmed.count('"') % 2 == 1:
+            trimmed = trimmed + '"'
+
+    return trimmed
+
+
+def _normalize_ternary_literals(expr: str) -> str:
+    ternary = re.match(r"^(?P<true>.+?)\s+if\s+(?P<cond>.+?)\s+else\s+(?P<false>.+)$", expr)
+    if not ternary:
+        return expr
+
+    true_part = _balance_quotes(ternary.group("true"))
+    false_part = _balance_quotes(ternary.group("false"))
+    return f"{true_part} if {ternary.group('cond')} else {false_part}"
+
+
+def _fix_common_template_errors(expr: str) -> str:
+    raw = expr.strip()
+    has_wrapped = raw.startswith("{{") and raw.endswith("}}")
+    body = raw[2:-2].strip() if has_wrapped else raw
+
+    body = _normalize_ternary_literals(body)
+
+    if re.search(r"\|\s*length\s*>", body):
+        body = re.sub(r"(.*?\|\s*length)\s*>(.+)", r"(\1) >\2", body)
+
+    return f"{{{{ {body} }}}}" if has_wrapped else body
+
+
+def _normalize_template_string(value: str) -> tuple[str, bool]:
+    fixed = value
+
+    looks_like_ref = any(token in value for token in ["result_of.", "loop.", "exports."])
+    has_braces = "{{" in value and "}}" in value
+
+    if not has_braces and looks_like_ref:
+        fixed = f"{{{{ {value.strip()} }}}}"
+
+    if not _is_valid_jinja(fixed):
+        candidate = _fix_common_template_errors(fixed)
+        if _is_valid_jinja(candidate):
+            return candidate, candidate != value
+    return fixed, fixed != value
+
+
+def _normalize_params_templates(obj: Any) -> tuple[Any, bool]:
+    changed = False
+
+    def _walk(val: Any) -> Any:
+        nonlocal changed
+        if isinstance(val, Mapping):
+            normalized: Dict[str, Any] = {}
+            for k, v in val.items():
+                normalized[k] = _walk(v)
+            return normalized
+        if isinstance(val, list):
+            return [_walk(item) for item in val]
+        if isinstance(val, str):
+            new_val, is_changed = _normalize_template_string(val)
+            changed = changed or is_changed
+            return new_val
+        return val
+
+    return _walk(obj), changed
 
 SWITCH_NODE_FIELDS = {
     "id",
@@ -1241,6 +1333,9 @@ def plan_workflow_structure_with_llm(
             return _return_tool_result("add_condition_node", result)
         normalized_params: Dict[str, Any] = dict(params or {})
         expr_val = normalized_params.get("expression")
+        if isinstance(expr_val, str):
+            fixed_expr, _ = _normalize_template_string(expr_val)
+            normalized_params["expression"] = fixed_expr
         if not isinstance(expr_val, str) or not expr_val.strip():
             result = _build_validation_error(
                 "condition.params.expression 必须是返回布尔值的 Jinja 表达式。",
@@ -1841,6 +1936,8 @@ def plan_workflow_structure_with_llm(
             result = {"status": "error", "message": "params 需要是对象。"}
             return _return_tool_result("update_node_params", result)
 
+        normalized_params, _ = _normalize_params_templates(dict(params))
+
         workflow = _build_workflow_for_params()
         nodes_by_id = {n.id: n for n in workflow.nodes}
         node = nodes_by_id.get(id)
@@ -1852,7 +1949,7 @@ def plan_workflow_structure_with_llm(
         binding_memory = _build_binding_memory(filled_params, validated_node_ids)
         errors = _validate_node_params(
             node=node,
-            params=dict(params),
+            params=dict(normalized_params),
             upstream_nodes=upstream_nodes,
             action_schemas=action_schemas,
             binding_memory=binding_memory,
@@ -1866,12 +1963,12 @@ def plan_workflow_structure_with_llm(
             }
             return _return_tool_result("update_node_params", result)
 
-        filled_params[id] = dict(params)
+        filled_params[id] = dict(normalized_params)
         if id not in validated_node_ids:
             validated_node_ids.append(id)
-        builder.update_node(id, params=dict(params))
+        builder.update_node(id, params=dict(normalized_params))
         _snapshot(f"validate_params_{id}")
-        result = {"status": "ok", "params": params}
+        result = {"status": "ok", "params": normalized_params}
         return _return_tool_result("update_node_params", result)
     
     agent = Agent(
