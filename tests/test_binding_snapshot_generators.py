@@ -2,6 +2,7 @@ from velvetflow.bindings import BindingContext
 from velvetflow.models import Workflow, Node
 from jinja2.filters import sync_do_unique
 from jinja2 import Environment
+from velvetflow.jinja_utils import _AutoValue
 
 
 def _fake_workflow() -> Workflow:
@@ -37,4 +38,16 @@ def test_binding_snapshot_handles_unhashable_unique_generator():
 
     # Falls back to the original sequence rather than raising during snapshot.
     assert snapshot["results"]["n1"]["value"] == [{"a": 1}, {"a": 2}]
+
+
+def test_binding_snapshot_unwraps_auto_value_proxy():
+    workflow = _fake_workflow()
+    auto_wrapped = _AutoValue("hello")
+    ctx = BindingContext(workflow, {"n1": {"value": auto_wrapped}})
+
+    snapshot = ctx.snapshot()
+
+    assert snapshot["results"]["n1"]["value"] == "hello"
+    restored = BindingContext.from_snapshot(workflow, snapshot)
+    assert restored.results == {"n1": {"value": "hello"}}
 

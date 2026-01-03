@@ -29,7 +29,7 @@ from velvetflow.reference_utils import (
     normalize_reference_path,
     parse_field_path,
 )
-from velvetflow.jinja_utils import render_jinja_template
+from velvetflow.jinja_utils import _AutoValue, render_jinja_template
 
 
 class BindingContext:
@@ -92,6 +92,11 @@ class BindingContext:
                         pass
 
                 return []
+        if isinstance(value, _AutoValue):
+            # Jinja context preparation wraps strings in a lightweight proxy to
+            # provide attribute access. Deep copying the proxy can recurse
+            # through ``__getattr__``. Unwrap to the raw value before copying.
+            return self._safe_deepcopy(value.value)
         if isinstance(value, dict):
             return {self._safe_deepcopy(k): self._safe_deepcopy(v) for k, v in value.items()}
         if isinstance(value, list):
