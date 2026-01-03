@@ -70,7 +70,28 @@ class BindingContext:
         """
 
         if isinstance(value, GeneratorType):
-            return list(value)
+            # Capture a potential fallback before consuming the generator in case
+            # iteration raises and clears the frame locals (e.g., Jinja's
+            # ``unique`` filter with unhashable items).
+            frame = getattr(value, "gi_frame", None)
+            fallback_seq = None
+            if frame and frame.f_locals:
+                fallback_seq = (
+                    frame.f_locals.get("seq")
+                    or frame.f_locals.get("iterable")
+                    or frame.f_locals.get("value")
+                )
+
+            try:
+                return [self._safe_deepcopy(v) for v in value]
+            except TypeError:
+                if fallback_seq is not None:
+                    try:
+                        return [self._safe_deepcopy(v) for v in fallback_seq]
+                    except Exception:
+                        pass
+
+                return []
         if isinstance(value, dict):
             return {self._safe_deepcopy(k): self._safe_deepcopy(v) for k, v in value.items()}
         if isinstance(value, list):
