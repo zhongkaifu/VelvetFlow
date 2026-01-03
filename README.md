@@ -3,7 +3,7 @@
 
 VelvetFlow 是一个可复用的 LLM 驱动工作流规划与执行演示项目。项目包含混合检索、Agent 工具驱动的结构 + 参数补全、静态校验与自修复、参数绑定 DSL、可模拟执行器与 DAG 可视化，帮助从自然语言需求自动构建并运行业务流程。近期已将 Planner 全面迁移到 **OpenAI Agent SDK**（`agents.Agent`/`Runner`/`function_tool`），以便在同一套工具描述下同时适配云端 Agent 与本地调试场景。
 
-开篇先交代业务与交付价值：更少人工即可把文字需求变成可执行流程，内置安全审计、防御式修复与回滚路径，缩短 PoC 周期并提高交付确定性。随后的章节概述核心架构（混合检索、需求拆解、结构/参数补全、Action Guard、本地/LLM 修复、需求对齐、可视化与模拟执行器），再逐步下钻到项目结构、运行方式、规划与执行细节及 DSL 参考，既便于决策判断落地性，也方便工程师按步骤复刻实现。
+开篇先交代业务与交付价值：更少人工即可把文字需求变成可执行流程，内置安全审计、防御式修复与回滚路径，缩短 PoC 周期并提高交付确定性。随后的章节概述核心架构（混合检索、需求拆解、结构/参数补全、Action Guard、本地/LLM 修复、可视化与模拟执行器），再逐步下钻到项目结构、运行方式、规划与执行细节及 DSL 参考，既便于决策判断落地性，也方便工程师按步骤复刻实现。
 
 ## 文档与导航
 - [docs/quickstart.md](docs/quickstart.md)：三分钟完成安装、索引构建与示例运行。
@@ -19,7 +19,7 @@ VelvetFlow 是一个可复用的 LLM 驱动工作流规划与执行演示项目�
 ```mermaid
 flowchart LR
     subgraph intake[需求解析与检索]
-        U[用户需求] --> R1[需求拆解\nplan_user_requirement]
+        U[用户需求] --> R1[需求拆解\nanalyze_user_requirement]
         U -->|工具检索| S[HybridActionSearchService]
     end
     subgraph plan[规划阶段（Agent + 校验）]
@@ -28,10 +28,9 @@ flowchart LR
         P1 --> G[Action Guard\n未注册动作替换]
         G --> J[Jinja 规范化 + 本地修复]
         J --> R[静态校验 + LLM 修复]
-        R --> A[需求对齐\nrequirement_alignment + update_workflow]
     end
     subgraph exec[执行阶段]
-        A --> V[可视化/持久化]
+        R --> V[可视化/持久化]
         V --> E[DynamicActionExecutor]
         E -->|拓扑执行| N[节点调度\ncondition/loop/switch]
         N -->|同步完成| C[结果聚合]
@@ -77,7 +76,6 @@ VelvetFlow (repo root)
 │   │   ├── workflow_builder.py  # 规划期的可变骨架构建器，附带隐式 edges/depends_on
 │   │   ├── structure.py         # 结构规划 Agent（需求拆解 + 节点构建 + 参数补全）
 │   │   ├── params_tools.py      # 参数补全的工具 Schema（强制 Jinja 参数）
-│   │   ├── requirement_alignment.py # 需求对齐检查与缺口补齐
 │   │   ├── repair.py            # 自修复 Agent，支持补丁与命名修复工具
 │   │   ├── orchestrator.py      # 规划/更新的管线编排与多轮修复
 │   │   ├── action_guard.py / approval.py / relations.py / update.py 等辅助模块
@@ -96,16 +94,15 @@ VelvetFlow (repo root)
 └── LICENSE
 ```
 
-- **Agent SDK 驱动的 Planner**：结构规划与参数补全在 `planner/structure.py` 内完成，Agent 先通过 `plan_user_requirement` 拆解需求，再使用节点增删改与 `update_node_params` 工具构建骨架并补全 params；`planner/agent_runtime.py` 集中导出 `Agent`/`Runner`/`function_tool`，确保同一套工具协议可在云端 Agent 与本地运行之间切换。
+- **Agent SDK 驱动的 Planner**：结构规划与参数补全在 `planner/structure.py` 内完成，前置的 `requirement_analysis.analyze_user_requirement` 会将自然语言需求拆解为结构化清单，规划阶段直接复用该清单并使用节点增删改与 `update_node_params` 工具构建骨架并补全 params；`planner/agent_runtime.py` 集中导出 `Agent`/`Runner`/`function_tool`，确保同一套工具协议可在云端 Agent 与本地运行之间切换。
 - **业务动作注册表**：`action_registry.py` 从 `tools/business_actions/` 载入动作，自动补齐 `requires_approval` / `allowed_roles` 安全字段，并提供 `get_action_by_id` 查询。
 - **离线索引 + 在线混合检索**：`search_index.py` 使用 OpenAI `text-embedding-3-large` 将业务动作构建为关键词与 embedding 索引，可由 `./build_action_index.py` 独立运行生成；`search.py` 读取索引并使用 `FakeElasticsearch`（关键词计分）与基于 Faiss 的向量检索（余弦相似度）混合排序，在线检索阶段仅对 query 进行 OpenAI embedding 再与索引中已有的动作 embedding 做匹配，`HybridActionSearchService` 提供工作流规划阶段的工具召回。
-- **工作流规划 Orchestrator**：`planner/orchestrator.py` 实现 `plan_workflow_with_two_pass`，在结构规划完成后依次执行 Action Guard、Jinja 规范化与本地修复、静态校验与 LLM 修复，再通过 `requirement_alignment.py` 检测需求缺口并用 `update_workflow_with_two_pass` 迭代补齐：
-  - 结构规划阶段内置需求拆解与节点/参数构建工具，loop body 引用缺失会在进入补全前先做预检查。
+- **工作流规划 Orchestrator**：`planner/orchestrator.py` 实现 `plan_workflow_with_two_pass`，在结构规划完成后依次执行 Action Guard、Jinja 规范化与本地修复、静态校验与 LLM 修复：
+  - 结构规划阶段复用需求拆解产物与节点/参数构建工具，loop body 引用缺失会在进入补全前先做预检查。
   - Action Guard 会对 `action_id` 做白名单校验，支持基于检索的一键替换与 LLM 修复。
   - 本地修复涵盖 Jinja 规范化、类型对齐、`loop.exports` 补全、alias 对齐与绑定路径归一化，之后再由静态校验与多轮 LLM 修复保证可执行性。
-  - 需求对齐会分析拆解后的 requirement 与现有 workflow 的映射，若仍有缺口会调用更新管线补齐节点或参数。
 - **DSL 模型与校验**：`models.py` 定义 Node/Edge/Workflow 的强类型模型（`model_validate`/`model_dump` 接口与 Pydantic 类似但不依赖其运行时），边由参数绑定与条件分支自动推导并在可视化/执行前归一化；校验涵盖节点类型、隐式连线合法性、loop 子图 Schema 等，并通过 `ValidationError` 统一描述错误。
-- **参数绑定 DSL**：`bindings.py` 支持 `__from__` 引用上游结果、`__agg__` 支持 `identity/count/count_if/format_join/filter_map/pipeline` 等聚合，同时也支持直接写 Jinja 模板；规划阶段会优先使用 Jinja 表达式并对残留的 `__agg__` 进行修复提示。
+  - **参数绑定 DSL**：系统现已 **仅支持 Jinja 表达式**（例如 `"{{ result_of.node.field }}"`），其他旧式结构化绑定不再被接收，确保 planner/执行器处理的都是字符串模板。参数校验与类型推断集中在 `bindings.py`/`verification` 目录中完成。
 - **执行器**：`executor/` 包中的 `DynamicActionExecutor` 会先校验 action_id 是否在注册表中，再执行拓扑排序确保连通；支持 condition 节点（基于 `params.expression` 的 Jinja 表达式）与 loop 节点（`body_subgraph` + `params.exports` 逐轮收集结果），并结合 repo 根目录的 `simulation_data.json` 模拟动作返回。日志输出使用 `logging_utils.py`。
 - **可视化**：`visualization.py` 提供 `render_workflow_dag`，支持 Unicode 字体回退，将 Workflow 渲染为 JPEG DAG。
 - **Jinja 表达式支持**：`jinja_utils.py` 构建严格模式的 Jinja 环境并在校验/执行前把包裹在 `{{ }}` 的纯字面量折叠为常量，静态检查会提前阻止语法错误的模板，运行时也可以在条件/聚合里直接求值表达式。【F:velvetflow/jinja_utils.py†L8-L114】【F:velvetflow/verification/jinja_validation.py†L50-L189】【F:velvetflow/executor/conditions.py†L14-L114】
@@ -206,15 +203,14 @@ VelvetFlow (repo root)
 下面将端到端流程拆解为可复用的流水线，体现近期新增的“防御式校验 + 自动修复”改动：
 
 1. **需求接收与环境准备**：获取自然语言需求，加载业务动作库并初始化混合检索服务，后续 Action Guard 将复用检索结果做自动替换。
-2. **需求拆解 + 结构/参数构建（Agent）**：`plan_workflow_structure_with_llm` 内联工具先调用 `plan_user_requirement` 拆解需求，再用节点增删改与 `update_node_params` 构建骨架并补全 params（全部以 Jinja 表达式为主），边由绑定与分支指向自动推导。【F:velvetflow/planner/structure.py†L373-L1188】
+2. **需求拆解 + 结构/参数构建（Agent）**：`requirement_analysis.analyze_user_requirement` 先将自然语言转为结构化清单，`plan_workflow_structure_with_llm` 复用该清单，再用节点增删改与 `update_node_params` 构建骨架并补全 params（全部以 Jinja 表达式为主），边由绑定与分支指向自动推导。【F:velvetflow/planner/structure.py†L373-L1168】
 3. **初步校验与 Action Guard**：结构结果会先做 loop body 预检查并执行 `Workflow.model_validate`，随后进入 Action Guard；未注册/缺失的 `action_id` 会先尝试用混合检索一键替换，再将剩余问题交给 LLM 修复，确保进入后续校验阶段的动作都在白名单内。【F:velvetflow/planner/orchestrator.py†L104-L343】
 4. **Jinja 规范化与本地修复**：进入多轮本地修复，包括 Jinja 语法规范化、类型对齐、`loop.exports` 补全、alias 对齐与绑定路径归一化： 
-   - **条件/引用类型矫正**：根据 condition kind 需求与输出 Schema 自动转换数值/正则类型，并为绑定的 `__from__` 与目标 Schema 之间的类型不匹配提供自动包装或错误提示。【F:velvetflow/planner/orchestrator.py†L444-L580】
+   - **条件/引用类型矫正**：根据 condition kind 需求与输出 Schema 自动转换数值/正则类型，并为绑定引用与目标 Schema 之间的类型不匹配提供自动包装或错误提示。【F:velvetflow/planner/orchestrator.py†L444-L580】
    - **loop.exports 补全**：自动填充缺失的 `params.exports` 映射并规范化导出字段，避免循环节点留空导致 LLM 返工。【F:velvetflow/planner/orchestrator.py†L589-L662】
    - **Schema 感知修复**：移除动作 Schema 未定义的字段、为空字段写入默认值或尝试按类型转换，再进入正式校验；无法修复的错误会打包为 `ValidationError` 供后续 LLM 使用。【F:velvetflow/planner/repair_tools.py†L63-L215】【F:velvetflow/planner/orchestrator.py†L664-L817】
 5. **静态校验 + LLM 自修复循环**：`validate_completed_workflow` 会在每轮本地修复后运行，若仍有错误则将错误分布与上下文交给 `_repair_with_llm_and_fallback`，在限定轮次内迭代直至通过或返回最后一个合法版本。【F:velvetflow/planner/orchestrator.py†L664-L940】
-6. **需求对齐补全**：规划器会调用 `requirement_alignment.py` 对照需求拆解结果，若仍有缺口则触发 `update_workflow_with_two_pass` 继续补齐节点或参数，再次走相同的校验/修复链路。【F:velvetflow/planner/orchestrator.py†L1460-L1494】【F:velvetflow/planner/requirement_alignment.py†L18-L80】
-7. **持久化与可视化**：通过校验后写出 `workflow_output.json`，并可用 `render_workflow_image.py` 生成 `workflow_dag.jpg`，同时日志保留所有 LLM 对话与自动修复记录便于审计。
+6. **持久化与可视化**：通过校验后写出 `workflow_output.json`，并可用 `render_workflow_image.py` 生成 `workflow_dag.jpg`，同时日志保留所有 LLM 对话与自动修复记录便于审计。
 
 下方流程图将关键输入/输出、自动修复节点与 LLM 交互标出：
 
@@ -228,18 +224,16 @@ flowchart TD
     F["Jinja 规范化 + 本地修复\n类型对齐、exports/alias 修复、路径归一化"] --> G
     G{{"LLM: 自修复 (_repair_with_llm_and_fallback)\n按需多轮"}} --> H
     F -->|仍有错误| G
-    H["静态校验 (validate_completed_workflow)\n输出: 完整 Workflow 模型"] --> I
-    I["需求对齐检查\nrequirement_alignment + update_workflow"] --> J["持久化与可视化\nworkflow_output.json + workflow_dag.jpg"]
+    H["静态校验 (validate_completed_workflow)\n输出: 完整 Workflow 模型"] --> J["持久化与可视化\nworkflow_output.json + workflow_dag.jpg"]
 
     classDef llm fill:#fff6e6,stroke:#e67e22,stroke-width:2px;
     class C,G llm;
 ```
 
 LLM / Agent SDK 相关节点说明：
-- **结构规划 Agent**：基于自然语言需求先调用 `plan_user_requirement` 拆解任务，再通过节点增删改与 `update_node_params` 工具补全 params（Jinja 表达式为主）。`WorkflowBuilder` 会把推导出的 edges、condition 分支与 `depends_on` 写回骨架，方便下游校验共享上下文；节点字段也会按节点类型或 action schema 过滤无关字段，避免 Agent 生成不可识别的参数。【F:velvetflow/planner/structure.py†L373-L1188】【F:velvetflow/planner/workflow_builder.py†L20-L222】
+- **结构规划 Agent**：需求拆解在前置阶段完成，规划时直接复用结构化任务清单，再通过节点增删改与 `update_node_params` 工具补全 params（Jinja 表达式为主）。`WorkflowBuilder` 会把推导出的 edges、condition 分支与 `depends_on` 写回骨架，方便下游校验共享上下文；节点字段也会按节点类型或 action schema 过滤无关字段，避免 Agent 生成不可识别的参数。【F:velvetflow/planner/structure.py†L373-L1168】【F:velvetflow/planner/workflow_builder.py†L20-L222】
 - **动作合法性守卫**：若发现 `action_id` 缺失或未注册，会先尝试基于 display_name/原 action_id 检索替换，再将剩余问题交给 LLM 修复，避免幻觉动作进入最终 Workflow。【F:velvetflow/planner/orchestrator.py†L104-L343】
-- **Jinja 规范化与参数一致性**：规划/校验阶段会将简单路径转换为 Jinja 字符串，并对残留的 `__agg__` 提示修复；参数补全阶段的 schema 约束来自 `params_tools.py`，确保节点 params 与动作 arg_schema 对齐。【F:velvetflow/planner/params_tools.py†L1-L193】【F:velvetflow/verification/jinja_validation.py†L10-L189】
-- **需求对齐检查**：对照拆解后的 requirements，检测 workflow 是否缺失关键步骤；如有缺口，触发 `update_workflow_with_two_pass` 继续补齐，并复用相同的校验/修复管线。【F:velvetflow/planner/orchestrator.py†L1460-L1494】【F:velvetflow/planner/requirement_alignment.py†L18-L80】
+- **Jinja 规范化与参数一致性**：规划/校验阶段会将简单路径转换为 Jinja 字符串，并对非模板参数给出修复建议；参数补全阶段的 schema 约束来自 `params_tools.py`，确保节点 params 与动作 arg_schema 对齐。【F:velvetflow/planner/params_tools.py†L1-L193】【F:velvetflow/verification/jinja_validation.py†L10-L189】
 - **自修复 Agent**：当静态校验或本地修复仍未通过时，使用当前 workflow 字典与 `ValidationError` 列表提示模型修复。Agent 可以调用命名修复工具（如替换引用、补必填参数、规范化绑定路径）或提交补丁文本，直至通过或达到 `max_repair_rounds`，并在过程中保留最近一次合法版本以确保可回退。【F:velvetflow/planner/repair.py†L616-L756】【F:velvetflow/planner/orchestrator.py†L664-L940】
 
 ### Agent 工具的设计与运行方式
@@ -299,22 +293,9 @@ LLM / Agent SDK 相关节点说明：
 - 推导逻辑会去重并忽略自引用，所有自动生成的边都会在可视化与执行阶段生效。【F:velvetflow/models.py†L137-L246】【F:velvetflow/models.py†L441-L468】
 
 ### 参数绑定 DSL（params 内的占位符）
-执行器会对 `params` 里的绑定表达式进行解析与类型校验。规划阶段默认使用 **Jinja 模板**（例如 `"{{ result_of.node.field }}"`），同时仍兼容 legacy 的 `__from__`/`__agg__` 绑定对象，便于手写或迁移历史 DSL：
-
-```jsonc
-"some_param": {"__from__": "result_of.nodeA.output.field", "__agg__": "identity"}
-```
-
-常用能力：
-- `__from__`: 指向上游结果或循环上下文，形如 `result_of.<node_id>.<path>`。如果节点位于 loop 体内，还可以写 `loop.item`/`loop.index`/`loop.size`/`loop.accumulator` 或 `item_alias` 指定的别名。
-- `__agg__`: 聚合/变换方式，默认 `identity`。规划阶段会对残留的 `__agg__` 提示修复，但执行器与静态校验仍可识别。支持：
-  - `count` / `count_if`：统计列表长度，`count_if` 还能用 `field`+`op`+`value` 过滤。
-  - `join`: 直接用 `separator`（或 `sep`）把字符串列表拼接成一个字符串。
-  - `format_join`: 将列表/单值按 `format` 模板渲染并用 `sep` 拼接，`format` 中应直接写字段名占位符（如 `{name}`、`{score}`），不再支持 `{value}`。
-  - `filter_map`: 先过滤再映射/格式化，适合从列表提取子字段并合并成字符串。
-  - `pipeline`: 以 `steps` 数组串联多个 `filter`/`format_join` 变换，便于描述更复杂的处理链条。
+执行器只接受 **Jinja 模板** 形式的绑定（例如 `"{{ result_of.node.field }}"`）。常用能力：
 - 直接字符串路径：`"params": {"threshold": "loop.index"}` 这类纯字符串会在规划阶段自动包裹为 Jinja 模板（`{{ loop.index }}`）；解析失败会保留原值并在日志给出警告。
-- 绑定路径的有效性：`__from__` 引用动作输出时会根据动作的 `output_schema`/`arg_schema` 或 loop 的 `exports` 做静态校验，字段不存在会在执行前抛错，方便手动调试。【F:velvetflow/bindings.py†L18-L205】【F:velvetflow/bindings.py†L206-L341】
+- 绑定路径的有效性：引用动作输出时会根据动作的 `output_schema`/`arg_schema` 或 loop 的 `exports` 做静态校验，字段不存在会在执行前抛错，方便手动调试。【F:velvetflow/bindings.py†L18-L205】【F:velvetflow/bindings.py†L206-L341】
 - **Jinja 表达式与常量折叠**：
   - 参数、条件及聚合中的字符串可以写成 Jinja 表达式（如 `"{{ get('result_of.node.score') > 80 }}"`），校验阶段会先用严格模式 Jinja 解析语法并提示错误路径。
   - 对于 `"{{ 'action' }}"` 这类包裹字面量的模板，会在模型校验前折叠成普通字符串，避免字段类型被模板包裹后误判。【F:velvetflow/jinja_utils.py†L8-L114】【F:velvetflow/verification/jinja_validation.py†L50-L189】
@@ -322,10 +303,10 @@ LLM / Agent SDK 相关节点说明：
 
 ### 手动调试与排错建议
 1. **先跑校验**：使用 `python validate_workflow.py your_workflow.json --print-normalized`，可以立刻发现重复节点、边引用不存在、loop 子图 schema 不合法等问题。【F:validate_workflow.py†L1-L58】
-2. **检查绑定路径**：若报 `__from__` 相关错误，确认 `result_of.<node>.<field>` 中的节点是否存在且有对应字段；loop 节点需检查 `exports` 中是否声明了该字段。
+2. **检查绑定路径**：如果 Jinja 引用报错，确认 `result_of.<node>.<field>` 中的节点是否存在且有对应字段；loop 节点需检查 `exports` 中是否声明了该字段。
 
 ### 常见绑定警告示例
-- **引用了 loop 未导出的字段**：loop 节点的输出仅包含 `params.exports` 声明的字段，不会直接暴露子图节点的字段。示例中 `aggregate_summaries` 的 `text` 绑定写成 `{"__from__":"result_of.loop_each_news.summarize_news.summary","__agg__":"format_join","sep":"\n"}`，在解析时会因为 `loop_each_news` 的虚拟输出 Schema 中不存在 `summarize_news.summary` 而触发 `__from__ 路径 ... 引用了 loop 输出中不存在的字段` 的警告。应改为引用 loop 导出的数组：`{"__from__":"result_of.loop_each_news.exports.summary","__agg__":"format_join","sep":"\n"}`。
+- **引用了 loop 未导出的字段**：loop 节点的输出仅包含 `params.exports` 声明的字段，不会直接暴露子图节点的字段。引用 loop 内部节点字段会触发校验错误，应改为引用 loop 导出的数组（如 `result_of.loop_each_news.exports.summary`）。
 3. **最小化修改面**：调试时优先修改 `params` 中的绑定表达式或 condition 节点的跳转（`true_to_node`/`false_to_node`），避免破坏整体拓扑。
 4. **模拟执行观察输出**：用 `python execute_workflow.py --workflow-json your_workflow.json`，日志会标明每个节点解析后的参数值，便于确认聚合逻辑是否符合预期。
 5. **可视化辅助**：通过 `python render_workflow_image.py --workflow-json your_workflow.json --output tmp.jpg` 生成 DAG，快速核对节点/边连通性与显示名称。

@@ -1,7 +1,7 @@
 # 内部实现与设计模式
 
 ## 模块分层
-- **规划层（基于 Agent SDK）**：`planner/structure.py` 内联定义 Agent 工具完成需求拆解、节点构建与参数补全，`workflow_builder.py` 推导 edges/depends_on 并裁剪无关字段，`params_tools.py` 提供参数补全的 tool schema，`requirement_alignment.py` 负责需求对齐检查，`repair.py`/`update.py` 提供修复与增量更新，`orchestrator.py` 统筹 Action Guard、Jinja 规范化与修复循环，核心依赖由 `agent_runtime.py` 集中导出。
+- **规划层（基于 Agent SDK）**：`planner/structure.py` 内联定义 Agent 工具完成需求拆解、节点构建与参数补全，`workflow_builder.py` 推导 edges/depends_on 并裁剪无关字段，`params_tools.py` 提供参数补全的 tool schema，`repair.py`/`update.py` 提供修复与增量更新，`orchestrator.py` 统筹 Action Guard、Jinja 规范化与修复循环，核心依赖由 `agent_runtime.py` 集中导出。
 - **校验层**：`workflow_parser.py` 提供 DSL 的语法/语义解析与恢复建议，`verification/*` 与 `planner/repair_tools.py` 检查节点类型、引用路径与 Schema 兼容性，必要时自动填充默认值或清理非法字段。
 - **执行层**：`executor` 包通过组合式 mixin 将动作调用、条件判断、循环展开、模板渲染与图遍历解耦，`dynamic_executor.py` 汇总后实现可挂起的执行主循环。
 

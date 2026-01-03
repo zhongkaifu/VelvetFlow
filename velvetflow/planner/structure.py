@@ -8,7 +8,7 @@ import copy
 import json
 import os
 from collections import deque
-from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Mapping, MutableMapping, Optional, Sequence, Tuple
 
 from velvetflow.config import OPENAI_MODEL
 from velvetflow.logging_utils import log_debug, log_event, log_info, log_section, log_warn
@@ -19,8 +19,15 @@ from velvetflow.planner.workflow_builder import (
     attach_condition_branches,
 )
 from velvetflow.loop_dsl import iter_workflow_and_loop_body_nodes
+from velvetflow.planner.requirement_analysis import _normalize_requirements_payload
 from velvetflow.search import HybridActionSearchService
-from velvetflow.models import ALLOWED_PARAM_AGGREGATORS, Node, Workflow, infer_edges_from_bindings
+from velvetflow.models import (
+    ALLOWED_PARAM_AGGREGATORS,
+    Node,
+    Workflow,
+    infer_depends_on_from_edges,
+    infer_edges_from_bindings,
+)
 from velvetflow.planner.relations import get_referenced_nodes
 from velvetflow.reference_utils import normalize_reference_path, parse_field_path
 from velvetflow.verification.validation import (
@@ -95,6 +102,135 @@ def _attach_inferred_edges(workflow: Dict[str, Any]) -> Dict[str, Any]:
     nodes = list(iter_workflow_and_loop_body_nodes(copied))
     copied["edges"] = infer_edges_from_bindings(nodes)
     return attach_condition_branches(copied)
+
+
+def _hydrate_builder_from_workflow(
+    *, builder: WorkflowBuilder, workflow: Mapping[str, Any]
+) -> None:
+    """Load an existing workflow DAG into a mutable ``WorkflowBuilder``.
+
+    This allows the planner to continue expanding an already constructed
+    workflow instead of always starting from scratch.
+    """
+
+    if not isinstance(workflow, Mapping):
+        return
+
+    hydrated_workflow = attach_condition_branches(copy.deepcopy(workflow))
+
+    name = hydrated_workflow.get("workflow_name")
+    description = hydrated_workflow.get("description")
+    if isinstance(name, str):
+        builder.workflow_name = name
+    if isinstance(description, str):
+        builder.description = description
+
+    visited: set[str] = set()
+
+    def _normalize_loop_params(params: Mapping[str, Any] | None) -> tuple[dict, list]:
+        if not isinstance(params, Mapping):
+            return {}, []
+
+        params_copy = copy.deepcopy(params)
+        body = params_copy.get("body_subgraph")
+
+        if isinstance(body, Mapping):
+            body_nodes = body.get("nodes") if isinstance(body.get("nodes"), list) else []
+            params_copy["body_subgraph"] = {k: v for k, v in body.items() if k != "nodes"}
+            params_copy["body_subgraph"].setdefault("nodes", [])
+        elif isinstance(body, list):
+            body_nodes = body
+            params_copy["body_subgraph"] = {"nodes": []}
+        else:
+            body_nodes = []
+            if "body_subgraph" in params_copy:
+                params_copy["body_subgraph"] = {"nodes": []}
+
+        return params_copy, list(body_nodes or [])
+
+    def _normalize_parallel_params(params: Mapping[str, Any] | None) -> tuple[dict, list[tuple[str, list[Any]]]]:
+        if not isinstance(params, Mapping):
+            return {}, []
+
+        params_copy = copy.deepcopy(params)
+        branches = params_copy.get("branches") if isinstance(params_copy.get("branches"), list) else []
+        branch_nodes: list[tuple[str, list[Any]]] = []
+        normalized_branches: list[dict] = []
+
+        for branch in branches or []:
+            if not isinstance(branch, Mapping):
+                continue
+
+            branch_copy = copy.deepcopy(branch)
+            sub_nodes = branch_copy.get("sub_graph_nodes") if isinstance(branch_copy.get("sub_graph_nodes"), list) else []
+            branch_copy["sub_graph_nodes"] = []
+
+            branch_id = branch_copy.get("id") if isinstance(branch_copy.get("id"), str) else None
+            if branch_id:
+                branch_nodes.append((branch_id, list(sub_nodes)))
+
+            normalized_branches.append(branch_copy)
+
+        params_copy["branches"] = normalized_branches
+        return params_copy, branch_nodes
+
+    edges = hydrated_workflow.get("edges") if isinstance(hydrated_workflow.get("edges"), list) else []
+    depends_on_map = infer_depends_on_from_edges(iter_workflow_and_loop_body_nodes(hydrated_workflow), edges)
+
+    def _walk(nodes: Sequence[Any] | None, parent_id: str | None = None) -> None:
+        for node in nodes or []:
+            if not isinstance(node, Mapping):
+                continue
+
+            node_id = node.get("id")
+            node_type = node.get("type")
+            if not isinstance(node_id, str) or not isinstance(node_type, str):
+                continue
+            if node_id in visited:
+                continue
+
+            visited.add(node_id)
+            params = node.get("params") if isinstance(node.get("params"), Mapping) else node.get("params")
+            depends_on = (
+                node.get("depends_on")
+                if isinstance(node.get("depends_on"), list)
+                else depends_on_map.get(node_id)
+                if depends_on_map
+                else None
+            )
+            inferred_parent = parent_id or (node.get("parent_node_id") if isinstance(node.get("parent_node_id"), str) else None)
+
+            body_nodes: list[Any] = []
+            branch_nodes: list[tuple[str, list[Any]]] = []
+            params_to_use: Mapping[str, Any] | None = None
+
+            if node_type == "loop":
+                params_to_use, body_nodes = _normalize_loop_params(params if isinstance(params, Mapping) else {})
+            elif node_type == "parallel":
+                params_to_use, branch_nodes = _normalize_parallel_params(params if isinstance(params, Mapping) else {})
+
+            builder.add_node(
+                node_id=node_id,
+                node_type=node_type,
+                action_id=node.get("action_id") if isinstance(node.get("action_id"), str) else None,
+                display_name=node.get("display_name") if isinstance(node.get("display_name"), str) else node.get("display_name"),
+                params=params_to_use if node_type == "loop" else (copy.deepcopy(params) if isinstance(params, Mapping) else params),
+                out_params_schema=node.get("out_params_schema") if isinstance(node.get("out_params_schema"), Mapping) else None,
+                true_to_node=node.get("true_to_node") if isinstance(node.get("true_to_node"), str) else node.get("true_to_node"),
+                false_to_node=node.get("false_to_node") if isinstance(node.get("false_to_node"), str) else node.get("false_to_node"),
+                cases=node.get("cases") if isinstance(node.get("cases"), list) else None,
+                default_to_node=node.get("default_to_node") if isinstance(node.get("default_to_node"), str) else node.get("default_to_node"),
+                parent_node_id=inferred_parent,
+                depends_on=depends_on,
+            )
+
+            if node_type == "loop" and body_nodes:
+                _walk(body_nodes, parent_id=node_id)
+            elif node_type == "parallel" and branch_nodes:
+                for branch_id, nodes_in_branch in branch_nodes:
+                    _walk(nodes_in_branch, parent_id=f"{node_id}:{branch_id}")
+
+    _walk(hydrated_workflow.get("nodes"))
 
 
 def _normalize_sub_graph_nodes(
@@ -348,7 +484,7 @@ def _ensure_loop_items_fields(
     loop_node: Mapping[str, Any],
     action_schemas: Mapping[str, Mapping[str, Any]],
 ) -> Dict[str, Any]:
-    """Placeholder for legacy API; returns exports unchanged."""
+    """Placeholder pass-through for loop exports."""
 
     return dict(exports)
 
@@ -370,20 +506,8 @@ def _prepare_skeleton_for_next_stage(
 def _build_combined_prompt() -> str:
     structure_prompt = (
         "你是一个通用业务工作流编排助手。\n"
-        "首先请将用户的自然语言需求拆解为结构化清单，并调用 plan_user_requirement 进行保存；\n"
-        "拆解格式必须为：\n"
-        "{\n"
-        "  \"requirements\": [\n"
-        "    {\n"
-        "      \"description\": \"Task description\",\n"
-        "      \"intent\": \"The intention of this task\",\n"
-        "      \"inputs\": [\"A list of input of this task\"],\n"
-        "      \"constraints\": [\"the list of constraints that this task must obey\"]\n"
-        "    }\n"
-        "  ],\n"
-        "  \"assumptions\": [\"The assumptions of user's requirement\"]\n"
-        "}\n"
-        "后续如需回顾需求拆解，请随时调用 get_user_requirement。\n"
+        "用户的自然语言需求已在前置步骤拆解为结构化清单，包含描述、意图、输入、约束、状态以及 mapped_node（与 workflow 节点的映射）。\n"
+        "如需补充或修改拆解与状态，请在需求分析阶段更新结构化清单后重新执行规划。\n"
         "【Workflow DSL 语法与语义（务必遵守）】\n"
         "- workflow = {workflow_name, description, nodes: []}，只能返回合法 JSON（edges 会由系统基于节点绑定自动推导，不需要生成）。\n"
         "- node 基本结构：{id, type, display_name, params, depends_on, action_id?, out_params_schema?, loop/subgraph/branches?}。\n"
@@ -392,13 +516,12 @@ def _build_combined_prompt() -> str:
         "  condition 节点的 params 只能包含 expression（单个返回布尔值的 Jinja 表达式）；true_to_node/false_to_node 必须是节点顶层字段（字符串或 null），不得放入 params。\n"
         "  loop 节点包含 loop_kind/iter/source/body_subgraph/exports，exports 的 value 必须引用 body_subgraph 节点字段（如 {{ result_of.node.field }}），循环外部只能引用 exports.<key>，body_subgraph 仅需 nodes 数组，不需要 entry/exit/edges。\n"
         "  parallel 节点的 branches 为非空数组，每个元素包含 id/entry_node/sub_graph_nodes。\n"
-        "- params 内部必须直接使用 Jinja 表达式引用上游结果（如 {{ result_of.<node_id>.<field_path> }} 或 {{ loop.item.xxx }}），不再允许旧的 __from__/__agg__ DSL。"
+        "- params 内部必须直接使用 Jinja 表达式引用上游结果（如 {{ result_of.<node_id>.<field_path> }} 或 {{ loop.item.xxx }}），不得输出对象式绑定。"
         "  你在规划阶段输出的每一个 params 值（包含 condition/switch/loop 节点）都会被 Jinja 引擎解析，任何非 Jinja2 语法的引用会被视为错误并触发自动修复，请严格遵循 Jinja 模板写法。"
         "  其中 <node_id> 必须存在且字段需与上游 output_schema 或 loop.exports 对齐。\n"
         "系统中有一个 Action Registry，包含大量业务动作，你只能通过 search_business_actions 查询。\n"
         "构建方式：\n"
-        "1) 第一步必须先调用 plan_user_requirement 保存需求拆解。\n"
-        "2) 使用 set_workflow_meta 设置工作流名称和描述。\n"
+        "1) 使用 set_workflow_meta 设置工作流名称和描述。\n"
         "2) 当需要业务动作时，必须先用 search_business_actions 查询候选；add_action_node 的 action_id 必须取自最近一次 candidates.id。\n"
         "3）当需要 condition/switch/loop 节点时，必须先用 add_condition_node/add_switch_node/add_loop_node 创建，params 中的表达式和引用需严格遵循 Jinja 模板写法；\n"
         "4) 调用 update_node_params 为已创建的节点补充并校验 params；\n"
@@ -428,13 +551,13 @@ def _build_combined_prompt() -> str:
         "你是一个工作流参数补全助手。一次只处理一个节点，请根据给定的 arg_schema 补齐当前节点的 params。\n"
         "必须通过工具提交与校验：调用 update_node_params 提交补全结果并校验，收到校验错误要重新分析并再次提交。\n"
         "当某个字段需要引用其他节点的输出时，必须直接写成 Jinja 表达式或模板字符串，例如 {{ result_of.<node_id>.<field> }}，"
-        "node_id 只能来自 allowed_node_ids，field 必须存在于该节点的 output_schema。禁止再使用旧的 __from__/__agg__ 绑定 DSL。\n"
+        "node_id 只能来自 allowed_node_ids，field 必须存在于该节点的 output_schema，并且必须写成 Jinja 模板。\n"
         "你的所有 params 值都会直接交给 Jinja2 引擎解析，任何非 Jinja 语法（包括残留的绑定对象或伪代码）都会被视为错误并触发自动修复，请务必输出可被 Jinja 渲染的字符串或字面量。\n"
         "循环场景下可使用 loop.item/loop.index 以及 loop.exports.* 暴露的字段，依然通过 Jinja 表达式引用，禁止直接引用 loop body 的节点。\n"
         "引用 loop.exports 结构时必须指向 exports 内部的具体字段或子结构，不能只写 result_of.<loop_id>.exports。\n"
         "loop.exports 的每个键会收集每轮迭代的结果形成列表，每个 exports value 必须引用 body_subgraph 节点字段，如 {{ result_of.<body_node>.<field> }}。\n"
         "所有节点的 params 不得为空；如无明显默认值，需要分析上下游语义后调用工具补全。\n"
-        "聚合/筛选/格式化也请用 Jinja 过滤器或表达式完成（例如 {{ result_of.a.items | selectattr('score', '>', 80) | list | length }} 或 {{ result_of.a.items | map(attribute='name') | join(', ') }}），不要再输出带 __agg__ 的对象。"
+        "聚合/筛选/格式化也请用 Jinja 过滤器或表达式完成（例如 {{ result_of.a.items | selectattr('score', '>', 80) | list | length }} 或 {{ result_of.a.items | map(attribute='name') | join(', ') }}），不要输出对象式绑定。"
     )
     return f"{structure_prompt}\n\n{param_prompt}"
 
@@ -746,17 +869,22 @@ def _validate_node_params(
 
 
 def plan_workflow_structure_with_llm(
-    nl_requirement: str,
+    parsed_requirement: Mapping[str, Any],
     search_service: HybridActionSearchService,
     action_registry: List[Dict[str, Any]],
     max_rounds: int = 100,
     progress_callback: Callable[[str, Mapping[str, Any]], None] | None = None,
-    return_requirement: bool = False,
-) -> Dict[str, Any] | tuple[Dict[str, Any], Dict[str, Any] | None]:
+    existing_workflow: Mapping[str, Any] | None = None,
+) -> Dict[str, Any]:
     if not os.environ.get("OPENAI_API_KEY"):
         raise RuntimeError("请先设置 OPENAI_API_KEY 环境变量再进行结构规划。")
 
+    parsed_requirement = _normalize_requirements_payload(parsed_requirement)
+    parsed_requirement = copy.deepcopy(parsed_requirement)
+
     builder = WorkflowBuilder()
+    if existing_workflow:
+        _hydrate_builder_from_workflow(builder=builder, workflow=existing_workflow)
     action_schemas = _build_action_schema_map(action_registry)
     last_action_candidates: List[str] = []
     all_action_candidates: List[str] = []
@@ -823,76 +951,6 @@ def plan_workflow_structure_with_llm(
         payload = {"status": "error", "message": message}
         payload.update(extra)
         return payload
-
-    parsed_requirement: Dict[str, Any] | None = None
-
-    @function_tool(strict_mode=False)
-    def plan_user_requirement(payload: Mapping[str, Any]) -> Mapping[str, Any]:
-        """保存解析后的用户需求拆解，供后续规划与校验。
-
-        payload 格式必须为：
-        {
-          "requirements": [
-            {
-              "description": "...",
-              "intent": "...",
-              "inputs": ["..."],
-              "constraints": ["..."]
-            }
-          ],
-          "assumptions": ["..."]
-        }
-        """
-        nonlocal parsed_requirement
-        _log_tool_call("plan_user_requirement", payload)
-        requirements = payload.get("requirements")
-        assumptions = payload.get("assumptions")
-        if not isinstance(requirements, list):
-            result = {
-                "status": "error",
-                "message": "requirements 必须是列表。",
-            }
-            return _return_tool_result("plan_user_requirement", result)
-        if assumptions is not None and not isinstance(assumptions, list):
-            result = {
-                "status": "error",
-                "message": "assumptions 必须是字符串列表。",
-            }
-            return _return_tool_result("plan_user_requirement", result)
-        for idx, item in enumerate(requirements):
-            if not isinstance(item, Mapping):
-                result = {
-                    "status": "error",
-                    "message": f"requirements[{idx}] 必须是对象。",
-                }
-                return _return_tool_result("plan_user_requirement", result)
-            for key in ("description", "intent", "inputs", "constraints"):
-                if key not in item:
-                    result = {
-                        "status": "error",
-                        "message": f"requirements[{idx}] 缺少字段 {key}。",
-                    }
-                    return _return_tool_result("plan_user_requirement", result)
-        normalized_payload = {
-            "requirements": list(requirements),
-            "assumptions": list(assumptions or []),
-        }
-        parsed_requirement = normalized_payload
-        result = {"status": "ok", "requirement": normalized_payload}
-        return _return_tool_result("plan_user_requirement", result)
-
-    @function_tool(strict_mode=False)
-    def get_user_requirement() -> Mapping[str, Any]:
-        """获取已保存的用户需求拆解，便于回顾与校验."""
-        _log_tool_call("get_user_requirement")
-        if not parsed_requirement:
-            result = {
-                "status": "error",
-                "message": "尚未保存需求拆解，请先调用 plan_user_requirement。",
-            }
-            return _return_tool_result("get_user_requirement", result)
-        result = {"status": "ok", "requirement": parsed_requirement}
-        return _return_tool_result("get_user_requirement", result)
 
     @function_tool(strict_mode=False)
     def search_business_actions(query: str, top_k: int = 5) -> Mapping[str, Any]:
@@ -1820,8 +1878,6 @@ def plan_workflow_structure_with_llm(
         name="WorkflowStructurePlanner",
         instructions=system_prompt,
         tools=[
-            plan_user_requirement,
-            get_user_requirement,
             search_business_actions,
             list_retrieved_business_action,
             set_workflow_meta,
@@ -1842,22 +1898,34 @@ def plan_workflow_structure_with_llm(
 
     log_section("结构规划 - Agent SDK")
 
+    def _format_prompt_item(item: Any) -> Any:
+        """Ensure the initial Agent SDK prompt is role-tagged for chat models."""
+
+        if isinstance(item, Mapping) and "role" not in item:
+            return {
+                "role": "user",
+                "content": json.dumps(item, ensure_ascii=False),
+            }
+        return item
+
     def _run_agent(prompt: Any) -> None:
+        base_prompt = prompt if isinstance(prompt, list) else [prompt]
+        initial_prompt = [_format_prompt_item(item) for item in base_prompt]
         try:
-            Runner.run_sync(agent, prompt, max_turns=max_rounds)  # type: ignore[arg-type]
+            Runner.run_sync(agent, initial_prompt, max_turns=max_rounds)  # type: ignore[arg-type]
         except TypeError:
-            coro = Runner.run(agent, prompt)  # type: ignore[call-arg]
+            coro = Runner.run(agent, initial_prompt)  # type: ignore[call-arg]
             if asyncio.iscoroutine(coro):
                 asyncio.run(coro)
 
-    _run_agent(nl_requirement)
+    _run_agent(
+        {"user_requirements": parsed_requirement, "existing_workflow": existing_workflow or {}}
+    )
     if not latest_skeleton:
         latest_skeleton = _prepare_skeleton_for_next_stage(
             builder=builder, action_registry=action_registry, search_service=search_service
         )
 
-    if return_requirement:
-        return latest_skeleton, parsed_requirement
     return latest_skeleton
 
 

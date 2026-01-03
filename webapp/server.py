@@ -17,7 +17,7 @@ import json
 import copy
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Mapping, Optional
 
 import anyio
 
@@ -94,6 +94,10 @@ _search_service: HybridActionSearchService | None = None
 
 
 def _get_search_service() -> HybridActionSearchService:
+    """Lazily construct a shared search service for planner endpoints."""
+
+    # Building the default service may hit disk/network, so reuse a singleton
+    # across requests.
     global _search_service
     if _search_service is None:
         _search_service = build_default_search_service()
@@ -101,10 +105,67 @@ def _get_search_service() -> HybridActionSearchService:
 
 
 def _is_empty_workflow(workflow: Workflow | Dict[str, Any]) -> bool:
+    """Check whether a workflow contains any nodes regardless of object type."""
+
+    # Accept either Pydantic object or raw dict payloads from the API body.
     nodes = getattr(workflow, "nodes", None)
     if nodes is None and isinstance(workflow, dict):
         nodes = workflow.get("nodes")
     return not nodes
+
+
+def _summarize_workflow(requirement: str, workflow_dict: Dict[str, Any]):
+    """Derive UI suggestions/tool-gap hints from a workflow result."""
+
+    suggestions: List[str] = []
+    tool_gap_message = None
+    tool_gap_suggestions: List[str] = []
+    needs_tool_gap = _workflow_missing_business_tools(workflow_dict, BUSINESS_ACTIONS)
+    if needs_tool_gap:
+        tool_gap_message, tool_gap_suggestions = _suggest_tool_gap_guidance(requirement)
+    elif _is_empty_workflow(workflow_dict):
+        suggestions = _suggest_requirement_additions(requirement)
+
+    return suggestions, tool_gap_message, tool_gap_suggestions or None
+
+
+def _run_planner_for_request(
+    req: PlanRequest,
+    search_service: HybridActionSearchService,
+    require_existing: bool = False,
+    *,
+    progress_callback: Callable[[str, Mapping[str, Any]], None] | None = None,
+):
+    """Dispatch a planning or updating request based on presence of a DAG."""
+
+    # Basic input validation before calling into planner logic.
+    if not req.requirement.strip():
+        raise HTTPException(status_code=400, detail="requirement 不能为空")
+
+    if require_existing and not req.existing_workflow:
+        raise HTTPException(status_code=400, detail="existing_workflow 不能为空")
+
+    # When an existing workflow is provided, route through the updater to
+    # preserve and extend the current DAG. Otherwise, build a fresh plan.
+    if req.existing_workflow:
+        return update_workflow_with_two_pass(
+            existing_workflow=req.existing_workflow,
+            requirement=req.requirement,
+            search_service=search_service,
+            action_registry=BUSINESS_ACTIONS,
+            max_rounds=100,
+            max_repair_rounds=3,
+            progress_callback=progress_callback,
+        )
+
+    return plan_workflow_with_two_pass(
+        nl_requirement=req.requirement,
+        search_service=search_service,
+        action_registry=BUSINESS_ACTIONS,
+        max_rounds=100,
+        max_repair_rounds=3,
+        progress_callback=progress_callback,
+    )
 
 
 def _suggest_requirement_additions(user_requirement: str, *, model: str = OPENAI_MODEL) -> List[str]:
@@ -314,9 +375,6 @@ def _iter_workflow_snapshots(workflow: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 @app.post("/api/plan", response_model=PlanResponse)
 def plan_workflow(req: PlanRequest) -> PlanResponse:
-    if not req.requirement.strip():
-        raise HTTPException(status_code=400, detail="requirement 不能为空")
-
     try:
         search_service = _get_search_service()
     except Exception as exc:  # noqa: BLE001 - surface startup errors
@@ -324,41 +382,18 @@ def plan_workflow(req: PlanRequest) -> PlanResponse:
 
     try:
         with _capture_logs() as logs:
-            if req.existing_workflow:
-                workflow = update_workflow_with_two_pass(
-                    existing_workflow=req.existing_workflow,
-                    requirement=req.requirement,
-                    search_service=search_service,
-                    action_registry=BUSINESS_ACTIONS,
-                    # Align with the CLI demo defaults to reduce discrepancies.
-                    max_repair_rounds=3,
-                )
-            else:
-                workflow = plan_workflow_with_two_pass(
-                    nl_requirement=req.requirement,
-                    search_service=search_service,
-                    action_registry=BUSINESS_ACTIONS,
-                    # Mirror build_workflow.py defaults for consistent planning results.
-                    max_rounds=100,
-                    max_repair_rounds=3,
-                )
+            workflow = _run_planner_for_request(req, search_service)
     except Exception as exc:  # noqa: BLE001 - keep API message concise
         raise HTTPException(
             status_code=500,
             detail=f"规划或自修复失败: {exc} | trace: {traceback.format_exc()}",
         ) from exc
 
-    suggestions: List[str] = []
-    tool_gap_message = None
-    tool_gap_suggestions: List[str] = []
-    needs_tool_gap = _workflow_missing_business_tools(workflow, BUSINESS_ACTIONS)
-    if needs_tool_gap:
-        tool_gap_message, tool_gap_suggestions = _suggest_tool_gap_guidance(req.requirement)
-    elif _is_empty_workflow(workflow):
-        suggestions = _suggest_requirement_additions(req.requirement)
+    workflow_dict = _serialize_workflow(workflow)
+    suggestions, tool_gap_message, tool_gap_suggestions = _summarize_workflow(req.requirement, workflow_dict)
 
     return PlanResponse(
-        workflow=_serialize_workflow(workflow),
+        workflow=workflow_dict,
         logs=logs,
         suggestions=suggestions,
         tool_gap_message=tool_gap_message,
@@ -366,10 +401,37 @@ def plan_workflow(req: PlanRequest) -> PlanResponse:
     )
 
 
-@app.post("/api/plan/stream")
-async def plan_workflow_stream(req: PlanRequest) -> StreamingResponse:
-    """Stream planning logs and the final workflow over SSE."""
+@app.post("/api/update", response_model=PlanResponse)
+def update_workflow(req: PlanRequest) -> PlanResponse:
+    try:
+        search_service = _get_search_service()
+    except Exception as exc:  # noqa: BLE001 - surface startup errors
+        raise HTTPException(status_code=500, detail=f"构建检索服务失败: {exc}") from exc
 
+    try:
+        with _capture_logs() as logs:
+            workflow = _run_planner_for_request(req, search_service, require_existing=True)
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001 - keep API message concise
+        raise HTTPException(
+            status_code=500,
+            detail=f"规划或自修复失败: {exc} | trace: {traceback.format_exc()}",
+        ) from exc
+
+    workflow_dict = _serialize_workflow(workflow)
+    suggestions, tool_gap_message, tool_gap_suggestions = _summarize_workflow(req.requirement, workflow_dict)
+
+    return PlanResponse(
+        workflow=workflow_dict,
+        logs=logs,
+        suggestions=suggestions,
+        tool_gap_message=tool_gap_message,
+        tool_gap_suggestions=tool_gap_suggestions or None,
+    )
+
+
+def _build_streaming_response(req: PlanRequest, require_existing: bool = False) -> StreamingResponse:
     if not req.requirement.strip():
         raise HTTPException(status_code=400, detail="requirement 不能为空")
 
@@ -403,26 +465,13 @@ async def plan_workflow_stream(req: PlanRequest) -> StreamingResponse:
 
         try:
             with _capture_logs_stream(queue, loop):
-                if req.existing_workflow:
-                    workflow = await asyncio.to_thread(
-                        update_workflow_with_two_pass,
-                        existing_workflow=req.existing_workflow,
-                        requirement=req.requirement,
-                        search_service=search_service,
-                        action_registry=BUSINESS_ACTIONS,
-                        max_repair_rounds=3,
-                        progress_callback=emit_progress,
-                    )
-                else:
-                    workflow = await asyncio.to_thread(
-                        plan_workflow_with_two_pass,
-                        nl_requirement=req.requirement,
-                        search_service=search_service,
-                        action_registry=BUSINESS_ACTIONS,
-                        max_rounds=100,
-                        max_repair_rounds=3,
-                        progress_callback=emit_progress,
-                    )
+                workflow = await asyncio.to_thread(
+                    _run_planner_for_request,
+                    req,
+                    search_service,
+                    require_existing,
+                    progress_callback=emit_progress,
+                )
 
             workflow_dict = _serialize_workflow(workflow)
             snapshots = _iter_workflow_snapshots(workflow_dict)
@@ -435,18 +484,12 @@ async def plan_workflow_stream(req: PlanRequest) -> StreamingResponse:
                 }
                 if snapshot.get("visible_subgraph") is not None:
                     payload["visible_subgraph"] = snapshot["visible_subgraph"]
-                await queue.put(
-                    payload
-                )
-            needs_tool_gap = _workflow_missing_business_tools(workflow_dict, BUSINESS_ACTIONS)
-            needs_more_detail = _is_empty_workflow(workflow_dict) or needs_tool_gap
-            suggestions = []
-            tool_gap_message = None
-            tool_gap_suggestions: List[str] = []
-            if needs_tool_gap:
-                tool_gap_message, tool_gap_suggestions = _suggest_tool_gap_guidance(req.requirement)
-            elif needs_more_detail:
-                suggestions = _suggest_requirement_additions(req.requirement)
+                await queue.put(payload)
+
+            suggestions, tool_gap_message, tool_gap_suggestions = _summarize_workflow(
+                req.requirement, workflow_dict
+            )
+            needs_more_detail = bool(tool_gap_message) or _is_empty_workflow(workflow_dict)
             await queue.put(
                 {
                     "type": "result",
@@ -454,9 +497,11 @@ async def plan_workflow_stream(req: PlanRequest) -> StreamingResponse:
                     "needs_more_detail": needs_more_detail,
                     "suggestions": suggestions,
                     "tool_gap_message": tool_gap_message,
-                    "tool_gap_suggestions": tool_gap_suggestions or None,
+                    "tool_gap_suggestions": tool_gap_suggestions,
                 }
             )
+        except HTTPException as exc:
+            await queue.put({"type": "error", "message": exc.detail})
         except Exception as exc:  # noqa: BLE001 - keep API message concise
             await queue.put(
                 {
@@ -484,6 +529,20 @@ async def plan_workflow_stream(req: PlanRequest) -> StreamingResponse:
                     pass
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+@app.post("/api/plan/stream")
+async def plan_workflow_stream(req: PlanRequest) -> StreamingResponse:
+    """Stream planning logs and the final workflow over SSE."""
+
+    return _build_streaming_response(req)
+
+
+@app.post("/api/update/stream")
+async def update_workflow_stream(req: PlanRequest) -> StreamingResponse:
+    """Stream updates when users refine an existing workflow over SSE."""
+
+    return _build_streaming_response(req, require_existing=True)
 
 
 @app.post("/api/run", response_model=RunResponse)

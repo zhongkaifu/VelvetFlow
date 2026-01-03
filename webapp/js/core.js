@@ -825,7 +825,6 @@ function extractOutputDefs(schema) {
 }
 
 function stringifyBinding(value) {
-  if (value && typeof value === "object" && value.__from__) return String(value.__from__);
   if (value === null || value === undefined) return "";
   if (typeof value === "string") return value;
   try {
@@ -839,7 +838,7 @@ function parseBinding(text) {
   const trimmed = text.trim();
   if (!trimmed) return undefined;
   if (trimmed.startsWith("result_of.")) {
-    return { __from__: trimmed };
+    return `{{ ${trimmed} }}`;
   }
   try {
     return JSON.parse(trimmed);
@@ -897,16 +896,19 @@ function collectRefsFromValue(value, refs) {
     return;
   }
   if (typeof value === "object") {
-    if (value.__from__ && typeof value.__from__ === "string" && value.__from__.startsWith("result_of.")) {
-      const parts = value.__from__.split(".");
-      if (parts.length >= 2) refs.add(parts[1]);
-    }
     Object.values(value).forEach((v) => collectRefsFromValue(v, refs));
     return;
   }
-  if (typeof value === "string" && value.startsWith("result_of.")) {
-    const parts = value.split(".");
-    if (parts.length >= 2) refs.add(parts[1]);
+  if (typeof value === "string") {
+    const directRefMatch = value.match(/\{\{\s*result_of\.([^.\s}]+)[^}]*\}\}/);
+    if (directRefMatch && directRefMatch[1]) {
+      refs.add(directRefMatch[1]);
+      return;
+    }
+    if (value.startsWith("result_of.")) {
+      const parts = value.split(".");
+      if (parts.length >= 2) refs.add(parts[1]);
+    }
   }
 }
 

@@ -11,6 +11,7 @@ import os
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional
+from types import GeneratorType
 
 from jinja2 import Undefined
 from velvetflow.aggregation import (
@@ -28,7 +29,7 @@ from velvetflow.reference_utils import (
     normalize_reference_path,
     parse_field_path,
 )
-from velvetflow.jinja_utils import render_jinja_template
+from velvetflow.jinja_utils import _AutoValue, render_jinja_template
 
 
 class BindingContext:
@@ -53,10 +54,61 @@ class BindingContext:
         """Return a serializable snapshot of the binding context."""
 
         return {
-            "results": copy.deepcopy(self.results),
-            "loop_ctx": copy.deepcopy(self.loop_ctx),
+            "results": self._safe_deepcopy(self.results),
+            "loop_ctx": self._safe_deepcopy(self.loop_ctx),
             "loop_id": self.loop_id,
         }
+
+    def _safe_deepcopy(self, value: Any) -> Any:
+        """Deep copy workflow bindings while normalizing generators.
+
+        Action/tool implementations may accidentally return generator objects
+        inside their payloads. Standard :func:`copy.deepcopy` fails on generators
+        (``TypeError: cannot pickle 'generator' object``). This helper eagerly
+        materializes generators to lists and recursively copies collections so
+        checkpointing the binding context never crashes.
+        """
+
+        if isinstance(value, GeneratorType):
+            # Capture a potential fallback before consuming the generator in case
+            # iteration raises and clears the frame locals (e.g., Jinja's
+            # ``unique`` filter with unhashable items).
+            frame = getattr(value, "gi_frame", None)
+            fallback_seq = None
+            if frame and frame.f_locals:
+                fallback_seq = (
+                    frame.f_locals.get("seq")
+                    or frame.f_locals.get("iterable")
+                    or frame.f_locals.get("value")
+                )
+
+            try:
+                return [self._safe_deepcopy(v) for v in value]
+            except TypeError:
+                if fallback_seq is not None:
+                    try:
+                        return [self._safe_deepcopy(v) for v in fallback_seq]
+                    except Exception:
+                        pass
+
+                return []
+        if isinstance(value, _AutoValue):
+            # Jinja context preparation wraps strings in a lightweight proxy to
+            # provide attribute access. Deep copying the proxy can recurse
+            # through ``__getattr__``. Unwrap to the raw value before copying.
+            return self._safe_deepcopy(value.value)
+        if isinstance(value, dict):
+            return {self._safe_deepcopy(k): self._safe_deepcopy(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [self._safe_deepcopy(v) for v in value]
+        if isinstance(value, tuple):
+            return tuple(self._safe_deepcopy(v) for v in value)
+        if isinstance(value, set):
+            return {self._safe_deepcopy(v) for v in value}
+        try:
+            return copy.deepcopy(value)
+        except Exception:
+            return value
 
     @classmethod
     def from_snapshot(

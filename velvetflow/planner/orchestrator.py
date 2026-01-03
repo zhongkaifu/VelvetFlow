@@ -45,6 +45,7 @@ from velvetflow.planner.repair import (
     _make_failure_validation_error,
     _repair_with_llm_and_fallback,
 )
+from velvetflow.planner.requirement_analysis import analyze_user_requirement
 from velvetflow.planner.repair_tools import (
     align_loop_body_alias_references,
     fill_loop_exports_defaults,
@@ -52,9 +53,7 @@ from velvetflow.planner.repair_tools import (
     normalize_binding_paths,
     _apply_local_repairs_for_unknown_params,
 )
-from velvetflow.planner.requirement_alignment import check_missing_requirements
 from velvetflow.planner.structure import plan_workflow_structure_with_llm
-from velvetflow.planner.update import update_workflow_with_llm
 from velvetflow.reference_utils import parse_field_path
 from velvetflow.verification import (
     precheck_loop_body_graphs,
@@ -108,60 +107,6 @@ def _is_empty_fallback_workflow(workflow: Workflow) -> bool:
     """Return True if we only have the synthetic empty fallback workflow."""
 
     return workflow.workflow_name == "fallback_workflow" and not workflow.nodes
-
-
-def _format_missing_requirements(missing: Sequence[Mapping[str, Any]]) -> str:
-    payload = {"missing_requirements": list(missing)}
-    return (
-        "以下需求尚未在 workflow 中找到对应节点或输出，请在现有 workflow 上补齐：\n"
-        f"{json.dumps(payload, ensure_ascii=False, indent=2)}"
-    )
-
-
-def _run_requirement_alignment_loop(
-    workflow: Workflow,
-    requirement_plan: Mapping[str, Any] | None,
-    *,
-    action_registry: List[Dict[str, Any]],
-    search_service: HybridActionSearchService,
-    max_rounds: int,
-    max_repair_rounds: int,
-    progress_callback: Callable[[str, Mapping[str, Any]], None] | None = None,
-) -> Workflow:
-    requirements = (
-        requirement_plan.get("requirements") if isinstance(requirement_plan, Mapping) else None
-    )
-    if not isinstance(requirements, list) or not requirements:
-        return workflow
-
-    current_workflow = workflow
-    previous_missing: Optional[str] = None
-
-    for round_idx in range(max_rounds):
-        missing = check_missing_requirements(
-            current_workflow.model_dump(by_alias=True),
-            requirement_plan,
-        )
-        if not missing:
-            return current_workflow
-        missing_fingerprint = json.dumps(missing, ensure_ascii=False, sort_keys=True)
-        if previous_missing == missing_fingerprint:
-            log_warn("[RequirementAlign] 连续轮次缺失项一致，停止对齐循环。")
-            return current_workflow
-        previous_missing = missing_fingerprint
-
-        requirement_text = _format_missing_requirements(missing)
-        current_workflow = update_workflow_with_two_pass(
-            existing_workflow=current_workflow.model_dump(by_alias=True),
-            requirement=requirement_text,
-            search_service=search_service,
-            action_registry=action_registry,
-            max_repair_rounds=max_repair_rounds,
-            progress_callback=progress_callback,
-        )
-
-    log_warn("[RequirementAlign] 对齐轮次已达到上限，返回当前 workflow。")
-    return current_workflow
 
 
 def _schemas_compatible(expected: Optional[Mapping[str, Any]], actual: Optional[Mapping[str, Any]]) -> bool:
@@ -1104,7 +1049,7 @@ def _validate_and_repair_workflow(
             action_registry=action_registry,
         )
 
-        # Some validation passes (e.g., legacy type coercion) may be skipped; ensure the
+        # Some validation passes (e.g., optional type coercion) may be skipped; ensure the
         # error accumulator is initialized even when those phases are absent to avoid
         # NameError crashes.
         coercion_errors: List[ValidationError] = []
@@ -1300,7 +1245,6 @@ def plan_workflow_with_two_pass(
     *,
     max_rounds: int = 10,
     max_repair_rounds: int = 3,
-    max_alignment_rounds: int = 3,
     trace_context: TraceContext | None = None,
     trace_id: str | None = None,
     progress_callback: Callable[[str, Mapping[str, Any]], None] | None = None,
@@ -1320,8 +1264,6 @@ def plan_workflow_with_two_pass(
     max_repair_rounds:
         参数补全后进入校验 + 自修复的最大轮次，超过后返回最后通过校验的
         版本。
-    max_alignment_rounds:
-        需求对齐检查的最大迭代次数，超过后返回当前对齐结果。
 
     返回
     ----
@@ -1343,6 +1285,13 @@ def plan_workflow_with_two_pass(
       保证调用方始终获得一个合法的 `Workflow` 实例。
     """
 
+    parsed_requirement = analyze_user_requirement(
+        nl_requirement,
+        max_rounds=max_rounds,
+    )
+
+    # Allow one restart with a fresh trace context if parameter completion fails,
+    # so downstream callers still get a valid workflow instead of an exception.
     restart_attempted = False
 
     while True:
@@ -1365,13 +1314,12 @@ def plan_workflow_with_two_pass(
             )
 
             with child_span("structure_planning"):
-                skeleton_raw, requirement_plan = plan_workflow_structure_with_llm(
-                    nl_requirement=nl_requirement,
+                skeleton_raw = plan_workflow_structure_with_llm(
+                    parsed_requirement=parsed_requirement,
                     search_service=search_service,
                     action_registry=action_registry,
                     max_rounds=max_rounds,
                     progress_callback=progress_callback,
-                    return_requirement=True,
                 )
             log_section("第一阶段结果：Workflow Skeleton")
             log_json("Workflow Skeleton", skeleton_raw)
@@ -1464,16 +1412,6 @@ def plan_workflow_with_two_pass(
                 progress_callback=progress_callback,
             )
 
-            planned_workflow = _run_requirement_alignment_loop(
-                planned_workflow,
-                requirement_plan,
-                action_registry=action_registry,
-                search_service=search_service,
-                max_rounds=max_alignment_rounds,
-                max_repair_rounds=max_repair_rounds,
-                progress_callback=progress_callback,
-            )
-
         if not _is_empty_fallback_workflow(planned_workflow):
             return planned_workflow
 
@@ -1495,8 +1433,8 @@ def update_workflow_with_two_pass(
     search_service: HybridActionSearchService,
     action_registry: List[Dict[str, Any]],
     *,
+    max_rounds: int = 100,
     max_repair_rounds: int = 3,
-    model: str = OPENAI_MODEL,
     trace_context: TraceContext | None = None,
     trace_id: str | None = None,
     progress_callback: Callable[[str, Mapping[str, Any]], None] | None = None,
@@ -1508,11 +1446,14 @@ def update_workflow_with_two_pass(
     through incremental changes plus validation-driven self-repair.
     """
 
+    # Reuse upstream trace context if provided so logs stay correlated; otherwise
+    # create a dedicated span for this update run.
     context = trace_context or TraceContext.create(trace_id=trace_id, span_name="update_orchestrator")
     with use_trace_context(context):
         log_event(
             "update_start",
             {
+                "max_rounds": max_rounds,
                 "max_repair_rounds": max_repair_rounds,
             },
             context=context,
@@ -1522,6 +1463,8 @@ def update_workflow_with_two_pass(
             base_workflow = Workflow.model_validate(existing_workflow)
         except PydanticValidationError as e:
             log_warn("[update_workflow_with_two_pass] 输入 workflow 校验失败，进入修复流程。")
+            # Input DSL might come from hand edits; repair it first so the planner
+            # can safely continue from a validated baseline.
             validation_errors = _convert_pydantic_errors(existing_workflow, e) or [
                 _make_failure_validation_error(str(e))
             ]
@@ -1543,23 +1486,35 @@ def update_workflow_with_two_pass(
         )
         last_good_workflow = base_workflow
 
-        with child_span("llm_update"):
-            updated_raw = update_workflow_with_llm(
-                workflow_raw=base_workflow.model_dump(by_alias=True),
-                requirement=requirement,
+        parsed_requirement = analyze_user_requirement(
+            requirement,
+            existing_workflow=base_workflow.model_dump(by_alias=True),
+            max_rounds=max_rounds,
+        )
+
+        with child_span("structure_planning"):
+            updated_raw = plan_workflow_structure_with_llm(
+                parsed_requirement=parsed_requirement,
+                search_service=search_service,
                 action_registry=action_registry,
-                model=model,
+                max_rounds=max_rounds,
+                progress_callback=progress_callback,
+                existing_workflow=base_workflow.model_dump(by_alias=True),
             )
 
+        # Sanity-check loop bodies early so repair prompts include missing IDs
+        # before the more expensive validation steps run.
         precheck_errors = precheck_loop_body_graphs(updated_raw)
         if precheck_errors:
-            log_warn("[update_workflow_with_two_pass] 更新结果包含 loop body 缺失节点，将交给 LLM 修复。")
+            log_warn(
+                "[update_workflow_with_two_pass] 结构规划阶段检测到 loop body 引用缺失节点，交给 LLM 修复。"
+            )
             updated_workflow = _repair_with_llm_and_fallback(
                 broken_workflow=updated_raw if isinstance(updated_raw, dict) else {},
                 validation_errors=precheck_errors,
                 action_registry=action_registry,
                 search_service=search_service,
-                reason="更新结果校验失败",
+                reason="结构规划阶段校验失败",
                 progress_callback=progress_callback,
             )
         else:
@@ -1567,8 +1522,9 @@ def update_workflow_with_two_pass(
                 updated_workflow = Workflow.model_validate(updated_raw)
             except PydanticValidationError as e:
                 log_warn(
-                    "[update_workflow_with_two_pass] 更新结果无法通过校验，进入自修复。"
+                    "[update_workflow_with_two_pass] 结构规划阶段校验失败，将错误交给 LLM 修复后继续。"
                 )
+                # Convert schema errors into a friendly shape before retrying via LLM.
                 validation_errors = _convert_pydantic_errors(updated_raw, e) or [
                     _make_failure_validation_error(str(e))
                 ]
@@ -1577,9 +1533,27 @@ def update_workflow_with_two_pass(
                     validation_errors=validation_errors,
                     action_registry=action_registry,
                     search_service=search_service,
-                    reason="更新结果校验失败",
+                    reason="结构规划阶段校验失败",
                     progress_callback=progress_callback,
-                )
+            )
+
+        if not isinstance(updated_workflow, Workflow):
+            payload = (
+                updated_workflow
+                if isinstance(updated_workflow, Mapping)
+                else updated_workflow.model_dump(by_alias=True)
+                if hasattr(updated_workflow, "model_dump")
+                else {}
+            )
+            updated_workflow = Workflow.model_validate(payload)
+        elif any(isinstance(n, dict) for n in getattr(updated_workflow, "nodes", [])):
+            updated_workflow = Workflow.model_validate(
+                {
+                    "workflow_name": getattr(updated_workflow, "workflow_name", "unnamed_workflow"),
+                    "description": getattr(updated_workflow, "description", ""),
+                    "nodes": getattr(updated_workflow, "nodes", []),
+                }
+            )
 
         updated_workflow = _ensure_actions_registered_or_repair(
             updated_workflow,
@@ -1596,6 +1570,8 @@ def update_workflow_with_two_pass(
             except Exception:
                 log_debug("[update_workflow_with_two_pass] progress_callback 更新阶段调用失败，已忽略。")
 
+        # Reuse the same validation/repair pipeline to ensure params and bindings
+        # are executable after structural updates.
         return _validate_and_repair_workflow(
             updated_workflow,
             action_registry=action_registry,

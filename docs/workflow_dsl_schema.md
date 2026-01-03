@@ -52,9 +52,8 @@
 - `params`：节点专属参数，结构取决于节点类型。
 
 ### 参数绑定 DSL 速览
-- **Jinja 模板（推荐）**：`"{{ result_of.<node_id>.<field> }}"` 直接引用上游输出，规划阶段默认使用该风格。
-- **Legacy 绑定对象**：`{"__from__": "result_of.<node_id>.<field>"}` 与 `__agg__` 仍可用于手写/迁移 DSL，但规划阶段会提示修复。
-- **聚合**：`"__agg__": "identity|count|count_if|join|filter_map|format_join|pipeline"`，可配合 `field`、`op`、`value`、`map_field` 等字段完成筛选/映射。
+- **Jinja 模板（唯一支持）**：`"{{ result_of.<node_id>.<field> }}"` 直接引用上游输出，规划/执行阶段均假定 params 仅包含字符串模板或字面量。
+- **聚合**：若需要聚合数组，建议在 Action 内部或自定义模板中过滤/映射，避免使用对象式绑定。
 - **模板语法校验**：params 字符串支持 Jinja 表达式，校验/执行时会折叠常量并报出语法错误。
 
 ## 节点类型与示例
@@ -113,7 +112,7 @@
 ### 5. `loop`
 - **字段**：
   - `loop_kind`：必填，支持 `for_each`/`foreach`/`while`。
-  - `source`：数组/序列的引用路径（如 `result_of.search.items`），支持字符串或 `{"__from__": ...}` 绑定对象。
+  - `source`：数组/序列的引用路径（如 `{{ result_of.search.items }}`），仅支持字符串/Jinja 模板。
   - `item_alias`：为每轮迭代命名，便于子图中引用当前项（例如 `loop.<item_alias>` 或直接使用别名）。
   - `condition`：仅 `while` 循环需要的布尔表达式（Jinja）。
   - `body_subgraph`：必填子图，包含至少一个 `action` 节点。可选 `entry`/`exit` 字段用于指定起止节点。

@@ -5,7 +5,7 @@
 - 结构规划工具在 `plan_workflow_structure_with_llm` 内联定义，借助闭包维护 `WorkflowBuilder` 与动作候选集，并自动补齐 edges/depends_on；节点 params 会按节点类型或 action schema 过滤无关字段，降低 Agent 生成的噪声。【F:velvetflow/planner/structure.py†L603-L829】【F:velvetflow/planner/workflow_builder.py†L20-L222】
 - 参数补全通过 `update_node_params` 工具逐节点校验，工具 schema 来自 `params_tools.py`，要求使用 Jinja 表达式引用上游输出，并携带跨节点绑定记忆确保实体 ID 一致性。【F:velvetflow/planner/params_tools.py†L1-L193】【F:velvetflow/planner/structure.py†L1706-L1817】
 - 修复阶段 Agent 可选择命名修复工具或提交补丁文本，未提交最终版本时会使用工作副本兜底，确保始终返回可序列化的 workflow。【F:velvetflow/planner/repair.py†L616-L756】
-- 需求对齐检查由 `requirement_alignment.py` 驱动，在规划完成后检测缺口并调用更新管线补齐。【F:velvetflow/planner/requirement_alignment.py†L18-L80】【F:velvetflow/planner/orchestrator.py†L1460-L1494】
+- 静态校验与自动修复由 `orchestrator.py` 统筹：结构规划后的骨架会经历 Action Guard、Jinja 规范化、本地修复与多轮 LLM 修复，确保最终输出的 workflow 可执行并满足 Schema 要求。【F:velvetflow/planner/orchestrator.py†L373-L940】
 
 ## 检索与模型调优
 - 调整混合检索权重：`velvetflow/search.py` 的 `FeatureRanker` 允许通过 `feature_weights`、`keyword_weight`、`embedding_weight` 微调关键信号。

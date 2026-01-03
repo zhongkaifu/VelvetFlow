@@ -196,7 +196,9 @@ def infer_edges_from_bindings(nodes: Iterable[Any]) -> List[Dict[str, Any]]:
                     parts = ref.split(".")
                     if len(parts) >= 2 and parts[1]:
                         yield parts[1]
-            for v in value.values():
+            for key, v in value.items():
+                if key in {"nodes", "sub_graph_nodes"}:
+                    continue
                 yield from _collect_refs(v)
         elif isinstance(value, list):
             for item in value:
@@ -766,17 +768,22 @@ class Workflow:
                     actions_by_id,
                     loop_body_parents,
                 )
-                actual_type = schema.get("type") if isinstance(schema, Mapping) else None
-                if actual_type not in {"array"}:
-                    errors.append(
-                        {
-                            "loc": ("nodes", idx, "params", "source"),
-                            "msg": (
-                                "loop 节点的 source 应该引用数组/序列"
-                                f"，但解析到的类型为 {actual_type or '未知'}，路径: {normalized_source}"
-                            ),
-                        }
-                    )
+                # When the source is a simple reference, we can statically validate it
+                # refers to an array. More complex Jinja expressions (e.g. list
+                # concatenations) may not be parsable, so we skip the type check when
+                # the schema cannot be resolved.
+                if schema is not None:
+                    actual_type = schema.get("type") if isinstance(schema, Mapping) else None
+                    if actual_type not in {"array"}:
+                        errors.append(
+                            {
+                                "loc": ("nodes", idx, "params", "source"),
+                                "msg": (
+                                    "loop 节点的 source 应该引用数组/序列"
+                                    f"，但解析到的类型为 {actual_type or '未知'}，路径: {normalized_source}"
+                                ),
+                            }
+                        )
 
             try:
                 Workflow.model_validate(

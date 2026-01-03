@@ -19,7 +19,7 @@ from velvetflow.models import Node
 JINJA_EXPRESSION_NOTE = (
     "所有 params 都会作为 Jinja2 模板解析，"
     "必须使用 {{ ... }} 或 {% ... %} 的合法语法引用上游结果、输入或常量。"
-    "严禁使用 __from__/__agg__ 等旧式绑定格式。"
+    "仅支持模板字符串或字面量，不允许对象式绑定。"
 )
 
 
@@ -144,7 +144,7 @@ def build_param_completion_tool(
         f"{description_prefix}{action_desc}"
         f" allowed_node_ids={','.join(allowed_node_ids) or '无上游'}。"
         "必须使用符合 Jinja2 语法的模板填入 params，"
-        "不可使用 __from__/__agg__ 旧式绑定。"
+        "不得输出对象式绑定。"
         "填完后调用该工具提交 params。"
     )
 
