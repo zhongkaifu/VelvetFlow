@@ -138,8 +138,21 @@ def analyze_user_requirement(
         model=OPENAI_MODEL,
     )
 
+    def _format_prompt_item(item: Any) -> Any:
+        """Ensure each message passed to the Agent SDK has a valid role/content."""
+
+        if isinstance(item, Mapping) and "role" not in item:
+            return {
+                "role": "user",
+                "content": json.dumps(item, ensure_ascii=False),
+            }
+        return item
+
     def _run_agent(prompt: Any) -> None:
-        initial_prompt = prompt if isinstance(prompt, list) else [prompt]
+        # Agents SDK expects a list of role-tagged messages; stringify dict payloads
+        # into a single user message to avoid empty-role errors.
+        base_prompt = prompt if isinstance(prompt, list) else [prompt]
+        initial_prompt = [_format_prompt_item(item) for item in base_prompt]
         try:
             Runner.run_sync(agent, initial_prompt, max_turns=max_rounds)  # type: ignore[arg-type]
         except TypeError:  # pragma: no cover - fallback for async runner

@@ -33,7 +33,9 @@ def test_analyze_user_requirement_wraps_prompt_in_list(monkeypatch):
     result = requirement_analysis.analyze_user_requirement("demo request", existing_workflow={})
 
     assert isinstance(captured_prompt.get("value"), list)
-    assert captured_prompt["value"][0] == {
+    first = captured_prompt["value"][0]
+    assert first["role"] == "user"
+    assert json.loads(first["content"]) == {
         "nl_requirement": "demo request",
         "existing_workflow": {},
     }

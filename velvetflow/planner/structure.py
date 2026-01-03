@@ -1999,8 +1999,19 @@ def plan_workflow_structure_with_llm(
 
         return True
 
+    def _format_prompt_item(item: Any) -> Any:
+        """Ensure the initial Agent SDK prompt is role-tagged for chat models."""
+
+        if isinstance(item, Mapping) and "role" not in item:
+            return {
+                "role": "user",
+                "content": json.dumps(item, ensure_ascii=False),
+            }
+        return item
+
     def _run_agent(prompt: Any) -> None:
-        initial_prompt = prompt if isinstance(prompt, list) else [prompt]
+        base_prompt = prompt if isinstance(prompt, list) else [prompt]
+        initial_prompt = [_format_prompt_item(item) for item in base_prompt]
         try:
             Runner.run_sync(agent, initial_prompt, max_turns=max_rounds)  # type: ignore[arg-type]
         except TypeError:
