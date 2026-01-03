@@ -94,7 +94,7 @@ VelvetFlow (repo root)
 └── LICENSE
 ```
 
-- **Agent SDK 驱动的 Planner**：结构规划与参数补全在 `planner/structure.py` 内完成，前置的 `requirement_analysis.analyze_user_requirement` 会将自然语言需求拆解为结构化清单，规划阶段通过 `review_user_requirement` 复用该清单并使用节点增删改与 `update_node_params` 工具构建骨架并补全 params；`planner/agent_runtime.py` 集中导出 `Agent`/`Runner`/`function_tool`，确保同一套工具协议可在云端 Agent 与本地运行之间切换。
+- **Agent SDK 驱动的 Planner**：结构规划与参数补全在 `planner/structure.py` 内完成，前置的 `requirement_analysis.analyze_user_requirement` 会将自然语言需求拆解为结构化清单，规划阶段直接复用该清单并使用节点增删改与 `update_node_params` 工具构建骨架并补全 params；`planner/agent_runtime.py` 集中导出 `Agent`/`Runner`/`function_tool`，确保同一套工具协议可在云端 Agent 与本地运行之间切换。
 - **业务动作注册表**：`action_registry.py` 从 `tools/business_actions/` 载入动作，自动补齐 `requires_approval` / `allowed_roles` 安全字段，并提供 `get_action_by_id` 查询。
 - **离线索引 + 在线混合检索**：`search_index.py` 使用 OpenAI `text-embedding-3-large` 将业务动作构建为关键词与 embedding 索引，可由 `./build_action_index.py` 独立运行生成；`search.py` 读取索引并使用 `FakeElasticsearch`（关键词计分）与基于 Faiss 的向量检索（余弦相似度）混合排序，在线检索阶段仅对 query 进行 OpenAI embedding 再与索引中已有的动作 embedding 做匹配，`HybridActionSearchService` 提供工作流规划阶段的工具召回。
 - **工作流规划 Orchestrator**：`planner/orchestrator.py` 实现 `plan_workflow_with_two_pass`，在结构规划完成后依次执行 Action Guard、Jinja 规范化与本地修复、静态校验与 LLM 修复：
@@ -203,7 +203,7 @@ VelvetFlow (repo root)
 下面将端到端流程拆解为可复用的流水线，体现近期新增的“防御式校验 + 自动修复”改动：
 
 1. **需求接收与环境准备**：获取自然语言需求，加载业务动作库并初始化混合检索服务，后续 Action Guard 将复用检索结果做自动替换。
-2. **需求拆解 + 结构/参数构建（Agent）**：`requirement_analysis.analyze_user_requirement` 先将自然语言转为结构化清单，`plan_workflow_structure_with_llm` 复用该清单（可通过 `review_user_requirement` 查看），再用节点增删改与 `update_node_params` 构建骨架并补全 params（全部以 Jinja 表达式为主），边由绑定与分支指向自动推导。【F:velvetflow/planner/structure.py†L373-L1188】
+2. **需求拆解 + 结构/参数构建（Agent）**：`requirement_analysis.analyze_user_requirement` 先将自然语言转为结构化清单，`plan_workflow_structure_with_llm` 复用该清单，再用节点增删改与 `update_node_params` 构建骨架并补全 params（全部以 Jinja 表达式为主），边由绑定与分支指向自动推导。【F:velvetflow/planner/structure.py†L373-L1168】
 3. **初步校验与 Action Guard**：结构结果会先做 loop body 预检查并执行 `Workflow.model_validate`，随后进入 Action Guard；未注册/缺失的 `action_id` 会先尝试用混合检索一键替换，再将剩余问题交给 LLM 修复，确保进入后续校验阶段的动作都在白名单内。【F:velvetflow/planner/orchestrator.py†L104-L343】
 4. **Jinja 规范化与本地修复**：进入多轮本地修复，包括 Jinja 语法规范化、类型对齐、`loop.exports` 补全、alias 对齐与绑定路径归一化： 
    - **条件/引用类型矫正**：根据 condition kind 需求与输出 Schema 自动转换数值/正则类型，并为绑定引用与目标 Schema 之间的类型不匹配提供自动包装或错误提示。【F:velvetflow/planner/orchestrator.py†L444-L580】
@@ -231,7 +231,7 @@ flowchart TD
 ```
 
 LLM / Agent SDK 相关节点说明：
-- **结构规划 Agent**：需求拆解在前置阶段完成，规划时通过 `review_user_requirement` 回顾结构化任务清单，再通过节点增删改与 `update_node_params` 工具补全 params（Jinja 表达式为主）。`WorkflowBuilder` 会把推导出的 edges、condition 分支与 `depends_on` 写回骨架，方便下游校验共享上下文；节点字段也会按节点类型或 action schema 过滤无关字段，避免 Agent 生成不可识别的参数。【F:velvetflow/planner/structure.py†L373-L1188】【F:velvetflow/planner/workflow_builder.py†L20-L222】
+- **结构规划 Agent**：需求拆解在前置阶段完成，规划时直接复用结构化任务清单，再通过节点增删改与 `update_node_params` 工具补全 params（Jinja 表达式为主）。`WorkflowBuilder` 会把推导出的 edges、condition 分支与 `depends_on` 写回骨架，方便下游校验共享上下文；节点字段也会按节点类型或 action schema 过滤无关字段，避免 Agent 生成不可识别的参数。【F:velvetflow/planner/structure.py†L373-L1168】【F:velvetflow/planner/workflow_builder.py†L20-L222】
 - **动作合法性守卫**：若发现 `action_id` 缺失或未注册，会先尝试基于 display_name/原 action_id 检索替换，再将剩余问题交给 LLM 修复，避免幻觉动作进入最终 Workflow。【F:velvetflow/planner/orchestrator.py†L104-L343】
 - **Jinja 规范化与参数一致性**：规划/校验阶段会将简单路径转换为 Jinja 字符串，并对非模板参数给出修复建议；参数补全阶段的 schema 约束来自 `params_tools.py`，确保节点 params 与动作 arg_schema 对齐。【F:velvetflow/planner/params_tools.py†L1-L193】【F:velvetflow/verification/jinja_validation.py†L10-L189】
 - **自修复 Agent**：当静态校验或本地修复仍未通过时，使用当前 workflow 字典与 `ValidationError` 列表提示模型修复。Agent 可以调用命名修复工具（如替换引用、补必填参数、规范化绑定路径）或提交补丁文本，直至通过或达到 `max_repair_rounds`，并在过程中保留最近一次合法版本以确保可回退。【F:velvetflow/planner/repair.py†L616-L756】【F:velvetflow/planner/orchestrator.py†L664-L940】

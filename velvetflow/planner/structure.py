@@ -507,7 +507,6 @@ def _build_combined_prompt() -> str:
     structure_prompt = (
         "你是一个通用业务工作流编排助手。\n"
         "用户的自然语言需求已在前置步骤拆解为结构化清单，包含描述、意图、输入、约束、状态以及 mapped_node（与 workflow 节点的映射）。\n"
-        "构建过程中务必调用 review_user_requirement 检查每个子需求的状态；如需同步状态或节点映射，请调用 update_user_requirement。只有当所有需求状态均为“已完成”时，整体 workflow 才算完成；\n"
         "如需补充或修改拆解与状态，请在需求分析阶段更新结构化清单后重新执行规划。\n"
         "【Workflow DSL 语法与语义（务必遵守）】\n"
         "- workflow = {workflow_name, description, nodes: []}，只能返回合法 JSON（edges 会由系统基于节点绑定自动推导，不需要生成）。\n"
@@ -522,8 +521,7 @@ def _build_combined_prompt() -> str:
         "  其中 <node_id> 必须存在且字段需与上游 output_schema 或 loop.exports 对齐。\n"
         "系统中有一个 Action Registry，包含大量业务动作，你只能通过 search_business_actions 查询。\n"
         "构建方式：\n"
-        "1) 使用 review_user_requirement 先检查已有的需求拆解与状态，确保规划覆盖所有任务。\n"
-        "2) 使用 set_workflow_meta 设置工作流名称和描述。\n"
+        "1) 使用 set_workflow_meta 设置工作流名称和描述。\n"
         "2) 当需要业务动作时，必须先用 search_business_actions 查询候选；add_action_node 的 action_id 必须取自最近一次 candidates.id。\n"
         "3）当需要 condition/switch/loop 节点时，必须先用 add_condition_node/add_switch_node/add_loop_node 创建，params 中的表达式和引用需严格遵循 Jinja 模板写法；\n"
         "4) 调用 update_node_params 为已创建的节点补充并校验 params；\n"
@@ -953,87 +951,6 @@ def plan_workflow_structure_with_llm(
         payload = {"status": "error", "message": message}
         payload.update(extra)
         return payload
-
-    @function_tool(strict_mode=False)
-    def review_user_requirement() -> Mapping[str, Any]:
-        """获取已保存的用户需求拆解与状态，便于回顾与校验。"""
-        _log_tool_call("review_user_requirement")
-        if not parsed_requirement:
-            result = {
-                "status": "error",
-                "message": "尚未提供结构化需求拆解，请确认需求分析步骤是否成功。",
-            }
-            return _return_tool_result("review_user_requirement", result)
-        result = {"status": "ok", "requirement": parsed_requirement}
-        return _return_tool_result("review_user_requirement", result)
-
-    @function_tool(strict_mode=False)
-    def update_user_requirement(
-        index: int, status: Optional[str] = None, mapped_node: Optional[List[str]] = None
-    ) -> Mapping[str, Any]:
-        """更新拆分后的用户需求状态与节点映射。"""
-
-        _log_tool_call(
-            "update_user_requirement",
-            {"index": index, "status": status, "mapped_node": mapped_node},
-        )
-
-        requirements = parsed_requirement.get("requirements") if parsed_requirement else None
-        if not isinstance(requirements, list) or not requirements:
-            result = {
-                "status": "error",
-                "message": "尚未提供结构化需求拆解或需求列表为空，无法更新。",
-            }
-            return _return_tool_result("update_user_requirement", result)
-
-        if not isinstance(index, int):
-            result = {"status": "error", "message": "index 需要是整数。"}
-            return _return_tool_result("update_user_requirement", result)
-
-        if index < 0 or index >= len(requirements):
-            result = {
-                "status": "error",
-                "message": f"index 超出范围，应在 [0, {len(requirements) - 1}] 内。",
-            }
-            return _return_tool_result("update_user_requirement", result)
-
-        requirement_item = requirements[index]
-        if not isinstance(requirement_item, MutableMapping):
-            result = {"status": "error", "message": "指定的需求项不是对象，无法更新。"}
-            return _return_tool_result("update_user_requirement", result)
-
-        if status is not None:
-            if not isinstance(status, str):
-                result = {"status": "error", "message": "status 需要是字符串。"}
-                return _return_tool_result("update_user_requirement", result)
-            requirement_item["status"] = status
-
-        if mapped_node is not None:
-            if not isinstance(mapped_node, list) or any(
-                not isinstance(node_id, str) for node_id in mapped_node
-            ):
-                result = {"status": "error", "message": "mapped_node 需要是节点 id 字符串数组。"}
-                return _return_tool_result("update_user_requirement", result)
-
-            missing_nodes = [node_id for node_id in mapped_node if node_id not in builder.nodes]
-            if missing_nodes:
-                result = {
-                    "status": "error",
-                    "message": "mapped_node 包含尚未创建的节点 id，请先创建对应节点。",
-                    "missing_nodes": missing_nodes,
-                }
-                return _return_tool_result("update_user_requirement", result)
-
-            requirement_item["mapped_node"] = list(mapped_node)
-
-        requirements[index] = dict(requirement_item)
-
-        result = {
-            "status": "ok",
-            "index": index,
-            "requirement": requirements[index],
-        }
-        return _return_tool_result("update_user_requirement", result)
 
     @function_tool(strict_mode=False)
     def search_business_actions(query: str, top_k: int = 5) -> Mapping[str, Any]:
@@ -1961,8 +1878,6 @@ def plan_workflow_structure_with_llm(
         name="WorkflowStructurePlanner",
         instructions=system_prompt,
         tools=[
-            review_user_requirement,
-            update_user_requirement,
             search_business_actions,
             list_retrieved_business_action,
             set_workflow_meta,
@@ -1982,22 +1897,6 @@ def plan_workflow_structure_with_llm(
     )
 
     log_section("结构规划 - Agent SDK")
-
-    def _all_requirements_completed() -> bool:
-        if not parsed_requirement:
-            return False
-
-        requirements = parsed_requirement.get("requirements")
-        if not isinstance(requirements, list) or not requirements:
-            return False
-
-        for item in requirements:
-            if not isinstance(item, Mapping):
-                return False
-            if item.get("status") != "已完成":
-                return False
-
-        return True
 
     def _format_prompt_item(item: Any) -> Any:
         """Ensure the initial Agent SDK prompt is role-tagged for chat models."""
@@ -2022,10 +1921,6 @@ def plan_workflow_structure_with_llm(
     _run_agent(
         {"user_requirements": parsed_requirement, "existing_workflow": existing_workflow or {}}
     )
-    if not _all_requirements_completed():
-        raise ValueError(
-            "需求状态未全部为已完成。请使用 review_user_requirement 检查，并通过 update_user_requirement 将所有需求标记为已完成后再结束规划。"
-        )
     if not latest_skeleton:
         latest_skeleton = _prepare_skeleton_for_next_stage(
             builder=builder, action_registry=action_registry, search_service=search_service
