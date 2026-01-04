@@ -57,7 +57,7 @@ def _validate_string_as_jinja(
                 code="INVALID_JINJA_EXPRESSION",
                 node_id=node_id,
                 field=".".join(path_parts),
-                message=f"Jinja 表达式无法解析: {error}",
+                message=f"Failed to parse Jinja expression: {error}",
             )
         )
 
@@ -144,7 +144,7 @@ def normalize_params_to_jinja(
                         code="INVALID_JINJA_EXPRESSION",
                         node_id=node_id,
                         field=".".join(path_parts),
-                        message="params 必须是 Jinja 表达式，检测到 __agg__ 聚合 DSL",
+                        message="params must be Jinja expressions; detected __agg__ aggregation DSL",
                     )
                 )
                 forbidden_paths.append(".".join(path_parts))

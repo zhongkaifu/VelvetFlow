@@ -72,7 +72,7 @@ def _validate_jinja_expression(expr: str, *, node_id: str | None, field: str, er
                 code="INVALID_JINJA_EXPRESSION",
                 node_id=node_id,
                 field=field,
-                message=f"Jinja 表达式无法解析: {exc}",
+                message=f"Failed to parse Jinja expression: {exc}",
             )
         )
 
@@ -251,9 +251,8 @@ def _validate_nodes_recursive(
                     node_id=nid,
                     field=field_path,
                     message=(
-                        f"节点 '{nid}' 的字段 '{field_path}' 自引用 {ref}"
-                        "，会造成循环依赖。请将此错误上下文提交给 LLM 分析原因，"
-                        "并使用可用工具改为引用上游节点的输出或拆分节点。"
+                        f"Field '{field_path}' on node '{nid}' self-references {ref}, creating a cyclic dependency."
+                        " Please share this context with the LLM to diagnose and use the available tools to reference upstream outputs or split the node."
                     ),
                 )
             )
@@ -265,7 +264,7 @@ def _validate_nodes_recursive(
                     node_id=nid,
                     field="params",
                     message=(
-                        "action 节点的 params 为空，需要通过 LLM 分析原因并调用工具补全必需字段或绑定。"
+                        "action node params are empty; have the LLM analyze the cause and use tools to fill required fields or bindings."
                     ),
                 )
             )
@@ -285,8 +284,8 @@ def _validate_nodes_recursive(
                     node_id=nid,
                     field=path,
                     message=(
-                        f"节点 '{nid}' 的参数 '{path}' 值为空，请结合上下文补全真实值或绑定来源{context_hint}。"
-                        "可参考输入/输出 schema 使用工具进行修复。"
+                        f"Parameter '{path}' on node '{nid}' is empty; fill in a real value or binding using the context {context_hint}."
+                        " Refer to input/output schemas and use tools for the fix."
                     ),
                 )
             )
@@ -298,7 +297,7 @@ def _validate_nodes_recursive(
                     code="INVALID_SCHEMA",
                     node_id=nid,
                     field="exports",
-                    message="exports 仅允许出现在 loop 节点上，用于暴露子图结果。",
+                    message="exports is only allowed on loop nodes to expose subgraph results.",
                 )
             )
 
@@ -311,7 +310,7 @@ def _validate_nodes_recursive(
                         code="UNKNOWN_ACTION_ID",
                         node_id=nid,
                         field="action_id",
-                        message=f"节点 '{nid}' 的 action_id '{action_id}' 不在 Action Registry 中。",
+                        message=f"Node '{nid}' uses action_id '{action_id}' which is not in the Action Registry.",
                     )
                 )
             else:
@@ -329,7 +328,7 @@ def _validate_nodes_recursive(
                                     node_id=nid,
                                     field=field,
                                     message=(
-                                        f"action 节点 '{nid}' 的 params 为空，但 action '{action_id}' 有必填字段 '{field}'。"
+                                        f"action node '{nid}' has empty params, but action '{action_id}' requires field '{field}'."
                                     ),
                                 )
                             )
@@ -342,7 +341,7 @@ def _validate_nodes_recursive(
                                     node_id=nid,
                                     field=field,
                                     message=(
-                                        f"action 节点 '{nid}' 的 params 缺少必填字段 '{field}' (action_id='{action_id}')"
+                                        f"action node '{nid}' params are missing required field '{field}' (action_id='{action_id}')."
                                     ),
                                 )
                             )
@@ -356,7 +355,7 @@ def _validate_nodes_recursive(
                                     node_id=nid,
                                     field=field,
                                     message=(
-                                        f"action 节点 '{nid}' 的参数 '{field}' 未在 action '{action_id}' 的 arg_schema 中定义。"
+                                        f"Parameter '{field}' on action node '{nid}' is not defined in action '{action_id}' arg_schema."
                                     ),
                                 )
                             )
@@ -375,7 +374,9 @@ def _validate_nodes_recursive(
                                     code="SCHEMA_MISMATCH",
                                     node_id=nid,
                                     field=field_label,
-                                    message=f"action 节点 '{nid}' 的参数绑定（{path_prefix or '<root>'}）无效：{schema_err}",
+                                    message=(
+                                        f"Parameter binding on action node '{nid}' ({path_prefix or '<root>'}) is invalid: {schema_err}"
+                                    ),
                                 )
                             )
 
@@ -395,8 +396,8 @@ def _validate_nodes_recursive(
                                             node_id=nid,
                                             field=path_prefix or "params",
                                             message=(
-                                                f"action 节点 '{nid}' 的参数绑定（{path_prefix or '<root>'}）"
-                                                f"的 __from__[{idx}] 类型无效，期望字符串。"
+                                                f"Parameter binding on action node '{nid}' ({path_prefix or '<root>'}) "
+                                                f"has an invalid __from__[{idx}] type; expected a string."
                                             ),
                                         )
                                     )
@@ -428,8 +429,8 @@ def _validate_nodes_recursive(
                                         node_id=nid,
                                         field=field_label,
                                         message=(
-                                            f"action 节点 '{nid}' 的参数绑定（{path_prefix or '<root>'}）引用无效"
-                                            f"{suffix}：{schema_err}"
+                                            f"Parameter binding on action node '{nid}' ({path_prefix or '<root>'}) has an invalid reference"
+                                            f"{suffix}: {schema_err}"
                                         ),
                                     )
                                 )
@@ -463,8 +464,8 @@ def _validate_nodes_recursive(
                                                         node_id=nid,
                                                         field=f"{path_prefix or 'params'}.pipeline.steps[{idx}].field",
                                                         message=(
-                                                            f"action 节点 '{nid}' 的参数绑定（{path_prefix or '<root>'}）中 pipeline.steps[{idx}].field='{fld}'"
-                                                            f" 无效{suffix}：{item_err}"
+                                                            f"Parameter binding on action node '{nid}' ({path_prefix or '<root>'}) pipeline.steps[{idx}].field='{fld}'"
+                                                            f" is invalid{suffix}: {item_err}"
                                                         ),
                                                     )
                                                 )
@@ -511,8 +512,8 @@ def _validate_nodes_recursive(
                                         node_id=nid,
                                         field=path_prefix,
                                         message=(
-                                            f"action 节点 '{nid}' 的模板引用 '{ref}' 无效："
-                                            f"引用了不存在的节点 '{target_node}'。"
+                                            f"Template reference '{ref}' on action node '{nid}' is invalid: "
+                                            f"node '{target_node}' does not exist."
                                         ),
                                     )
                                 )
@@ -545,8 +546,8 @@ def _validate_nodes_recursive(
                                                 node_id=nid,
                                                 field=path_prefix,
                                                 message=(
-                                                    f"节点 '{nid}' 的模板引用 '{ref}' 无效：loop 节点 '{loop_ctx_root}' 当前 item_alias 为 '{loop_item_alias}'，"
-                                                    "请使用该别名而非 '.item' 访问循环元素。"
+                                                    f"Template reference '{ref}' on node '{nid}' is invalid: loop node '{loop_ctx_root}' currently uses item_alias '{loop_item_alias}'."
+                                                    " Please use that alias instead of '.item' to access loop elements."
                                                 ),
                                             )
                                         )
@@ -558,8 +559,8 @@ def _validate_nodes_recursive(
                                                 node_id=nid,
                                                 field=path_prefix,
                                                 message=(
-                                                    f"节点 '{nid}' 的模板引用 '{ref}' 无效：loop 节点 '{loop_ctx_root}' 上下文仅暴露 {', '.join(sorted(allowed_loop_fields | {'item'}))}，"
-                                                    f"找不到字段 '{root_field}'。"
+                                                    f"Template reference '{ref}' on node '{nid}' is invalid: loop node '{loop_ctx_root}' context only exposes {', '.join(sorted(allowed_loop_fields | {'item'}))};"
+                                                    f" field '{root_field}' was not found."
                                                 ),
                                             )
                                         )
@@ -586,7 +587,7 @@ def _validate_nodes_recursive(
                                     node_id=nid,
                                     field=path_prefix,
                                     message=(
-                                        f"action 节点 '{nid}' 的模板引用 '{ref}' 无效：{schema_err}"
+                                        f"Template reference '{ref}' on action node '{nid}' is invalid: {schema_err}"
                                     ),
                                 )
                             )
@@ -618,8 +619,8 @@ def _validate_nodes_recursive(
                         node_id=nid,
                         field="true_to_node/false_to_node",
                         message=(
-                            "condition 节点的 true_to_node 和 false_to_node 不能同时为空，"
-                            "请让 LLM 分析并使用工具修复该错误。"
+                            "condition node true_to_node and false_to_node cannot both be empty;"
+                            " ask the LLM to analyze and use tools to fix this error."
                         ),
                     )
                 )
@@ -633,8 +634,8 @@ def _validate_nodes_recursive(
                         node_id=nid,
                         field="expression",
                         message=(
-                            "condition 节点需要提供返回布尔值的 Jinja 表达式，"
-                            "请使用 params.expression 指定逻辑，其他字段（kind/source/field/threshold 等）已弃用。"
+                            "condition nodes must provide a Jinja expression that returns a boolean;"
+                            " use params.expression for logic—other fields (kind/source/field/threshold, etc.) are deprecated."
                         ),
                     )
                 )
@@ -665,8 +666,8 @@ def _validate_nodes_recursive(
                                     node_id=nid,
                                     field="expression",
                                     message=(
-                                        f"条件表达式引用 {source} 的属性 '{field}' 未在上游输出 schema 中声明，"
-                                        "请调整 exports 中暴露的字段或修改表达式以匹配可用字段。"
+                                        f"Condition expression references attribute '{field}' on {source} that is not declared in the upstream output schema;"
+                                        " adjust exported fields or update the expression to match available fields."
                                     ),
                                 )
                             )
@@ -681,7 +682,7 @@ def _validate_nodes_recursive(
                         code="INVALID_SCHEMA",
                         node_id=nid,
                         field="exports",
-                        message="loop 节点定义 exports 时必须提供 body_subgraph。",
+                        message="loop nodes must provide body_subgraph when defining exports.",
                     )
                 )
             if isinstance(body_exports, Mapping):
@@ -690,7 +691,7 @@ def _validate_nodes_recursive(
                         code="INVALID_SCHEMA",
                         node_id=nid,
                         field="body_subgraph.exports",
-                        message="loop.exports 应定义在 params.exports，请从 body_subgraph 中移除。",
+                        message="loop.exports should be defined in params.exports; remove it from body_subgraph.",
                     )
                 )
 
@@ -701,8 +702,8 @@ def _validate_nodes_recursive(
                         node_id=nid,
                         field="body_subgraph.nodes",
                         message=(
-                            "loop 节点的 body_subgraph 至少需要一个 action 节点，"
-                            "请使用规划/修复工具补充可执行步骤。"
+                            "loop node body_subgraph must contain at least one action node;"
+                            " use planning/repair tools to add executable steps."
                         ),
                     )
                 )
@@ -715,7 +716,7 @@ def _validate_nodes_recursive(
                         code="MISSING_REQUIRED_PARAM",
                         node_id=nid,
                         field="loop_kind",
-                        message=f"loop 节点 '{nid}' 的 params.loop_kind 不能为空。",
+                        message=f"loop node '{nid}' requires a non-empty params.loop_kind.",
                     )
                 )
             elif loop_kind not in allowed_loop_kinds:
@@ -724,7 +725,7 @@ def _validate_nodes_recursive(
                         code="SCHEMA_MISMATCH",
                         node_id=nid,
                         field="loop_kind",
-                        message=f"loop 节点 '{nid}' 的 loop_kind='{loop_kind}' 未被支持。",
+                        message=f"loop node '{nid}' has unsupported loop_kind='{loop_kind}'.",
                     )
                 )
 
@@ -736,7 +737,7 @@ def _validate_nodes_recursive(
                         code="MISSING_REQUIRED_PARAM",
                         node_id=nid,
                         field="source",
-                        message=f"loop 节点 '{nid}' 需要 source 字段指明循环输入。",
+                        message=f"loop node '{nid}' requires a source field to specify iteration input.",
                     )
                 )
             elif isinstance(source, str):
@@ -755,7 +756,7 @@ def _validate_nodes_recursive(
                             code="SCHEMA_MISMATCH",
                             node_id=nid,
                             field="source",
-                            message=f"loop 节点 '{nid}' 的 source 无效：{src_err}",
+                            message=f"Invalid source for loop node '{nid}': {src_err}",
                         )
                     )
                 else:
@@ -778,8 +779,8 @@ def _validate_nodes_recursive(
                                 node_id=nid,
                                 field="source",
                                 message=(
-                                    f"loop 节点 '{nid}' 的 source 应该引用数组/序列"
-                                    f"，但解析到的类型为 {actual_type or '未知'}，路径: {normalized_source}"
+                                    f"loop node '{nid}' source should reference an array/sequence"
+                                    f", but resolved type is {actual_type or 'unknown'}, path: {normalized_source}"
                                 ),
                             )
                         )
@@ -806,7 +807,7 @@ def _validate_nodes_recursive(
                             code="SCHEMA_MISMATCH",
                             node_id=nid,
                             field="source",
-                            message=f"loop 节点 '{nid}' 的 source 无效：{src_err}",
+                            message=f"Invalid source for loop node '{nid}': {src_err}",
                         )
                     )
                 elif isinstance(source.get("__from__"), str):
@@ -826,7 +827,7 @@ def _validate_nodes_recursive(
                                 code="SCHEMA_MISMATCH",
                                 node_id=nid,
                                 field="source",
-                                message=f"loop 节点 '{nid}' 的 source 引用无效：{schema_err}",
+                                message=f"loop node '{nid}' has an invalid source reference: {schema_err}",
                             )
                         )
                     else:
@@ -848,9 +849,9 @@ def _validate_nodes_recursive(
                                     node_id=nid,
                                     field="source",
                                     message=(
-                                        f"loop 节点 '{nid}' 的 source 应该引用数组/序列"
-                                        f"，但解析到的类型为 {actual_type or '未知'}，路径: {normalized_source}"
-                                    ),
+                                      f"loop node '{nid}' source should reference an array/sequence"
+                                      f", but resolved type is {actual_type or 'unknown'}, path: {normalized_source}"
+                                      ),
                                 )
                             )
 
@@ -870,7 +871,7 @@ def _validate_nodes_recursive(
                         code="INVALID_SCHEMA",
                         node_id=nid,
                         field="source",
-                        message="loop 节点的 source 必须是字符串或绑定对象。",
+                        message="loop node source must be a string or binding object.",
                     )
                 )
 
@@ -880,7 +881,7 @@ def _validate_nodes_recursive(
                         code="MISSING_REQUIRED_PARAM",
                         node_id=nid,
                         field="item_alias",
-                        message=f"loop 节点 '{nid}' 需要 item_alias 用于循环体中引用当前元素。",
+                        message=f"loop node '{nid}' requires item_alias to reference the current element in the loop body.",
                     )
                 )
 
@@ -890,7 +891,7 @@ def _validate_nodes_recursive(
                         code="MISSING_REQUIRED_PARAM",
                         node_id=nid,
                         field="condition",
-                        message=f"loop 节点 '{nid}' 的 while 循环需要 condition。",
+                        message=f"loop node '{nid}' with while loop requires condition.",
                     )
                 )
 
@@ -901,7 +902,7 @@ def _validate_nodes_recursive(
                         code="SCHEMA_MISMATCH",
                         node_id=nid,
                         field="exports",
-                        message=f"loop 节点 '{nid}' 的 exports 必须是对象。",
+                        message=f"loop node '{nid}' exports must be an object.",
                     )
                 )
             elif isinstance(exports, Mapping):
@@ -917,7 +918,7 @@ def _validate_nodes_recursive(
                                 code="SCHEMA_MISMATCH",
                                 node_id=nid,
                                 field="exports",
-                                message=f"loop 节点 '{nid}' 的 exports key 必须是字符串。",
+                                message=f"loop node '{nid}' exports keys must be strings.",
                             )
                         )
                         continue
@@ -927,7 +928,7 @@ def _validate_nodes_recursive(
                                 code="SCHEMA_MISMATCH",
                                 node_id=nid,
                                 field=f"exports.{key}",
-                                message=f"loop 节点 '{nid}' 的 exports.{key} 必须是非空 Jinja 表达式字符串。",
+                                message=f"loop node '{nid}' exports.{key} must be a non-empty Jinja expression string.",
                             )
                         )
                         continue
@@ -938,7 +939,7 @@ def _validate_nodes_recursive(
                                 code="SCHEMA_MISMATCH",
                                 node_id=nid,
                                 field=f"exports.{key}",
-                                message=f"loop 节点 '{nid}' 的 exports.{key} 必须引用 body_subgraph 节点输出字段。",
+                                message=f"loop node '{nid}' exports.{key} must reference body_subgraph node output fields.",
                             )
                         )
                         continue
@@ -960,7 +961,7 @@ def _validate_nodes_recursive(
                                     node_id=nid,
                                     field=f"exports.{key}",
                                     message=(
-                                        f"loop 节点 '{nid}' 的 exports.{key} 只能引用 body_subgraph 内的节点输出。"
+                                        f"loop node '{nid}' exports.{key} can only reference outputs from nodes inside body_subgraph."
                                     ),
                                 )
                             )
@@ -971,7 +972,7 @@ def _validate_nodes_recursive(
                                 code="SCHEMA_MISMATCH",
                                 node_id=nid,
                                 field=f"exports.{key}",
-                                message=f"loop 节点 '{nid}' 的 exports.{key} 必须引用 body_subgraph 节点输出字段。",
+                                message=f"loop node '{nid}' exports.{key} must reference body_subgraph node output fields.",
                             )
                         )
                         continue
@@ -1012,7 +1013,7 @@ def _validate_nodes_recursive(
                         code="MISSING_REQUIRED_PARAM",
                         node_id=nid,
                         field="branches",
-                        message=f"parallel 节点 '{nid}' 需要非空 branches 列表。",
+                        message=f"parallel node '{nid}' requires a non-empty branches list.",
                     )
                 )
 
