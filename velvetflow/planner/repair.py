@@ -366,20 +366,20 @@ def _summarize_validation_errors_for_llm(
 
 
 _ERROR_TYPE_PROMPTS: Dict[str, str] = {
-    "MISSING_REQUIRED_PARAM": "补齐 params.<field>，优先绑定上游符合 arg_schema 的输出或使用 schema 默认值。示例：如果 action 需要 params.prompt 且缺失，可绑定上游文案生成节点的 result.output。",
-    "UNKNOWN_ACTION_ID": "替换为 Action Registry 中存在的 action_id，保持节点含义最接近并同步校正 params。示例：将未知的 action_id 改为 registry 中的 text.generate，并保留 prompt/temperature 等参数。",
-    "UNKNOWN_PARAM": "移除或重命名 params 中未在 arg_schema 声明的字段，使其与 schema 对齐。示例：action schema 仅接受 prompt/temperature，应删除意外出现的 max_token 字段。",
-    "DISCONNECTED_GRAPH": "连接无入度/出度节点，确保每个节点都位于可达路径上。示例：为孤立的 summary 节点添加来自前置生成节点的边，并把结果导向下游汇总节点。",
-    "INVALID_EDGE": "修复边的 from/to 以引用存在的节点，并保持条件字段合法。示例：若 edge.to 指向不存在的 node-3，可改为实际存在的 reviewer 节点。",
-    "SCHEMA_MISMATCH": "调整绑定字段或聚合方式，使类型与上游 output_schema/arg_schema 兼容。示例：如果上游输出是 list 而当前节点期望 string，可改为 join 列表或选择单个元素。",
-    "INVALID_SCHEMA": "按 DSL 结构补齐/修正字段类型（nodes/edges/params），避免 JSON 结构缺失。示例：在 workflow 缺少 edges 字段时补空数组，并确保 nodes 为列表。",
-    "INVALID_LOOP_BODY": "补齐 loop.body_subgraph.nodes（至少一个 action），并确保 exports 使用 {key: Jinja表达式} 结构引用 body_subgraph 节点字段。",
-    "STATIC_RULES_SUMMARY": "遵循静态规则摘要中的提示逐项修复，优先处理连通性和 schema 不匹配。示例：按摘要要求先修复未连接的边，再补齐缺失的必填参数。",
-    "EMPTY_PARAM_VALUE": "为空的参数应填入非空值或绑定，避免空字符串/空对象。示例：将空的 params.prompt 改为具体提示词或绑定上游结果。",
-    "EMPTY_PARAMS": "params 不能是空对象，为必填字段提供值或引用，并使用工具完成不确定的填充。示例：若节点类型为 action 但 params 为 {}，根据 arg_schema 填入 prompt/template 等必填字段。",
-    "SELF_REFERENCE": "移除节点对自身 result_of.<node> 的引用，改用上游输出或拆分节点并通过工具应用修改。示例：若 node-a.params.input 引用 result_of.node-a，可改为 result_of.previous-node。",
-    "SYNTAX_ERROR": "修正 DSL 语法（括号、逗号、引号等），使解析器能生成 AST。示例：补全缺失的引号或逗号，确保 JSON 能被解析。",
-    "GRAMMAR_VIOLATION": "遵循文法约束调整节点/字段位置，按期望的 token/产生式重新组织。示例：将误放在 edges 中的节点定义移回 nodes 列表。",
+    "MISSING_REQUIRED_PARAM": "Fill in params.<field>; prefer binding upstream outputs that match arg_schema or use schema defaults. Example: if an action requires params.prompt but it is missing, bind result.output from an upstream copywriting node.",
+    "UNKNOWN_ACTION_ID": "Replace with an action_id that exists in the Action Registry, keeping the node's intent closest and fixing params accordingly. Example: change an unknown action_id to text.generate in the registry and keep parameters such as prompt/temperature.",
+    "UNKNOWN_PARAM": "Remove or rename params fields not declared in arg_schema so they align with the schema. Example: if the action schema only accepts prompt/temperature, delete an unexpected max_token field.",
+    "DISCONNECTED_GRAPH": "Connect nodes with no in-degree/out-degree so every node sits on a reachable path. Example: add an edge from a prior generation node to an isolated summary node and route its result to downstream aggregation nodes.",
+    "INVALID_EDGE": "Fix edge.from/edge.to to reference existing nodes and keep condition fields valid. Example: if edge.to points to missing node-3, change it to an existing reviewer node.",
+    "SCHEMA_MISMATCH": "Adjust bound fields or aggregation so types are compatible with upstream output_schema/arg_schema. Example: if upstream output is a list but the current node expects a string, join the list or pick a single element.",
+    "INVALID_SCHEMA": "Fill or correct field types per the DSL structure (nodes/edges/params) to avoid missing JSON pieces. Example: if the workflow lacks an edges field, add an empty array and ensure nodes is a list.",
+    "INVALID_LOOP_BODY": "Fill loop.body_subgraph.nodes (at least one action) and ensure exports use the {key: Jinja expression} shape referencing body_subgraph node fields.",
+    "STATIC_RULES_SUMMARY": "Follow the static rules summary step by step, prioritizing connectivity and schema mismatches. Example: fix disconnected edges first per the summary, then fill missing required params.",
+    "EMPTY_PARAM_VALUE": "Populate empty parameters with non-empty values or bindings; avoid empty strings/objects. Example: change an empty params.prompt to a concrete prompt or bind it to an upstream result.",
+    "EMPTY_PARAMS": "params cannot be an empty object—provide values or references for required fields and use tools to fill uncertain parts. Example: if a node type is action but params is {}, fill required fields like prompt/template according to arg_schema.",
+    "SELF_REFERENCE": "Remove a node's reference to its own result_of.<node>; use upstream outputs instead, or split the node and apply tools. Example: if node-a.params.input references result_of.node-a, change it to result_of.previous-node.",
+    "SYNTAX_ERROR": "Fix DSL syntax (brackets, commas, quotes, etc.) so the parser can build the AST. Example: add missing quotes or commas to make the JSON parseable.",
+    "GRAMMAR_VIOLATION": "Rearrange nodes/fields according to grammar constraints, respecting expected tokens/productions. Example: move a node definition mistakenly placed in edges back to the nodes list.",
 }
 
 
