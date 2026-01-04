@@ -185,7 +185,7 @@ def analyze_user_requirement(
                     "intent": "",
                     "inputs": [],
                     "constraints": [],
-                    "status": "Not started",
+                    "status": "未开始",
                     "mapped_node": [],
                 }
             ],

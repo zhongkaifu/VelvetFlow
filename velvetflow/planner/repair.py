@@ -339,7 +339,7 @@ def _summarize_validation_errors_for_llm(
             if match:
                 loop_ref = match.group(1)
             repair_prompts.append(
-                "- [SCHEMA_MISMATCH] Loop item reference fix: if used inside the loop body, change to"
+                "- [SCHEMA_MISMATCH] loop item 引用修复 (Loop item reference fix): if used inside the loop body, change to"
                 " `loop.item.<field>` and ensure the params.source element schema contains that field;"
                 " if used outside the loop, change to `result_of.<loop_id>.exports.<key>`.".replace(
                     "<loop_id>", str(loop_ref)
@@ -347,10 +347,10 @@ def _summarize_validation_errors_for_llm(
             )
 
         history = previous_attempts.get(_make_error_key(err))
-        if history:
-            lines.append("    Previous repair attempts:")
-            for h in history:
-                lines.append(f"    - {h}")
+    if history:
+        lines.append("    历史修复尝试 / Previous repair attempts:")
+        for h in history:
+            lines.append(f"    - {h}")
 
     if schema_hints:
         lines.append("")
@@ -365,7 +365,7 @@ def _summarize_validation_errors_for_llm(
     guidance_prompts = sorted(set(repair_prompts + exploration_prompts))
     if guidance_prompts:
         lines.append("")
-        lines.append("Error-specific tips/repair guidance (use these directions with the surrounding context):")
+        lines.append("错误特定提示 / Error-specific tips (use these directions with the surrounding context):")
         lines.extend(guidance_prompts)
 
     return "\n".join(lines)
@@ -376,7 +376,7 @@ _ERROR_TYPE_PROMPTS: Dict[str, str] = {
     "UNKNOWN_ACTION_ID": "Replace with an action_id that exists in the Action Registry while keeping semantics similar and adjusting params accordingly. Example: change an unknown action_id to text.generate in the registry and retain prompt/temperature parameters.",
     "UNKNOWN_PARAM": "Remove or rename params fields not declared in the arg_schema so they align with the schema. Example: if the action schema only accepts prompt/temperature, delete an unexpected max_token field.",
     "DISCONNECTED_GRAPH": "Connect nodes with no inputs/outputs so every node sits on a reachable path. Example: add an edge from an upstream generation node to an isolated summary node and route its result to downstream aggregation.",
-    "INVALID_EDGE": "Fix edge from/to values to reference existing nodes and keep condition fields valid. Example: if edge.to points to nonexistent node-3, change it to a real reviewer node.",
+    "INVALID_EDGE": "修复边 / 连接无入度: Fix edge from/to values to reference existing nodes and keep condition fields valid. Example: if edge.to points to nonexistent node-3, change it to a real reviewer node.",
     "SCHEMA_MISMATCH": "Adjust bound fields or aggregation so types are compatible with upstream output_schema/arg_schema. Example: when upstream output is a list but the current node expects a string, join the list or pick a single element.",
     "INVALID_SCHEMA": "Complete or correct field types per the DSL structure (nodes/edges/params) to avoid missing JSON structures. Example: if the workflow lacks an edges field, add an empty array and ensure nodes is a list.",
     "INVALID_LOOP_BODY": "Fill loop.body_subgraph.nodes (at least one action) and ensure exports use the {key: Jinja expression} structure referencing body_subgraph node fields.",
@@ -514,9 +514,9 @@ def _repair_with_llm_and_fallback(
         if not isinstance(repaired, Workflow):
             repaired = Workflow.model_validate(repaired)
         log_success("[AutoRepair] LLM repair succeeded; continuing workflow construction.")
-    return repaired
-except Exception as err:  # noqa: BLE001
-    log_warn(f"[AutoRepair] LLM repair failed: {err}")
+        return repaired
+    except Exception as err:  # noqa: BLE001
+        log_warn(f"[AutoRepair] LLM repair failed: {err}")
         try:
             fallback = _safe_repair_invalid_loop_body(broken_workflow)
             fallback = ensure_registered_actions(
@@ -532,8 +532,7 @@ except Exception as err:  # noqa: BLE001
             return fallback
         except Exception as inner_err:  # noqa: BLE001
             log_error(
-                "[AutoRepair] Failed to fall back to the original structure; keeping the failed structure for continued repair:"
-                f"{inner_err}"
+                f"[AutoRepair] Failed to fall back to the original structure; keeping the failed structure for continued repair: {inner_err}"
             )
             # Preserve the last broken structure so the outer planner loop can keep
             # attempting repairs instead of returning a synthetic empty workflow.
