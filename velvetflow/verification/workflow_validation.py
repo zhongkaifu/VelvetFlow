@@ -51,27 +51,27 @@ def precheck_loop_body_graphs(workflow_raw: Mapping[str, Any] | Any) -> List[Val
         params = node.get("params") if isinstance(node.get("params"), Mapping) else {}
         body = params.get("body_subgraph") if isinstance(params, Mapping) else None
         if not isinstance(body, Mapping):
-        errors.append(
-            ValidationError(
-                code="INVALID_LOOP_BODY",
-                node_id=loop_id,
-                field="body_subgraph",
-                message=f"loop node '{loop_id}' must provide body_subgraph.",
+            errors.append(
+                ValidationError(
+                    code="INVALID_LOOP_BODY",
+                    node_id=loop_id,
+                    field="body_subgraph",
+                    message=f"loop node '{loop_id}' must provide body_subgraph.",
+                )
             )
-        )
-        continue
+            continue
 
         body_nodes = [bn for bn in body.get("nodes", []) or [] if isinstance(bn, Mapping)]
         if not body_nodes:
-        errors.append(
-            ValidationError(
-                code="INVALID_LOOP_BODY",
-                node_id=loop_id,
-                field="body_subgraph.nodes",
-                message=f"loop node '{loop_id}' body_subgraph.nodes cannot be empty.",
+            errors.append(
+                ValidationError(
+                    code="INVALID_LOOP_BODY",
+                    node_id=loop_id,
+                    field="body_subgraph.nodes",
+                    message=f"loop node '{loop_id}' body_subgraph.nodes cannot be empty.",
+                )
             )
-        )
-        continue
+            continue
 
         seen_ids: set[str] = set()
         for nested in body_nodes:
@@ -80,15 +80,15 @@ def precheck_loop_body_graphs(workflow_raw: Mapping[str, Any] | Any) -> List[Val
                 continue
             if nid in seen_ids:
                 errors.append(
-                ValidationError(
-                    code="INVALID_LOOP_BODY",
-                    node_id=loop_id,
-                    field="body_subgraph.nodes",
-                    message=(
-                        f"loop node '{loop_id}' has duplicate node id in body_subgraph.nodes: {nid}"
-                    ),
+                    ValidationError(
+                        code="INVALID_LOOP_BODY",
+                        node_id=loop_id,
+                        field="body_subgraph.nodes",
+                        message=(
+                            f"loop node '{loop_id}' has duplicate node id in body_subgraph.nodes: {nid}"
+                        ),
+                    )
                 )
-            )
                 break
             seen_ids.add(nid)
         if not loop_body_has_action(body):
