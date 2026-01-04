@@ -13,6 +13,10 @@ from velvetflow.reference_utils import normalize_reference_path
 
 
 _SIMPLE_PATH_RE = re.compile(r"^(result_of|loop)\.[A-Za-z_][\w.]*$")
+_TERNARY_EXPR_RE = re.compile(
+    r"^(?P<true_val>.+?)\s+if\s+(?P<cond>.+?)\s+else\s+(?P<false_val>.+)$",
+    re.IGNORECASE,
+)
 
 
 def _normalize_jinja_expr(value: Any) -> Tuple[Any, bool]:
@@ -28,6 +32,16 @@ def _normalize_jinja_expr(value: Any) -> Tuple[Any, bool]:
 
     if isinstance(value, str):
         stripped = value.strip()
+
+        # Auto-repair common ternary expressions that miss surrounding quotes,
+        # e.g. "abnormal' if (...) else 'normal" -> {{ 'abnormal' if (...) else 'normal' }}
+        ternary = _TERNARY_EXPR_RE.match(stripped)
+        if ternary and "{{" not in stripped and "{%" not in stripped:
+            true_val = ternary.group("true_val").strip().strip("'\"")
+            false_val = ternary.group("false_val").strip().strip("'\"")
+            cond = ternary.group("cond").strip()
+            return f"{{{{ {repr(true_val)} if {cond} else {repr(false_val)} }}}}", True
+
         if stripped and "{{" not in stripped and "{%" not in stripped:
             if _SIMPLE_PATH_RE.match(stripped):
                 return f"{{{{ {stripped} }}}}", True
