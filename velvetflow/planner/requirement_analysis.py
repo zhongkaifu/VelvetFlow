@@ -16,27 +16,28 @@ def _normalize_requirements_payload(payload: Mapping[str, Any]) -> Dict[str, Any
 
     The analyzer and planner share this helper to ensure every requirement item
     includes the expected fields and that status is always provided as a string
-    describing progress (例如 "未开始"/"进行中"/"已完成"), and that mapped nodes
+    describing progress (for example "Not started"/"In progress"/"Completed"), and
+    that mapped nodes
     are normalized as string arrays.
     """
 
     requirements = payload.get("requirements")
     if not isinstance(requirements, list):
-        raise ValueError("requirements 必须是列表。")
+        raise ValueError("requirements must be a list.")
     if len(requirements) == 0:
-        raise ValueError("requirements 至少需要包含一个子任务。")
+        raise ValueError("requirements must include at least one subtask.")
 
     normalized_items = []
 
     for idx, item in enumerate(requirements):
         if not isinstance(item, MutableMapping):
-            raise ValueError(f"requirements[{idx}] 必须是对象。")
+            raise ValueError(f"requirements[{idx}] must be an object.")
         for key in ["description", "intent", "inputs", "constraints", "status"]:
             if key not in item:
-                raise ValueError(f"requirements[{idx}] 缺少字段 {key}。")
+                raise ValueError(f"requirements[{idx}] is missing field {key}.")
         if not isinstance(item.get("status"), str):
             raise ValueError(
-                f"requirements[{idx}].status 必须是字符串，用于标记进度（如未开始/进行中/已完成）。"
+                f"requirements[{idx}].status must be a string describing progress (e.g., Not started / In progress / Completed)."
             )
 
         mapped_node = item.get("mapped_node", [])
@@ -46,7 +47,7 @@ def _normalize_requirements_payload(payload: Mapping[str, Any]) -> Dict[str, Any
             not isinstance(node_id, str) for node_id in mapped_node
         ):
             raise ValueError(
-                f"requirements[{idx}].mapped_node 必须是字符串数组，用于记录映射到的 workflow 节点 id。"
+                f"requirements[{idx}].mapped_node must be an array of strings for mapped workflow node ids."
             )
 
         normalized_item = dict(item)
@@ -65,26 +66,26 @@ def _normalize_requirements_payload(payload: Mapping[str, Any]) -> Dict[str, Any
 
 def _build_requirement_prompt() -> str:
     return (
-        "你是一个需求分析助手，需要仔细阅读用户的自然语言需求，并把它拆分成便于构建工作流的结构化清单。\n"
-        "你的分析步骤：\n"
-        "1) 识别用户需求中的主要目标与子任务，补充必要的上下文假设。\n"
-        "2) 为每个子任务明确目的(intention)、需要的输入(inputs)、必须遵守的约束(constraints)、当前状态(status)，以及该子任务映射到的 workflow 节点 id 列表(mapped_node，可为空)。\n"
-        "3) 汇总全局假设或前置条件到 assumptions。\n"
-        "请务必调用工具返回以下 JSON 结构，字段含义必须完整且使用中文状态值：\n"
+        "You are a requirement analysis assistant. Carefully read the user's natural language request and break it into a structured checklist for workflow construction.\n"
+        "Analysis steps:\n"
+        "1) Identify the main goals and subtasks, adding any necessary contextual assumptions.\n"
+        "2) For each subtask, clarify the intent, required inputs, constraints, current status, and the list of mapped workflow node ids (mapped_node, which may be empty).\n"
+        "3) Collect global assumptions or prerequisites into assumptions.\n"
+        "You must call the tool and return the JSON structure below; keep field meanings complete.\n"
         "{\n"
         "  \"requirements\": [\n"
         "    {\n"
-        "      \"description\": \"任务描述，概述子任务要做什么\",\n"
-        "      \"intent\": \"该子任务的目的或达成的价值\",\n"
-        "      \"inputs\": [\"完成该子任务需要的输入列表\"],\n"
-        "      \"constraints\": [\"执行该子任务必须遵循的约束\"],\n"
-        "      \"status\": \"未开始 / 进行中 / 已完成 / 其他有助提示\",\n"
-        "      \"mapped_node\": [\"对应的 workflow 节点 id，可为空\"]\n"
+        "      \"description\": \"What the subtask does\",\n"
+        "      \"intent\": \"Purpose or value delivered by the subtask\",\n"
+        "      \"inputs\": [\"Inputs needed to complete the subtask\"],\n"
+        "      \"constraints\": [\"Constraints that must be followed\"],\n"
+        "      \"status\": \"Not started / In progress / Completed / other useful hints\",\n"
+        "      \"mapped_node\": [\"Mapped workflow node ids, may be empty\"]\n"
         "    }\n"
         "  ],\n"
-        "  \"assumptions\": [\"对需求的假设或注意事项\"]\n"
+        "  \"assumptions\": [\"Assumptions or notes about the requirement\"]\n"
         "}\n"
-        "如果提供了已有 workflow，请结合其中的节点来补全 mapped_node，并确保 status 准确反映当前进度。"
+        "If an existing workflow is provided, use its nodes to populate mapped_node and ensure status reflects current progress accurately."
     )
 
 
@@ -96,7 +97,7 @@ def analyze_user_requirement(
 ) -> Dict[str, Any]:
     """Break down the raw natural-language requirement into structured items."""
 
-    log_section("需求分析 - Agent SDK")
+    log_section("Requirement analysis - Agent SDK")
 
     parsed_requirement: Dict[str, Any] | None = None
 
@@ -184,7 +185,7 @@ def analyze_user_requirement(
                     "intent": "",
                     "inputs": [],
                     "constraints": [],
-                    "status": "未开始",
+                    "status": "Not started",
                     "mapped_node": [],
                 }
             ],
