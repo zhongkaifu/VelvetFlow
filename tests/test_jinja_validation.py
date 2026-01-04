@@ -47,3 +47,39 @@ def test_condition_field_literal_wrapped_as_jinja():
     assert errors == []
     assert summary.get("applied") in {False, None}
     assert normalized["nodes"][0]["params"]["expression"] == "{{ result_of.some_loop.exports.items | length > 0 }}"
+
+
+def test_malformed_conditional_literal_is_repaired():
+    workflow = _workflow({"status": "abnormal' if loop.item.temperature > 38 else 'normal"})
+
+    normalized, summary, errors = normalize_params_to_jinja(workflow)
+
+    assert errors == []
+    assert summary["applied"] is True
+    assert summary["replacements"] == [
+        {
+            "path": "params.status",
+            "from": "abnormal' if loop.item.temperature > 38 else 'normal",
+            "to": "{{ 'abnormal' if loop.item.temperature > 38 else 'normal' }}",
+        }
+    ]
+
+
+def test_malformed_conditional_literal_with_filter_is_repaired():
+    workflow = _workflow(
+        {
+            "status": "alert' if (loop.item.temperature is not none and (loop.item.temperature | float) > 38.0) else 'normal",
+        }
+    )
+
+    normalized, summary, errors = normalize_params_to_jinja(workflow)
+
+    assert errors == []
+    assert summary["applied"] is True
+    assert summary["replacements"] == [
+        {
+            "path": "params.status",
+            "from": "alert' if (loop.item.temperature is not none and (loop.item.temperature | float) > 38.0) else 'normal",
+            "to": "{{ 'alert' if (loop.item.temperature is not none and (loop.item.temperature | float) > 38.0) else 'normal' }}",
+        }
+    ]

@@ -616,7 +616,7 @@ def _schema_path_error(schema: Mapping[str, Any], fields: List[Any]) -> Optional
     """Check whether a dotted/Indexed field path exists in a JSON schema."""
 
     if not isinstance(schema, Mapping):
-        return "output_schema 不是对象，无法校验字段路径。"
+        return "output_schema is not an object; field paths cannot be validated."
 
     normalized_fields = _normalize_field_tokens(fields)
 
@@ -628,14 +628,20 @@ def _schema_path_error(schema: Mapping[str, Any], fields: List[Any]) -> Optional
 
         if isinstance(name, int):
             if typ != "array":
-                return f"字段路径 '{'.'.join(map(str, normalized_fields))}' 与 schema 类型 '{typ}' 不匹配（期望 array）。"
+                return (
+                    f"Field path '{'.'.join(map(str, normalized_fields))}' does not match "
+                    f"schema type '{typ}' (expected array)."
+                )
             current = current.get("items") or {}
             idx += 1
             continue
 
         if name == "*":
             if typ != "array":
-                return f"字段路径 '{'.'.join(map(str, normalized_fields))}' 与 schema 类型 '{typ}' 不匹配（期望 array）。"
+                return (
+                    f"Field path '{'.'.join(map(str, normalized_fields))}' does not match "
+                    f"schema type '{typ}' (expected array)."
+                )
             current = current.get("items") or {}
             idx += 1
             continue
@@ -653,7 +659,7 @@ def _schema_path_error(schema: Mapping[str, Any], fields: List[Any]) -> Optional
         if typ == "object" or typ is None:
             props = current.get("properties") or {}
             if name not in props:
-                return f"字段 '{name}' 不存在，已知字段有: {list(props.keys())}"
+                return f"Field '{name}' does not exist; known fields: {list(props.keys())}"
             current = props[name]
             idx += 1
             continue
@@ -661,7 +667,10 @@ def _schema_path_error(schema: Mapping[str, Any], fields: List[Any]) -> Optional
         if idx == len(normalized_fields) - 1:
             return None
 
-        return f"字段路径 '{'.'.join(map(str, normalized_fields))}' 与 schema 类型 '{typ}' 不匹配（期望 object/array）。"
+        return (
+            f"Field path '{'.'.join(map(str, normalized_fields))}' does not match "
+            f"schema type '{typ}' (expected object/array)."
+        )
 
     return None
 

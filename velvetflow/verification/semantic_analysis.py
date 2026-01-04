@@ -35,7 +35,7 @@ def _declare_node_symbol(
                 code="INVALID_SYMBOL",
                 node_id=None,
                 field="nodes",
-                message="节点缺少 id 或 id 类型不是字符串。",
+                message="Node is missing an id or the id is not a string.",
             )
         )
         return
@@ -46,7 +46,7 @@ def _declare_node_symbol(
                 code="DUPLICATE_SYMBOL",
                 node_id=node_id,
                 field="nodes",
-                message=f"检测到重复的节点 id '{node_id}'，请更换唯一名称。",
+                message=f"Duplicate node id '{node_id}' detected; please choose a unique name.",
             )
         )
     else:
@@ -71,7 +71,7 @@ def _gather_loop_body_symbols(
                 node_id=str(loop_node.get("id")),
                 field="params.item_alias",
                 message=(
-                    f"循环别名 '{alias}' 与已有节点/符号冲突，建议更换不重复的名称。"
+                    f"Loop item alias '{alias}' conflicts with an existing node/symbol; please choose a unique name."
                 ),
             )
         )
@@ -89,7 +89,7 @@ def _gather_loop_body_symbols(
                         code="DUPLICATE_SYMBOL",
                         node_id=nid,
                         field="params.body_subgraph.nodes",
-                        message=f"loop 子图内的节点 id '{nid}' 重复。",
+                        message=f"Duplicate node id '{nid}' found inside loop subgraph.",
                     )
                 )
             local_ids.add(nid)
@@ -104,7 +104,7 @@ def _gather_loop_body_symbols(
                     code="UNDEFINED_REFERENCE",
                     node_id=str(loop_node.get("id")),
                     field=f"params.body_subgraph.{ref_field}",
-                    message=f"loop 子图 {ref_field}='{ref_value}' 未在 body_subgraph.nodes 中定义。",
+                    message=f"Loop subgraph {ref_field}='{ref_value}' is not defined in body_subgraph.nodes.",
                 )
             )
 
@@ -145,7 +145,7 @@ def _check_edges_and_branches(
                         code="UNDEFINED_REFERENCE",
                         node_id=node.get("id"),
                         field=field_path,
-                        message=f"参数绑定引用了不存在的节点 '{target}'。",
+                        message=f"Parameter binding references missing node '{target}'.",
                     )
                 )
 
@@ -159,7 +159,7 @@ def _check_edges_and_branches(
                         code="UNDEFINED_REFERENCE",
                         node_id=node_id,
                         field="depends_on",
-                        message=f"节点 '{node_id}' 的 depends_on 引用了不存在的节点 '{dep}'。",
+                        message=f"Node '{node_id}' depends_on references nonexistent node '{dep}'.",
                     )
                 )
         if ntype == "condition":
@@ -171,7 +171,7 @@ def _check_edges_and_branches(
                             code="UNDEFINED_REFERENCE",
                             node_id=node_id,
                             field=branch_field,
-                            message=f"condition 节点引用了不存在的分支节点 '{target}'。",
+                            message=f"Condition node references missing branch node '{target}'.",
                         )
                     )
         if ntype == "switch":
@@ -186,7 +186,7 @@ def _check_edges_and_branches(
                             code="UNDEFINED_REFERENCE",
                             node_id=node_id,
                             field=f"cases[{idx}].to_node",
-                            message=f"switch 节点引用了不存在的分支节点 '{target}'。",
+                            message=f"Switch node references missing branch node '{target}'.",
                         )
                     )
             if "default_to_node" in node:
@@ -197,7 +197,7 @@ def _check_edges_and_branches(
                             code="UNDEFINED_REFERENCE",
                             node_id=node_id,
                             field="default_to_node",
-                            message=f"switch 节点引用了不存在的默认分支节点 '{default_target}'。",
+                            message=f"Switch node references missing default branch node '{default_target}'.",
                         )
                     )
 
@@ -356,7 +356,7 @@ def _check_binding_contracts(
                             code="SCHEMA_MISMATCH",
                             node_id=node_id,
                             field=field_path,
-                            message=f"参数绑定来源 {normalized_src} 无效：{schema_err}",
+                            message=f"Parameter binding source {normalized_src} is invalid: {schema_err}",
                         )
                     )
                     continue
@@ -375,8 +375,8 @@ def _check_binding_contracts(
                             node_id=node_id,
                             field=field_path,
                             message=(
-                                f"参数绑定使用 __agg__={agg_value or 'identity'} "
-                                f"需要类型为 {agg_input_schema.get('type')} 的输入，但来源 {normalized_src} 的类型为 {actual_schema.get('type') if actual_schema else '未知'}。"
+                                f"Parameter binding with __agg__={agg_value or 'identity'} "
+                                f"requires input type {agg_input_schema.get('type')}, but source {normalized_src} has type {actual_schema.get('type') if actual_schema else 'unknown'}."
                             ),
                         )
                     )
@@ -388,9 +388,9 @@ def _check_binding_contracts(
                             node_id=node_id,
                             field=field_path,
                             message=(
-                                f"参数绑定期望类型 {expected_schema.get('type') if expected_schema else '未知'}"
-                                f"，但来源 {normalized_src} 缺少输出类型定义。"
-                                "请在构建 workflow 时补充上游输出 schema 或通过 __agg__/pipeline 进行类型转换。"
+                                f"Parameter binding expects type {expected_schema.get('type') if expected_schema else 'unknown'}"
+                                f" but source {normalized_src} is missing an output type definition."
+                                " Please add the upstream output schema when building the workflow or convert via __agg__/pipeline."
                             ),
                         )
                     )
@@ -402,9 +402,9 @@ def _check_binding_contracts(
                             node_id=node_id,
                             field=field_path,
                             message=(
-                                f"参数绑定期望类型 {expected_schema.get('type') if expected_schema else '未知'}"
-                                f"，但来源 {normalized_src} 的类型为 {effective_schema.get('type') if effective_schema else '未知'}。"
-                                "请在下游 params 中添加格式或类型转换（例如设置合适的 __agg__ 或 pipeline 步骤）以适配输入需求。"
+                                f"Parameter binding expects type {expected_schema.get('type') if expected_schema else 'unknown'}"
+                                f" but source {normalized_src} has type {effective_schema.get('type') if effective_schema else 'unknown'}."
+                                " Please add formatting or type conversion in downstream params (for example, configure an appropriate __agg__ or pipeline step) to satisfy input requirements."
                             ),
                         )
                     )
