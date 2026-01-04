@@ -13,6 +13,26 @@ from velvetflow.reference_utils import normalize_reference_path
 
 
 _SIMPLE_PATH_RE = re.compile(r"^(result_of|loop)\.[A-Za-z_][\w.]*$")
+_COND_LITERAL_FIX_RE = re.compile(
+    r"^([^'{%}]+?)'\s+if\s+(.+?)\s+else\s+'([^'{%}]+)$"
+)
+
+
+def _fix_conditional_literal_expr(expr: str) -> str | None:
+    """Repair malformed ternary literals like "abnormal' if ... else 'normal".
+
+    The LLM sometimes omits the leading/trailing quote for string literals while
+    emitting Python-style ternaries. If we detect this pattern, synthesize a
+    proper Jinja expression so downstream parsing succeeds.
+    """
+
+    match = _COND_LITERAL_FIX_RE.match(expr.strip())
+    if not match:
+        return None
+
+    truthy, condition, falsy = match.groups()
+    repaired = f"{{{{ '{truthy.strip()}' if {condition.strip()} else '{falsy.strip()}' }}}}"
+    return repaired
 
 
 def _normalize_jinja_expr(value: Any) -> Tuple[Any, bool]:
@@ -29,6 +49,11 @@ def _normalize_jinja_expr(value: Any) -> Tuple[Any, bool]:
     if isinstance(value, str):
         stripped = value.strip()
         if stripped and "{{" not in stripped and "{%" not in stripped:
+            if " if " in stripped and " else " in stripped:
+                repaired = _fix_conditional_literal_expr(stripped)
+                if repaired:
+                    return repaired, True
+                return f"{{{{ {stripped} }}}}", True
             if _SIMPLE_PATH_RE.match(stripped):
                 return f"{{{{ {stripped} }}}}", True
             # Fallback: wrap raw literals as Jinja templates so every param
