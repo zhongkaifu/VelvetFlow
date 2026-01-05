@@ -7,7 +7,9 @@ from typing import List, Mapping
 
 import pytest
 
+from velvetflow import action_registry
 from velvetflow.action_registry import validate_actions
+from velvetflow.executor import DynamicActionExecutor
 from velvetflow.planner import plan_workflow_with_two_pass
 from velvetflow.search import build_search_service_from_actions
 
@@ -103,50 +105,97 @@ def test_real_openai_plans_weather_notification_workflow():
         ]
     )
 
-    search_service = build_search_service_from_actions(
-        actions,
-        embedding_model=os.environ.get("VELVETFLOW_EMBEDDING_MODEL", "text-embedding-3-small"),
-        alpha=0.7,
-    )
+    # 将业务动作注册到全局 Registry，便于执行器校验。
+    original_registry = list(action_registry.BUSINESS_ACTIONS)
+    action_registry.BUSINESS_ACTIONS.extend(actions)
 
-    requirement = (
-        "每天早上 7 点为上海用户生成当日天气摘要，"
-        "并通过钉钉或邮件发送提醒，让他们在出门前就能知道天气情况。"
-    )
-
-    workflow = plan_workflow_with_two_pass(
-        nl_requirement=requirement,
-        search_service=search_service,
-        action_registry=actions,
-        # Allow a few more turns because live models may need additional
-        # iterations to converge when planning in Chinese.
-        max_rounds=100,
-        max_repair_rounds=2,
-    )
-
-    action_ids = [
-        getattr(node, "action_id", None)
-        for node in workflow.nodes
-        if getattr(node, "type", None) == "action"
-    ]
-    assert action_ids, "workflow should contain action nodes"
-    assert set(action_ids).issubset({a["action_id"] for a in actions})
-
-    connections = set()
-
-    for edge in workflow.edges:
-        source = (
-            getattr(edge, "source", None)
-            or getattr(edge, "from_node", None)
-            or (edge.get("from") if isinstance(edge, Mapping) else None)
-        )
-        target = (
-            getattr(edge, "target", None)
-            or getattr(edge, "to_node", None)
-            or (edge.get("to") if isinstance(edge, Mapping) else None)
+    try:
+        search_service = build_search_service_from_actions(
+            actions,
+            embedding_model=os.environ.get(
+                "VELVETFLOW_EMBEDDING_MODEL", "text-embedding-3-small"
+            ),
+            alpha=0.7,
         )
 
-        if source and target:
-            connections.add((source, target))
+        requirement = (
+            "每天早上 7 点为上海用户生成当日天气摘要，"
+            "并通过钉钉或邮件发送提醒，让他们在出门前就能知道天气情况。"
+        )
 
-    assert connections, "workflow should include data flow edges"
+        workflow = plan_workflow_with_two_pass(
+            nl_requirement=requirement,
+            search_service=search_service,
+            action_registry=actions,
+            # Allow a few more turns because live models may need additional
+            # iterations to converge when planning in Chinese.
+            max_rounds=100,
+            max_repair_rounds=2,
+        )
+
+        action_ids = [
+            getattr(node, "action_id", None)
+            for node in workflow.nodes
+            if getattr(node, "type", None) == "action"
+        ]
+        assert action_ids, "workflow should contain action nodes"
+        assert set(action_ids).issubset({a["action_id"] for a in actions})
+
+        connections = set()
+
+        for edge in workflow.edges:
+            source = (
+                getattr(edge, "source", None)
+                or getattr(edge, "from_node", None)
+                or (edge.get("from") if isinstance(edge, Mapping) else None)
+            )
+            target = (
+                getattr(edge, "target", None)
+                or getattr(edge, "to_node", None)
+                or (edge.get("to") if isinstance(edge, Mapping) else None)
+            )
+
+            if source and target:
+                connections.add((source, target))
+
+        assert connections, "workflow should include data flow edges"
+
+        simulation_data = {
+            "fetch_city_weather": {
+                "result": {"weather_summary": "{{city}} 天气晴朗，最高25°C"}
+            },
+            "notify_daily_weather": {
+                "result": {
+                    "delivery_status": "已向 {{recipient}} 通过 {{channel}} 发送: {{weather_summary}}"
+                }
+            },
+        }
+
+        executor = DynamicActionExecutor(workflow, simulations=simulation_data)
+        execution_results = executor.run()
+
+        # 验证天气工具返回的模拟天气摘要被正确渲染。
+        fetch_weather_node_id = next(
+            n.id for n in workflow.nodes if getattr(n, "action_id", None) == "fetch_city_weather"
+        )
+        fetch_weather_result = execution_results[fetch_weather_node_id]
+        resolved_city = fetch_weather_result["params"]["city"]
+        expected_weather = f"{resolved_city} 天气晴朗，最高25°C"
+        assert fetch_weather_result["weather_summary"] == expected_weather
+
+        # 验证推送工具使用渲染后的天气摘要和收件人信息。
+        notify_node_id = next(
+            n.id
+            for n in workflow.nodes
+            if getattr(n, "action_id", None) == "notify_daily_weather"
+            and n.id in execution_results
+        )
+        notify_result = execution_results[notify_node_id]
+        notify_params = notify_result["params"]
+        expected_delivery = (
+            f"已向 {notify_params['recipient']} 通过 {notify_params['channel']} 发送: "
+            f"{notify_params['weather_summary']}"
+        )
+        assert notify_result["delivery_status"] == expected_delivery
+    finally:
+        action_registry.BUSINESS_ACTIONS[:] = original_registry
