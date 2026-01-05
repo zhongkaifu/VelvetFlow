@@ -73,3 +73,47 @@ jobs:
         uses: test-summary/action@v2
         with:
           paths: reports/pytest.xml
+
+  live-openai-tests:
+    name: Run live OpenAI tests (requires secret)
+    runs-on: ubuntu-latest
+    needs: tests
+    env:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
+      OPENAI_MODEL: ${{ secrets.OPENAI_MODEL }}
+      OPENAI_EMBEDDING_MODEL: ${{ secrets.OPENAI_EMBEDDING_MODEL }}
+    if: ${{ env.OPENAI_API_KEY != '' }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          fi
+
+      - name: Run live OpenAI endpoint tests
+        run: |
+          mkdir -p reports
+          pytest --junitxml=reports/openai-live.xml tests/test_openai_live.py
+
+      - name: Upload live test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest-openai-live-results
+          path: reports/openai-live.xml
+
+      - name: Summarize live results
+        if: always()
+        uses: test-summary/action@v2
+        with:
+          paths: reports/openai-live.xml
