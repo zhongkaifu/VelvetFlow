@@ -134,6 +134,7 @@ VelvetFlow (repo root)
    ```bash
    export OPENAI_API_KEY="<your_api_key>"
    ```
+   - 参见 [docs/openai_token_security.md](docs/openai_token_security.md) 了解在本地与 CI 中安全保存/注入 Token 的实践，以及如何运行需要真实 OpenAI 端点的测试。
 3. **离线构建工具集索引（可选）**
    - 若需根据最新的 `tools/business_actions/` 重建关键词与向量索引，可运行：
      ```bash
