@@ -1,3 +1,21 @@
+<!-- Language toggle tabs -->
+<style>
+.lang-tabs { border: 1px solid #d0d7de; border-radius: 6px; padding: 0.75rem; }
+.lang-tabs input[type="radio"] { display: none; }
+.lang-tabs label { padding: 0.35rem 0.75rem; border: 1px solid #d0d7de; border-bottom: none; border-radius: 6px 6px 0 0; margin-right: 0.25rem; cursor: pointer; background: #f6f8fa; font-weight: 600; }
+.lang-tabs input[type="radio"]:checked + label { background: #fff; border-bottom: 1px solid #fff; }
+.lang-tabs .tabs-body { border-top: 1px solid #d0d7de; padding-top: 0.75rem; }
+.lang-tabs .tab-content { display: none; }
+#troubleshooting-lang-zh:checked ~ .tabs-body #troubleshooting-tab-zh,
+#troubleshooting-lang-en:checked ~ .tabs-body #troubleshooting-tab-en { display: block; }
+</style>
+<div class="lang-tabs">
+<input type="radio" id="troubleshooting-lang-zh" name="troubleshooting-lang" checked>
+<label for="troubleshooting-lang-zh">中文</label>
+<input type="radio" id="troubleshooting-lang-en" name="troubleshooting-lang">
+<label for="troubleshooting-lang-en">English</label>
+<div class="tabs-body">
+<div class="tab-content" id="troubleshooting-tab-zh">
 # 故障排除
 
 ## 常见错误
@@ -21,3 +39,16 @@
 
 ## 进一步支持
 - 如果需要替换真实后端服务或扩展动作 Schema，可先在 `simulation_data.json` 模拟期望返回，再将工具映射加入 `tools/business_actions/` 并重新构建索引。
+
+</div>
+<div class="tab-content" id="troubleshooting-tab-en">
+## Troubleshooting (English)
+- **Missing OpenAI credentials**: Ensure `OPENAI_API_KEY` is set; planners and retrieval embedding calls require it.
+- **Index not found**: Rebuild the action index with `build_action_index.py` or confirm `tools/action_index.json` exists.
+- **Validation failures**: Review `ValidationError` locations for invalid bindings, missing exports, or unsupported node types; rerun validation after fixing DSL fields.
+- **Execution stalls**: Check for async nodes returning `async_pending` and resume with saved `ExecutionCheckpoint` once external work finishes.
+- **Logging**: Use console logs and event logs (`logging_utils.py`) to locate planner or executor issues.
+
+</div>
+</div>
+</div>

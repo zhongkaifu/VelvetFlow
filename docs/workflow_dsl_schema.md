@@ -1,3 +1,21 @@
+<!-- Language toggle tabs -->
+<style>
+.lang-tabs { border: 1px solid #d0d7de; border-radius: 6px; padding: 0.75rem; }
+.lang-tabs input[type="radio"] { display: none; }
+.lang-tabs label { padding: 0.35rem 0.75rem; border: 1px solid #d0d7de; border-bottom: none; border-radius: 6px 6px 0 0; margin-right: 0.25rem; cursor: pointer; background: #f6f8fa; font-weight: 600; }
+.lang-tabs input[type="radio"]:checked + label { background: #fff; border-bottom: 1px solid #fff; }
+.lang-tabs .tabs-body { border-top: 1px solid #d0d7de; padding-top: 0.75rem; }
+.lang-tabs .tab-content { display: none; }
+#dsl-schema-lang-zh:checked ~ .tabs-body #dsl-schema-tab-zh,
+#dsl-schema-lang-en:checked ~ .tabs-body #dsl-schema-tab-en { display: block; }
+</style>
+<div class="lang-tabs">
+<input type="radio" id="dsl-schema-lang-zh" name="dsl-schema-lang" checked>
+<label for="dsl-schema-lang-zh">中文</label>
+<input type="radio" id="dsl-schema-lang-en" name="dsl-schema-lang">
+<label for="dsl-schema-lang-en">English</label>
+<div class="tabs-body">
+<div class="tab-content" id="dsl-schema-tab-zh">
 # Workflow DSL Schema 参考
 
 本文汇总 VelvetFlow 的 workflow DSL 结构、节点类型与示例片段，便于规划/校验阶段快速对照。所有示例均可直接通过 `Workflow.model_validate` 校验并在执行器中运行。
@@ -230,3 +248,18 @@
 }
 ```
 该 DAG 由 `nodes` 中的绑定与条件字段推导出完整拓扑，可直接用于可视化与执行。
+
+</div>
+<div class="tab-content" id="dsl-schema-tab-en">
+## Workflow DSL Schema (English)
+- **Workflow fields**: Metadata, nodes list, and optional edges (often derived from bindings). Ensures DAG semantics and reachability before execution.
+- **Node types**:
+  - `action`: Executes a registered action (`action_id`) with parameters/bindings and declares exports.
+  - `condition`: Evaluates a Jinja `params.expression` to decide branch traversal.
+  - `loop`: Iterates over a collection, executing `body_subgraph` and collecting `params.exports` each round.
+- **Bindings**: Must use Jinja expressions, referencing `result_of.<node>.<field>` or loop exports. Normalization resolves aliases and ensures consistent paths.
+- **Example**: A full workflow JSON example (see Chinese section above) shows nodes, bindings, exports, and edges as produced by the planner and validated before execution.
+
+</div>
+</div>
+</div>

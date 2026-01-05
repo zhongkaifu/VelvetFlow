@@ -1,3 +1,21 @@
+<!-- Language toggle tabs -->
+<style>
+.lang-tabs { border: 1px solid #d0d7de; border-radius: 6px; padding: 0.75rem; }
+.lang-tabs input[type="radio"] { display: none; }
+.lang-tabs label { padding: 0.35rem 0.75rem; border: 1px solid #d0d7de; border-bottom: none; border-radius: 6px 6px 0 0; margin-right: 0.25rem; cursor: pointer; background: #f6f8fa; font-weight: 600; }
+.lang-tabs input[type="radio"]:checked + label { background: #fff; border-bottom: 1px solid #fff; }
+.lang-tabs .tabs-body { border-top: 1px solid #d0d7de; padding-top: 0.75rem; }
+.lang-tabs .tab-content { display: none; }
+#token-security-lang-zh:checked ~ .tabs-body #token-security-tab-zh,
+#token-security-lang-en:checked ~ .tabs-body #token-security-tab-en { display: block; }
+</style>
+<div class="lang-tabs">
+<input type="radio" id="token-security-lang-zh" name="token-security-lang" checked>
+<label for="token-security-lang-zh">中文</label>
+<input type="radio" id="token-security-lang-en" name="token-security-lang">
+<label for="token-security-lang-en">English</label>
+<div class="tabs-body">
+<div class="tab-content" id="token-security-tab-zh">
 # OpenAI 凭证安全指引
 
 本项目会在嵌入检索与工作流规划阶段调用 OpenAI API。为避免泄露凭证，请遵循以下做法：
@@ -31,3 +49,14 @@ pytest tests/test_openai_workflow_integration.py -q
 
 - 在共享机器或 CI 运行后，清除会话中的环境变量：`unset OPENAI_API_KEY OPENAI_BASE_URL OPENAI_ORG_ID`。
 - 失效或轮转旧凭证，保持审计记录，及时撤销可疑的访问密钥。
+
+</div>
+<div class="tab-content" id="token-security-tab-en">
+## OpenAI Token Security (English)
+- **Secure storage**: Keep `OPENAI_API_KEY` in environment variables or a secrets manager; avoid committing keys to source control.
+- **Integration tests**: Use explicit toggles to enable tests that call OpenAI APIs; default to offline/simulated runs to prevent accidental usage.
+- **Least privilege**: Prefer project-scoped keys with usage limits; rotate credentials regularly and monitor for unexpected activity.
+
+</div>
+</div>
+</div>
