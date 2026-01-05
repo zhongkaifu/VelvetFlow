@@ -22,7 +22,9 @@ def _normalize_base_url(raw_base_url: str | None) -> str | None:
         return cleaned
 
     # Allow users to provide a host without scheme; default to https.
-    return f"https://{cleaned}"
+    candidate = f"https://{cleaned.lstrip('/')}"
+    parsed_candidate = urllib.parse.urlparse(candidate)
+    return candidate if parsed_candidate.netloc else None
 
 
 def _require_live_openai_client() -> OpenAI:
