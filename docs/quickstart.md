@@ -1,5 +1,8 @@
 # 快速开始
 
+> English version: [quickstart.en.md](quickstart.en.md)
+
+
 本指南帮助你在几分钟内完成依赖安装、索引构建与端到端演示运行。
 
 ## 环境准备

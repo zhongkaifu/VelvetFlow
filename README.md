@@ -1,4 +1,7 @@
 # VelvetFlow [![CI](https://github.com/zhongkaifu/VelvetFlow/actions/workflows/ci.yml/badge.svg)](https://github.com/zhongkaifu/VelvetFlow/actions/workflows/ci.yml)
+
+> English version: [README.en.md](README.en.md)
+
 [![](logo.jpg)](logo.jpg)
 
 VelvetFlow 是一个可复用的 LLM 驱动工作流规划与执行演示项目。项目包含混合检索、Agent 工具驱动的结构 + 参数补全、静态校验与自修复、参数绑定 DSL、可模拟执行器与 DAG 可视化，帮助从自然语言需求自动构建并运行业务流程。近期已将 Planner 全面迁移到 **OpenAI Agent SDK**（`agents.Agent`/`Runner`/`function_tool`），以便在同一套工具描述下同时适配云端 Agent 与本地调试场景。
@@ -79,7 +82,7 @@ VelvetFlow (repo root)
 │   │   ├── params_tools.py      # 参数补全的工具 Schema（强制 Jinja 参数）
 │   │   ├── repair.py            # 自修复 Agent，支持补丁与命名修复工具
 │   │   ├── orchestrator.py      # 规划/更新的管线编排与多轮修复
-│   │   ├── action_guard.py / approval.py / relations.py / update.py 等辅助模块
+│   │   ├── action_guard.py / approval.py / relations.py / tools.py 等辅助模块
 │   ├── verification/            # 规划/更新/执行共享的静态校验模块
 │   ├── search.py                # 在线检索：基于离线索引的混合排序
 │   ├── search_index.py          # 离线索引：关键词与向量索引的构建/持久化

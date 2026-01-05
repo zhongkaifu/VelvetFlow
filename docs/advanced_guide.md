@@ -1,5 +1,8 @@
 # 进阶指南
 
+> English version: [advanced_guide.en.md](advanced_guide.en.md)
+
+
 ## Agent SDK 与规划工具
 - 结构规划与参数补全基于 OpenAI Agent SDK 的 `Agent`/`Runner`/`function_tool` 运行，`planner/agent_runtime.py` 统一导出依赖，便于在云端 Agent 与本地兼容层之间切换。【F:velvetflow/planner/agent_runtime.py†L4-L26】【F:velvetflow/planner/structure.py†L1134-L1163】
 - 结构规划工具在 `plan_workflow_structure_with_llm` 内联定义，借助闭包维护 `WorkflowBuilder` 与动作候选集，并自动补齐 edges/depends_on；节点 params 会按节点类型或 action schema 过滤无关字段，降低 Agent 生成的噪声。【F:velvetflow/planner/structure.py†L603-L829】【F:velvetflow/planner/workflow_builder.py†L20-L222】

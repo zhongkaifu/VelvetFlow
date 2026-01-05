@@ -1,5 +1,8 @@
 # 故障排除
 
+> English version: [troubleshooting.en.md](troubleshooting.en.md)
+
+
 ## 常见错误
 - **缺少 OpenAI 凭证**：确保已设置 `OPENAI_API_KEY` 环境变量。
 - **缺少 Agent SDK**：如果报 `No module named 'agents'` 或 Planner 无法导入 Agent/Runner，请额外执行 `pip install agents`（或 `uv add agents`），因为结构/补参/修复阶段依赖 OpenAI Agent SDK。

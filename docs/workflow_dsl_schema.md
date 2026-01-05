@@ -1,5 +1,8 @@
 # Workflow DSL Schema 参考
 
+> English version: [workflow_dsl_schema.en.md](workflow_dsl_schema.en.md)
+
+
 本文汇总 VelvetFlow 的 workflow DSL 结构、节点类型与示例片段，便于规划/校验阶段快速对照。所有示例均可直接通过 `Workflow.model_validate` 校验并在执行器中运行。
 
 ## 顶层结构：Workflow Graph

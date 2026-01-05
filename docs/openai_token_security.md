@@ -1,5 +1,8 @@
 # OpenAI 凭证安全指引
 
+> English version: [openai_token_security.en.md](openai_token_security.en.md)
+
+
 本项目会在嵌入检索与工作流规划阶段调用 OpenAI API。为避免泄露凭证，请遵循以下做法：
 
 ## 安全存储与加载
