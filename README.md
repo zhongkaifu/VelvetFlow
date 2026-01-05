@@ -12,6 +12,7 @@ VelvetFlow 是一个可复用的 LLM 驱动工作流规划与执行演示项目�
 - [docs/advanced_guide.md](docs/advanced_guide.md)：检索调优、模型替换、异步节点恢复等进阶玩法。
 - [docs/internal_design.md](docs/internal_design.md)：执行引擎与状态机示意、设计模式与模块分层。
 - [docs/troubleshooting.md](docs/troubleshooting.md)：常见错误、自查步骤与定位日志。
+- [docs/openai_token_security.md](docs/openai_token_security.md)：OpenAI 凭证安全保存、集成测试开关与最小权限建议。
 
 ## 架构总览（执行引擎与状态流转）
 下面的引擎示意突出混合检索、规划 + 校验修复与动态执行的衔接：

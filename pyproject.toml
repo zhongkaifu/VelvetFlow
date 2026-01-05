@@ -35,3 +35,8 @@ packages = ["velvetflow"]
 # Keep the environment synced with dependencies defined above
 # without needing an editable install.
 package = true
+
+[tool.pytest.ini_options]
+markers = [
+  "openai_e2e: runs against the real OpenAI endpoint and requires OPENAI_API_KEY",
+]
