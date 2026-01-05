@@ -3,7 +3,7 @@ Integration test that exercises real OpenAI endpoints to build a workflow end-to
 Set `VELVETFLOW_RUN_OPENAI_E2E=1` and `OPENAI_API_KEY` to enable.
 """
 import os
-from typing import List
+from typing import List, Mapping
 
 import pytest
 
@@ -132,9 +132,21 @@ def test_real_openai_plans_weather_notification_workflow():
     assert action_ids, "workflow should contain action nodes"
     assert set(action_ids).issubset({a["action_id"] for a in actions})
 
-    connections = {
-        (edge.source, edge.target)
-        for edge in workflow.edges
-        if getattr(edge, "source", None) and getattr(edge, "target", None)
-    }
+    connections = set()
+
+    for edge in workflow.edges:
+        source = (
+            getattr(edge, "source", None)
+            or getattr(edge, "from_node", None)
+            or (edge.get("from") if isinstance(edge, Mapping) else None)
+        )
+        target = (
+            getattr(edge, "target", None)
+            or getattr(edge, "to_node", None)
+            or (edge.get("to") if isinstance(edge, Mapping) else None)
+        )
+
+        if source and target:
+            connections.add((source, target))
+
     assert connections, "workflow should include data flow edges"
