@@ -118,8 +118,10 @@ def test_real_openai_plans_weather_notification_workflow():
         nl_requirement=requirement,
         search_service=search_service,
         action_registry=actions,
-        max_rounds=3,
-        max_repair_rounds=1,
+        # Allow a few more turns because live models may need additional
+        # iterations to converge when planning in Chinese.
+        max_rounds=6,
+        max_repair_rounds=2,
     )
 
     action_ids = [
