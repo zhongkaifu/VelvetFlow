@@ -1,22 +1,7 @@
-<!-- Language toggle tabs -->
-<style>
-.lang-tabs { border: 1px solid #d0d7de; border-radius: 6px; padding: 0.75rem; }
-.lang-tabs input[type="radio"] { display: none; }
-.lang-tabs label { padding: 0.35rem 0.75rem; border: 1px solid #d0d7de; border-bottom: none; border-radius: 6px 6px 0 0; margin-right: 0.25rem; cursor: pointer; background: #f6f8fa; font-weight: 600; }
-.lang-tabs input[type="radio"]:checked + label { background: #fff; border-bottom: 1px solid #fff; }
-.lang-tabs .tabs-body { border-top: 1px solid #d0d7de; padding-top: 0.75rem; }
-.lang-tabs .tab-content { display: none; }
-#core-concepts-lang-zh:checked ~ .tabs-body #core-concepts-tab-zh,
-#core-concepts-lang-en:checked ~ .tabs-body #core-concepts-tab-en { display: block; }
-</style>
-<div class="lang-tabs">
-<input type="radio" id="core-concepts-lang-zh" name="core-concepts-lang" checked>
-<label for="core-concepts-lang-zh">中文</label>
-<input type="radio" id="core-concepts-lang-en" name="core-concepts-lang">
-<label for="core-concepts-lang-en">English</label>
-<div class="tabs-body">
-<div class="tab-content" id="core-concepts-tab-zh">
 # 核心概念
+
+> English version: [core_concepts.en.md](core_concepts.en.md)
+
 
 ## Workflow 与节点模型
 - **Workflow**：包含 `nodes`、可选 `edges` 与元数据；edges 可由参数绑定或条件/循环/多分支出口自动推导，Planner 会在输出中附带只读 edges/depends_on 方便可视化与下游校验。
@@ -39,25 +24,3 @@
 - **需求拆解**：`requirement_analysis.analyze_user_requirement` 将自然语言拆解为结构化清单，为后续的节点规划与校验提供上下文，规划阶段直接复用该清单。
 - **Action Guard**：`planner/orchestrator.py` 在结构规划后检查缺失或未注册的 `action_id`，必要时基于混合检索自动替换并提示模型修复。
 - **静态校验与修复循环**：`workflow_parser.py`、`verification/validation.py`、`planner/repair_tools.py` 联合提供语法/语义校验与本地修复（填充默认值、删除未知字段、类型矫正），在必要时调用 Agent 修复，保证输出的 Workflow 可执行。
-
-</div>
-<div class="tab-content" id="core-concepts-tab-en">
-## Core Concepts (English)
-This section outlines the data models and reference rules used by VelvetFlow.
-
-### Workflow / Node / Edge
-- **Workflow**: A DAG composed of nodes and edges describing end-to-end automation. Supports metadata, bindings, and validation for execution.
-- **Node**: Typed units such as `action`, `condition`, and `loop` with parameters, bindings, and optional `body_subgraph` for loops. Nodes declare exports for downstream bindings.
-- **Edge**: Derived from bindings or explicit `depends_on`. Edges are normalized before visualization or execution to ensure reachability and ordering.
-
-### Bindings and References
-- Bindings must use **Jinja expressions** like `"{{ result_of.node.field }}"`; legacy structured bindings are rejected.
-- Reference rules ensure the binding path targets exported fields, respects loop scoping, and avoids blocked branches. Normalization aligns aliases and consistent paths.
-
-### Validation Notes
-- Static validation covers node types, implicit edges, loop subgraph schemas, and binding paths. Errors surface through `ValidationError` with precise locations.
-- The planner and executor share the same validation logic to guarantee consistency between planned workflows and runtime execution.
-
-</div>
-</div>
-</div>

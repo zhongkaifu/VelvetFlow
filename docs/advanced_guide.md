@@ -1,22 +1,7 @@
-<!-- Language toggle tabs -->
-<style>
-.lang-tabs { border: 1px solid #d0d7de; border-radius: 6px; padding: 0.75rem; }
-.lang-tabs input[type="radio"] { display: none; }
-.lang-tabs label { padding: 0.35rem 0.75rem; border: 1px solid #d0d7de; border-bottom: none; border-radius: 6px 6px 0 0; margin-right: 0.25rem; cursor: pointer; background: #f6f8fa; font-weight: 600; }
-.lang-tabs input[type="radio"]:checked + label { background: #fff; border-bottom: 1px solid #fff; }
-.lang-tabs .tabs-body { border-top: 1px solid #d0d7de; padding-top: 0.75rem; }
-.lang-tabs .tab-content { display: none; }
-#advanced-guide-lang-zh:checked ~ .tabs-body #advanced-guide-tab-zh,
-#advanced-guide-lang-en:checked ~ .tabs-body #advanced-guide-tab-en { display: block; }
-</style>
-<div class="lang-tabs">
-<input type="radio" id="advanced-guide-lang-zh" name="advanced-guide-lang" checked>
-<label for="advanced-guide-lang-zh">中文</label>
-<input type="radio" id="advanced-guide-lang-en" name="advanced-guide-lang">
-<label for="advanced-guide-lang-en">English</label>
-<div class="tabs-body">
-<div class="tab-content" id="advanced-guide-tab-zh">
 # 进阶指南
+
+> English version: [advanced_guide.en.md](advanced_guide.en.md)
+
 
 ## Agent SDK 与规划工具
 - 结构规划与参数补全基于 OpenAI Agent SDK 的 `Agent`/`Runner`/`function_tool` 运行，`planner/agent_runtime.py` 统一导出依赖，便于在云端 Agent 与本地兼容层之间切换。【F:velvetflow/planner/agent_runtime.py†L4-L26】【F:velvetflow/planner/structure.py†L1134-L1163】
@@ -48,16 +33,3 @@
 ## 可观测性与日志
 - 规划阶段：`planner/structure.py` 会记录每次 tool-calling、需求拆解与 LLM 返回，便于复现失败案例。
 - 执行阶段：`velvetflow/logging_utils.py` 提供结构化事件日志，配合 run_manager 可以收集指标（节点数、结果数、异步请求 ID）。
-
-</div>
-<div class="tab-content" id="advanced-guide-tab-en">
-## Advanced Guide (English)
-- **Retrieval tuning**: Adjust the offline index build parameters (model choice, chunking) and rerank strategies in `search.py` to improve tool recall quality.
-- **Model replacement**: Swap LLM or embedding models via `velvetflow/config.py` while keeping tool schemas stable; ensure validation and orchestrator expectations still hold.
-- **Async node recovery**: Use the executor's suspension/resume flow to persist checkpoints, restore `ExecutionCheckpoint`, and continue once external async work completes.
-- **Debugging planners**: Run planners locally with the Agent SDK (`planner/agent_runtime.py`) to inspect tool inputs/outputs and iterate on prompt/tool definitions.
-- **Customization**: Extend `tools/business_actions/` with namespaced actions and rebuild the index; adjust Action Guard policies to enforce role/approval constraints.
-
-</div>
-</div>
-</div>
