@@ -56,7 +56,7 @@ def precheck_loop_body_graphs(workflow_raw: Mapping[str, Any] | Any) -> List[Val
                     code="INVALID_LOOP_BODY",
                     node_id=loop_id,
                     field="body_subgraph",
-                    message=f"loop 节点 '{loop_id}' 必须提供 body_subgraph。",
+                    message=f"Loop node '{loop_id}' must provide body_subgraph.",
                 )
             )
             continue
@@ -68,7 +68,7 @@ def precheck_loop_body_graphs(workflow_raw: Mapping[str, Any] | Any) -> List[Val
                     code="INVALID_LOOP_BODY",
                     node_id=loop_id,
                     field="body_subgraph.nodes",
-                    message=f"loop 节点 '{loop_id}' 的 body_subgraph.nodes 不能为空。",
+                    message=f"Loop node '{loop_id}' must have non-empty body_subgraph.nodes.",
                 )
             )
             continue
@@ -85,7 +85,7 @@ def precheck_loop_body_graphs(workflow_raw: Mapping[str, Any] | Any) -> List[Val
                         node_id=loop_id,
                         field="body_subgraph.nodes",
                         message=(
-                            f"loop 节点 '{loop_id}' 的 body_subgraph.nodes 中存在重复的节点 id: {nid}"
+                            f"Loop node '{loop_id}' body_subgraph.nodes contains duplicate node id: {nid}"
                         ),
                     )
                 )
@@ -98,8 +98,8 @@ def precheck_loop_body_graphs(workflow_raw: Mapping[str, Any] | Any) -> List[Val
                     node_id=loop_id,
                     field="body_subgraph.nodes",
                     message=(
-                        "loop 节点的 body_subgraph 至少需要一个 action 节点，"
-                        "请使用规划/修复工具为循环体补充可执行步骤。"
+                        "A loop's body_subgraph requires at least one action node;"
+                        " please use planning/repair tools to add executable steps to the loop body."
                     ),
                 )
             )
@@ -140,12 +140,12 @@ def run_lightweight_static_rules(
             if err:
                 binding_issues.append(f"{nid}:{binding.get('path')} -> {err}")
     if binding_issues:
-        messages.append("参数绑定引用无效: " + "; ".join(binding_issues[:10]))
+        messages.append("Invalid parameter binding references: " + "; ".join(binding_issues[:10]))
 
     if not messages:
         return []
 
-    summary = "；".join(messages)
+    summary = "; ".join(messages)
     return [
         ValidationError(
             code="STATIC_RULES_SUMMARY",
@@ -174,7 +174,7 @@ def validate_completed_workflow(
                 node["out_params_schema"] = schema
 
     nodes = workflow.get("nodes", [])
-    # 拓扑与连通性基于最新的绑定推导，避免依赖可能过期的显式快照。
+    # Topology and connectivity rely on up-to-date inferred bindings to avoid stale snapshots.
     inferred_edges = infer_edges_from_bindings(nodes)
     depends_map = infer_depends_on_from_edges(nodes, inferred_edges)
 
@@ -193,7 +193,7 @@ def validate_completed_workflow(
                     node_id=node.get("id"),
                     field="exports",
                     message=(
-                        "检测到非 loop 节点携带 exports，已删除该字段，请使用工具在合法位置重新生成 exports。"
+                        "Detected exports on a non-loop node; removed the field. Please use tools to regenerate exports in a valid location."
                     ),
                 )
             )
@@ -206,7 +206,7 @@ def validate_completed_workflow(
                     code="UNKNOWN_PARAM",
                     node_id=node.get("id"),
                     field=field,
-                    message="节点 params 包含不支持的字段，已在校验阶段移除。",
+                    message="Node params contain unsupported fields and were removed during validation.",
                 )
             )
 
@@ -217,7 +217,7 @@ def validate_completed_workflow(
                     code="INVALID_SCHEMA",
                     node_id=node.get("id"),
                     field="depends_on",
-                    message="depends_on 必须是节点 id 的字符串数组。",
+                    message="depends_on must be a list of node id strings.",
                 )
             )
 
@@ -232,8 +232,8 @@ def validate_completed_workflow(
                             node_id=node.get("id"),
                             field=branch_field,
                             message=(
-                                f"condition 分支 {branch_field} 指向不存在的节点 '{target}'。"
-                                "请确认该节点是否已创建或使用修复工具清理无效分支引用。"
+                                f"condition branch {branch_field} points to nonexistent node '{target}'."
+                                " Confirm the node exists or use the repair tools to clean invalid branch references."
                             ),
                         )
                     )
@@ -250,8 +250,8 @@ def validate_completed_workflow(
                             node_id=node.get("id"),
                             field=f"cases[{idx}].to_node",
                             message=(
-                                f"switch 分支 cases[{idx}].to_node 指向不存在的节点 '{target}'。"
-                                "请确认该节点是否已创建或使用修复工具清理无效分支引用。"
+                                f"switch branch cases[{idx}].to_node points to nonexistent node '{target}'."
+                                " Confirm the node exists or use the repair tools to clean invalid branch references."
                             ),
                         )
                     )
@@ -264,8 +264,8 @@ def validate_completed_workflow(
                             node_id=node.get("id"),
                             field="default_to_node",
                             message=(
-                                f"switch 默认分支 default_to_node 指向不存在的节点 '{default_target}'。"
-                                "请确认该节点是否已创建或使用修复工具清理无效分支引用。"
+                                f"switch default branch default_to_node points to nonexistent node '{default_target}'."
+                                " Confirm the node exists or use the repair tools to clean invalid branch references."
                             ),
                         )
                     )
@@ -277,12 +277,12 @@ def validate_completed_workflow(
                             code="INVALID_SCHEMA",
                             node_id=node.get("id"),
                             field="depends_on",
-                            message="depends_on 中的节点引用无效，请确保依赖指向已存在的节点。",
+                            message="Invalid node reference in depends_on; ensure dependencies point to existing nodes.",
                         )
                     )
         errors.set_context(None)
 
-    # ---------- 图连通性校验 ----------
+    # ---------- Graph connectivity validation ----------
     start_nodes = [n["id"] for n in nodes if n.get("type") == "start"]
     reachable: set = set()
     if nodes:
@@ -312,7 +312,7 @@ def validate_completed_workflow(
                     code="DISCONNECTED_GRAPH",
                     node_id=None,
                     field=None,
-                    message="未找到入度为 0 的节点，无法确定拓扑起点。",
+                    message="No node with indegree 0 found; unable to determine topological start.",
                 )
             )
 
@@ -331,7 +331,7 @@ def validate_completed_workflow(
                 if nxt not in reachable:
                     dq.append(nxt)
 
-        # 检测环：拓扑排序未遍历完所有节点。
+        # Detect cycles: topological sort did not traverse all nodes.
         topo_queue = deque(zero_indegree)
         visited = 0
         while topo_queue:
@@ -347,7 +347,7 @@ def validate_completed_workflow(
                     code="DISCONNECTED_GRAPH",
                     node_id=None,
                     field=None,
-                    message="检测到工作流包含环或互相引用，无法完成拓扑排序。",
+                    message="Detected cycles or mutual references in the workflow; topological sort failed.",
                 )
             )
 
@@ -358,12 +358,12 @@ def validate_completed_workflow(
                     code="DISCONNECTED_GRAPH",
                     node_id=nid,
                     field=None,
-                    message=f"节点 '{nid}' 无法从 start 节点到达。",
+                    message=f"Node '{nid}' is unreachable from start nodes.",
                 )
             )
             errors.set_context(None)
 
-    # ---------- 节点校验（含 loop body） ----------
+    # ---------- Node validation (including loop body) ----------
     _validate_nodes_recursive(nodes, nodes_by_id, actions_by_id, loop_body_parents, errors)
 
     return errors
@@ -387,7 +387,7 @@ def validate_param_binding_and_schema(
     if isinstance(src, list):
         for item in src:
             if not isinstance(item, str):
-                return "__from__ 数组元素必须是字符串"
+                return "__from__ array elements must be strings"
             err = _check_output_path_against_schema(
                 item, nodes_by_id, actions_by_id, loop_body_parents
             )

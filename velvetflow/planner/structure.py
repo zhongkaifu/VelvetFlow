@@ -1046,16 +1046,17 @@ def plan_workflow_structure_with_llm(
 
     @function_tool(strict_mode=False)
     def search_business_actions(query: str, top_k: int = 5) -> Mapping[str, Any]:
-        """检索业务动作候选，用于规划时选择合法的 action_id。
+        """Search business action candidates to choose a valid ``action_id`` during planning.
 
-        适用场景：在创建/更新 action 节点之前，先查询可用动作列表。
+        Use case: Query the available action list before creating or updating an action node.
 
         Args:
-            query: 检索关键词，描述业务动作能力或名称。
-            top_k: 返回候选数量上限。
+            query: Search keywords that describe the business action capability or name.
+            top_k: Maximum number of candidates to return.
 
         Returns:
-            包含检索状态、原始动作列表与精简候选信息的结果字典。
+            A result dictionary containing the search status, raw action list, and simplified
+            candidate information.
         """
         _log_tool_call("search_business_actions", {"query": query, "top_k": top_k})
         actions_raw = search_service.search(query=query, top_k=int(top_k))
@@ -1090,7 +1091,7 @@ def plan_workflow_structure_with_llm(
 
     @function_tool(strict_mode=False)
     def list_retrieved_business_action() -> Mapping[str, Any]:
-        """列出当前已获取的业务动作候选信息。"""
+        """List the business action candidates that have been retrieved so far."""
         _log_tool_call("list_retrieved_business_action")
         result = {
             "status": "ok",
@@ -1100,16 +1101,17 @@ def plan_workflow_structure_with_llm(
 
     @function_tool(strict_mode=False)
     def set_workflow_meta(workflow_name: str, description: Optional[str] = None) -> Mapping[str, Any]:
-        """设置工作流的名称与描述。
+        """Set the workflow name and description.
 
-        适用场景：在规划工作流结构前初始化元信息，便于后续阶段阅读。
+        Use case: Initialize metadata before planning the workflow structure to keep later
+        stages readable.
 
         Args:
-            workflow_name: 工作流名称。
-            description: 工作流描述，可选。
+            workflow_name: Workflow name.
+            description: Optional workflow description.
 
         Returns:
-            包含状态与操作类型的结果字典。
+            A result dictionary containing the status and operation type.
         """
         _log_tool_call(
             "set_workflow_meta",
@@ -1130,21 +1132,24 @@ def plan_workflow_structure_with_llm(
         depends_on: Optional[List[str]] = None,
         parent_node_id: Optional[str] = None,
     ) -> Mapping[str, Any]:
-        """添加 action 节点，绑定已检索到的业务动作。
+        """Add an action node that binds to a retrieved business action.
 
-        适用场景：在结构规划阶段加入具体业务能力，并挂接上游依赖。
+        Use case: Add concrete business capabilities and connect upstream dependencies during
+        structure planning.
 
         Args:
-            id: 节点唯一标识。
-            action_id: 业务动作 ID，必须来自最近一次检索候选。
-            display_name: 节点展示名称，可选。
-            out_params_schema: action 输出参数 schema 映射，可选。
-            params: action 输入参数字典，可选。
-            depends_on: 直接依赖的上游节点 ID 列表，可选。
-            parent_node_id: 父节点 ID（用于子图/循环场景），可选。
+            id: Unique node identifier.
+            action_id: Business action ID that must come from the most recent search
+                candidates.
+            display_name: Optional node display name.
+            out_params_schema: Optional mapping of the action output parameter schema.
+            params: Optional dictionary of action input parameters.
+            depends_on: Optional list of upstream node IDs.
+            parent_node_id: Optional parent node ID for subgraphs or loop scenarios.
 
         Returns:
-            包含状态、类型与节点 ID 的结果字典；失败时返回错误信息。
+            A result dictionary containing the status, type, and node ID; returns an error
+            message on failure.
         """
         _log_tool_call(
             "add_action_node",
@@ -1209,23 +1214,25 @@ def plan_workflow_structure_with_llm(
         depends_on: Optional[List[str]] = None,
         parent_node_id: Optional[str] = None,
     ) -> Mapping[str, Any]:
-        """添加 loop 节点并绑定循环子图。
+        """Add a loop node and bind its loop subgraph.
 
-        适用场景：需要对集合进行遍历或 while 循环时，创建 loop 结构。
+        Use case: Create a loop structure when iterating over a collection or running a
+        ``while`` loop.
 
         Args:
-            id: 节点唯一标识。
-            loop_kind: 循环类型（for_each/while）。
-            source: 循环数据源（Jinja 表达式或映射对象）。
-            item_alias: 循环项别名。
-            display_name: 节点展示名称，可选。
-            params: loop 参数字典，可选。
-            sub_graph_nodes: 循环子图节点 ID 列表，可选。
-            depends_on: 直接依赖的上游节点 ID 列表，可选。
-            parent_node_id: 父节点 ID（用于嵌套循环），可选。
+            id: Unique node identifier.
+            loop_kind: Loop type (``for_each``/``while``).
+            source: Loop data source (Jinja expression or mapping object).
+            item_alias: Alias for each loop item.
+            display_name: Optional node display name.
+            params: Optional loop parameter dictionary.
+            sub_graph_nodes: Optional list of node IDs inside the loop subgraph.
+            depends_on: Optional list of upstream node IDs.
+            parent_node_id: Optional parent node ID for nested loops.
 
         Returns:
-            包含状态、类型与节点 ID 的结果字典；失败时返回错误信息。
+            A result dictionary containing the status, type, and node ID; returns an error
+            message on failure.
         """
         _log_tool_call(
             "add_loop_node",
@@ -1297,21 +1304,23 @@ def plan_workflow_structure_with_llm(
         depends_on: Optional[List[str]] = None,
         parent_node_id: Optional[str] = None,
     ) -> Mapping[str, Any]:
-        """添加 condition 节点并声明分支走向。
+        """Add a condition node and declare branch targets.
 
-        适用场景：需要根据表达式判断走向不同分支时创建条件节点。
+        Use case: Create a condition node when routing to different branches based on an
+        expression.
 
         Args:
-            id: 节点唯一标识。
-            true_to_node: 条件为真时跳转的节点 ID 或 null。
-            false_to_node: 条件为假时跳转的节点 ID 或 null。
-            display_name: 节点展示名称，可选。
-            params: 条件参数字典，需包含 expression。
-            depends_on: 直接依赖的上游节点 ID 列表，可选。
-            parent_node_id: 父节点 ID（用于子图/循环场景），可选。
+            id: Unique node identifier.
+            true_to_node: Node ID to jump to when the condition is true, or ``null``.
+            false_to_node: Node ID to jump to when the condition is false, or ``null``.
+            display_name: Optional node display name.
+            params: Condition parameter dictionary that must include ``expression``.
+            depends_on: Optional list of upstream node IDs.
+            parent_node_id: Optional parent node ID for subgraph or loop scenarios.
 
         Returns:
-            包含状态、类型与节点 ID 的结果字典；失败时返回错误信息。
+            A result dictionary containing the status, type, and node ID; returns an error
+            message on failure.
         """
         _log_tool_call(
             "add_condition_node",
@@ -1379,21 +1388,22 @@ def plan_workflow_structure_with_llm(
         depends_on: Optional[List[str]] = None,
         parent_node_id: Optional[str] = None,
     ) -> Mapping[str, Any]:
-        """添加 switch 节点，按多分支 case 路由。
+        """Add a switch node that routes according to multi-branch cases.
 
-        适用场景：需要多条件分支跳转时创建 switch 节点。
+        Use case: Create a switch node when multiple conditional branches are required.
 
         Args:
-            id: 节点唯一标识。
-            cases: 分支列表，每个元素包含匹配信息与 to_node。
-            display_name: 节点展示名称，可选。
-            params: switch 参数字典（source/field），可选。
-            default_to_node: 默认分支节点 ID 或 null。
-            depends_on: 直接依赖的上游节点 ID 列表，可选。
-            parent_node_id: 父节点 ID（用于子图/循环场景），可选。
+            id: Unique node identifier.
+            cases: Branch list where each item contains matching information and ``to_node``.
+            display_name: Optional node display name.
+            params: Optional switch parameter dictionary (``source``/``field``).
+            default_to_node: Default branch node ID or ``null``.
+            depends_on: Optional list of upstream node IDs.
+            parent_node_id: Optional parent node ID for subgraphs or loop scenarios.
 
         Returns:
-            包含状态、类型与节点 ID 的结果字典；失败时返回错误信息。
+            A result dictionary containing the status, type, and node ID; returns an error
+            message on failure.
         """
         _log_tool_call(
             "add_switch_node",
@@ -1482,21 +1492,24 @@ def plan_workflow_structure_with_llm(
         depends_on: Optional[List[str]] = None,
         parent_node_id: Optional[str] = None,
     ) -> Mapping[str, Any]:
-        """更新已有 action 节点的属性或参数。
+        """Update the properties or parameters of an existing action node.
 
-        适用场景：对已创建的 action 节点补充显示名、参数或重选动作。
+        Use case: Add display names, parameters, or reselect an action for an existing action
+        node.
 
         Args:
-            id: 节点唯一标识。
-            display_name: 节点展示名称，可选。
-            params: action 参数字典，可选。
-            out_params_schema: 输出参数 schema，可选。
-            action_id: 业务动作 ID（需来自最近一次检索候选），可选。
-            depends_on: 直接依赖的上游节点 ID 列表，可选。
-            parent_node_id: 父节点 ID，可选。
+            id: Unique node identifier.
+            display_name: Optional node display name.
+            params: Optional action parameter dictionary.
+            out_params_schema: Optional output parameter schema.
+            action_id: Optional business action ID (must come from the most recent search
+                candidates).
+            depends_on: Optional list of upstream node IDs.
+            parent_node_id: Optional parent node ID.
 
         Returns:
-            包含状态、类型与节点 ID 的结果字典；失败时返回错误信息。
+            A result dictionary containing the status, type, and node ID; returns an error
+            message on failure.
         """
         _log_tool_call(
             "update_action_node",
@@ -1570,21 +1583,22 @@ def plan_workflow_structure_with_llm(
         depends_on: Optional[List[str]] = None,
         parent_node_id: Optional[str] = None,
     ) -> Mapping[str, Any]:
-        """更新已有 condition 节点的表达式或分支指向。
+        """Update the expression or branch targets of an existing condition node.
 
-        适用场景：修正条件表达式或调整 true/false 跳转目标。
+        Use case: Fix the condition expression or adjust the true/false jump targets.
 
         Args:
-            id: 节点唯一标识。
-            display_name: 节点展示名称，可选。
-            params: 条件参数字典（expression），可选。
-            true_to_node: 条件为真时跳转的节点 ID 或 null，可选。
-            false_to_node: 条件为假时跳转的节点 ID 或 null，可选。
-            depends_on: 直接依赖的上游节点 ID 列表，可选。
-            parent_node_id: 父节点 ID，可选。
+            id: Unique node identifier.
+            display_name: Optional node display name.
+            params: Optional condition parameter dictionary (``expression``).
+            true_to_node: Node ID to jump to when the condition is true, or ``null``.
+            false_to_node: Node ID to jump to when the condition is false, or ``null``.
+            depends_on: Optional list of upstream node IDs.
+            parent_node_id: Optional parent node ID.
 
         Returns:
-            包含状态、类型与节点 ID 的结果字典；失败时返回错误信息。
+            A result dictionary containing the status, type, and node ID; returns an error
+            message on failure.
         """
         _log_tool_call(
             "update_condition_node",
@@ -1663,21 +1677,22 @@ def plan_workflow_structure_with_llm(
         depends_on: Optional[List[str]] = None,
         parent_node_id: Optional[str] = None,
     ) -> Mapping[str, Any]:
-        """更新已有 switch 节点的 case 或默认分支。
+        """Update the cases or default branch of an existing switch node.
 
-        适用场景：补充/修正多分支路由规则或默认跳转。
+        Use case: Add or correct multi-branch routing rules or the default jump target.
 
         Args:
-            id: 节点唯一标识。
-            display_name: 节点展示名称，可选。
-            params: switch 参数字典（source/field），可选。
-            cases: case 列表，可选。
-            default_to_node: 默认分支节点 ID 或 null，可选。
-            depends_on: 直接依赖的上游节点 ID 列表，可选。
-            parent_node_id: 父节点 ID，可选。
+            id: Unique node identifier.
+            display_name: Optional node display name.
+            params: Optional switch parameter dictionary (``source``/``field``).
+            cases: Optional list of cases.
+            default_to_node: Default branch node ID or ``null``.
+            depends_on: Optional list of upstream node IDs.
+            parent_node_id: Optional parent node ID.
 
         Returns:
-            包含状态、类型与节点 ID 的结果字典；失败时返回错误信息。
+            A result dictionary containing the status, type, and node ID; returns an error
+            message on failure.
         """
         _log_tool_call(
             "update_switch_node",
@@ -1769,20 +1784,21 @@ def plan_workflow_structure_with_llm(
         depends_on: Optional[List[str]] = None,
         parent_node_id: Optional[str] = None,
     ) -> Mapping[str, Any]:
-        """更新已有 loop 节点的参数或子图。
+        """Update the parameters or subgraph of an existing loop node.
 
-        适用场景：修正循环参数、子图节点集合或依赖关系。
+        Use case: Correct loop parameters, the set of subgraph nodes, or dependencies.
 
         Args:
-            id: 节点唯一标识。
-            display_name: 节点展示名称，可选。
-            params: loop 参数字典，可选。
-            sub_graph_nodes: 循环子图节点 ID 列表，可选。
-            depends_on: 直接依赖的上游节点 ID 列表，可选。
-            parent_node_id: 父节点 ID，可选。
+            id: Unique node identifier.
+            display_name: Optional node display name.
+            params: Optional loop parameter dictionary.
+            sub_graph_nodes: Optional list of node IDs inside the loop subgraph.
+            depends_on: Optional list of upstream node IDs.
+            parent_node_id: Optional parent node ID.
 
         Returns:
-            包含状态、类型与节点 ID 的结果字典；失败时返回错误信息。
+            A result dictionary containing the status, type, and node ID; returns an error
+            message on failure.
         """
         _log_tool_call(
             "update_loop_node",
@@ -1836,12 +1852,12 @@ def plan_workflow_structure_with_llm(
 
     @function_tool(strict_mode=False)
     def dump_model() -> Mapping[str, Any]:
-        """导出当前 workflow 快照，便于调试或回显。
+        """Export the current workflow snapshot for debugging or display.
 
-        适用场景：需要查看当前构建器状态时调用。
+        Use case: Invoke this when you need to inspect the current builder state.
 
         Returns:
-            包含节点/边统计与 workflow 快照的结果字典。
+            A result dictionary containing node/edge statistics and the workflow snapshot.
         """
         _log_tool_call("dump_model")
         snapshot = _snapshot("dump_model")
@@ -1913,7 +1929,7 @@ def plan_workflow_structure_with_llm(
 
     @function_tool(strict_mode=False)
     def get_param_context(id: str) -> Mapping[str, Any]:
-        """获取指定节点的参数补全上下文。"""
+        """Get the parameter-completion context for a specific node."""
         _log_tool_call("get_param_context", {"id": id})
         if not isinstance(id, str) or id not in builder.nodes:
             result = {"status": "error", "message": "节点不存在，无法获取参数上下文。"}
@@ -1927,7 +1943,7 @@ def plan_workflow_structure_with_llm(
 
     @function_tool(strict_mode=False)
     def update_node_params(id: str, params: Dict[str, Any]) -> Mapping[str, Any]:
-        """更新并校验指定节点参数。"""
+        """Update and validate parameters for the specified node."""
         _log_tool_call("update_node_params", {"id": id})
         if not isinstance(id, str) or id not in builder.nodes:
             result = {"status": "error", "message": "节点不存在，无法更新参数。"}
