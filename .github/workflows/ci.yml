@@ -83,7 +83,7 @@ jobs:
       OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
       OPENAI_MODEL: ${{ secrets.OPENAI_MODEL }}
       OPENAI_EMBEDDING_MODEL: ${{ secrets.OPENAI_EMBEDDING_MODEL }}
-    if: ${{ env.OPENAI_API_KEY != '' }}
+    if: ${{ secrets.OPENAI_API_KEY != '' }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
