@@ -12,39 +12,37 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 
-class _FakeArray(list):
-    @property
-    def shape(self):
-        return (len(self),)
+try:  # pragma: no cover - prefers real numpy when available
+    import numpy  # type: ignore  # noqa: F401
+except ImportError:  # pragma: no cover - lightweight fallback for environments without numpy
+    class _FakeArray(list):
+        @property
+        def shape(self):
+            return (len(self),)
 
-    def __truediv__(self, other):
-        return _FakeArray([x / other for x in self])
+        def __truediv__(self, other):
+            return _FakeArray([x / other for x in self])
 
+    def _fake_array(data, dtype=None):
+        return _FakeArray(list(data))
 
-def _fake_array(data, dtype=None):
-    return _FakeArray(list(data))
+    def _fake_zeros(size, dtype=None):
+        return _FakeArray([0.0] * int(size))
 
+    def _fake_dot(a, b):
+        return sum(float(x) * float(y) for x, y in zip(a, b))
 
-def _fake_zeros(size, dtype=None):
-    return _FakeArray([0.0] * int(size))
+    class _FakeLinalg:
+        @staticmethod
+        def norm(vec):
+            return math.sqrt(sum(float(x) ** 2 for x in vec) or 1.0)
 
-
-def _fake_dot(a, b):
-    return sum(float(x) * float(y) for x, y in zip(a, b))
-
-
-class _FakeLinalg:
-    @staticmethod
-    def norm(vec):
-        return math.sqrt(sum(float(x) ** 2 for x in vec) or 1.0)
-
-
-_fake_numpy = types.SimpleNamespace(
-    array=_fake_array,
-    zeros=_fake_zeros,
-    dot=_fake_dot,
-    linalg=_FakeLinalg(),
-    float32=float,
-)
-sys.modules.setdefault("numpy", _fake_numpy)
+    _fake_numpy = types.SimpleNamespace(
+        array=_fake_array,
+        zeros=_fake_zeros,
+        dot=_fake_dot,
+        linalg=_FakeLinalg(),
+        float32=float,
+    )
+    sys.modules.setdefault("numpy", _fake_numpy)
 
