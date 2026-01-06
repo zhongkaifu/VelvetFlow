@@ -20,6 +20,7 @@ All callers receive a ``Workflow`` object and do not need to handle the raw JSON
 returned by the LLM.
 """
 
+import copy
 import json
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional
 
@@ -79,6 +80,32 @@ def _index_actions_by_id(
     """Build a quick lookup table for action metadata keyed by `action_id`."""
 
     return {a["action_id"]: a for a in action_registry}
+
+
+def _parse_expected_format_schema(expected_format: Any) -> Optional[Dict[str, Any]]:
+    """Parse expected_format into a JSON schema mapping if possible."""
+
+    if isinstance(expected_format, Mapping):
+        return dict(expected_format)
+
+    if isinstance(expected_format, str):
+        stripped = expected_format.strip()
+
+        # Handle fenced code blocks such as ```json ... ```.
+        if stripped.startswith("```") and stripped.endswith("```"):
+            stripped = stripped.strip("`")
+            if "\n" in stripped:
+                stripped = stripped.split("\n", 1)[1]
+
+        try:
+            parsed = json.loads(stripped)
+        except json.JSONDecodeError:
+            return None
+
+        if isinstance(parsed, Mapping):
+            return dict(parsed)
+
+    return None
 
 
 def _is_missing_required_value(value: Any) -> bool:
@@ -229,8 +256,23 @@ def _attach_out_params_schema(
         if not isinstance(schema, Mapping):
             continue
 
-        if node.get("out_params_schema") != schema:
-            node["out_params_schema"] = schema
+        params = node.get("params") if isinstance(node.get("params"), Mapping) else {}
+        expected_format = params.get("expected_format") if isinstance(params, Mapping) else None
+
+        schema_to_set = schema
+
+        if action_id == "common.ask_ai.v1":
+            expected_schema = _parse_expected_format_schema(expected_format)
+            if expected_schema:
+                schema_to_set = copy.deepcopy(schema)
+                properties = schema_to_set.setdefault("properties", {})
+                properties["results"] = expected_schema
+                required = schema_to_set.setdefault("required", [])
+                if "results" not in required:
+                    required.append("results")
+
+        if node.get("out_params_schema") != schema_to_set:
+            node["out_params_schema"] = schema_to_set
             changed = True
 
     return workflow if not changed else Workflow.model_validate(wf_dict)
