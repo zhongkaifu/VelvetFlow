@@ -250,6 +250,7 @@ def _summarize_validation_errors_for_llm(
 
     action_map: Dict[str, Mapping[str, Any]] = {}
     node_to_action: Dict[str, str] = {}
+    missing_param_context: Dict[str, Dict[str, Any]] = {}
     previous_attempts = previous_attempts or {}
 
     def _make_error_key(e: ValidationError) -> str:
@@ -269,6 +270,29 @@ def _summarize_validation_errors_for_llm(
             action_id = n.get("action_id") if n.get("type") == "action" else None
             if isinstance(node_id, str) and isinstance(action_id, str):
                 node_to_action[node_id] = action_id
+                action_def = action_map.get(action_id, {})
+                arg_schema = action_def.get("arg_schema") if isinstance(action_def, Mapping) else None
+                required_fields = []
+                if isinstance(arg_schema, Mapping):
+                    req = arg_schema.get("required")
+                    if isinstance(req, list):
+                        required_fields = req
+                params = n.get("params") if isinstance(n.get("params"), Mapping) else {}
+                missing = [
+                    f
+                    for f in required_fields
+                    if f not in params
+                    or params.get(f) is None
+                    or (isinstance(params.get(f), str) and params.get(f).strip() == "")
+                    or (isinstance(params.get(f), (list, dict)) and len(params.get(f)) == 0)
+                ]
+                if missing:
+                    missing_param_context[node_id] = {
+                        "action_id": action_id,
+                        "missing": missing,
+                        "required": required_fields,
+                        "provided": sorted(params.keys()),
+                    }
     for idx, err in enumerate(errors, start=1):
         locations = []
         if err.node_id:
@@ -305,6 +329,21 @@ def _summarize_validation_errors_for_llm(
                     schema_hints.append(
                         f"- Action {action_id} expects field {err.field} to match type/structure: {expected_type}; please align it with the schema."
                     )
+
+        if err.code == "MISSING_REQUIRED_PARAM" and err.node_id:
+            ctx = missing_param_context.get(err.node_id)
+            if ctx:
+                required_list = ", ".join(ctx.get("required", []))
+                missing_list = ", ".join(ctx.get("missing", [])) or err.field
+                provided_list = ", ".join(ctx.get("provided", []))
+                schema_hints.append(
+                    "- Action {aid} is missing required params [{missing}] (required: [{required}], provided: [{provided}]); use fill_action_required_params or update bindings to satisfy arg_schema.".format(
+                        aid=ctx.get("action_id", ""),
+                        missing=missing_list,
+                        required=required_list,
+                        provided=provided_list,
+                    )
+                )
 
         prompt = _ERROR_TYPE_PROMPTS.get(err.code)
         if prompt:
@@ -372,7 +411,7 @@ def _summarize_validation_errors_for_llm(
 
 
 _ERROR_TYPE_PROMPTS: Dict[str, str] = {
-    "MISSING_REQUIRED_PARAM": "Fill params.<field>; prefer binding upstream outputs that satisfy arg_schema or use schema defaults. Example: if an action requires params.prompt but it is missing, bind it to result.output from an upstream copywriting node.",
+    "MISSING_REQUIRED_PARAM": "Fill params.<field>; prefer binding upstream outputs that satisfy arg_schema or use schema defaults. Use the fill_action_required_params tool with node_id to auto-fill placeholders before applying custom bindings. Example: if an action requires params.prompt but it is missing, bind it to result.output from an upstream copywriting node.",
     "UNKNOWN_ACTION_ID": "Replace with an action_id that exists in the Action Registry while keeping semantics similar and adjusting params accordingly. Example: change an unknown action_id to text.generate in the registry and retain prompt/temperature parameters.",
     "UNKNOWN_PARAM": "Remove or rename params fields not declared in the arg_schema so they align with the schema. Example: if the action schema only accepts prompt/temperature, delete an unexpected max_token field.",
     "DISCONNECTED_GRAPH": "Connect nodes with no inputs/outputs so every node sits on a reachable path. Example: add an edge from an upstream generation node to an isolated summary node and route its result to downstream aggregation.",

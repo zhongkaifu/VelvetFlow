@@ -74,6 +74,47 @@ def test_error_summary_includes_previous_attempts():
     assert "轮次 1 使用 LLM 修复 未修复" in summary
 
 
+def test_error_summary_surfaces_missing_required_param_context():
+    errors = [
+        ValidationError(
+            code="MISSING_REQUIRED_PARAM",
+            node_id="writer",
+            field="prompt",
+            message="missing required",
+        )
+    ]
+    workflow = {
+        "nodes": [
+            {
+                "id": "writer",
+                "type": "action",
+                "action_id": "text.generate",
+                "params": {"prompt": "", "tone": ""},
+            }
+        ]
+    }
+    action_registry = [
+        {
+            "action_id": "text.generate",
+            "arg_schema": {
+                "type": "object",
+                "properties": {
+                    "prompt": {"type": "string"},
+                    "tone": {"type": "string"},
+                },
+                "required": ["prompt", "tone"],
+            },
+        }
+    ]
+
+    summary = _summarize_validation_errors_for_llm(
+        errors, workflow=workflow, action_registry=action_registry
+    )
+
+    assert "text.generate" in summary
+    assert "required" in summary and "tone" in summary
+
+
 def test_rule_repairs_surface_missing_loop_body():
     workflow = {"nodes": [{"id": "loop1", "type": "loop", "params": {"exports": {}}}]}
 

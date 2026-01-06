@@ -81,6 +81,65 @@ def _index_actions_by_id(
     return {a["action_id"]: a for a in action_registry}
 
 
+def _is_missing_required_value(value: Any) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return value.strip() == ""
+    if isinstance(value, (list, dict)):
+        return len(value) == 0
+    return False
+
+
+def _collect_missing_required_param_errors(
+    workflow: Workflow, action_registry: List[Dict[str, Any]]
+) -> List[ValidationError]:
+    """Return errors for action nodes whose required params are absent or empty."""
+
+    actions_by_id = _index_actions_by_id(action_registry)
+    errors: List[ValidationError] = []
+
+    for node in iter_workflow_and_loop_body_nodes(workflow.model_dump(by_alias=True)):
+        if node.get("type") != "action":
+            continue
+
+        action_id = node.get("action_id") if isinstance(node.get("action_id"), str) else None
+        action_def = actions_by_id.get(action_id) if action_id else None
+        if not action_def:
+            continue
+
+        arg_schema = action_def.get("arg_schema") if isinstance(action_def, Mapping) else None
+        required_fields = arg_schema.get("required") if isinstance(arg_schema, Mapping) else []
+        if not isinstance(required_fields, list):
+            continue
+
+        params = node.get("params") if isinstance(node.get("params"), Mapping) else {}
+        provided_keys = ", ".join(sorted(params.keys())) if params else ""
+
+        for field in required_fields:
+            value = params.get(field)
+            if field not in params or _is_missing_required_value(value):
+                errors.append(
+                    ValidationError(
+                        code="MISSING_REQUIRED_PARAM",
+                        node_id=node.get("id"),
+                        field=field,
+                        message=(
+                            "action 节点 '{nid}' 的业务工具 '{aid}' 缺少必填参数 '{field}'"
+                            " 或值为空；必填字段: {required}；已提供: {provided}"
+                        ).format(
+                            nid=node.get("id"),
+                            aid=action_id,
+                            field=field,
+                            required=", ".join(required_fields),
+                            provided=provided_keys,
+                        ),
+                    )
+                )
+
+    return errors
+
+
 def _schema_primary_type(schema: Optional[Mapping[str, Any]]) -> Any:
     if not isinstance(schema, Mapping):
         return None
@@ -1070,6 +1129,12 @@ def _validate_and_repair_workflow(
                     action_registry=action_registry,
                 )
             )
+
+        existing_error_keys = {(e.code, e.node_id, e.field) for e in errors}
+        for err in _collect_missing_required_param_errors(current_workflow, action_registry):
+            if (err.code, err.node_id, err.field) not in existing_error_keys:
+                errors.append(err)
+                existing_error_keys.add((err.code, err.node_id, err.field))
 
         if _is_empty_fallback_workflow(current_workflow):
             log_warn("检测到空的 fallback workflow，自动触发重新规划")
