@@ -3,13 +3,11 @@
 
 """Binding and schema validation helpers."""
 
-import json
 import re
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence
 
-from velvetflow.aggregation import JinjaExprValidationError, validate_jinja_expression
 from velvetflow.loop_dsl import build_loop_output_schema
-from velvetflow.models import ALLOWED_PARAM_AGGREGATORS, ValidationError
+from velvetflow.models import ValidationError
 from velvetflow.reference_utils import (
     canonicalize_template_placeholders,
     normalize_reference_path,
@@ -65,29 +63,6 @@ def _get_node_output_schema(
                     return output_schema
 
     return None
-
-
-def _maybe_decode_binding_string(raw: str) -> Optional[Any]:
-    """Attempt to parse a JSON-like binding stored as string."""
-
-    if not isinstance(raw, str):
-        return None
-
-    text = raw.strip()
-    if not text.startswith("{"):
-        return None
-
-    try:
-        parsed = json.loads(text)
-    except json.JSONDecodeError:
-        return None
-
-    if isinstance(parsed, Mapping) and "__from__" in parsed:
-        return parsed
-
-    return None
-
-
 def _iter_empty_param_fields(obj: Any, path_prefix: str = "params") -> Iterable[str]:
     """Yield parameter paths whose values are empty strings."""
 
@@ -121,88 +96,20 @@ def _iter_template_references(text: str) -> Iterable[str]:
         for match in _TEMPLATE_REF_PATTERN.finditer(text)
         if match.group(1) or match.group(2) or match.group(3)
     )
-
-
 def _collect_param_bindings(obj: Any, prefix: str = "") -> List[Dict[str, Any]]:
-    """Collect bindings that carry a __from__ reference for lightweight checks."""
+    """Legacy helper retained for compatibility; no bindings are collected now."""
 
-    bindings: List[Dict[str, Any]] = []
-
-    if isinstance(obj, Mapping):
-        if "__from__" in obj:
-            binding: Dict[str, Any] = {"path": prefix or "params", "source": obj.get("__from__")}
-            if "__agg__" in obj:
-                binding["agg"] = obj.get("__agg__")
-            binding["binding"] = obj
-            bindings.append(binding)
-        for key, value in obj.items():
-            new_prefix = f"{prefix}.{key}" if prefix else str(key)
-            bindings.extend(_collect_param_bindings(value, new_prefix))
-    elif isinstance(obj, list):
-        for idx, value in enumerate(obj):
-            new_prefix = f"{prefix}[{idx}]" if prefix else f"[{idx}]"
-            bindings.extend(_collect_param_bindings(value, new_prefix))
-    elif isinstance(obj, str):
-        decoded = _maybe_decode_binding_string(obj)
-        if decoded:
-            bindings.extend(_collect_param_bindings(decoded, prefix))
-
-    return bindings
+    return []
 
 
 def validate_param_binding(binding: Any) -> Optional[str]:
-    """Validate the shape of a single parameter binding."""
+    """Reject legacy ``__from__``/``__agg__`` parameter bindings."""
 
     if not isinstance(binding, Mapping):
-        return "参数绑定必须是对象。"
+        return "Parameter binding must be an object."
 
-    if "__from__" not in binding:
-        return "缺少 __from__ 字段"
-
-    source_path = binding["__from__"]
-    if isinstance(source_path, list):
-        if not source_path:
-            return "__from__ 不应为空数组"
-        if any(not isinstance(item, str) for item in source_path):
-            return "__from__ 数组元素必须是字符串"
-    elif not isinstance(source_path, str):
-        return "__from__ 必须是字符串或字符串数组"
-
-    allowed_aggs = set(ALLOWED_PARAM_AGGREGATORS)
-    agg_spec = binding.get("__agg__", "identity")
-    agg = agg_spec.get("op") if isinstance(agg_spec, Mapping) else agg_spec
-    if agg not in allowed_aggs:
-        return (
-            f"__agg__ 不支持值 {agg}，可选值：{', '.join(ALLOWED_PARAM_AGGREGATORS)}"
-        )
-
-    if isinstance(agg_spec, Mapping):
-        condition_ast = agg_spec.get("condition")
-        if condition_ast is not None:
-            try:
-                validate_jinja_expression(condition_ast, path="__agg__.condition")
-            except JinjaExprValidationError as exc:
-                return f"__agg__.condition 无效：{exc}"
-        for type_field in ("input_type", "output_type"):
-            if type_field in agg_spec and not isinstance(agg_spec.get(type_field), str):
-                return f"{type_field} 必须是字符串"
-
-    if agg == "count_if":
-        if not (
-            isinstance(agg_spec, Mapping) and agg_spec.get("condition") is not None
-        ) and ("field" not in binding or "op" not in binding or "value" not in binding):
-            return "count_if 需要提供 field/op/value 或通过 __agg__.condition 指定表达式"
-
-    if agg == "pipeline":
-        steps = binding.get("steps")
-        if not isinstance(steps, list) or not steps:
-            return "pipeline 需要非空 steps 数组"
-        for idx, step in enumerate(steps):
-            if not isinstance(step, Mapping):
-                return f"pipeline.steps[{idx}] 必须是对象"
-            op = step.get("op")
-            if op not in {"filter", "map", "format_join", "sort", "limit"}:
-                return f"pipeline.steps[{idx}].op 不支持值 {op}"
+    if "__from__" in binding or "__agg__" in binding:
+        return "Legacy __from__/__agg__ bindings are no longer supported."
 
     return None
 
@@ -217,12 +124,12 @@ def _check_output_path_against_schema(
 ) -> Optional[str]:
     source_path = normalize_reference_path(source_path)
     if not isinstance(source_path, str):
-        return f"source/__from__ 应该是字符串，但收到类型: {type(source_path)}"
+        return f"source path should be a string, but received type: {type(source_path)}"
 
     try:
         parts = parse_field_path(source_path)
     except Exception:
-        return f"source/__from__ 不是合法的路径字符串: {source_path}"
+        return f"source path is not a valid path string: {source_path}"
 
     if len(parts) < 2 or parts[0] != "result_of":
         return None
@@ -233,13 +140,13 @@ def _check_output_path_against_schema(
     loop_body_parents = loop_body_parents or {}
 
     if node_id not in nodes_by_id:
-        return f"节点 '{node_id}' 不存在，无法引用其输出"
+        return f"Node '{node_id}' does not exist; cannot reference its output"
 
     target = nodes_by_id[node_id]
     target_type = target.get("type")
     parent_loop = loop_body_parents.get(node_id)
     if parent_loop and rest_path and rest_path[0] != "exports":
-        return f"loop body 节点 '{node_id}' 只能通过 exports 暴露输出"
+        return f"Loop body node '{node_id}' can only expose outputs through exports"
 
     context_parent_loop = (
         loop_body_parents.get(context_node_id)
@@ -251,28 +158,28 @@ def _check_output_path_against_schema(
         loop_params = target.get("params") if isinstance(target, Mapping) else {}
         loop_schema = build_loop_output_schema(loop_params or {})
         if not loop_schema:
-            return f"loop 节点 '{node_id}' 缺少 exports/out_schema 等输出定义，无法引用"
+            return f"Loop node '{node_id}' is missing exports/out_schema output definitions and cannot be referenced"
 
         allowed_meta_fields = {"status", "loop_kind"}
         if rest_path:
             root_field = rest_path[0]
             if root_field not in {"exports", *allowed_meta_fields}:
                 return (
-                    f"loop 节点 '{node_id}' 的输出只能通过 exports.* "
-                    f"或内置状态字段 {', '.join(sorted(allowed_meta_fields))} 暴露，找不到字段 '{root_field}'"
+                    f"Outputs of loop node '{node_id}' can only be exposed through exports.* "
+                    f"or builtin status fields {', '.join(sorted(allowed_meta_fields))}; field '{root_field}' was not found"
                 )
 
             if root_field == "exports" and len(rest_path) == 1:
                 return (
-                    f"引用 loop 节点 '{node_id}' 的 exports 时必须指定 exports 内部的字段或结构，"
-                    "例如 exports.<key>。"
+                    f"When referencing exports of loop node '{node_id}', you must specify a field or structure inside exports,"
+                    "for example exports.<key>."
                 )
 
         if context_parent_loop and context_parent_loop == node_id and rest_path:
             if rest_path[0] == "exports":
                 return (
-                    f"loop body 节点 '{context_node_id}' 不可直接引用所属 loop "
-                    f"'{node_id}' 的 exports，请改为引用 body_subgraph 节点的输出"
+                    f"Loop body node '{context_node_id}' cannot directly reference the exports of its loop "
+                    f"'{node_id}'; reference the outputs of body_subgraph nodes instead"
                 )
 
         return _schema_path_error(loop_schema, _normalize_field_tokens(list(rest_path)))
@@ -281,7 +188,7 @@ def _check_output_path_against_schema(
         pretty_path = ".".join(str(p) for p in rest_path) if rest_path else ""
         suffix = f".{pretty_path}" if pretty_path else ""
         return (
-            f"condition 节点 '{node_id}' 没有输出，不能通过 result_of.{node_id}{suffix} 被引用"
+            f"Condition node '{node_id}' has no output and cannot be referenced via result_of.{node_id}{suffix}"
         )
 
     if target_type == "action":
@@ -293,7 +200,7 @@ def _check_output_path_against_schema(
     if rest_path:
         pretty_path = ".".join(str(p) for p in rest_path)
         return (
-            f"节点 '{node_id}' 类型为 {target.get('type')}，无法引用其输出路径 '{pretty_path}'"
+            f"Node '{node_id}' has type {target.get('type')} and cannot reference output path '{pretty_path}'"
         )
 
     return None
@@ -418,36 +325,6 @@ def _get_output_schema_at_path(
                 return {"type": "integer"}
 
     return _walk_schema_with_tokens(schema_obj, normalized_path)
-
-
-def _project_schema_through_agg(
-    schema: Optional[Mapping[str, Any]], agg_spec: Any
-) -> Optional[Mapping[str, Any]]:
-    """Approximate the output schema after applying an aggregation op."""
-
-    if agg_spec is None:
-        return schema
-
-    agg_op = agg_spec.get("op") if isinstance(agg_spec, Mapping) else agg_spec
-    output_type = agg_spec.get("output_type") if isinstance(agg_spec, Mapping) else None
-
-    if output_type:
-        return {"type": output_type}
-
-    if agg_op in {"count", "count_if"}:
-        return {"type": "integer"}
-
-    if agg_op in {"join", "format_join", "filter_map"}:
-        return {"type": "string"}
-
-    if agg_op == "pipeline":
-        steps = agg_spec.get("steps") if isinstance(agg_spec, Mapping) else None
-        if isinstance(steps, list):
-            for step in steps:
-                if isinstance(step, Mapping) and step.get("op") == "format_join":
-                    return {"type": "string"}
-
-    return schema
 
 
 def _get_field_schema_from_item(
@@ -616,7 +493,7 @@ def _schema_path_error(schema: Mapping[str, Any], fields: List[Any]) -> Optional
     """Check whether a dotted/Indexed field path exists in a JSON schema."""
 
     if not isinstance(schema, Mapping):
-        return "output_schema 不是对象，无法校验字段路径。"
+        return "output_schema is not an object; cannot validate field path."
 
     normalized_fields = _normalize_field_tokens(fields)
 
@@ -628,14 +505,14 @@ def _schema_path_error(schema: Mapping[str, Any], fields: List[Any]) -> Optional
 
         if isinstance(name, int):
             if typ != "array":
-                return f"字段路径 '{'.'.join(map(str, normalized_fields))}' 与 schema 类型 '{typ}' 不匹配（期望 array）。"
+                return f"Field path '{'.'.join(map(str, normalized_fields))}' does not match schema type '{typ}' (expected array)."
             current = current.get("items") or {}
             idx += 1
             continue
 
         if name == "*":
             if typ != "array":
-                return f"字段路径 '{'.'.join(map(str, normalized_fields))}' 与 schema 类型 '{typ}' 不匹配（期望 array）。"
+                return f"Field path '{'.'.join(map(str, normalized_fields))}' does not match schema type '{typ}' (expected array)."
             current = current.get("items") or {}
             idx += 1
             continue
@@ -653,7 +530,7 @@ def _schema_path_error(schema: Mapping[str, Any], fields: List[Any]) -> Optional
         if typ == "object" or typ is None:
             props = current.get("properties") or {}
             if name not in props:
-                return f"字段 '{name}' 不存在，已知字段有: {list(props.keys())}"
+                return f"Field '{name}' does not exist; known fields: {list(props.keys())}"
             current = props[name]
             idx += 1
             continue
@@ -661,7 +538,7 @@ def _schema_path_error(schema: Mapping[str, Any], fields: List[Any]) -> Optional
         if idx == len(normalized_fields) - 1:
             return None
 
-        return f"字段路径 '{'.'.join(map(str, normalized_fields))}' 与 schema 类型 '{typ}' 不匹配（期望 object/array）。"
+        return f"Field path '{'.'.join(map(str, normalized_fields))}' does not match schema type '{typ}' (expected object/array)."
 
     return None
 
@@ -742,7 +619,7 @@ def _check_array_item_field(
         context_node_id=context_node_id,
     )
     if not item_schema:
-        return f"路径 '{normalized_source}' 不是数组输出，无法访问字段 '{field}'。"
+        return f"Path '{normalized_source}' is not an array output; cannot access field '{field}'."
 
     return _schema_path_error(item_schema, [field])
 
@@ -759,7 +636,6 @@ __all__ = [
     "_index_actions_by_id",
     "_iter_empty_param_fields",
     "_iter_template_references",
-    "_maybe_decode_binding_string",
     "_schema_path_error",
     "_suggest_numeric_subfield",
     "_walk_schema_with_tokens",

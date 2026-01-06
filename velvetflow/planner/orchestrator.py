@@ -3,24 +3,25 @@
 
 """Top-level orchestrator for the two-pass planner.
 
-本模块聚合了结构规划、参数补全与错误修复三个阶段，主要通过 LLM 进行
-workflow 结构和参数的两阶段推理，然后在必要时向 LLM 提供错误上下文进行
-自修复。为了降低调用方的认知负担，核心入口 `plan_workflow_with_two_pass`
-会处理：
+This module orchestrates structure planning, parameter completion, and error repair.
+It runs a two-pass reasoning flow with an LLM to draft the workflow structure and fill
+parameters, then supplies validation context back to the LLM for self-repair when
+needed. The main entry ``plan_workflow_with_two_pass`` handles:
 
-* 骨架阶段：根据自然语言需求触发 LLM 生成节点的初稿，并保证 Action
-  Registry 覆盖。
-* 参数阶段：在约定的 prompt 语境下补全每个 action 的参数，并校验返回
-  结构符合 `Workflow` Pydantic 模型。
-* 修复阶段：当校验失败时，将 ValidationError 列表和上一次合法结构回传给
-  LLM，请求其输出完全序列化的 workflow 字典；若多轮修复仍失败则返回最后
-  一次通过校验的版本。
+* Skeleton stage: invoke the LLM with the natural-language requirement to generate
+  initial nodes, ensuring Action Registry coverage.
+* Parameter stage: fill each action's parameters under the agreed-upon prompt context
+  and validate the structure against the ``Workflow`` Pydantic model.
+* Repair stage: when validation fails, return the ``ValidationError`` list and last
+  valid structure to the LLM, asking for a fully serialized workflow dictionary; if
+  multiple repair rounds still fail, return the most recent valid version.
 
-返回值统一为 `Workflow` 对象，调用方无需关心 LLM 返回的原始 JSON 格式。
+All callers receive a ``Workflow`` object and do not need to handle the raw JSON
+returned by the LLM.
 """
 
 import json
-from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional
 
 from velvetflow.config import OPENAI_MODEL
 from velvetflow.logging_utils import (
@@ -54,7 +55,6 @@ from velvetflow.planner.repair_tools import (
     _apply_local_repairs_for_unknown_params,
 )
 from velvetflow.planner.structure import plan_workflow_structure_with_llm
-from velvetflow.reference_utils import parse_field_path
 from velvetflow.verification import (
     precheck_loop_body_graphs,
     run_lightweight_static_rules,
@@ -125,8 +125,9 @@ def _collect_missing_required_param_errors(
                         node_id=node.get("id"),
                         field=field,
                         message=(
-                            "action 节点 '{nid}' 的业务工具 '{aid}' 缺少必填参数 '{field}'"
-                            " 或值为空；必填字段: {required}；已提供: {provided}"
+                            "Action node '{nid}' with tool '{aid}' is missing required "
+                            "param '{field}' or it is empty; required fields: {required}; "
+                            "provided: {provided}"
                         ).format(
                             nid=node.get("id"),
                             aid=action_id,
@@ -194,70 +195,6 @@ def _schemas_compatible(expected: Optional[Mapping[str, Any]], actual: Optional[
     return True
 
 
-def _iter_bindings_with_schema(
-    value: Any, schema: Optional[Mapping[str, Any]], path_prefix: str
-) -> Iterable[tuple[str, Mapping[str, Any], Optional[Mapping[str, Any]]]]:
-    """Yield all bindings together with their expected schema context."""
-
-    if isinstance(value, Mapping):
-        if "__from__" in value:
-            yield path_prefix, value, schema
-        for key, val in value.items():
-            next_prefix = f"{path_prefix}.{key}" if path_prefix else str(key)
-            child_schema: Optional[Mapping[str, Any]] = None
-            if isinstance(schema, Mapping):
-                schema_type = schema.get("type")
-                if schema_type == "array":
-                    child_schema = schema.get("items")
-                elif schema_type in {None, "object"}:
-                    props = schema.get("properties") or {}
-                    child_schema = props.get(key) if isinstance(props, Mapping) else None
-            yield from _iter_bindings_with_schema(val, child_schema, next_prefix)
-        return
-
-    if isinstance(value, Sequence) and not isinstance(value, (bytes, str)):
-        item_schema = schema.get("items") if isinstance(schema, Mapping) else None
-        for idx, item in enumerate(value):
-            yield from _iter_bindings_with_schema(item, item_schema, f"{path_prefix}[{idx}]")
-
-
-def _binding_io_schemas(
-    source_schema: Optional[Mapping[str, Any]], binding: Mapping[str, Any]
-) -> tuple[Optional[Mapping[str, Any]], Optional[Mapping[str, Any]]]:
-    """Infer aggregator input/output schemas for a binding."""
-
-    if not isinstance(binding, Mapping):
-        return source_schema, None
-
-    agg = binding.get("__agg__")
-    agg_input: Optional[Mapping[str, Any]] = None
-    agg_output: Optional[Mapping[str, Any]] = None
-
-    if isinstance(agg, Mapping):
-        if isinstance(agg.get("input_type"), str):
-            agg_input = {"type": agg["input_type"]}
-        if isinstance(agg.get("output_type"), str):
-            agg_output = {"type": agg["output_type"]}
-        agg = agg.get("op")
-
-    if agg in {"count", "count_if"}:
-        agg_input = agg_input or {"type": "array"}
-        agg_output = agg_output or {"type": "integer"}
-    if agg in {"join", "format_join", "filter_map"}:
-        agg_input = agg_input or {"type": "array"}
-        agg_output = agg_output or {"type": "string"}
-    if agg == "pipeline":
-        agg_input = agg_input or {"type": "array"}
-        steps = binding.get("steps")
-        if isinstance(steps, list) and any(
-            isinstance(step, Mapping) and step.get("op") == "format_join"
-            for step in steps
-        ):
-            agg_output = agg_output or {"type": "string"}
-
-    return agg_output or source_schema, agg_input
-
-
 def _find_unregistered_action_nodes(
     workflow_dict: Dict[str, Any],
     actions_by_id: Dict[str, Dict[str, Any]],
@@ -305,14 +242,18 @@ def _evaluate_schema_alignment(
     """Score how well the node params align with the candidate arg_schema."""
 
     if not isinstance(node_params, Mapping):
-        return 0.0, [], [], ["节点 params 不是映射，无法比较"]
+        return 0.0, [], [], ["Node params are not a mapping; cannot compare."]
 
     if not isinstance(candidate_schema, Mapping):
-        return 0.0, [], sorted(node_params.keys()), ["候选 action 缺少 arg_schema，跳过对齐评分"]
+        return 0.0, [], sorted(node_params.keys()), [
+            "Candidate action is missing arg_schema; skipping alignment score.",
+        ]
 
     properties = candidate_schema.get("properties")
     if not isinstance(properties, Mapping):
-        return 0.0, [], sorted(node_params.keys()), ["arg_schema.properties 缺失，跳过对齐评分"]
+        return 0.0, [], sorted(node_params.keys()), [
+            "arg_schema.properties missing; skipping alignment score.",
+        ]
 
     provided_keys = set(node_params.keys())
     schema_keys = set(properties.keys())
@@ -320,15 +261,21 @@ def _evaluate_schema_alignment(
     unmatched = sorted(provided_keys - schema_keys)
 
     if not provided_keys:
-        return 0.6, matched, unmatched, ["节点未提供参数键名，给予中等默认置信度"]
+        return 0.6, matched, unmatched, [
+            "Node provided no parameter keys; assigning medium default confidence.",
+        ]
 
     if not schema_keys:
-        return 0.0, matched, unmatched, ["候选 arg_schema 无 properties，无法比对参数键名"]
+        return 0.0, matched, unmatched, [
+            "Candidate arg_schema has no properties; cannot compare parameter keys.",
+        ]
 
     coverage = len(matched) / max(len(provided_keys), len(schema_keys))
     notes: List[str] = []
     if unmatched:
-        notes.append("节点参数键名在候选 arg_schema 中不存在：" + ",".join(unmatched))
+        notes.append(
+            "Parameter keys are missing from candidate arg_schema: " + ",".join(unmatched)
+        )
 
     return coverage, matched, unmatched, notes
 
@@ -373,8 +320,8 @@ def _auto_replace_unregistered_actions(
 
         if search_confidence is None or search_confidence < MIN_SEARCH_CONFIDENCE:
             log_warn(
-                f"[ActionGuard] 节点 '{node_id}' 的候选动作 '{candidate_id}' 置信度 {search_confidence}"
-                f" 低于阈值 {MIN_SEARCH_CONFIDENCE}，跳过自动替换。"
+                f"[ActionGuard] Candidate action '{candidate_id}' for node '{node_id}' has confidence"
+                f" {search_confidence} below threshold {MIN_SEARCH_CONFIDENCE}; skipping auto replacement."
             )
             continue
 
@@ -383,16 +330,16 @@ def _auto_replace_unregistered_actions(
         )
         if schema_score < MIN_SCHEMA_SCORE:
             log_warn(
-                f"[ActionGuard] 节点 '{node_id}' 的候选动作 '{candidate_id}' 参数匹配度 {schema_score:.2f}"
-                f" 低于阈值 {MIN_SCHEMA_SCORE}，跳过自动替换。"
+                f"[ActionGuard] Candidate action '{candidate_id}' for node '{node_id}' has param alignment"
+                f" {schema_score:.2f} below threshold {MIN_SCHEMA_SCORE}; skipping auto replacement."
             )
             continue
 
         node["action_id"] = candidate_id
         changed = True
         log_info(
-            f"[ActionGuard] 节点 '{node_id}' 的 action_id='{original_action_id}' 未注册，",
-            f"已自动替换为 '{candidate_id}'（search={search_confidence:.2f}, schema={schema_score:.2f}）。"
+            f"[ActionGuard] Node '{node_id}' had unregistered action_id='{original_action_id}',",
+            f"Auto-replaced with '{candidate_id}' (search={search_confidence:.2f}, schema={schema_score:.2f})."
         )
 
     if not changed:
@@ -401,7 +348,7 @@ def _auto_replace_unregistered_actions(
     try:
         return Workflow.model_validate(workflow_dict)
     except Exception as exc:  # noqa: BLE001
-        log_warn(f"[ActionGuard] 自动替换 action_id 失败：{exc}")
+        log_warn(f"[ActionGuard] Auto replacement for action_id failed: {exc}")
         return None
 
 
@@ -488,295 +435,17 @@ def _coerce_value_to_schema_type(value: Any, field_schema: Mapping[str, Any]) ->
 def _align_reference_field_types(
     workflow: Workflow, *, action_registry: List[Dict[str, Any]]
 ) -> tuple[Workflow, List[ValidationError]]:
-    """Ensure param binding types match the referenced output schema.
+    """Legacy placeholder: reference bindings are no longer auto-aligned."""
 
-    当某个参数通过 ``__from__`` 引用上游节点输出时，检查该字段期望的
-    JSON Schema 类型是否与引用的输出类型一致：
-
-    * 若检测到类型不一致且可预测的转换规则（如数组包装、字符串化）可用，
-      则直接在本地修改 workflow，避免进入 LLM 修复流程。
-    * 无法自动转换时，返回带有上下文信息的 ``ValidationError``，以便后续
-      交给 LLM 处理。
-    """
-
-    def _coerce_binding(binding: Mapping[str, Any], field_schema: Mapping[str, Any]) -> Optional[Any]:
-        schema_type = _schema_primary_type(field_schema)
-        if schema_type == "array" and not isinstance(binding, list):
-            return [binding]
-
-        if schema_type == "string":
-            agg = binding.get("__agg__", "identity")
-            if agg in {None, "", "identity"}:
-                coerced = dict(binding)
-                coerced["__agg__"] = "pipeline"
-                steps = coerced.get("steps") or []
-                coerced["steps"] = steps + [{"op": "format_join"}]
-                return coerced
-
-        return None
-
-    wf_dict = workflow.model_dump(by_alias=True)
-    actions_by_id = _index_actions_by_id(action_registry)
-    nodes_by_id = {n.get("id"): n for n in iter_workflow_and_loop_body_nodes(wf_dict)}
-
-    loop_body_parents: Dict[str, str] = {}
-    for node in wf_dict.get("nodes", []) or []:
-        if not isinstance(node, Mapping) or node.get("type") != "loop":
-            continue
-        params = node.get("params") if isinstance(node.get("params"), Mapping) else {}
-        body_nodes = (
-            params.get("body_subgraph", {}).get("nodes") if isinstance(params, Mapping) else []
-        )
-        for bn in body_nodes or []:
-            if isinstance(bn, Mapping) and bn.get("id"):
-                loop_body_parents[bn["id"]] = node.get("id", "")
-
-    errors: List[ValidationError] = []
-    changed = False
-
-    for node in wf_dict.get("nodes", []) or []:
-        if not isinstance(node, Mapping) or node.get("type") != "action":
-            continue
-
-        node_id = node.get("id")
-        params = node.get("params") if isinstance(node.get("params"), Mapping) else None
-        if not params:
-            continue
-
-        arg_schema = actions_by_id.get(node.get("action_id"), {}).get("arg_schema")
-        for path, binding, binding_schema in _iter_bindings_with_schema(
-            params, arg_schema, "params"
-        ):
-            from_path = binding.get("__from__") if isinstance(binding, Mapping) else None
-            if not isinstance(from_path, str):
-                continue
-
-            source_schema = _get_output_schema_at_path(
-                from_path,
-                nodes_by_id,
-                actions_by_id,
-                loop_body_parents=loop_body_parents,
-            )
-            effective_schema, agg_input_schema = _binding_io_schemas(
-                source_schema, binding
-            )
-            if agg_input_schema and not _schemas_compatible(
-                agg_input_schema, source_schema
-            ):
-                errors.append(
-                    ValidationError(
-                        code="SCHEMA_MISMATCH",
-                        node_id=node_id,
-                        field=path.replace("params.", "", 1),
-                        message=(
-                            f"参数 {path} 使用 __agg__ 需要类型为 {agg_input_schema.get('type')} 的输入，"
-                            f"但来源 {from_path} 的类型为 {', '.join(sorted(_schema_types(source_schema))) or '未知'}"
-                        ),
-                    )
-                )
-                continue
-
-            target_type = _schema_primary_type(binding_schema)
-            source_type = _schema_primary_type(effective_schema)
-
-            if target_type is None or source_type is None or target_type == source_type:
-                continue
-
-            coerced = _coerce_binding(binding, binding_schema or {})
-            if coerced is not None:
-                parent = params
-                try:
-                    tokens = parse_field_path(path.replace("params.", "", 1))
-                except Exception:
-                    errors.append(
-                        ValidationError(
-                            code="SCHEMA_MISMATCH",
-                            node_id=node_id,
-                            field=path.replace("params.", "", 1),
-                            message=(
-                                f"参数 {path} 的路径无法解析，跳过自动类型转换。"
-                            ),
-                        )
-                    )
-                    continue
-                cursor: Any = parent
-                for token in tokens[:-1]:
-                    if isinstance(token, int):
-                        cursor = cursor[token]
-                    else:
-                        cursor = cursor.get(token)
-                last = tokens[-1]
-                if isinstance(cursor, list) and isinstance(last, int):
-                    cursor[last] = coerced
-                elif isinstance(cursor, Mapping):
-                    cursor[last] = coerced
-                changed = True
-                continue
-
-            errors.append(
-                ValidationError(
-                    code="SCHEMA_MISMATCH",
-                    node_id=node_id,
-                    field=path.replace("params.", "", 1),
-                    message=(
-                        "参数 {field} 引用 {source} 的输出类型为 {source_type}，"
-                        "但期望 {target_type}。无法自动转换，请使用工具调整或添加转换逻辑。"
-                    ).format(
-                        field=path,
-                        source=from_path,
-                        source_type=source_type,
-                        target_type=target_type,
-                    ),
-                )
-            )
-
-    if not changed:
-        return workflow, errors
-
-    try:
-        coerced_workflow = Workflow.model_validate(wf_dict)
-    except Exception as exc:  # noqa: BLE001
-        log_warn(f"[AutoRepair] 引用类型矫正后验证失败：{exc}")
-        return workflow, errors
-
-    return coerced_workflow, errors
+    return workflow, []
 
 
 def _align_binding_and_param_types(
     workflow: Workflow, *, action_registry: List[Dict[str, Any]]
 ) -> tuple[Workflow, List[ValidationError]]:
-    """Match binding source types with target param schemas early in planning.
+    """Legacy placeholder: binding/param type alignment for __from__/__agg__ is removed."""
 
-    This step builds a lightweight type environment from upstream node outputs,
-    infers the effective type of each ``__from__`` binding (including
-    ``__agg__`` transformations), and checks it against the expected type in
-    the action's ``arg_schema``. Mismatches are surfaced as validation errors,
-    with an early auto-repair rule (R1): when the source is an object and the
-    target expects a primitive (string/number/integer/boolean), automatically
-    pick the only compatible field if unique; otherwise, emit a repair
-    suggestion listing candidates.
-    """
-
-    wf_dict = workflow.model_dump(by_alias=True)
-    actions_by_id = _index_actions_by_id(action_registry)
-    nodes_by_id = {n.get("id"): n for n in iter_workflow_and_loop_body_nodes(wf_dict)}
-    loop_body_parents = index_loop_body_nodes(wf_dict)
-
-    errors: List[ValidationError] = []
-    changed = False
-
-    for node in wf_dict.get("nodes", []) or []:
-        if not isinstance(node, Mapping) or node.get("type") != "action":
-            continue
-
-        node_id = node.get("id")
-        params = node.get("params") if isinstance(node.get("params"), Mapping) else None
-        if not params:
-            continue
-
-        arg_schema = actions_by_id.get(node.get("action_id"), {}).get("arg_schema")
-        if not isinstance(arg_schema, Mapping):
-            continue
-
-        for path, binding, binding_schema in _iter_bindings_with_schema(
-            params, arg_schema, "params"
-        ):
-            if not isinstance(binding_schema, Mapping):
-                continue
-
-            from_path = binding.get("__from__") if isinstance(binding, Mapping) else None
-            if not isinstance(from_path, str):
-                continue
-
-            source_schema = _get_output_schema_at_path(
-                from_path,
-                nodes_by_id,
-                actions_by_id,
-                loop_body_parents=loop_body_parents,
-            )
-            expected_path = path.replace("params.", "", 1)
-            effective_schema, agg_input_schema = _binding_io_schemas(source_schema, binding)
-
-            if agg_input_schema and not _schemas_compatible(agg_input_schema, source_schema):
-                errors.append(
-                    ValidationError(
-                        code="SCHEMA_MISMATCH",
-                        node_id=node_id,
-                        field=expected_path,
-                        message=(
-                            f"参数 {path} 使用 __agg__ 需要类型为 {agg_input_schema.get('type')} 的输入，"
-                            f"但来源 {from_path} 的类型为 {', '.join(sorted(_schema_types(source_schema))) or '未知'}"
-                        ),
-                    )
-                )
-                continue
-
-            if _schemas_compatible(binding_schema, effective_schema):
-                continue
-
-            target_types = _schema_types(binding_schema)
-            source_types = _schema_types(source_schema)
-            expected_path = path.replace("params.", "", 1)
-
-            primitive_targets = {"string", "number", "integer", "boolean"}
-            if "object" in source_types and target_types & primitive_targets:
-                props = (
-                    source_schema.get("properties")
-                    if isinstance(source_schema, Mapping)
-                    and isinstance(source_schema.get("properties"), Mapping)
-                    else {}
-                )
-                compatible_fields = [
-                    name
-                    for name, prop_schema in props.items()
-                    if isinstance(prop_schema, Mapping)
-                    and _schemas_compatible(binding_schema, prop_schema)
-                ]
-
-                if len(compatible_fields) == 1:
-                    binding["__from__"] = f"{from_path}.{compatible_fields[0]}"
-                    changed = True
-                    continue
-
-                if len(compatible_fields) > 1:
-                    candidates = ", ".join(
-                        f"{from_path}.{field}" for field in compatible_fields
-                    )
-                    errors.append(
-                        ValidationError(
-                            code="SCHEMA_MISMATCH",
-                            node_id=node_id,
-                            field=expected_path,
-                            message=(
-                                f"参数 {path} 期望 {', '.join(sorted(target_types))}，"
-                                f"但来源 {from_path} 是 object，存在多种兼容字段: {candidates}"
-                            ),
-                        )
-                    )
-                    continue
-
-            errors.append(
-                ValidationError(
-                    code="SCHEMA_MISMATCH",
-                    node_id=node_id,
-                    field=expected_path,
-                    message=(
-                        f"参数 {path} 期望 {', '.join(sorted(target_types)) or '未知'}，"
-                        f"但来源 {from_path} 的类型为 {', '.join(sorted(source_types)) or '未知'}"
-                    ),
-                )
-            )
-
-    if not changed:
-        return workflow, errors
-
-    try:
-        coerced_workflow = Workflow.model_validate(wf_dict)
-    except Exception as exc:  # noqa: BLE001
-        log_warn(f"[AutoRepair] 引用字段类型对齐失败：{exc}")
-        return workflow, errors
-
-    return coerced_workflow, errors
+    return workflow, []
 
 
 
@@ -788,8 +457,8 @@ def _apply_local_repairs_for_missing_params(
 ) -> Optional[Workflow]:
     """Handle predictable missing/typing issues before invoking the LLM.
 
-    当补参结果存在缺失的必填字段或简单的类型问题时，尝试根据 arg_schema
-    填充占位符或类型矫正，以减少进入 LLM 自修复的次数。
+    When parameter completion leaves required fields missing or minor type issues, use arg_schema
+    placeholders or type coercion to reduce LLM repair cycles.
     """
 
     actions_by_id = _index_actions_by_id(action_registry)
@@ -846,7 +515,7 @@ def _apply_local_repairs_for_missing_params(
     try:
         return Workflow.model_validate(workflow_dict)
     except Exception as exc:  # noqa: BLE001
-        log_warn(f"[AutoRepair] 本地修正失败：{exc}")
+        log_warn(f"[AutoRepair] Local fix failed: {exc}")
         return None
 
 
@@ -855,7 +524,7 @@ def _apply_local_repairs_for_schema_mismatch(
     validation_errors: List[ValidationError],
     action_registry: List[Dict[str, Any]],
 ) -> Optional[Workflow]:
-    """Coerce obvious类型不匹配的 action 参数，减少进入 LLM 的次数。"""
+    """Coerce obvious type mismatches in action params to avoid unnecessary LLM calls."""
 
     actions_by_id = _index_actions_by_id(action_registry)
     workflow_dict = current_workflow.model_dump(by_alias=True)
@@ -906,7 +575,7 @@ def _apply_local_repairs_for_schema_mismatch(
     try:
         return Workflow.model_validate(workflow_dict)
     except Exception as exc:  # noqa: BLE001
-        log_warn(f"[AutoRepair] schema 类型矫正失败：{exc}")
+        log_warn(f"[AutoRepair] Schema type coercion failed: {exc}")
         return None
 
 
@@ -919,10 +588,10 @@ def _ensure_actions_registered_or_repair(
 ) -> Workflow:
     """Ensure all action nodes reference a registered action, otherwise trigger repair.
 
-    如果 Workflow 中的 action 节点缺失或引用未注册的 `action_id`，该函数会
-    生成对应的 `ValidationError`，并将错误上下文、Action Registry 以及调用
-    原因传递给 LLM 进行自动修复。LLM 需要返回一个完整的 workflow JSON，
-    随后再由 Pydantic 转为 `Workflow` 实例。
+    If the workflow has action nodes missing or referencing unregistered `action_id`, this function
+    builds corresponding `ValidationError` entries and passes the error context, Action Registry, and call
+    reason to the LLM for auto repair. The LLM must return a complete workflow JSON,
+    which Pydantic will then convert into a `Workflow` instance.
     """
 
     guarded = ensure_registered_actions(
@@ -949,7 +618,7 @@ def _ensure_actions_registered_or_repair(
     )
     if auto_repaired is not None:
         log_info(
-            "[ActionGuard] 已基于 display_name/action_id 的相似度完成自动替换，进入一次性校验。"
+            "[ActionGuard] Auto replacement based on display_name/action_id similarity complete; running single validation."
         )
         return _attach_out_params_schema(auto_repaired, actions_by_id)
 
@@ -959,10 +628,10 @@ def _ensure_actions_registered_or_repair(
             node_id=item["id"],
             field="action_id",
             message=(
-                f"节点 '{item['id']}' 的 action_id '{item['action_id']}' 不在 Action Registry 中，"
-                "请替换为已注册的动作。"
+                f"Node '{item['id']}' has action_id '{item['action_id']}' that is not in the Action Registry,"
+                "please replace it with a registered action."
                 if item.get("action_id")
-                else f"节点 '{item['id']}' 缺少 action_id，请补充已注册的动作。"
+                else f"Node '{item['id']}' is missing action_id; please supply a registered action."
             ),
         )
         for item in invalid_nodes
@@ -1005,18 +674,18 @@ def _validate_and_repair_workflow(
             payload = workflow_obj.model_dump(by_alias=True) if isinstance(workflow_obj, Workflow) else workflow_obj
             progress_callback(label, payload)
         except Exception:
-            log_debug(f"[validate_and_repair] progress_callback {label} 触发失败，已忽略。")
+            log_debug(f"[validate_and_repair] progress_callback {label} failed and was ignored.")
 
     for repair_round in range(max_repair_rounds + 1):
-        log_section(f"校验 + 自修复轮次 {repair_round}")
-        log_json("当前 workflow", current_workflow.model_dump(by_alias=True))
+        log_section(f"Validation + auto-repair round {repair_round}")
+        log_json("Current workflow", current_workflow.model_dump(by_alias=True))
 
         jinja_params_workflow, jinja_params_summary, jinja_params_errors = normalize_params_to_jinja(
             current_workflow.model_dump(by_alias=True)
         )
         if jinja_params_summary.get("applied") or jinja_params_summary.get("forbidden_paths"):
             log_info(
-                "[JinjaGuard] 已规范化 workflow params 并标记非 Jinja DSL。",
+                "[JinjaGuard] Normalized workflow params and marked non-Jinja DSL entries.",
                 f"summary={jinja_params_summary}",
             )
             try:
@@ -1024,7 +693,7 @@ def _validate_and_repair_workflow(
                 last_good_workflow = current_workflow
             except PydanticValidationError as exc:
                 log_warn(
-                    f"[AutoRepair] Jinja 规范化后校验失败，交给 LLM 修复。 error={exc}"
+                    f"[AutoRepair] Validation failed after Jinja normalization; passing to LLM. error={exc}"
                 )
                 validation_errors = _convert_pydantic_errors(jinja_params_workflow, exc) or [
                     _make_failure_validation_error(str(exc))
@@ -1034,14 +703,14 @@ def _validate_and_repair_workflow(
                     validation_errors=validation_errors,
                     action_registry=action_registry,
                     search_service=search_service,
-                    reason="Jinja 规范化后校验失败",
+                    reason="Validation failed after Jinja normalization",
                     progress_callback=progress_callback,
                 )
                 current_workflow = _ensure_actions_registered_or_repair(
                     current_workflow,
                     action_registry=action_registry,
                     search_service=search_service,
-                    reason="Jinja 规范化修复后校验 action_id",
+                    reason="Validate action_id after Jinja normalization repair",
                     progress_callback=progress_callback,
                 )
                 last_good_workflow = current_workflow
@@ -1053,7 +722,7 @@ def _validate_and_repair_workflow(
         )
         if jinja_summary.get("applied"):
             log_info(
-                "[JinjaGuard] 已将 condition.params 中的引用规范化为 Jinja 字符串。",
+                "[JinjaGuard] Normalized references in condition.params to Jinja strings.",
                 f"replacements={jinja_summary.get('replacements')}",
             )
             current_workflow = Workflow.model_validate(jinja_checked_workflow)
@@ -1073,7 +742,7 @@ def _validate_and_repair_workflow(
         )
         if loop_export_summary.get("applied"):
             log_info(
-                "[AutoRepair] loop.exports 缺失或不完整，已自动填充：",
+                "[AutoRepair] loop.exports were missing or incomplete; auto-filled:",
                 f"summary={loop_export_summary}",
             )
             current_workflow = Workflow.model_validate(loop_exports_workflow)
@@ -1086,7 +755,7 @@ def _validate_and_repair_workflow(
         )
         if alias_summary.get("applied"):
             log_info(
-                "[AutoRepair] loop.body_subgraph 引用了失效的 alias，已自动对齐到当前 item_alias。",
+                "[AutoRepair] loop.body_subgraph referenced a stale alias; aligned to current item_alias.",
                 f"summary={alias_summary}",
             )
             current_workflow = Workflow.model_validate(aligned_alias_workflow)
@@ -1097,7 +766,7 @@ def _validate_and_repair_workflow(
         )
         if normalize_summary.get("applied"):
             log_info(
-                "[AutoRepair] 已规范化绑定路径，减少进入 LLM 的次数。",
+                "[AutoRepair] Normalized binding paths to reduce LLM repairs.",
                 f"summary={normalize_summary}",
             )
             current_workflow = Workflow.model_validate(normalized_workflow)
@@ -1137,10 +806,10 @@ def _validate_and_repair_workflow(
                 existing_error_keys.add((err.code, err.node_id, err.field))
 
         if _is_empty_fallback_workflow(current_workflow):
-            log_warn("检测到空的 fallback workflow，自动触发重新规划")
+            log_warn("Detected empty fallback workflow; triggering replanning automatically")
             errors.append(
                 _make_failure_validation_error(
-                    "workflow 回退为空的 fallback_workflow，需要重新规划"
+                    "workflow rollback produced an empty fallback_workflow; replanning required"
                 )
             )
 
@@ -1149,7 +818,7 @@ def _validate_and_repair_workflow(
         )
         if fix_summary.get("applied"):
             log_info(
-                "[AutoRepair] 检测到 loop.exports 引用缺少 exports 段，已自动补全。",
+                "[AutoRepair] Detected loop.exports reference missing the exports section and auto-completed it.",
                 f"replacements={fix_summary.get('replacements')}",
             )
             current_workflow = Workflow.model_validate(fixed_workflow)
@@ -1162,14 +831,14 @@ def _validate_and_repair_workflow(
             for key, attempt in list(pending_attempts.items()):
                 if key in current_errors_by_key:
                     note = (
-                        f"轮次 {attempt.get('round')} 使用 {attempt.get('method')} 未修复："
+                        f"Attempt round {attempt.get('round')} with {attempt.get('method')} did not fix errors:"
                         f"{current_errors_by_key[key].message}"
                     )
                     failed_repair_history.setdefault(key, []).append(note)
                 pending_attempts.pop(key, None)
 
         if not errors:
-            log_success("校验通过，无需进一步修复")
+            log_success("Validation passed; no further repair needed")
             last_good_workflow = current_workflow
             _emit_progress(f"{trace_event_prefix}_repair_round_{repair_round}", current_workflow)
             log_event(
@@ -1194,7 +863,7 @@ def _validate_and_repair_workflow(
                 "total": len(errors),
             },
         )
-        log_warn("校验未通过，错误列表：")
+        log_warn("Validation failed; error list:")
         for e in errors:
             log_error(
                 f"[code={e.code}] node={e.node_id} field={e.field} message={e.message}"
@@ -1218,7 +887,7 @@ def _validate_and_repair_workflow(
                 action_registry=action_registry,
             )
         if locally_repaired is not None:
-            log_info("[AutoRepair] 检测到可预测的字段缺失/多余/类型不匹配问题，已在本地修正并重新校验。")
+            log_info("[AutoRepair] Predictable missing/extra/type mismatch fields detected; fixed locally and revalidated.")
             current_workflow = locally_repaired
             last_good_workflow = current_workflow
 
@@ -1228,7 +897,7 @@ def _validate_and_repair_workflow(
             )
 
             if not errors:
-                log_success("本地修正后校验通过，无需调用 LLM 继续修复。")
+                log_success("Validation passed after local fixes; no LLM repair needed.")
                 _emit_progress(f"{trace_event_prefix}_repair_round_{repair_round}", current_workflow)
                 log_event(
                     f"{trace_event_prefix}_completed",
@@ -1240,14 +909,14 @@ def _validate_and_repair_workflow(
                 )
                 return current_workflow
 
-                log_warn("本地修正后仍有错误，将继续进入 LLM 修复流程：")
+                log_warn("Errors remain after local fixes; continuing with LLM repair:")
                 for e in errors:
                     log_error(
                         f"[code={e.code}] node={e.node_id} field={e.field} message={e.message}"
                     )
 
         if repair_round == max_repair_rounds:
-            log_warn("已到最大修复轮次，仍有错误，返回最后一个合法结构版本")
+            log_warn("Reached max repair rounds with remaining errors; returning last valid structure")
             log_event(
                 f"{trace_event_prefix}_completed",
                 {
@@ -1266,26 +935,26 @@ def _validate_and_repair_workflow(
             if failed_repair_history.get(key)
         }
 
-        log_info(f"调用 LLM 进行第 {repair_round + 1} 次修复")
+        log_info(f"Calling LLM for repair round {repair_round + 1}")
         current_workflow = _repair_with_llm_and_fallback(
             broken_workflow=current_workflow.model_dump(by_alias=True),
             validation_errors=errors,
             action_registry=action_registry,
             search_service=search_service,
-            reason=f"修复轮次 {repair_round + 1}",
+            reason=f"Repair round {repair_round + 1}",
             previous_attempts=previous_attempts,
             progress_callback=progress_callback,
         )
         for key in current_errors_by_key:
             pending_attempts[key] = {
                 "round": repair_round + 1,
-                "method": "LLM 修复",
+                "method": "LLM repair",
             }
         current_workflow = _ensure_actions_registered_or_repair(
             current_workflow,
             action_registry=action_registry,
             search_service=search_service,
-            reason=f"修复轮次 {repair_round + 1} 后校验 action_id",
+            reason=f"Validate action_id after repair round {repair_round + 1}",
             progress_callback=progress_callback,
         )
         last_good_workflow = current_workflow
@@ -1316,38 +985,38 @@ def plan_workflow_with_two_pass(
 ) -> Workflow:
     """Plan a workflow in two passes with structured validation and LLM repair.
 
-    参数
+    Args
     ----
     nl_requirement:
-        面向 LLM 的自然语言需求描述，必须明确业务目标、主要输入/输出。
+        Natural-language requirement for the LLM; must clarify business goal and key inputs/outputs.
     search_service:
-        用于辅助 LLM 选择与需求匹配的业务 Action 的检索服务。
+        Retrieval service to help the LLM select business actions matching the requirement.
     action_registry:
-        已注册的业务动作列表，传入的每个元素应包含唯一的 `action_id`。
+        List of registered business actions; each element must include a unique `action_id`.
     max_rounds:
-        结构规划阶段允许的 LLM 迭代轮次，决定覆盖率/连通性纠错次数。
+        Allowed LLM iterations in the structure planning stage, controlling coverage/connectivity fixes.
     max_repair_rounds:
-        参数补全后进入校验 + 自修复的最大轮次，超过后返回最后通过校验的
-        版本。
+        Maximum rounds for validation + self-repair after parameter completion; beyond this, return the
+        last version that passed validation.
 
-    返回
+    Returns
     ----
     Workflow
-        通过 Pydantic 校验、所有 action_id 均注册的最终 Workflow 对象。
+        Final Workflow object that passes Pydantic validation with all action_id registered.
 
-    LLM 返回格式约定
-    ----------------
-    * 结构规划与参数补全阶段均要求 LLM 返回可被 `Workflow` 解析的 JSON 对象，
-      至少包含 `nodes` 数组（连线会通过节点绑定自动推导）。
-    * 修复阶段会附带 `validation_errors`，LLM 需直接输出修正后的完整 JSON，
-      不需要包含额外解释文本。
+    LLM response format
+    -------------------
+    * Structure planning and parameter completion require the LLM to return JSON parseable by
+      ``Workflow``, at minimum containing the ``nodes`` array (edges are inferred from node bindings).
+    * Repair rounds include ``validation_errors``; the LLM must output the corrected full JSON without
+      extra explanatory text.
 
-    边界条件
+    Edge cases
     --------
-    * 如果结构规划或补参阶段抛出异常/校验失败，会在保留最近一次合法
-      Workflow 的前提下，使用 LLM 自修复。
-    * 当达到 `max_repair_rounds` 仍存在错误时，返回最近一次通过校验的版本，
-      保证调用方始终获得一个合法的 `Workflow` 实例。
+    * If structure planning or parameter fill throws or fails validation, reuse the last valid
+      Workflow and invoke LLM self-repair.
+    * When ``max_repair_rounds`` is reached with remaining errors, return the most recent validated
+      version so callers always receive a valid ``Workflow`` instance.
     """
 
     parsed_requirement = analyze_user_requirement(
@@ -1386,25 +1055,25 @@ def plan_workflow_with_two_pass(
                     max_rounds=max_rounds,
                     progress_callback=progress_callback,
                 )
-            log_section("第一阶段结果：Workflow Skeleton")
+            log_section("Phase one result: Workflow Skeleton")
             log_json("Workflow Skeleton", skeleton_raw)
             if progress_callback:
                 try:
                     progress_callback("structure_completed", skeleton_raw)
                 except Exception:
-                    log_debug("[plan_workflow_with_two_pass] progress_callback 结构阶段调用失败，已忽略。")
+                    log_debug("[plan_workflow_with_two_pass] progress_callback failed during structure stage and was ignored.")
 
             precheck_errors = precheck_loop_body_graphs(skeleton_raw)
             if precheck_errors:
                 log_warn(
-                    "[plan_workflow_with_two_pass] 结构规划阶段检测到 loop body 引用缺失节点，交给 LLM 修复。"
+                    "[plan_workflow_with_two_pass] Structure stage found loop body referencing missing nodes; delegating to LLM repair."
                 )
                 skeleton = _repair_with_llm_and_fallback(
                     broken_workflow=skeleton_raw if isinstance(skeleton_raw, dict) else {},
                     validation_errors=precheck_errors,
                     action_registry=action_registry,
                     search_service=search_service,
-                    reason="结构规划阶段校验失败",
+                    reason="Structure planning validation failed",
                     progress_callback=progress_callback,
                 )
             else:
@@ -1412,7 +1081,7 @@ def plan_workflow_with_two_pass(
                     skeleton = Workflow.model_validate(skeleton_raw)
                 except PydanticValidationError as e:
                     log_warn(
-                        "[plan_workflow_with_two_pass] 结构规划阶段校验失败，将错误交给 LLM 修复后继续。"
+                        "[plan_workflow_with_two_pass] Structure planning validation failed; sending errors to LLM repair before continuing."
                     )
                     validation_errors = _convert_pydantic_errors(skeleton_raw, e)
                     if not validation_errors:
@@ -1422,19 +1091,19 @@ def plan_workflow_with_two_pass(
                         validation_errors=validation_errors,
                         action_registry=action_registry,
                         search_service=search_service,
-                        reason="结构规划阶段校验失败",
+                        reason="Structure planning validation failed",
                         progress_callback=progress_callback,
                     )
                 except Exception as e:  # noqa: BLE001
                     log_warn(
-                        "[plan_workflow_with_two_pass] 结构规划阶段遇到致命错误，交给 LLM 修复后继续。"
+                        "[plan_workflow_with_two_pass] Structure stage encountered a fatal error; delegating to LLM repair before continuing."
                     )
                     skeleton = _repair_with_llm_and_fallback(
                         broken_workflow=skeleton_raw if isinstance(skeleton_raw, dict) else {},
                         validation_errors=[_make_failure_validation_error(str(e))],
                         action_registry=action_registry,
                         search_service=search_service,
-                        reason="结构规划阶段校验失败",
+                        reason="Structure planning validation failed",
                         progress_callback=progress_callback,
                     )
             if not isinstance(skeleton, Workflow):
@@ -1460,7 +1129,7 @@ def plan_workflow_with_two_pass(
                 skeleton,
                 action_registry=action_registry,
                 search_service=search_service,
-                reason="结构规划后修正未注册的 action_id",
+                reason="Fix unregistered action_id after structure planning",
                 progress_callback=progress_callback,
             )
             last_good_workflow: Workflow = skeleton
@@ -1484,8 +1153,8 @@ def plan_workflow_with_two_pass(
             return planned_workflow
 
         log_warn(
-            "[plan_workflow_with_two_pass] 检测到空的 fallback workflow，当前上下文无法继续修复，"
-            "将使用全新上下文重新规划。"
+            "[plan_workflow_with_two_pass] Detected empty fallback workflow; current context cannot continue repair,"
+            "replanning with fresh context."
         )
         restart_attempted = True
         trace_context = None
@@ -1506,7 +1175,7 @@ def update_workflow_with_two_pass(
 ) -> Workflow:
     """Update an existing workflow using the same validation/repair pipeline as planning.
 
-    The ``existing_workflow`` is treated as a trusted DSL 模版 whenever possible. We
+    The ``existing_workflow`` is treated as a trusted DSL template whenever possible. We
     attempt to preserve untouched nodes/edges while satisfying the new ``requirement``
     through incremental changes plus validation-driven self-repair.
     """
@@ -1527,7 +1196,7 @@ def update_workflow_with_two_pass(
         try:
             base_workflow = Workflow.model_validate(existing_workflow)
         except PydanticValidationError as e:
-            log_warn("[update_workflow_with_two_pass] 输入 workflow 校验失败，进入修复流程。")
+            log_warn("[update_workflow_with_two_pass] Input workflow failed validation; entering repair loop.")
             # Input DSL might come from hand edits; repair it first so the planner
             # can safely continue from a validated baseline.
             validation_errors = _convert_pydantic_errors(existing_workflow, e) or [
@@ -1538,7 +1207,7 @@ def update_workflow_with_two_pass(
                 validation_errors=validation_errors,
                 action_registry=action_registry,
                 search_service=search_service,
-                reason="更新前的输入校验失败",
+                reason="Input validation before update failed",
                 progress_callback=progress_callback,
             )
 
@@ -1546,7 +1215,7 @@ def update_workflow_with_two_pass(
             base_workflow,
             action_registry=action_registry,
             search_service=search_service,
-            reason="更新前校验 action_id",
+            reason="Validate action_id before update",
             progress_callback=progress_callback,
         )
         last_good_workflow = base_workflow
@@ -1572,14 +1241,14 @@ def update_workflow_with_two_pass(
         precheck_errors = precheck_loop_body_graphs(updated_raw)
         if precheck_errors:
             log_warn(
-                "[update_workflow_with_two_pass] 结构规划阶段检测到 loop body 引用缺失节点，交给 LLM 修复。"
+                "[update_workflow_with_two_pass] Structure stage found loop body referencing missing nodes; delegating to LLM repair."
             )
             updated_workflow = _repair_with_llm_and_fallback(
                 broken_workflow=updated_raw if isinstance(updated_raw, dict) else {},
                 validation_errors=precheck_errors,
                 action_registry=action_registry,
                 search_service=search_service,
-                reason="结构规划阶段校验失败",
+                reason="Structure planning validation failed",
                 progress_callback=progress_callback,
             )
         else:
@@ -1587,7 +1256,7 @@ def update_workflow_with_two_pass(
                 updated_workflow = Workflow.model_validate(updated_raw)
             except PydanticValidationError as e:
                 log_warn(
-                    "[update_workflow_with_two_pass] 结构规划阶段校验失败，将错误交给 LLM 修复后继续。"
+                    "[update_workflow_with_two_pass] Structure planning validation failed; sending errors to LLM repair before continuing."
                 )
                 # Convert schema errors into a friendly shape before retrying via LLM.
                 validation_errors = _convert_pydantic_errors(updated_raw, e) or [
@@ -1598,7 +1267,7 @@ def update_workflow_with_two_pass(
                     validation_errors=validation_errors,
                     action_registry=action_registry,
                     search_service=search_service,
-                    reason="结构规划阶段校验失败",
+                    reason="Structure planning validation failed",
                     progress_callback=progress_callback,
             )
 
@@ -1624,7 +1293,7 @@ def update_workflow_with_two_pass(
             updated_workflow,
             action_registry=action_registry,
             search_service=search_service,
-            reason="更新结果校验 action_id",
+            reason="Validate action_id after update",
             progress_callback=progress_callback,
         )
         last_good_workflow = updated_workflow
@@ -1633,7 +1302,7 @@ def update_workflow_with_two_pass(
             try:
                 progress_callback("update_completed", updated_workflow.model_dump(by_alias=True))
             except Exception:
-                log_debug("[update_workflow_with_two_pass] progress_callback 更新阶段调用失败，已忽略。")
+                log_debug("[update_workflow_with_two_pass] progress_callback failed during update stage and was ignored.")
 
         # Reuse the same validation/repair pipeline to ensure params and bindings
         # are executable after structural updates.
