@@ -20,8 +20,6 @@ from .binding_checks import (
     _get_output_schema_at_path,
     _iter_empty_param_fields,
     _iter_template_references,
-    _maybe_decode_binding_string,
-    _project_schema_through_agg,
     _schema_path_error,
     _suggest_numeric_subfield,
     _walk_schema_with_tokens,
@@ -477,9 +475,7 @@ def _validate_nodes_recursive(
                         new_prefix = f"{path_prefix}[{idx}]"
                         _walk_params_for_from(v, new_prefix)
                 elif isinstance(obj, str):
-                    decoded = _maybe_decode_binding_string(obj)
-                    if decoded:
-                        _walk_params_for_from(decoded, path_prefix)
+                    return
 
             _walk_params_for_from(params)
 
