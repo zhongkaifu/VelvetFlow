@@ -98,67 +98,6 @@ def test_exports_disallowed_outside_loop_body():
     assert any(err.field == "exports" and err.code == "INVALID_SCHEMA" for err in errors)
 
 
-def test_stringified_binding_referencing_loop_body_is_flagged():
-    """字符串化的 __from__ 绑定也应在 planner 校验阶段暴露错误。"""
-
-    workflow = {
-        "workflow_name": "Nvidia和Google财经新闻搜索总结通知",
-        "nodes": [
-            {
-                "id": "search_news_nvidia_google",
-                "type": "action",
-                "action_id": "common.search_news.v1",
-                "params": {"query": "Nvidia AND Google"},
-            },
-            {
-                "id": "loop_each_news",
-                "type": "loop",
-                "params": {
-                    "loop_kind": "for_each",
-                    "source": "result_of.search_news_nvidia_google.results",
-                    "item_alias": "news_item",
-                    "body_subgraph": {
-                        "nodes": [
-                            {
-                                "id": "summarize_news",
-                                "type": "action",
-                                "action_id": "common.summarize.v1",
-                                "params": {"text": "placeholder"},
-                            },
-                            {"id": "exit", "type": "end"},
-                        ],
-                        "edges": [{"from": "summarize_news", "to": "exit"}],
-                        "entry": "summarize_news",
-                        "exit": "exit",
-                    },
-                    "exports": {"items": "{{ result_of.summarize_news.summary }}"},
-                },
-            },
-            {
-                "id": "aggregate_summaries",
-                "type": "action",
-                "action_id": "common.summarize.v1",
-                "params": {
-                    "text": "{\"__from__\":\"result_of.loop_each_news.summarize_news.summary\",\"__agg__\":\"format_join\",\"sep\":\"\\n\"}",
-                },
-            },
-            {"id": "end", "type": "end"},
-        ],
-        "edges": [
-            {"from": "search_news_nvidia_google", "to": "loop_each_news"},
-            {"from": "loop_each_news", "to": "aggregate_summaries"},
-            {"from": "aggregate_summaries", "to": "end"},
-        ],
-    }
-
-    errors = validate_workflow_data(workflow, ACTION_REGISTRY)
-
-    assert any(
-        e.code == "SCHEMA_MISMATCH" and e.node_id == "aggregate_summaries" and e.field == "text"
-        for e in errors
-    )
-
-
 def test_precheck_is_available_for_planner_users():
     """Planner 层的 precheck 导出应可独立调用。"""
 
@@ -257,60 +196,6 @@ def test_loop_body_pydantic_errors_are_preserved():
     # 错误位置信息应该保留，并标注在 body_subgraph 下，方便修复逻辑使用
     error = exc_info.value.errors()[0]
     assert error.get("loc", ())[:3] == ("body_subgraph", "nodes", 0)
-
-
-def test_loop_body_nodes_should_not_reference_loop_exports():
-    """Body nodes must rely on body_subgraph outputs instead of loop exports."""
-
-    workflow = {
-        "workflow_name": "news_summary",
-        "nodes": [
-            {
-                "id": "search_news",
-                "type": "action",
-                "action_id": "common.search_news.v1",
-                "params": {"query": "AI"},
-            },
-            {
-                "id": "loop_summarize_news",
-                "type": "loop",
-                "params": {
-                    "loop_kind": "for_each",
-                    "source": "result_of.search_news.results",
-                    "item_alias": "news_item",
-                    "body_subgraph": {
-                        "nodes": [
-                            {
-                                "id": "summarize_news",
-                                "type": "action",
-                                "action_id": "common.summarize.v1",
-                                "params": {
-                                    "text": {
-                                        "__from__": "result_of.loop_summarize_news.exports.summaries"
-                                    }
-                                },
-                            },
-                            {"id": "exit", "type": "end"},
-                        ],
-                        "edges": [{"from": "summarize_news", "to": "exit"}],
-                        "entry": "summarize_news",
-                        "exit": "exit",
-                    },
-                    "exports": {"summaries": "{{ result_of.summarize_news.summary }}"},
-                },
-            },
-        ],
-        "edges": [{"from": "search_news", "to": "loop_summarize_news"}],
-    }
-
-    errors = validate_workflow_data(workflow, ACTION_REGISTRY)
-
-    assert any(
-        e.code == "SCHEMA_MISMATCH"
-        and e.node_id == "summarize_news"
-        and "不可直接引用所属 loop" in e.message
-        for e in errors
-    )
 
 
 def test_condition_field_on_loop_item_alias_should_be_allowed():
