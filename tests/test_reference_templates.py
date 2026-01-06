@@ -181,7 +181,7 @@ def test_validation_rejects_invalid_template_reference():
     assert len(errors) == 1
     assert errors[0].node_id == "notify"
     assert errors[0].field == "status"
-    assert "模板" in errors[0].message
+    assert "Template reference" in errors[0].message
     assert "missing" in errors[0].message
 
 
@@ -210,7 +210,7 @@ def test_validation_rejects_invalid_dollar_template_reference():
     assert len(errors) == 1
     assert errors[0].node_id == "notify"
     assert errors[0].field == "status"
-    assert "模板" in errors[0].message
+    assert "Template reference" in errors[0].message
     assert "missing" in errors[0].message
 
 
@@ -239,7 +239,7 @@ def test_validation_rejects_invalid_double_dollar_template_reference():
     assert len(errors) == 1
     assert errors[0].node_id == "notify"
     assert errors[0].field == "status"
-    assert "模板" in errors[0].message
+    assert "Template reference" in errors[0].message
     assert "missing" in errors[0].message
 
 
@@ -277,7 +277,7 @@ def test_validation_rejects_template_reference_with_unknown_field():
     assert len(errors) == 1
     assert errors[0].node_id == "notify"
     assert errors[0].field == "email_content"
-    assert "模板" in errors[0].message
+    assert "Template reference" in errors[0].message
     assert "missing_field" in errors[0].message
 
 
