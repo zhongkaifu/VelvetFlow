@@ -203,7 +203,7 @@ def _prepare_ask_ai_prompt(
     prompt: str | None,
     question: str | None,
     context: Dict[str, Any] | None,
-    expected_format: str | None,
+    expected_format: str | Mapping[str, Any] | None,
 ) -> str:
     if prompt:
         return prompt
@@ -215,8 +215,13 @@ def _prepare_ask_ai_prompt(
         parts.append("Context (for reference):")
         parts.append(context_json)
     if expected_format:
+        expected_format_text = (
+            expected_format
+            if isinstance(expected_format, str)
+            else json.dumps(expected_format, ensure_ascii=False, indent=2)
+        )
         parts.append("Return JSON following this guidance:")
-        parts.append(expected_format)
+        parts.append(expected_format_text)
     parts.append("Respond with valid JSON only.")
     return "\n\n".join(parts)
 
@@ -274,7 +279,7 @@ def ask_ai(
     prompt: str | None = None,
     question: str | None = None,
     context: Dict[str, Any] | None = None,
-    expected_format: str | None = None,
+    expected_format: str | Mapping[str, Any] | None = None,
     tool: List[Mapping[str, Any]] | None = None,
     model: str | None = None,
     max_tokens: int = 256,
