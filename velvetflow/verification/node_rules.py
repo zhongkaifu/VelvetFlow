@@ -938,7 +938,9 @@ def _validate_nodes_recursive(
                                 code="SCHEMA_MISMATCH",
                                 node_id=nid,
                                 field=f"exports.{key}",
-                                message=f"loop node '{nid}' exports.{key} must reference output fields from body_subgraph nodes.",
+                                message=(
+                                    f"loop node '{nid}' exports.{key} must reference nodes or output fields from body_subgraph nodes."
+                                ),
                             )
                         )
                         continue
@@ -948,7 +950,7 @@ def _validate_nodes_recursive(
                             tokens = parse_field_path(ref)
                         except Exception:
                             continue
-                        if len(tokens) < 3 or tokens[0] != "result_of":
+                        if tokens[0] != "result_of" or len(tokens) < 2:
                             continue
                         ref_node = tokens[1]
                         if isinstance(ref_node, str) and ref_node in body_node_ids:
@@ -960,7 +962,7 @@ def _validate_nodes_recursive(
                                     node_id=nid,
                                     field=f"exports.{key}",
                                     message=(
-                                        f"loop node '{nid}' exports.{key} may only reference outputs of nodes within body_subgraph."
+                                        f"loop node '{nid}' exports.{key} may only reference nodes or outputs within body_subgraph."
                                     ),
                                 )
                             )
@@ -971,7 +973,9 @@ def _validate_nodes_recursive(
                                 code="SCHEMA_MISMATCH",
                                 node_id=nid,
                                 field=f"exports.{key}",
-                                message=f"loop node '{nid}' exports.{key} must reference output fields from body_subgraph nodes.",
+                                message=(
+                                    f"loop node '{nid}' exports.{key} must reference nodes or output fields from body_subgraph nodes."
+                                ),
                             )
                         )
                         continue
