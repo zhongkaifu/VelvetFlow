@@ -375,6 +375,51 @@ def test_condition_field_on_loop_item_alias_should_be_allowed():
     )
 
 
+def test_loop_exports_allow_body_node_reference_without_field():
+    """Loop exports may collect entire body nodes, not just their output fields."""
+
+    workflow = {
+        "workflow_name": "loop_body_node_exports",
+        "nodes": [
+            {
+                "id": "search_news",
+                "type": "action",
+                "action_id": "common.search_news.v1",
+                "params": {"query": "AI"},
+            },
+            {
+                "id": "loop_collect_summaries",
+                "type": "loop",
+                "params": {
+                    "loop_kind": "for_each",
+                    "source": "result_of.search_news.results",
+                    "item_alias": "item",
+                    "body_subgraph": {
+                        "nodes": [
+                            {
+                                "id": "summarize_news",
+                                "type": "action",
+                                "action_id": "common.summarize.v1",
+                                "params": {"text": "{{ item.title }}"},
+                            },
+                            {"id": "exit", "type": "end"},
+                        ],
+                        "edges": [{"from": "summarize_news", "to": "exit"}],
+                        "entry": "summarize_news",
+                        "exit": "exit",
+                    },
+                    "exports": {"summaries": "{{ result_of.summarize_news }}"},
+                },
+            },
+        ],
+        "edges": [{"from": "search_news", "to": "loop_collect_summaries"}],
+    }
+
+    errors = validate_workflow_data(workflow, ACTION_REGISTRY)
+
+    assert errors == []
+
+
 def test_index_loop_body_nodes_includes_nested_loops():
     workflow = {
         "workflow_name": "nested_loop_mapping",
