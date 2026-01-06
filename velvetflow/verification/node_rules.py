@@ -2,6 +2,7 @@
 # License: BSD 3-Clause License
 
 """Node-level validation logic for workflows."""
+import ast
 import re
 from typing import Any, Dict, List, Mapping, Optional
 
@@ -78,6 +79,19 @@ def _validate_jinja_expression(expr: str, *, node_id: str | None, field: str, er
 def _schema_contains_field(schema: Mapping[str, Any] | None, field: str) -> bool:
     if not isinstance(schema, Mapping) or not field:
         return False
+
+
+def _is_literal_source(source: str, normalized: str) -> bool:
+    """Return True when a loop source is a templated literal rather than a reference."""
+
+    if normalized.startswith("result_of."):
+        return False
+
+    stripped = source.strip()
+    if stripped.startswith("{{") or stripped.startswith("${"):
+        return True
+
+    return False
 
     parts = [token for token in field.split(".") if token]
     current: Mapping[str, Any] | None = schema
@@ -736,64 +750,104 @@ def _validate_nodes_recursive(
                     )
                 )
             elif isinstance(source, str):
-                if _is_self_reference_path(source, nid):
-                    _flag_self_reference("source", source)
-                src_err = _check_output_path_against_schema(
-                    source,
-                    nodes_by_id,
-                    actions_by_id,
-                    loop_body_parents,
-                    context_node_id=nid,
-                )
-                if src_err:
-                    errors.append(
-                        ValidationError(
-                            code="SCHEMA_MISMATCH",
-                            node_id=nid,
-                            field="source",
-                            message=f"loop node '{nid}' has an invalid source: {src_err}",
-                        )
-                    )
-                else:
-                    normalized_source = normalize_reference_path(source)
-                    container_schema = _get_output_schema_at_path(
-                        normalized_source,
-                        nodes_by_id,
-                        actions_by_id,
-                        loop_body_parents,
-                    )
-                    actual_type = (
-                        container_schema.get("type")
-                        if isinstance(container_schema, Mapping)
-                        else None
-                    )
-                    if actual_type not in {"array"}:
+                normalized_source = normalize_reference_path(source)
+
+                if _is_literal_source(source, normalized_source):
+                    literal_expr = normalized_source
+                    if literal_expr == source:
+                        stripped_source = source.strip()
+                        if stripped_source.startswith("{{") and stripped_source.endswith("}}"):
+                            literal_expr = stripped_source[2:-2].strip()
+                        elif stripped_source.startswith("${{") and stripped_source.endswith("}}"):
+                            literal_expr = stripped_source[3:-2].strip()
+                        elif stripped_source.startswith("${") and stripped_source.endswith("}"):
+                            literal_expr = stripped_source[2:-1].strip()
+
+                    try:
+                        literal_value = ast.literal_eval(literal_expr)
+                    except Exception:
                         errors.append(
                             ValidationError(
                                 code="SCHEMA_MISMATCH",
                                 node_id=nid,
                                 field="source",
                                 message=(
-                                    f"loop node '{nid}' source should reference an array/sequence"
-                                    f", but resolved type is {actual_type or 'unknown'}, path: {normalized_source}"
+                                    f"loop node '{nid}' source must be a valid literal array when using a constant template;"
+                                    f" unable to parse expression: {literal_expr}"
                                 ),
                             )
                         )
-
-                    if isinstance(item_alias, str):
-                        nested_schema = _get_array_item_schema_from_output(
+                    else:
+                        if not isinstance(literal_value, (list, tuple)):
+                            errors.append(
+                                ValidationError(
+                                    code="SCHEMA_MISMATCH",
+                                    node_id=nid,
+                                    field="source",
+                                    message=(
+                                        f"loop node '{nid}' source should evaluate to an array/sequence"
+                                        f" when using a constant template, but got type {type(literal_value).__name__}."
+                                    ),
+                                )
+                            )
+                else:
+                    if _is_self_reference_path(source, nid):
+                        _flag_self_reference("source", source)
+                    src_err = _check_output_path_against_schema(
+                        source,
+                        nodes_by_id,
+                        actions_by_id,
+                        loop_body_parents,
+                        context_node_id=nid,
+                    )
+                    if src_err:
+                        errors.append(
+                            ValidationError(
+                                code="SCHEMA_MISMATCH",
+                                node_id=nid,
+                                field="source",
+                                message=f"loop node '{nid}' has an invalid source: {src_err}",
+                            )
+                        )
+                    else:
+                        container_schema = _get_output_schema_at_path(
                             normalized_source,
                             nodes_by_id,
                             actions_by_id,
                             loop_body_parents,
-                            context_node_id=nid,
                         )
-
-                        if nested_schema:
-                            alias_schemas = dict(alias_schemas or {})
-                            alias_schemas[normalize_reference_path(item_alias)] = (
-                                nested_schema
+                        actual_type = (
+                            container_schema.get("type")
+                            if isinstance(container_schema, Mapping)
+                            else None
+                        )
+                        if actual_type not in {"array"}:
+                            errors.append(
+                                ValidationError(
+                                    code="SCHEMA_MISMATCH",
+                                    node_id=nid,
+                                    field="source",
+                                    message=(
+                                        f"loop node '{nid}' source should reference an array/sequence"
+                                        f", but resolved type is {actual_type or 'unknown'}, path: {normalized_source}"
+                                    ),
+                                )
                             )
+
+                        if isinstance(item_alias, str):
+                            nested_schema = _get_array_item_schema_from_output(
+                                normalized_source,
+                                nodes_by_id,
+                                actions_by_id,
+                                loop_body_parents,
+                                context_node_id=nid,
+                            )
+
+                            if nested_schema:
+                                alias_schemas = dict(alias_schemas or {})
+                                alias_schemas[normalize_reference_path(item_alias)] = (
+                                    nested_schema
+                                )
             elif isinstance(source, Mapping):
                 src_err = validate_param_binding(source)
                 if src_err:

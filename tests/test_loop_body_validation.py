@@ -305,6 +305,44 @@ def test_loop_exports_allow_body_node_reference_without_field():
     assert errors == []
 
 
+def test_loop_source_allows_constant_template_list():
+    """Loops may iterate over literal sequences provided via templated constants."""
+
+    workflow = {
+        "workflow_name": "loop_over_constant_contacts",
+        "nodes": [
+            {
+                "id": "notify_contacts",
+                "type": "loop",
+                "params": {
+                    "loop_kind": "for_each",
+                    "source": "{{ [{'contact': 'user1@example.com', 'preference': 'dingding'}] }}",
+                    "item_alias": "recipient",
+                    "body_subgraph": {
+                        "nodes": [
+                            {
+                                "id": "send_digest",
+                                "type": "action",
+                                "action_id": "common.summarize.v1",
+                                "params": {"text": "{{ recipient.contact }}"},
+                            },
+                            {"id": "exit", "type": "end"},
+                        ],
+                        "edges": [{"from": "send_digest", "to": "exit"}],
+                        "entry": "send_digest",
+                        "exit": "exit",
+                    },
+                },
+            }
+        ],
+        "edges": [],
+    }
+
+    errors = validate_workflow_data(workflow, ACTION_REGISTRY)
+
+    assert errors == []
+
+
 def test_index_loop_body_nodes_includes_nested_loops():
     workflow = {
         "workflow_name": "nested_loop_mapping",
