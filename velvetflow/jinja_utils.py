@@ -145,6 +145,71 @@ def validate_jinja_expr(expr: Any, *, path: str = "expression") -> None:
                     raise ValueError(f"{path} 使用了未注册的测试: {test_arg.value}")
 
 
+def extract_jinja_reference_paths(expr: str) -> list[str]:
+    """Extract dotted reference paths from a Jinja expression.
+
+    Returns a list of reference strings such as ``result_of.node.field`` or
+    ``loop.item.name`` derived from attribute/item lookup chains.
+    """
+
+    if not isinstance(expr, str) or not expr.strip():
+        return []
+
+    env = get_jinja_env()
+    try:
+        parsed = env.parse(f"{{{{ {expr} }}}}")
+    except TemplateError:
+        return []
+
+    def _build_path(node: nodes.Node) -> str | None:
+        if isinstance(node, nodes.Name):
+            return node.name
+        if isinstance(node, nodes.Getattr):
+            base = _build_path(node.node)
+            if base:
+                return f"{base}.{node.attr}"
+        if isinstance(node, nodes.Getitem):
+            base = _build_path(node.node)
+            if not base:
+                return None
+            arg = node.arg
+            if isinstance(arg, nodes.Const):
+                if isinstance(arg.value, int):
+                    return f"{base}[{arg.value}]"
+                if isinstance(arg.value, str):
+                    return f"{base}.{arg.value}"
+            return None
+        return None
+
+    def _collect(node: nodes.Node) -> list[str]:
+        collected: list[str] = []
+        path = _build_path(node)
+        if path:
+            collected.append(path)
+        for child in node.iter_child_nodes():
+            collected.extend(_collect(child))
+        return collected
+
+    raw_paths = _collect(parsed)
+    unique_paths = list(dict.fromkeys(raw_paths))
+
+    def _is_prefix(candidate: str, full: str) -> bool:
+        if not full.startswith(candidate) or len(full) <= len(candidate):
+            return False
+        next_char = full[len(candidate)]
+        return next_char in {".", "["}
+
+    filtered: list[str] = []
+    for path in unique_paths:
+        if any(_is_prefix(path, other) for other in unique_paths if other != path):
+            continue
+        if "." not in path and "[" not in path:
+            continue
+        filtered.append(path)
+
+    return filtered
+
+
 def eval_jinja_expr(expr: str, context: Mapping[str, Any]) -> Any:
     """Evaluate a Jinja expression string with the provided context."""
 

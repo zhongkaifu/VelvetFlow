@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Mapping, Tuple
 
 from jinja2 import TemplateError
 
-from velvetflow.jinja_utils import get_jinja_env
+from velvetflow.jinja_utils import get_jinja_env, validate_jinja_expr
 from velvetflow.models import ValidationError
 from velvetflow.reference_utils import normalize_reference_path
 
@@ -17,6 +17,16 @@ _TERNARY_EXPR_RE = re.compile(
     r"^(?P<true_val>.+?)\s+if\s+(?P<cond>.+?)\s+else\s+(?P<false_val>.+)$",
     re.IGNORECASE,
 )
+_JINJA_EXPR_HINTS_RE = re.compile(
+    r"(result_of\.|loop\.|\||==|!=|>=|<=|>|<|\band\b|\bor\b|\bnot\b|\bin\b)"
+)
+
+
+def _looks_like_jinja_expression(value: str) -> bool:
+    if not value:
+        return False
+
+    return bool(_JINJA_EXPR_HINTS_RE.search(value))
 
 
 def _normalize_jinja_expr(value: Any) -> Tuple[Any, bool]:
@@ -44,6 +54,12 @@ def _normalize_jinja_expr(value: Any) -> Tuple[Any, bool]:
 
         if stripped and "{{" not in stripped and "{%" not in stripped:
             if _SIMPLE_PATH_RE.match(stripped):
+                return f"{{{{ {stripped} }}}}", True
+            if _looks_like_jinja_expression(stripped):
+                try:
+                    validate_jinja_expr(stripped)
+                except ValueError:
+                    return f"{{{{ {repr(value)} }}}}", True
                 return f"{{{{ {stripped} }}}}", True
             # Fallback: wrap raw literals as Jinja templates so every param
             # remains Jinja-compatible (e.g., condition.field="employee_id").

@@ -3,6 +3,7 @@
 
 """Utilities for building workflow skeletons during planning."""
 
+import re
 import copy
 
 from typing import Any, Dict, Mapping, Optional
@@ -10,6 +11,7 @@ from typing import Any, Dict, Mapping, Optional
 from velvetflow.logging_utils import log_warn
 from velvetflow.loop_dsl import iter_workflow_and_loop_body_nodes
 from velvetflow.models import infer_depends_on_from_edges, infer_edges_from_bindings
+from velvetflow.reference_utils import canonicalize_template_placeholders, normalize_reference_path
 
 
 def _normalize_condition_label(raw: Any) -> Optional[str]:
@@ -83,6 +85,104 @@ def attach_condition_branches(workflow: Dict[str, Any]) -> Dict[str, Any]:
 
 
 _UNSET = object()
+_TEMPLATE_REF_PATTERN = re.compile(
+    r"\{\{\s*([^{}]+?)\s*\}\}|\$\{\{\s*([^{}]+?)\s*\}\}|\$\{\s*([^{}]+?)\s*\}"
+)
+
+
+def _extract_export_expr(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    stripped = value.strip()
+    if not stripped:
+        return None
+    normalized = normalize_reference_path(stripped)
+    return normalized.strip()
+
+
+def _replace_exports_in_string(
+    value: str, *, export_exprs: Mapping[str, str], loop_id: str | None
+) -> str:
+    if not export_exprs:
+        return value
+
+    canonical = canonicalize_template_placeholders(value)
+    stripped = canonical.strip()
+    for key, expr in export_exprs.items():
+        if stripped == f"exports.{key}":
+            return f"{{{{ {expr} }}}}"
+        if loop_id and stripped == f"result_of.{loop_id}.exports.{key}":
+            return f"{{{{ {expr} }}}}"
+
+    def _match_key(expr: str) -> str | None:
+        expr = expr.strip()
+        if expr.startswith("exports."):
+            key = expr[len("exports.") :]
+        elif loop_id and expr.startswith(f"result_of.{loop_id}.exports."):
+            key = expr[len(f"result_of.{loop_id}.exports.") :]
+        else:
+            return None
+        return key if key in export_exprs else None
+
+    def _replace(match: re.Match[str]) -> str:
+        expr = match.group(1) or match.group(2) or match.group(3) or ""
+        key = _match_key(expr)
+        if key:
+            return f"{{{{ {export_exprs[key]} }}}}"
+        return match.group(0)
+
+    return _TEMPLATE_REF_PATTERN.sub(_replace, canonical)
+
+
+def _replace_exports_in_params(
+    value: Any, *, export_exprs: Mapping[str, str], loop_id: str | None
+) -> Any:
+    if isinstance(value, Mapping):
+        return {
+            key: _replace_exports_in_params(val, export_exprs=export_exprs, loop_id=loop_id)
+            for key, val in value.items()
+        }
+    if isinstance(value, list):
+        return [
+            _replace_exports_in_params(item, export_exprs=export_exprs, loop_id=loop_id)
+            for item in value
+        ]
+    if isinstance(value, str):
+        return _replace_exports_in_string(value, export_exprs=export_exprs, loop_id=loop_id)
+    return value
+
+
+def _replace_loop_body_exports(node: Mapping[str, Any]) -> None:
+    params = node.get("params") if isinstance(node.get("params"), Mapping) else None
+    if not isinstance(params, Mapping):
+        return
+    exports = params.get("exports")
+    if not isinstance(exports, Mapping):
+        return
+    loop_id = node.get("id") if isinstance(node.get("id"), str) else None
+    export_exprs = {
+        key: expr
+        for key, value in exports.items()
+        if isinstance(key, str) and (expr := _extract_export_expr(value))
+    }
+    if not export_exprs:
+        return
+
+    body = params.get("body_subgraph") if isinstance(params.get("body_subgraph"), Mapping) else None
+    body_nodes = body.get("nodes") if isinstance(body, Mapping) else None
+    if not isinstance(body_nodes, list):
+        return
+
+    for body_node in body_nodes:
+        if not isinstance(body_node, Mapping):
+            continue
+        body_params = body_node.get("params")
+        if isinstance(body_params, Mapping):
+            body_node["params"] = _replace_exports_in_params(
+                body_params, export_exprs=export_exprs, loop_id=loop_id
+            )
+        if body_node.get("type") == "loop":
+            _replace_loop_body_exports(body_node)
 
 
 class WorkflowBuilder:
@@ -256,6 +356,9 @@ class WorkflowBuilder:
             "description": self.description,
             "nodes": root_nodes,
         }
+        for node in workflow.get("nodes", []) or []:
+            if isinstance(node, Mapping) and node.get("type") == "loop":
+                _replace_loop_body_exports(node)
         # Provide implicitly derived edges as read-only context for downstream
         # tools/LLM refinement while keeping the source of truth in param
         # bindings. 遍历主图与 loop 子图的所有节点，确保子图中的引用同样被纳入。 
