@@ -3,6 +3,8 @@
 
 """Workflow-level validation entrypoints."""
 from collections import deque
+import copy
+import json
 from typing import Any, Dict, List, Mapping, Optional
 
 from velvetflow.models import (
@@ -107,6 +109,31 @@ def precheck_loop_body_graphs(workflow_raw: Mapping[str, Any] | Any) -> List[Val
     return errors
 
 
+def _parse_expected_format_schema(expected_format: Any) -> Optional[Dict[str, Any]]:
+    """Parse expected_format into a JSON schema mapping if possible."""
+
+    if isinstance(expected_format, Mapping):
+        return dict(expected_format)
+
+    if isinstance(expected_format, str):
+        stripped = expected_format.strip()
+
+        if stripped.startswith("```") and stripped.endswith("```"):
+            stripped = stripped.strip("`")
+            if "\n" in stripped:
+                stripped = stripped.split("\n", 1)[1]
+
+        try:
+            parsed = json.loads(stripped)
+        except json.JSONDecodeError:
+            return None
+
+        if isinstance(parsed, Mapping):
+            return dict(parsed)
+
+    return None
+
+
 def _index_nodes_by_id(workflow: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
     return {n["id"]: n for n in workflow.get("nodes", [])}
 
@@ -170,8 +197,26 @@ def validate_completed_workflow(
 
             action_def = actions_by_id.get(node.get("action_id"))
             schema = action_def.get("output_schema") if isinstance(action_def, Mapping) else None
-            if isinstance(schema, Mapping) and node.get("out_params_schema") != schema:
-                node["out_params_schema"] = schema
+            params = node.get("params") if isinstance(node.get("params"), Mapping) else {}
+
+            schema_to_set = schema
+
+            if (
+                node.get("action_id") == "common.ask_ai.v1"
+                and isinstance(schema, Mapping)
+                and isinstance(params, Mapping)
+            ):
+                expected_schema = _parse_expected_format_schema(params.get("expected_format"))
+                if expected_schema:
+                    schema_to_set = copy.deepcopy(schema)
+                    properties = schema_to_set.setdefault("properties", {})
+                    properties["results"] = expected_schema
+                    required = schema_to_set.setdefault("required", [])
+                    if "results" not in required:
+                        required.append("results")
+
+            if isinstance(schema_to_set, Mapping) and node.get("out_params_schema") != schema_to_set:
+                node["out_params_schema"] = schema_to_set
 
     nodes = workflow.get("nodes", [])
     # Topology and connectivity rely on up-to-date inferred bindings to avoid stale snapshots.
