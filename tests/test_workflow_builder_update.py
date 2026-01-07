@@ -190,3 +190,41 @@ def test_builder_adds_switch_nodes_and_infers_edges():
     assert any(cond == "default" for _, _, cond in edge_conditions)
 
 
+def test_builder_replaces_loop_body_exports_references():
+    builder = WorkflowBuilder()
+    builder.add_node(
+        node_id="loop_node",
+        node_type="loop",
+        params={
+            "loop_kind": "for_each",
+            "source": "{{ result_of.start.items }}",
+            "item_alias": "item",
+            "exports": {"total": "{{ result_of.inner.total }}"},
+        },
+    )
+    builder.add_node(
+        node_id="inner",
+        node_type="action",
+        action_id="demo.inner",
+        params={"value": "{{ loop.item.value }}"},
+        parent_node_id="loop_node",
+    )
+    builder.add_node(
+        node_id="use_export",
+        node_type="action",
+        action_id="demo.use_export",
+        params={
+            "value": "{{ exports.total }}",
+            "raw_value": "exports.total",
+        },
+        parent_node_id="loop_node",
+    )
+
+    workflow = builder.to_workflow()
+    loop_node = _find(workflow["nodes"], "loop_node")
+    body_nodes = (loop_node.get("params") or {}).get("body_subgraph", {}).get("nodes", [])
+    use_export = _find(body_nodes, "use_export")
+
+    assert use_export["params"]["value"] == "{{ result_of.inner.total }}"
+    assert use_export["params"]["raw_value"] == "{{ result_of.inner.total }}"
+
