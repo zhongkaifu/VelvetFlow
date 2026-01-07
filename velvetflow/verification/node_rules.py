@@ -6,7 +6,7 @@ import ast
 import re
 from typing import Any, Dict, List, Mapping, Optional
 
-from velvetflow.jinja_utils import validate_jinja_expr
+from velvetflow.jinja_utils import extract_jinja_reference_paths, validate_jinja_expr
 from velvetflow.models import ValidationError
 from velvetflow.reference_utils import normalize_reference_path, parse_field_path
 from velvetflow.loop_dsl import loop_body_has_action
@@ -498,108 +498,113 @@ def _validate_nodes_recursive(
                     for ref in _iter_template_references(obj):
                         _validate_jinja_expression(ref, node_id=nid, field=path_prefix or "params", errors=errors)
 
-                        ref_head = _strip_jinja_filters(ref)
-                        if not ref_head:
-                            continue
-                        ref_path = normalize_reference_path(ref_head)
-                        try:
-                            ref_parts = parse_field_path(ref_path)
-                        except Exception:
-                            continue
+                        for ref_path in extract_jinja_reference_paths(ref):
+                            try:
+                                ref_parts = parse_field_path(ref_path)
+                            except Exception:
+                                continue
 
-                        missing_target_node = False
-                        if ref_path.startswith("result_of."):
-                            target_node = None
-                            if ref_parts and len(ref_parts) >= 2 and isinstance(ref_parts[1], str):
-                                target_node = ref_parts[1]
+                            missing_target_node = False
+                            if ref_path.startswith("result_of."):
+                                target_node = None
+                                if ref_parts and len(ref_parts) >= 2 and isinstance(ref_parts[1], str):
+                                    target_node = ref_parts[1]
 
-                            if target_node and target_node not in nodes_by_id:
-                                missing_target_node = True
+                                if target_node and target_node not in nodes_by_id:
+                                    missing_target_node = True
+                                    errors.append(
+                                        ValidationError(
+                                            code="SCHEMA_MISMATCH",
+                                            node_id=nid,
+                                            field=path_prefix,
+                                            message=(
+                                                f"Template reference '{ref}' on action node '{nid}' is invalid: "
+                                                f"Referenced node '{target_node}' does not exist."
+                                            ),
+                                        )
+                                    )
+
+                                if missing_target_node:
+                                    continue
+
+                            if _is_self_reference_path(ref_path, nid):
+                                field_label = path_prefix or "params"
+                                if path_prefix and not path_prefix.startswith("params"):
+                                    field_label = f"params.{path_prefix}"
+                                _flag_self_reference(field_label, ref_path)
+
+                            if ref_parts and isinstance(ref_parts[0], str):
+                                loop_ctx_root = ref_parts[0]
+                                loop_node = nodes_by_id.get(loop_ctx_root)
+                                if isinstance(loop_node, Mapping) and loop_node.get("type") == "loop":
+                                    loop_params = (
+                                        loop_node.get("params") if isinstance(loop_node.get("params"), Mapping) else {}
+                                    )
+                                    loop_item_alias = (
+                                        loop_params.get("item_alias")
+                                        if isinstance(loop_params.get("item_alias"), str)
+                                        else None
+                                    )
+                                    if len(ref_parts) >= 2 and isinstance(ref_parts[1], str):
+                                        root_field = ref_parts[1]
+                                        allowed_loop_fields = {"index", "size", "accumulator"}
+                                        if loop_item_alias:
+                                            allowed_loop_fields.add(loop_item_alias)
+                                        # Allow using item directly only when item_alias is missing or equals 'item'
+                                        if root_field == "item" and loop_item_alias and loop_item_alias != "item":
+                                            errors.append(
+                                                ValidationError(
+                                                    code="SCHEMA_MISMATCH",
+                                                    node_id=nid,
+                                                    field=path_prefix,
+                                                    message=(
+                                                        f"Template reference '{ref}' on node '{nid}' is invalid: loop node '{loop_ctx_root}' currently exposes item_alias '{loop_item_alias}',"
+                                                        "Use the alias instead of '.item' to access loop elements."
+                                                    ),
+                                                )
+                                            )
+                                            continue
+                                        if isinstance(root_field, str) and root_field not in allowed_loop_fields and not (
+                                            root_field == "item" and loop_item_alias in {None, "item"}
+                                        ):
+                                            errors.append(
+                                                ValidationError(
+                                                    code="SCHEMA_MISMATCH",
+                                                    node_id=nid,
+                                                    field=path_prefix,
+                                                    message=(
+                                                        f"Template reference '{ref}' on node '{nid}' is invalid: loop node '{loop_ctx_root}' context only exposes {', '.join(sorted(allowed_loop_fields | {'item'}))},"
+                                                        f"Field '{root_field}' was not found."
+                                                    ),
+                                                )
+                                            )
+                                            continue
+
+                            schema_err = None
+                            if ref_parts:
+                                alias = ref_parts[0]
+                                if alias_schemas and alias in alias_schemas:
+                                    schema_err = _schema_path_error(alias_schemas[alias], ref_parts[1:])
+                                else:
+                                    schema_err = _check_output_path_against_schema(
+                                        ref_path,
+                                        nodes_by_id,
+                                        actions_by_id,
+                                        loop_body_parents,
+                                        context_node_id=nid,
+                                    )
+
+                            if schema_err:
                                 errors.append(
                                     ValidationError(
                                         code="SCHEMA_MISMATCH",
                                         node_id=nid,
                                         field=path_prefix,
                                         message=(
-                                            f"Template reference '{ref}' on action node '{nid}' is invalid: "
-                                            f"Referenced node '{target_node}' does not exist."
+                                            f"Template reference '{ref}' on action node '{nid}' is invalid: {schema_err}"
                                         ),
                                     )
                                 )
-
-                            if missing_target_node:
-                                continue
-
-                        if _is_self_reference_path(ref_path, nid):
-                            field_label = path_prefix or "params"
-                            if path_prefix and not path_prefix.startswith("params"):
-                                field_label = f"params.{path_prefix}"
-                            _flag_self_reference(field_label, ref_path)
-
-                        if ref_parts and isinstance(ref_parts[0], str):
-                            loop_ctx_root = ref_parts[0]
-                            loop_node = nodes_by_id.get(loop_ctx_root)
-                            if isinstance(loop_node, Mapping) and loop_node.get("type") == "loop":
-                                loop_params = loop_node.get("params") if isinstance(loop_node.get("params"), Mapping) else {}
-                                loop_item_alias = loop_params.get("item_alias") if isinstance(loop_params.get("item_alias"), str) else None
-                                if len(ref_parts) >= 2 and isinstance(ref_parts[1], str):
-                                    root_field = ref_parts[1]
-                                    allowed_loop_fields = {"index", "size", "accumulator"}
-                                    if loop_item_alias:
-                                        allowed_loop_fields.add(loop_item_alias)
-                                    # Allow using item directly only when item_alias is missing or equals 'item'
-                                    if root_field == "item" and loop_item_alias and loop_item_alias != "item":
-                                        errors.append(
-                                            ValidationError(
-                                                code="SCHEMA_MISMATCH",
-                                                node_id=nid,
-                                                field=path_prefix,
-                                                message=(
-                                                    f"Template reference '{ref}' on node '{nid}' is invalid: loop node '{loop_ctx_root}' currently exposes item_alias '{loop_item_alias}',"
-                                                    "Use the alias instead of '.item' to access loop elements."
-                                                ),
-                                            )
-                                        )
-                                        continue
-                                    if isinstance(root_field, str) and root_field not in allowed_loop_fields and not (root_field == "item" and loop_item_alias in {None, "item"}):
-                                        errors.append(
-                                            ValidationError(
-                                                code="SCHEMA_MISMATCH",
-                                                node_id=nid,
-                                                field=path_prefix,
-                                                message=(
-                                                    f"Template reference '{ref}' on node '{nid}' is invalid: loop node '{loop_ctx_root}' context only exposes {', '.join(sorted(allowed_loop_fields | {'item'}))},"
-                                                    f"Field '{root_field}' was not found."
-                                                ),
-                                            )
-                                        )
-                                        continue
-
-                        schema_err = None
-                        if ref_parts:
-                            alias = ref_parts[0]
-                            if alias_schemas and alias in alias_schemas:
-                                schema_err = _schema_path_error(alias_schemas[alias], ref_parts[1:])
-                            else:
-                                schema_err = _check_output_path_against_schema(
-                                    ref_path,
-                                    nodes_by_id,
-                                    actions_by_id,
-                                    loop_body_parents,
-                                    context_node_id=nid,
-                                )
-
-                        if schema_err:
-                            errors.append(
-                                ValidationError(
-                                    code="SCHEMA_MISMATCH",
-                                    node_id=nid,
-                                    field=path_prefix,
-                                    message=(
-                                        f"Template reference '{ref}' on action node '{nid}' is invalid: {schema_err}"
-                                    ),
-                                )
-                            )
                 elif isinstance(obj, Mapping):
                     for key, value in list(obj.items()):
                         new_prefix = f"{path_prefix}.{key}" if path_prefix else str(key)
