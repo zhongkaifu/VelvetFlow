@@ -84,3 +84,32 @@ def test_rule_repairs_surface_missing_loop_body():
         err.code == "INVALID_LOOP_BODY" and err.field == "body_subgraph"
         for err in remaining_errors
     )
+
+
+def test_rule_repairs_drop_invalid_switch_defaults():
+    workflow = {
+        "nodes": [
+            {
+                "id": "route_by_label",
+                "type": "switch",
+                "params": {"source": "{{ result_of.start.label }}", "field": "label"},
+                "cases": [],
+                "default_to_node": "null",
+            },
+            {"id": "start", "type": "action", "action_id": "demo.start", "params": {}},
+        ],
+        "edges": [],
+    }
+    errors = [
+        ValidationError(
+            code="UNDEFINED_REFERENCE",
+            node_id="route_by_label",
+            field="default_to_node",
+            message="switch default branch default_to_node points to nonexistent node 'null'",
+        )
+    ]
+
+    patched, _remaining_errors = apply_rule_based_repairs(workflow, [], errors)
+
+    route = next(node for node in patched["nodes"] if node.get("id") == "route_by_label")
+    assert route.get("default_to_node") is None

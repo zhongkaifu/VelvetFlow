@@ -445,7 +445,11 @@ def apply_rule_based_repairs(
     )
     if any(err.code == "UNDEFINED_REFERENCE" for err in validation_errors):
         patched_workflow, drop_summary = apply_repair_tool(
-            "drop_invalid_references", patched_workflow, remove_edges=True
+            tool_name="drop_invalid_references",
+            args={"remove_edges": True},
+            workflow=patched_workflow,
+            validation_errors=validation_errors,
+            action_registry=action_registry,
         )
         log_info(
             "[AutoRepair] UNDEFINED_REFERENCE was auto-cleaned; handing off to the LLM for analysis.",
