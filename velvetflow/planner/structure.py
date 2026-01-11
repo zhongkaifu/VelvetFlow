@@ -1069,13 +1069,6 @@ def plan_workflow_structure_with_llm(
         payload.update(extra)
         return payload
 
-    def _find_action_definition(action_id: str) -> Optional[Mapping[str, Any]]:
-        actions = search_service.search(query=action_id, top_k=10)
-        for action in actions:
-            if action.get("action_id") == action_id:
-                return action
-        return None
-
     @function_tool(strict_mode=False)
     def search_business_actions(query: str, top_k: int = 5) -> Mapping[str, Any]:
         """Search business action candidates to choose a valid ``action_id`` during planning.
@@ -1159,7 +1152,6 @@ def plan_workflow_structure_with_llm(
         id: str,
         action_id: str,
         display_name: Optional[str] = None,
-        out_params_schema: Optional[Dict[str, str]] = None,
         params: Optional[Dict[str, Any]] = None,
         depends_on: Optional[List[str]] = None,
         parent_node_id: Optional[str] = None,
@@ -1174,7 +1166,6 @@ def plan_workflow_structure_with_llm(
             action_id: Business action ID that must come from the most recent search
                 candidates.
             display_name: Optional node display name.
-            out_params_schema: Optional mapping of the action output parameter schema.
             params: Optional dictionary of action input parameters.
             depends_on: Optional list of upstream node IDs.
             parent_node_id: Optional parent node ID for subgraphs or loop scenarios.
@@ -1205,7 +1196,7 @@ def plan_workflow_structure_with_llm(
             result = _build_validation_error("parent_node_id 需要是字符串或 null。")
             return _return_tool_result("add_action_node", result)
 
-        action_def = _find_action_definition(action_id)
+        action_def = search_service.get_action_by_id(action_id)
         if not action_def:
             result = _build_validation_error(
                 "action_id 对应的业务工具不存在，请重新搜索确认。",
@@ -1531,7 +1522,6 @@ def plan_workflow_structure_with_llm(
         id: str,
         display_name: Optional[str] = None,
         params: Optional[Dict[str, Any]] = None,
-        out_params_schema: Optional[Dict[str, Any]] = None,
         action_id: Optional[str] = None,
         depends_on: Optional[List[str]] = None,
         parent_node_id: Optional[str] = None,
@@ -1545,7 +1535,6 @@ def plan_workflow_structure_with_llm(
             id: Unique node identifier.
             display_name: Optional node display name.
             params: Optional action parameter dictionary.
-            out_params_schema: Optional output parameter schema.
             action_id: Optional business action ID (must come from the most recent search
                 candidates).
             depends_on: Optional list of upstream node IDs.
@@ -1583,7 +1572,7 @@ def plan_workflow_structure_with_llm(
         if not isinstance(target_action_id, str):
             result = _build_validation_error("action 节点缺少有效 action_id，无法更新。")
             return _return_tool_result("update_action_node", result)
-        action_def = _find_action_definition(target_action_id)
+        action_def = search_service.get_action_by_id(target_action_id)
         if not action_def:
             result = _build_validation_error(
                 "action_id 对应的业务工具不存在，请重新搜索确认。",
