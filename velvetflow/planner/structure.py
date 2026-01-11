@@ -1004,6 +1004,10 @@ def plan_workflow_structure_with_llm(
     latest_skeleton: Dict[str, Any] = {}
     workflow_check_state = {"called": False, "has_issues": False}
 
+    def _reset_workflow_check_state() -> None:
+        workflow_check_state["called"] = False
+        workflow_check_state["has_issues"] = False
+
     def _emit_progress(label: str, workflow_obj: Mapping[str, Any]) -> None:
         if not progress_callback:
             return
@@ -1210,6 +1214,7 @@ def plan_workflow_structure_with_llm(
             parent_node_id=parent_node_id if isinstance(parent_node_id, str) else None,
             depends_on=depends_on or [],
         )
+        _reset_workflow_check_state()
         removed_node_fields = _sanitize_builder_node_fields(builder, id)
         _snapshot(f"add_action_{id}")
         if removed_fields or removed_node_fields:
@@ -1301,6 +1306,7 @@ def plan_workflow_structure_with_llm(
             parent_node_id=parent_node_id if isinstance(parent_node_id, str) else None,
             depends_on=depends_on or [],
         )
+        _reset_workflow_check_state()
         _attach_sub_graph_nodes(builder, id, normalized_nodes)
         removed_node_fields = _sanitize_builder_node_fields(builder, id)
         _snapshot(f"add_loop_{id}")
@@ -1386,6 +1392,7 @@ def plan_workflow_structure_with_llm(
             parent_node_id=parent_node_id if isinstance(parent_node_id, str) else None,
             depends_on=depends_on or [],
         )
+        _reset_workflow_check_state()
         removed_node_fields = _sanitize_builder_node_fields(builder, id)
         _snapshot(f"add_condition_{id}")
         if removed_fields or removed_node_fields:
@@ -1481,6 +1488,7 @@ def plan_workflow_structure_with_llm(
             parent_node_id=parent_node_id if isinstance(parent_node_id, str) else None,
             depends_on=depends_on or [],
         )
+        _reset_workflow_check_state()
         removed_node_fields = _sanitize_builder_node_fields(builder, id)
         _snapshot(f"add_switch_{id}")
         if removed_fields or removed_node_fields:
@@ -1580,6 +1588,7 @@ def plan_workflow_structure_with_llm(
             updates["depends_on"] = depends_on
 
         builder.update_node(id, **updates)
+        _reset_workflow_check_state()
         removed_param_fields.extend(_sanitize_builder_node_params(builder, id, action_schemas))
         removed_node_fields = _sanitize_builder_node_fields(builder, id)
         _snapshot(f"update_action_{id}")
@@ -1674,6 +1683,7 @@ def plan_workflow_structure_with_llm(
             updates["depends_on"] = depends_on
 
         builder.update_node(id, **updates)
+        _reset_workflow_check_state()
         removed_param_fields.extend(_sanitize_builder_node_params(builder, id, action_schemas))
         removed_node_fields = _sanitize_builder_node_fields(builder, id)
         _snapshot(f"update_condition_{id}")
@@ -1782,6 +1792,7 @@ def plan_workflow_structure_with_llm(
             updates["depends_on"] = depends_on
 
         builder.update_node(id, **updates)
+        _reset_workflow_check_state()
         removed_param_fields.extend(_sanitize_builder_node_params(builder, id, action_schemas))
         removed_node_fields = _sanitize_builder_node_fields(builder, id)
         _snapshot(f"update_switch_{id}")
@@ -1856,6 +1867,7 @@ def plan_workflow_structure_with_llm(
             updates["depends_on"] = depends_on
 
         builder.update_node(id, **updates)
+        _reset_workflow_check_state()
         _attach_sub_graph_nodes(builder, id, normalized_nodes)
         removed_param_fields.extend(_sanitize_builder_node_params(builder, id, action_schemas))
         removed_node_fields = _sanitize_builder_node_fields(builder, id)
@@ -2111,6 +2123,7 @@ def plan_workflow_structure_with_llm(
         if id not in validated_node_ids:
             validated_node_ids.append(id)
         builder.update_node(id, params=dict(normalized_params))
+        _reset_workflow_check_state()
         _snapshot(f"validate_params_{id}")
         result = {"status": "ok", "params": normalized_params}
         return _return_tool_result("update_node_params", result)
