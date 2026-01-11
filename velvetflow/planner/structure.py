@@ -638,6 +638,7 @@ def _build_combined_prompt() -> str:
         "7) Condition nodes must explicitly provide true_to_node and false_to_node. Values can be a node id (continue execution) or null (indicating that branch ends); express dependencies through input/output references in node params—no need to draw edges explicitly.\n"
         "8) Maintain depends_on (array of strings) for each node, listing its direct upstream dependencies; when a node is targeted by condition.true_to_node/false_to_node, you must add that condition node to the target node's depends_on.\n"
         "9) After the structure is complete, continue to fill params for all nodes and ensure update_node_params validation passes.\n\n"
+        "10) When you believe the workflow is complete, call check_workflow to validate upstream references; only after check_workflow succeeds should you call finalize_workflow to finish.\n\n"
         "Important note: Only action nodes need out_params_schema; condition nodes do not have this property. The format of out_params_schema should be {\"param_name\": \"type\"}; list only the names and types of output parameters of the business action, without extra descriptions or examples.\n\n"
         "[Very important principles]\n"
         "1. You must design the workflow strictly around the natural language requirement in the current conversation:\n"
@@ -667,6 +668,7 @@ def _build_combined_prompt() -> str:
         "Each key in loop.exports collects per-iteration results into a list; each exports value must reference a body_subgraph node field, such as {{ result_of.<body_node>.<field> }}.\n"
         "Params for all nodes must not be empty; if there is no obvious default value, analyze upstream/downstream semantics and then use the tool to fill them.\n"
         "Complete aggregation/filtering/formatting with Jinja filters or expressions (for example, {{ result_of.a.items | selectattr('score', '>', 80) | list | length }} or {{ result_of.a.items | map(attribute='name') | join(', ') }}); do not output object-style bindings."
+        "\nFinally, when workflow construction is done, you must call check_workflow first and then finalize_workflow to confirm completion."
     )
     return f"{structure_prompt}\n\n{param_prompt}"
 
@@ -1000,6 +1002,7 @@ def plan_workflow_structure_with_llm(
     all_action_candidates: List[str] = []
     all_action_candidates_info: List[Dict[str, Any]] = []
     latest_skeleton: Dict[str, Any] = {}
+    workflow_check_state = {"called": False, "has_issues": False}
 
     def _emit_progress(label: str, workflow_obj: Mapping[str, Any]) -> None:
         if not progress_callback:
@@ -1910,7 +1913,10 @@ def plan_workflow_structure_with_llm(
 
     @function_tool(strict_mode=False)
     def check_workflow() -> Mapping[str, Any]:
-        """Check whether action nodes reference upstream nodes via Jinja templates."""
+        """Check whether action nodes reference upstream nodes via Jinja templates.
+
+        Call this before finalize_workflow to validate workflow quality.
+        """
         _log_tool_call("check_workflow")
         snapshot = _attach_inferred_edges(builder.to_workflow())
         nodes = list(iter_workflow_and_loop_body_nodes(snapshot))
@@ -1963,7 +1969,36 @@ def plan_workflow_structure_with_llm(
             "feedback": feedback,
             "workflow": snapshot,
         }
+        workflow_check_state["called"] = True
+        workflow_check_state["has_issues"] = has_issues
         return _return_tool_result("check_workflow", result)
+
+    @function_tool(strict_mode=False)
+    def finalize_workflow() -> Mapping[str, Any]:
+        """Mark the workflow as complete after check_workflow succeeds."""
+        _log_tool_call("finalize_workflow")
+        if not workflow_check_state["called"]:
+            result = {
+                "status": "error",
+                "type": "finalize_workflow",
+                "message": "Please call check_workflow before finalize_workflow.",
+            }
+            return _return_tool_result("finalize_workflow", result)
+        if workflow_check_state["has_issues"]:
+            result = {
+                "status": "needs_more_work",
+                "type": "finalize_workflow",
+                "message": "check_workflow reported issues; update nodes and re-run check_workflow.",
+            }
+            return _return_tool_result("finalize_workflow", result)
+
+        snapshot = _attach_inferred_edges(builder.to_workflow())
+        result = {
+            "status": "ok",
+            "type": "finalize_workflow",
+            "workflow": snapshot,
+        }
+        return _return_tool_result("finalize_workflow", result)
 
     filled_params: Dict[str, Dict[str, Any]] = {
         nid: copy.deepcopy(node.get("params", {}))
@@ -2098,6 +2133,7 @@ def plan_workflow_structure_with_llm(
             get_param_context,
             update_node_params,
             check_workflow,
+            finalize_workflow,
             dump_model,
         ],
         model=OPENAI_MODEL
