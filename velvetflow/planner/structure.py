@@ -1069,6 +1069,13 @@ def plan_workflow_structure_with_llm(
         payload.update(extra)
         return payload
 
+    def _find_action_definition(action_id: str) -> Optional[Mapping[str, Any]]:
+        actions = search_service.search(query=action_id, top_k=10)
+        for action in actions:
+            if action.get("action_id") == action_id:
+                return action
+        return None
+
     @function_tool(strict_mode=False)
     def search_business_actions(query: str, top_k: int = 5) -> Mapping[str, Any]:
         """Search business action candidates to choose a valid ``action_id`` during planning.
@@ -1198,6 +1205,14 @@ def plan_workflow_structure_with_llm(
             result = _build_validation_error("parent_node_id 需要是字符串或 null。")
             return _return_tool_result("add_action_node", result)
 
+        action_def = _find_action_definition(action_id)
+        if not action_def:
+            result = _build_validation_error(
+                "action_id 对应的业务工具不存在，请重新搜索确认。",
+                action_id=action_id,
+            )
+            return _return_tool_result("add_action_node", result)
+
         cleaned_params, removed_fields = _filter_supported_params(
             node_type="action",
             params=params or {},
@@ -1209,7 +1224,7 @@ def plan_workflow_structure_with_llm(
             node_type="action",
             action_id=action_id,
             display_name=display_name,
-            out_params_schema=out_params_schema,
+            out_params_schema=action_def.get("output_schema"),
             params=cleaned_params,
             parent_node_id=parent_node_id if isinstance(parent_node_id, str) else None,
             depends_on=depends_on or [],
@@ -1564,11 +1579,22 @@ def plan_workflow_structure_with_llm(
             result = _build_validation_error("action 节点的 params 需要是对象。")
             return _return_tool_result("update_action_node", result)
 
+        target_action_id = action_id if isinstance(action_id, str) else builder.nodes.get(id, {}).get("action_id")
+        if not isinstance(target_action_id, str):
+            result = _build_validation_error("action 节点缺少有效 action_id，无法更新。")
+            return _return_tool_result("update_action_node", result)
+        action_def = _find_action_definition(target_action_id)
+        if not action_def:
+            result = _build_validation_error(
+                "action_id 对应的业务工具不存在，请重新搜索确认。",
+                action_id=target_action_id,
+            )
+            return _return_tool_result("update_action_node", result)
+
         updates: Dict[str, Any] = {}
         if display_name is not None:
             updates["display_name"] = display_name
-        if out_params_schema is not None:
-            updates["out_params_schema"] = out_params_schema
+        updates["out_params_schema"] = action_def.get("output_schema")
         if action_id is not None:
             updates["action_id"] = action_id
         if parent_node_id is not None:
