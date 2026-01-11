@@ -1069,6 +1069,51 @@ def plan_workflow_structure_with_llm(
         payload.update(extra)
         return payload
 
+    def _build_workflow_snapshot() -> Workflow:
+        workflow_dict = _attach_inferred_edges(builder.to_workflow())
+        return Workflow.model_validate(workflow_dict)
+
+    def _extract_result_of_paths(expr: str) -> List[str]:
+        return re.findall(
+            r"result_of\.[A-Za-z0-9_-]+(?:\[[0-9*]+\]|\.[A-Za-z0-9_-]+)*",
+            expr,
+        )
+
+    def _collect_param_reference_issues(
+        params: Mapping[str, Any],
+    ) -> tuple[List[str], List[Dict[str, Any]]]:
+        workflow = _build_workflow_snapshot()
+        nodes_by_id = {n.id: n.model_dump(by_alias=True) for n in workflow.nodes}
+        actions_by_id = {aid: schema for aid, schema in action_schemas.items()}
+        issues: List[str] = []
+
+        def _walk(val: Any, path_prefix: str = "params") -> None:
+            if isinstance(val, Mapping):
+                for key, item in val.items():
+                    next_prefix = f"{path_prefix}.{key}" if path_prefix else str(key)
+                    _walk(item, next_prefix)
+            elif isinstance(val, list):
+                for idx, item in enumerate(val):
+                    _walk(item, f"{path_prefix}[{idx}]")
+            elif isinstance(val, str):
+                for expr in _iter_template_references(val):
+                    for ref in _extract_result_of_paths(expr):
+                        err = _check_output_path_against_schema(ref, nodes_by_id, actions_by_id)
+                        if err:
+                            issues.append(f"{path_prefix}: {err}")
+
+        _walk(params)
+
+        available_nodes = [
+            {
+                "id": node.id,
+                "type": node.type,
+                "fields": _summarize_node_outputs(node, action_schemas),
+            }
+            for node in workflow.nodes
+        ]
+        return issues, available_nodes
+
     @function_tool(strict_mode=False)
     def search_business_actions(query: str, top_k: int = 5) -> Mapping[str, Any]:
         """Search business action candidates to choose a valid ``action_id`` during planning.
@@ -1210,6 +1255,14 @@ def plan_workflow_structure_with_llm(
             action_schemas=action_schemas,
             action_id=action_id,
         )
+        reference_issues, available_nodes = _collect_param_reference_issues(cleaned_params)
+        if reference_issues:
+            result = _build_validation_error(
+                "action params 引用了不存在的节点字段，请修正后重新调用 add_action_node。",
+                invalid_references=reference_issues,
+                available_nodes=available_nodes,
+            )
+            return _return_tool_result("add_action_node", result)
         builder.add_node(
             node_id=id,
             node_type="action",
@@ -1596,6 +1649,14 @@ def plan_workflow_structure_with_llm(
                 action_id=action_id if isinstance(action_id, str) else builder.nodes.get(id, {}).get("action_id"),
             )
             updates["params"] = cleaned_params
+            reference_issues, available_nodes = _collect_param_reference_issues(cleaned_params)
+            if reference_issues:
+                result = _build_validation_error(
+                    "action params 引用了不存在的节点字段，请修正后重新调用 update_action_node。",
+                    invalid_references=reference_issues,
+                    available_nodes=available_nodes,
+                )
+                return _return_tool_result("update_action_node", result)
         else:
             removed_param_fields = []
 
