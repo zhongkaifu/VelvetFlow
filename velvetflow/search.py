@@ -422,6 +422,27 @@ class HybridActionSearchService:
             )
             return results
 
+    def get_action_by_id(self, action_id: str) -> Optional[Dict[str, Any]]:
+        """Fetch an action definition by action_id."""
+        if not action_id:
+            return None
+
+        direct = get_action_by_id(action_id)
+        if direct:
+            return direct
+
+        actions = getattr(self.es, "actions", [])
+        if isinstance(actions, list):
+            for action in actions:
+                if action.get("action_id") == action_id:
+                    return action
+
+        results = self.search(query=action_id, top_k=5)
+        for action in results:
+            if action.get("action_id") == action_id:
+                return action
+        return None
+
 
 def build_search_service_from_index(
     index: ActionIndex,

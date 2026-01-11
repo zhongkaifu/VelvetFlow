@@ -196,6 +196,23 @@ def _attach_inferred_edges(workflow: Dict[str, Any]) -> Dict[str, Any]:
     return attach_condition_branches(copied)
 
 
+def _ensure_start_node(builder: WorkflowBuilder) -> str:
+    for node in builder.nodes.values():
+        if isinstance(node, Mapping) and node.get("type") == "start":
+            node_id = node.get("id")
+            return node_id if isinstance(node_id, str) else "start"
+
+    base_id = "start"
+    node_id = base_id
+    counter = 1
+    while node_id in builder.nodes:
+        node_id = f"{base_id}_{counter}"
+        counter += 1
+
+    builder.add_node(node_id=node_id, node_type="start", display_name="Start", params={})
+    return node_id
+
+
 def _hydrate_builder_from_workflow(
     *, builder: WorkflowBuilder, workflow: Mapping[str, Any]
 ) -> None:
@@ -603,7 +620,7 @@ def _build_combined_prompt() -> str:
         "[Workflow DSL syntax and semantics (must follow)]\n"
         "- workflow = {workflow_name, description, nodes: []}; only return valid JSON (edges will be automatically inferred by the system based on node bindings, no need to generate them).\n"
         "- Node basic structure: {id, type, display_name, params, depends_on, action_id?, out_params_schema?, loop/subgraph/branches?}.\n"
-        "  type only allows action/condition/loop/parallel. No start/end/exit nodes are needed.\n"
+        "  type allows start/action/condition/loop/parallel; include a start node to mark the workflow entry.\n"
         "  Action nodes must specify action_id (from the action library) and params; only action nodes allow out_params_schema.\n"
         "  Condition node params can only include expression (a single Jinja expression returning a boolean); true_to_node/false_to_node must be top-level fields (string or null), not inside params.\n"
         "  Loop nodes contain loop_kind/iter/source/body_subgraph/exports. Values in exports must reference fields of nodes inside body_subgraph (e.g., {{ result_of.node.field }}); outside the loop you may only reference exports.<key>. body_subgraph only needs the nodes array—no entry/exit/edges.\n"
@@ -621,6 +638,7 @@ def _build_combined_prompt() -> str:
         "7) Condition nodes must explicitly provide true_to_node and false_to_node. Values can be a node id (continue execution) or null (indicating that branch ends); express dependencies through input/output references in node params—no need to draw edges explicitly.\n"
         "8) Maintain depends_on (array of strings) for each node, listing its direct upstream dependencies; when a node is targeted by condition.true_to_node/false_to_node, you must add that condition node to the target node's depends_on.\n"
         "9) After the structure is complete, continue to fill params for all nodes and ensure update_node_params validation passes.\n\n"
+        "10) When you believe the workflow is complete, call check_workflow to validate upstream references; only after check_workflow succeeds should you call finalize_workflow to finish.\n\n"
         "Important note: Only action nodes need out_params_schema; condition nodes do not have this property. The format of out_params_schema should be {\"param_name\": \"type\"}; list only the names and types of output parameters of the business action, without extra descriptions or examples.\n\n"
         "[Very important principles]\n"
         "1. You must design the workflow strictly around the natural language requirement in the current conversation:\n"
@@ -650,6 +668,7 @@ def _build_combined_prompt() -> str:
         "Each key in loop.exports collects per-iteration results into a list; each exports value must reference a body_subgraph node field, such as {{ result_of.<body_node>.<field> }}.\n"
         "Params for all nodes must not be empty; if there is no obvious default value, analyze upstream/downstream semantics and then use the tool to fill them.\n"
         "Complete aggregation/filtering/formatting with Jinja filters or expressions (for example, {{ result_of.a.items | selectattr('score', '>', 80) | list | length }} or {{ result_of.a.items | map(attribute='name') | join(', ') }}); do not output object-style bindings."
+        "\nFinally, when workflow construction is done, you must call check_workflow first and then finalize_workflow to confirm completion."
     )
     return f"{structure_prompt}\n\n{param_prompt}"
 
@@ -977,11 +996,17 @@ def plan_workflow_structure_with_llm(
     builder = WorkflowBuilder()
     if existing_workflow:
         _hydrate_builder_from_workflow(builder=builder, workflow=existing_workflow)
+    _ensure_start_node(builder)
     action_schemas = _build_action_schema_map(action_registry)
     last_action_candidates: List[str] = []
     all_action_candidates: List[str] = []
     all_action_candidates_info: List[Dict[str, Any]] = []
     latest_skeleton: Dict[str, Any] = {}
+    workflow_check_state = {"called": False, "has_issues": False}
+
+    def _reset_workflow_check_state() -> None:
+        workflow_check_state["called"] = False
+        workflow_check_state["has_issues"] = False
 
     def _emit_progress(label: str, workflow_obj: Mapping[str, Any]) -> None:
         if not progress_callback:
@@ -1043,6 +1068,51 @@ def plan_workflow_structure_with_llm(
         payload = {"status": "error", "message": message}
         payload.update(extra)
         return payload
+
+    def _build_workflow_snapshot() -> Workflow:
+        workflow_dict = _attach_inferred_edges(builder.to_workflow())
+        return Workflow.model_validate(workflow_dict)
+
+    def _extract_result_of_paths(expr: str) -> List[str]:
+        return re.findall(
+            r"result_of\.[A-Za-z0-9_-]+(?:\[[0-9*]+\]|\.[A-Za-z0-9_-]+)*",
+            expr,
+        )
+
+    def _collect_param_reference_issues(
+        params: Mapping[str, Any],
+    ) -> tuple[List[str], List[Dict[str, Any]]]:
+        workflow = _build_workflow_snapshot()
+        nodes_by_id = {n.id: n.model_dump(by_alias=True) for n in workflow.nodes}
+        actions_by_id = {aid: schema for aid, schema in action_schemas.items()}
+        issues: List[str] = []
+
+        def _walk(val: Any, path_prefix: str = "params") -> None:
+            if isinstance(val, Mapping):
+                for key, item in val.items():
+                    next_prefix = f"{path_prefix}.{key}" if path_prefix else str(key)
+                    _walk(item, next_prefix)
+            elif isinstance(val, list):
+                for idx, item in enumerate(val):
+                    _walk(item, f"{path_prefix}[{idx}]")
+            elif isinstance(val, str):
+                for expr in _iter_template_references(val):
+                    for ref in _extract_result_of_paths(expr):
+                        err = _check_output_path_against_schema(ref, nodes_by_id, actions_by_id)
+                        if err:
+                            issues.append(f"{path_prefix}: {err}")
+
+        _walk(params)
+
+        available_nodes = [
+            {
+                "id": node.id,
+                "type": node.type,
+                "fields": _summarize_node_outputs(node, action_schemas),
+            }
+            for node in workflow.nodes
+        ]
+        return issues, available_nodes
 
     @function_tool(strict_mode=False)
     def search_business_actions(query: str, top_k: int = 5) -> Mapping[str, Any]:
@@ -1127,7 +1197,6 @@ def plan_workflow_structure_with_llm(
         id: str,
         action_id: str,
         display_name: Optional[str] = None,
-        out_params_schema: Optional[Dict[str, str]] = None,
         params: Optional[Dict[str, Any]] = None,
         depends_on: Optional[List[str]] = None,
         parent_node_id: Optional[str] = None,
@@ -1142,7 +1211,6 @@ def plan_workflow_structure_with_llm(
             action_id: Business action ID that must come from the most recent search
                 candidates.
             display_name: Optional node display name.
-            out_params_schema: Optional mapping of the action output parameter schema.
             params: Optional dictionary of action input parameters.
             depends_on: Optional list of upstream node IDs.
             parent_node_id: Optional parent node ID for subgraphs or loop scenarios.
@@ -1173,22 +1241,39 @@ def plan_workflow_structure_with_llm(
             result = _build_validation_error("parent_node_id 需要是字符串或 null。")
             return _return_tool_result("add_action_node", result)
 
+        action_def = search_service.get_action_by_id(action_id)
+        if not action_def:
+            result = _build_validation_error(
+                "action_id 对应的业务工具不存在，请重新搜索确认。",
+                action_id=action_id,
+            )
+            return _return_tool_result("add_action_node", result)
+
         cleaned_params, removed_fields = _filter_supported_params(
             node_type="action",
             params=params or {},
             action_schemas=action_schemas,
             action_id=action_id,
         )
+        reference_issues, available_nodes = _collect_param_reference_issues(cleaned_params)
+        if reference_issues:
+            result = _build_validation_error(
+                "action params 引用了不存在的节点字段，请修正后重新调用 add_action_node。",
+                invalid_references=reference_issues,
+                available_nodes=available_nodes,
+            )
+            return _return_tool_result("add_action_node", result)
         builder.add_node(
             node_id=id,
             node_type="action",
             action_id=action_id,
             display_name=display_name,
-            out_params_schema=out_params_schema,
+            out_params_schema=action_def.get("output_schema"),
             params=cleaned_params,
             parent_node_id=parent_node_id if isinstance(parent_node_id, str) else None,
             depends_on=depends_on or [],
         )
+        _reset_workflow_check_state()
         removed_node_fields = _sanitize_builder_node_fields(builder, id)
         _snapshot(f"add_action_{id}")
         if removed_fields or removed_node_fields:
@@ -1280,6 +1365,7 @@ def plan_workflow_structure_with_llm(
             parent_node_id=parent_node_id if isinstance(parent_node_id, str) else None,
             depends_on=depends_on or [],
         )
+        _reset_workflow_check_state()
         _attach_sub_graph_nodes(builder, id, normalized_nodes)
         removed_node_fields = _sanitize_builder_node_fields(builder, id)
         _snapshot(f"add_loop_{id}")
@@ -1365,6 +1451,7 @@ def plan_workflow_structure_with_llm(
             parent_node_id=parent_node_id if isinstance(parent_node_id, str) else None,
             depends_on=depends_on or [],
         )
+        _reset_workflow_check_state()
         removed_node_fields = _sanitize_builder_node_fields(builder, id)
         _snapshot(f"add_condition_{id}")
         if removed_fields or removed_node_fields:
@@ -1460,6 +1547,7 @@ def plan_workflow_structure_with_llm(
             parent_node_id=parent_node_id if isinstance(parent_node_id, str) else None,
             depends_on=depends_on or [],
         )
+        _reset_workflow_check_state()
         removed_node_fields = _sanitize_builder_node_fields(builder, id)
         _snapshot(f"add_switch_{id}")
         if removed_fields or removed_node_fields:
@@ -1487,7 +1575,6 @@ def plan_workflow_structure_with_llm(
         id: str,
         display_name: Optional[str] = None,
         params: Optional[Dict[str, Any]] = None,
-        out_params_schema: Optional[Dict[str, Any]] = None,
         action_id: Optional[str] = None,
         depends_on: Optional[List[str]] = None,
         parent_node_id: Optional[str] = None,
@@ -1501,7 +1588,6 @@ def plan_workflow_structure_with_llm(
             id: Unique node identifier.
             display_name: Optional node display name.
             params: Optional action parameter dictionary.
-            out_params_schema: Optional output parameter schema.
             action_id: Optional business action ID (must come from the most recent search
                 candidates).
             depends_on: Optional list of upstream node IDs.
@@ -1535,11 +1621,22 @@ def plan_workflow_structure_with_llm(
             result = _build_validation_error("action 节点的 params 需要是对象。")
             return _return_tool_result("update_action_node", result)
 
+        target_action_id = action_id if isinstance(action_id, str) else builder.nodes.get(id, {}).get("action_id")
+        if not isinstance(target_action_id, str):
+            result = _build_validation_error("action 节点缺少有效 action_id，无法更新。")
+            return _return_tool_result("update_action_node", result)
+        action_def = search_service.get_action_by_id(target_action_id)
+        if not action_def:
+            result = _build_validation_error(
+                "action_id 对应的业务工具不存在，请重新搜索确认。",
+                action_id=target_action_id,
+            )
+            return _return_tool_result("update_action_node", result)
+
         updates: Dict[str, Any] = {}
         if display_name is not None:
             updates["display_name"] = display_name
-        if out_params_schema is not None:
-            updates["out_params_schema"] = out_params_schema
+        updates["out_params_schema"] = action_def.get("output_schema")
         if action_id is not None:
             updates["action_id"] = action_id
         if parent_node_id is not None:
@@ -1552,6 +1649,14 @@ def plan_workflow_structure_with_llm(
                 action_id=action_id if isinstance(action_id, str) else builder.nodes.get(id, {}).get("action_id"),
             )
             updates["params"] = cleaned_params
+            reference_issues, available_nodes = _collect_param_reference_issues(cleaned_params)
+            if reference_issues:
+                result = _build_validation_error(
+                    "action params 引用了不存在的节点字段，请修正后重新调用 update_action_node。",
+                    invalid_references=reference_issues,
+                    available_nodes=available_nodes,
+                )
+                return _return_tool_result("update_action_node", result)
         else:
             removed_param_fields = []
 
@@ -1559,6 +1664,7 @@ def plan_workflow_structure_with_llm(
             updates["depends_on"] = depends_on
 
         builder.update_node(id, **updates)
+        _reset_workflow_check_state()
         removed_param_fields.extend(_sanitize_builder_node_params(builder, id, action_schemas))
         removed_node_fields = _sanitize_builder_node_fields(builder, id)
         _snapshot(f"update_action_{id}")
@@ -1653,6 +1759,7 @@ def plan_workflow_structure_with_llm(
             updates["depends_on"] = depends_on
 
         builder.update_node(id, **updates)
+        _reset_workflow_check_state()
         removed_param_fields.extend(_sanitize_builder_node_params(builder, id, action_schemas))
         removed_node_fields = _sanitize_builder_node_fields(builder, id)
         _snapshot(f"update_condition_{id}")
@@ -1761,6 +1868,7 @@ def plan_workflow_structure_with_llm(
             updates["depends_on"] = depends_on
 
         builder.update_node(id, **updates)
+        _reset_workflow_check_state()
         removed_param_fields.extend(_sanitize_builder_node_params(builder, id, action_schemas))
         removed_node_fields = _sanitize_builder_node_fields(builder, id)
         _snapshot(f"update_switch_{id}")
@@ -1835,6 +1943,7 @@ def plan_workflow_structure_with_llm(
             updates["depends_on"] = depends_on
 
         builder.update_node(id, **updates)
+        _reset_workflow_check_state()
         _attach_sub_graph_nodes(builder, id, normalized_nodes)
         removed_param_fields.extend(_sanitize_builder_node_params(builder, id, action_schemas))
         removed_node_fields = _sanitize_builder_node_fields(builder, id)
@@ -1871,6 +1980,113 @@ def plan_workflow_structure_with_llm(
             "workflow": snapshot,
         }
         return _return_tool_result("dump_model", result)
+
+    def _collect_template_node_refs(obj: Any) -> set[str]:
+        refs: set[str] = set()
+
+        def _walk(val: Any) -> None:
+            if isinstance(val, Mapping):
+                for item in val.values():
+                    _walk(item)
+            elif isinstance(val, list):
+                for item in val:
+                    _walk(item)
+            elif isinstance(val, str):
+                for expr in _iter_template_references(val):
+                    for match in re.findall(r"result_of\.([A-Za-z0-9_-]+)", expr):
+                        refs.add(match)
+
+        _walk(obj)
+        return refs
+
+    @function_tool(strict_mode=False)
+    def check_workflow() -> Mapping[str, Any]:
+        """Check whether action nodes reference upstream nodes via Jinja templates.
+
+        Call this before finalize_workflow to validate workflow quality.
+        """
+        _log_tool_call("check_workflow")
+        snapshot = _attach_inferred_edges(builder.to_workflow())
+        nodes = list(iter_workflow_and_loop_body_nodes(snapshot))
+        edges = infer_edges_from_bindings(nodes)
+        node_ids = {
+            node.get("id")
+            for node in nodes
+            if isinstance(node, Mapping) and isinstance(node.get("id"), str)
+        }
+        incoming_counts: Dict[str, int] = {nid: 0 for nid in node_ids if isinstance(nid, str)}
+        for edge in edges:
+            if not isinstance(edge, Mapping):
+                continue
+            to_node = edge.get("to") if "to" in edge else edge.get("to_node")
+            if isinstance(to_node, str) and to_node in incoming_counts:
+                incoming_counts[to_node] += 1
+
+        nodes_without_refs: List[str] = []
+        for node in nodes:
+            if not isinstance(node, Mapping):
+                continue
+            if node.get("type") != "action":
+                continue
+            node_id = node.get("id")
+            if not isinstance(node_id, str):
+                continue
+            has_incoming = incoming_counts.get(node_id, 0) > 0
+            param_refs = _collect_template_node_refs(node.get("params", {}))
+            has_param_refs = any(
+                ref in node_ids and ref != node_id for ref in param_refs if isinstance(ref, str)
+            )
+            if not has_incoming and not has_param_refs:
+                nodes_without_refs.append(node_id)
+
+        has_issues = bool(nodes_without_refs)
+        status = "needs_more_work" if has_issues else "ok"
+        if has_issues:
+            feedback = (
+                "Some action nodes have no upstream references. "
+                f"Update params to reference upstream outputs for nodes: {', '.join(nodes_without_refs)}."
+            )
+        else:
+            feedback = "All action nodes reference upstream outputs."
+
+        result = {
+            "status": status,
+            "type": "check_workflow",
+            "nodes_without_references": nodes_without_refs,
+            "has_issues": has_issues,
+            "feedback": feedback,
+            "workflow": snapshot,
+        }
+        workflow_check_state["called"] = True
+        workflow_check_state["has_issues"] = has_issues
+        return _return_tool_result("check_workflow", result)
+
+    @function_tool(strict_mode=False)
+    def finalize_workflow() -> Mapping[str, Any]:
+        """Mark the workflow as complete after check_workflow succeeds."""
+        _log_tool_call("finalize_workflow")
+        if not workflow_check_state["called"]:
+            result = {
+                "status": "error",
+                "type": "finalize_workflow",
+                "message": "Please call check_workflow before finalize_workflow.",
+            }
+            return _return_tool_result("finalize_workflow", result)
+        if workflow_check_state["has_issues"]:
+            result = {
+                "status": "needs_more_work",
+                "type": "finalize_workflow",
+                "message": "check_workflow reported issues; update nodes and re-run check_workflow.",
+            }
+            return _return_tool_result("finalize_workflow", result)
+
+        snapshot = _attach_inferred_edges(builder.to_workflow())
+        result = {
+            "status": "ok",
+            "type": "finalize_workflow",
+            "workflow": snapshot,
+        }
+        return _return_tool_result("finalize_workflow", result)
 
     filled_params: Dict[str, Dict[str, Any]] = {
         nid: copy.deepcopy(node.get("params", {}))
@@ -1983,6 +2199,7 @@ def plan_workflow_structure_with_llm(
         if id not in validated_node_ids:
             validated_node_ids.append(id)
         builder.update_node(id, params=dict(normalized_params))
+        _reset_workflow_check_state()
         _snapshot(f"validate_params_{id}")
         result = {"status": "ok", "params": normalized_params}
         return _return_tool_result("update_node_params", result)
@@ -2004,6 +2221,8 @@ def plan_workflow_structure_with_llm(
             update_loop_node,
             get_param_context,
             update_node_params,
+            check_workflow,
+            finalize_workflow,
             dump_model,
         ],
         model=OPENAI_MODEL
