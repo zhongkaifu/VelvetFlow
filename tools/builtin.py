@@ -283,7 +283,7 @@ def ask_ai(
     tool: List[Mapping[str, Any]] | None = None,
     model: str | None = None,
     max_tokens: int = 256,
-    max_rounds: int = 3,
+    max_rounds: int = 5,
 ) -> Dict[str, Any]:
     """LLM helper that can optionally call business tools and analyze results."""
 
