@@ -130,7 +130,6 @@ def test_real_openai_plans_weather_notification_workflow():
             # Allow a few more turns because live models may need additional
             # iterations to converge when planning in Chinese.
             max_rounds=100,
-            max_repair_rounds=2,
         )
 
         action_ids = [
