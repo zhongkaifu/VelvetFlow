@@ -45,7 +45,6 @@ def plan_workflow_with_two_pass(
     action_registry: List[Dict[str, Any]],
     *,
     max_rounds: int = 10,
-    max_repair_rounds: int | None = None,
     trace_context: TraceContext | None = None,
     trace_id: str | None = None,
     progress_callback: Callable[[str, Mapping[str, Any]], None] | None = None,
@@ -64,7 +63,6 @@ def plan_workflow_with_two_pass(
             {
                 "nl_requirement": nl_requirement,
                 "max_rounds": max_rounds,
-                "max_repair_rounds": max_repair_rounds,
             },
             context=context,
         )
@@ -120,7 +118,6 @@ def update_workflow_with_two_pass(
     action_registry: List[Dict[str, Any]],
     *,
     max_rounds: int = 100,
-    max_repair_rounds: int | None = None,
     trace_context: TraceContext | None = None,
     trace_id: str | None = None,
     progress_callback: Callable[[str, Mapping[str, Any]], None] | None = None,
