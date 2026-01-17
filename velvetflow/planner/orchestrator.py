@@ -54,11 +54,8 @@ def plan_workflow_with_two_pass(
 
     parsed_requirement = analyze_user_requirement(
         nl_requirement,
-        max_rounds=max_repair_rounds if max_repair_rounds is not None else max_rounds,
+        max_rounds=max_rounds,
     )
-
-    if max_repair_rounds is not None:
-        max_rounds = max_repair_rounds
 
     context = trace_context or TraceContext.create(trace_id=trace_id, span_name="orchestrator")
     with use_trace_context(context):
@@ -67,6 +64,7 @@ def plan_workflow_with_two_pass(
             {
                 "nl_requirement": nl_requirement,
                 "max_rounds": max_rounds,
+                "max_repair_rounds": max_repair_rounds,
             },
             context=context,
         )
@@ -140,9 +138,6 @@ def update_workflow_with_two_pass(
         )
 
         base_workflow = Workflow.model_validate(existing_workflow)
-
-        if max_repair_rounds is not None:
-            max_rounds = max_repair_rounds
 
         parsed_requirement = analyze_user_requirement(
             requirement,
