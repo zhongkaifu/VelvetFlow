@@ -2114,7 +2114,23 @@ def plan_workflow_structure_with_llm(
             if not has_incoming and not has_param_refs:
                 nodes_without_refs.append(node_id)
 
-        has_issues = bool(nodes_without_refs) or not llm_satisfies
+        loop_nodes_missing_actions: List[str] = []
+        for node in nodes:
+            if not isinstance(node, Mapping):
+                continue
+            if node.get("type") != "loop":
+                continue
+            node_id = node.get("id")
+            params = node.get("params") if isinstance(node.get("params"), Mapping) else {}
+            body_nodes = (params.get("body_subgraph") or {}).get("nodes", [])
+            has_action = any(
+                isinstance(body_node, Mapping) and body_node.get("type") == "action"
+                for body_node in body_nodes
+            )
+            if not has_action and isinstance(node_id, str):
+                loop_nodes_missing_actions.append(node_id)
+
+        has_issues = bool(nodes_without_refs) or bool(loop_nodes_missing_actions) or not llm_satisfies
         status = "needs_more_work" if has_issues else "ok"
         feedback_parts = []
         if nodes_without_refs:
@@ -2122,6 +2138,12 @@ def plan_workflow_structure_with_llm(
                 "Some action nodes have no upstream references. "
                 "Update params to reference upstream outputs for nodes: "
                 f"{', '.join(nodes_without_refs)}."
+            )
+        if loop_nodes_missing_actions:
+            feedback_parts.append(
+                "Loop nodes must include at least one action node in body_subgraph. "
+                "Add an action node to the subgraph or remove the loop if it is unnecessary: "
+                f"{', '.join(loop_nodes_missing_actions)}."
             )
         if not llm_satisfies:
             missing_text = "; ".join(llm_missing) if llm_missing else "未满足的需求未明确。"
@@ -2144,6 +2166,7 @@ def plan_workflow_structure_with_llm(
             "status": status,
             "type": "check_workflow",
             "nodes_without_references": nodes_without_refs,
+            "loop_nodes_missing_actions": loop_nodes_missing_actions,
             "requirements_missing": llm_missing,
             "requirements_suggestions": llm_suggestions,
             "llm_requirement_check": llm_eval,
