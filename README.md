@@ -238,7 +238,7 @@ LLM / Agent SDK 相关节点说明：
 - **结构规划 Agent**：需求拆解在前置阶段完成，规划时直接复用结构化任务清单，再通过节点增删改与 `update_node_params` 工具补全 params（Jinja 表达式为主）。`WorkflowBuilder` 会把推导出的 edges、condition 分支与 `depends_on` 写回骨架，方便下游校验共享上下文；节点字段也会按节点类型或 action schema 过滤无关字段，避免 Agent 生成不可识别的参数。【F:velvetflow/planner/structure.py†L373-L1168】【F:velvetflow/planner/workflow_builder.py†L20-L222】
 - **动作合法性守卫**：若发现 `action_id` 缺失或未注册，会先尝试基于 display_name/原 action_id 检索替换，再将剩余问题交给 LLM 修复，避免幻觉动作进入最终 Workflow。【F:velvetflow/planner/orchestrator.py†L104-L343】
 - **Jinja 规范化与参数一致性**：规划/校验阶段会将简单路径转换为 Jinja 字符串，并对非模板参数给出修复建议；参数补全阶段的 schema 约束来自 `params_tools.py`，确保节点 params 与动作 arg_schema 对齐。【F:velvetflow/planner/params_tools.py†L1-L193】【F:velvetflow/verification/jinja_validation.py†L10-L189】
-- **自修复 Agent**：当静态校验或本地修复仍未通过时，使用当前 workflow 字典与 `ValidationError` 列表提示模型修复。Agent 可以调用命名修复工具（如替换引用、补必填参数、规范化绑定路径）或提交补丁文本，直至通过或达到 `max_repair_rounds`，并在过程中保留最近一次合法版本以确保可回退。【F:velvetflow/planner/repair.py†L616-L756】【F:velvetflow/planner/orchestrator.py†L664-L940】
+- **自修复 Agent**：当静态校验或本地修复仍未通过时，使用当前 workflow 字典与 `ValidationError` 列表提示模型修复。Agent 可以调用命名修复工具（如替换引用、补必填参数、规范化绑定路径）或提交补丁文本，直至通过，并在过程中保留最近一次合法版本以确保可回退。【F:velvetflow/planner/repair.py†L616-L756】【F:velvetflow/planner/orchestrator.py†L664-L940】
 
 ### Agent 工具的设计与运行方式
 - **会话级工具与闭包状态**：结构规划的工具集（需求拆解、检索、设置 meta、节点增删改、参数补全）在 `plan_workflow_structure_with_llm` 内使用 `@function_tool(strict_mode=False)` 声明，并依托闭包保存 `WorkflowBuilder`、动作候选与检索结果等上下文，`planner/agent_runtime.py` 统一导出 `Agent`/`Runner`/`function_tool` 便于切换 Agent SDK 版本。【F:velvetflow/planner/structure.py†L373-L1836】【F:velvetflow/planner/agent_runtime.py†L4-L26】

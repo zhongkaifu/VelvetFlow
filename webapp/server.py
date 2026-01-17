@@ -154,7 +154,6 @@ def _run_planner_for_request(
             search_service=search_service,
             action_registry=BUSINESS_ACTIONS,
             max_rounds=100,
-            max_repair_rounds=3,
             progress_callback=progress_callback,
         )
 
@@ -163,7 +162,6 @@ def _run_planner_for_request(
         search_service=search_service,
         action_registry=BUSINESS_ACTIONS,
         max_rounds=100,
-        max_repair_rounds=3,
         progress_callback=progress_callback,
     )
 
