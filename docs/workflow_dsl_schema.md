@@ -69,6 +69,9 @@
 
 ### 2. `action`
 - **字段**：`action_id` 指向注册表中的工具，`params` 对应工具的 `arg_schema`，`out_params_schema` 可选（覆盖/补充动作的输出 Schema）。
+- **`out_params_schema` 形式**：
+  - 可使用完整 JSON Schema（带 `type`/`properties` 等）。
+  - 也支持简写嵌套映射：字符串类型会被视为 `{"type": "<type>"}`，嵌套对象会被转换为 `{"type": "object", "properties": ...}`，便于快速声明深层字段。
 - **示例**：
 ```json
 {
@@ -80,6 +83,20 @@
     "__invoke_mode": "async"
   },
   "out_params_schema": {"type": "object", "properties": {"summary": {"type": "string"}}}
+}
+```
+```json
+{
+  "id": "extract_profile",
+  "type": "action",
+  "action_id": "crm.extract_profile",
+  "params": {"source": "{{ result_of.fetch_user.raw }}"},
+  "out_params_schema": {
+    "profile": {
+      "name": "string",
+      "contact": {"email": "string", "phone": "string"}
+    }
+  }
 }
 ```
 
