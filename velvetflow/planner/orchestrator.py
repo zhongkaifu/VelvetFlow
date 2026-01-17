@@ -119,8 +119,8 @@ def plan_workflow_with_two_pass(
         validation_errors = _validate_workflow(guarded, action_registry)
         if validation_errors:
             log_warn(
-                "[plan_workflow_with_two_pass] Validation produced errors; returning workflow with warnings.",
-                json.dumps(
+                "[plan_workflow_with_two_pass] Validation produced errors; returning workflow with warnings. "
+                + json.dumps(
                     [_serialize_validation_error(err) for err in validation_errors],
                     ensure_ascii=False,
                 ),
@@ -191,8 +191,8 @@ def update_workflow_with_two_pass(
         validation_errors = _validate_workflow(updated_workflow, action_registry)
         if validation_errors:
             log_warn(
-                "[update_workflow_with_two_pass] Validation produced errors; returning workflow with warnings.",
-                json.dumps(
+                "[update_workflow_with_two_pass] Validation produced errors; returning workflow with warnings. "
+                + json.dumps(
                     [_serialize_validation_error(err) for err in validation_errors],
                     ensure_ascii=False,
                 ),
