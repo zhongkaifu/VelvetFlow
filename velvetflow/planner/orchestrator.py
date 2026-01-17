@@ -21,6 +21,8 @@ from velvetflow.logging_utils import (
     log_warn,
     use_trace_context,
 )
+from dataclasses import asdict, is_dataclass
+
 from velvetflow.models import PydanticValidationError, ValidationError, Workflow
 from velvetflow.planner.action_guard import ensure_registered_actions
 from velvetflow.planner.requirement_analysis import analyze_user_requirement
@@ -37,6 +39,19 @@ def _validate_workflow(
     return validate_completed_workflow(
         workflow.model_dump(by_alias=True), action_registry=action_registry
     )
+
+
+def _serialize_validation_error(error: ValidationError) -> Dict[str, Any]:
+    if hasattr(error, "model_dump"):
+        return error.model_dump()  # type: ignore[no-any-return]
+    if is_dataclass(error):
+        return asdict(error)
+    return {
+        "code": getattr(error, "code", None),
+        "node_id": getattr(error, "node_id", None),
+        "field": getattr(error, "field", None),
+        "message": getattr(error, "message", str(error)),
+    }
 
 
 def plan_workflow_with_two_pass(
@@ -105,7 +120,10 @@ def plan_workflow_with_two_pass(
         if validation_errors:
             log_warn(
                 "[plan_workflow_with_two_pass] Validation produced errors; returning workflow with warnings.",
-                json.dumps([err.model_dump() for err in validation_errors], ensure_ascii=False),
+                json.dumps(
+                    [_serialize_validation_error(err) for err in validation_errors],
+                    ensure_ascii=False,
+                ),
             )
 
         return guarded
@@ -174,7 +192,10 @@ def update_workflow_with_two_pass(
         if validation_errors:
             log_warn(
                 "[update_workflow_with_two_pass] Validation produced errors; returning workflow with warnings.",
-                json.dumps([err.model_dump() for err in validation_errors], ensure_ascii=False),
+                json.dumps(
+                    [_serialize_validation_error(err) for err in validation_errors],
+                    ensure_ascii=False,
+                ),
             )
 
         return updated_workflow
