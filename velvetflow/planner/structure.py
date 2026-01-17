@@ -1426,6 +1426,26 @@ def plan_workflow_structure_with_llm(
         if false_to_node is not None and not isinstance(false_to_node, str):
             result = _build_validation_error("false_to_node 只能是节点 id 或 null。", invalid_fields=["false_to_node"])
             return _return_tool_result("add_condition_node", result)
+        workflow_nodes = builder.to_workflow().get("nodes", [])
+        known_node_ids = {
+            node.get("id")
+            for node in workflow_nodes
+            if isinstance(node, Mapping) and isinstance(node.get("id"), str)
+        }
+        missing_branches = [
+            node_id
+            for node_id in (true_to_node, false_to_node)
+            if isinstance(node_id, str) and node_id not in known_node_ids
+        ]
+        if missing_branches:
+            result = _build_validation_error(
+                "condition 节点的分支目标必须先存在。"
+                "请先创建分支节点后再创建或更新 condition 节点；"
+                "如果分支不需要，请将 true_to_node/false_to_node 设为 null。",
+                invalid_fields=["true_to_node", "false_to_node"],
+                missing_nodes=missing_branches,
+            )
+            return _return_tool_result("add_condition_node", result)
         normalized_params: Dict[str, Any] = dict(params or {})
         expr_val = normalized_params.get("expression")
         if isinstance(expr_val, str):
@@ -1727,6 +1747,27 @@ def plan_workflow_structure_with_llm(
         if false_to_node is not None and not isinstance(false_to_node, str):
             result = _build_validation_error("false_to_node 只能是节点 id 或 null。", invalid_fields=["false_to_node"])
             return _return_tool_result("update_condition_node", result)
+        if true_to_node is not None or false_to_node is not None:
+            workflow_nodes = builder.to_workflow().get("nodes", [])
+            known_node_ids = {
+                node.get("id")
+                for node in workflow_nodes
+                if isinstance(node, Mapping) and isinstance(node.get("id"), str)
+            }
+            missing_branches = [
+                node_id
+                for node_id in (true_to_node, false_to_node)
+                if isinstance(node_id, str) and node_id not in known_node_ids
+            ]
+            if missing_branches:
+                result = _build_validation_error(
+                    "condition 节点的分支目标必须先存在。"
+                    "请先创建分支节点后再更新 condition 节点；"
+                    "如果分支不需要，请将 true_to_node/false_to_node 设为 null。",
+                    invalid_fields=["true_to_node", "false_to_node"],
+                    missing_nodes=missing_branches,
+                )
+                return _return_tool_result("update_condition_node", result)
         if params is not None and not isinstance(params, Mapping):
             result = _build_validation_error("condition 节点的 params 需要是对象。")
             return _return_tool_result("update_condition_node", result)
