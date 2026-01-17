@@ -9,6 +9,7 @@ parameters, then validates the result before returning.
 """
 
 import json
+from dataclasses import asdict, is_dataclass
 from typing import Any, Callable, Dict, List, Mapping
 
 from velvetflow.logging_utils import (
@@ -37,6 +38,16 @@ def _validate_workflow(
     return validate_completed_workflow(
         workflow.model_dump(by_alias=True), action_registry=action_registry
     )
+
+
+def _serialize_validation_error(error: ValidationError) -> Dict[str, Any]:
+    """Convert validation errors into JSON-serializable dictionaries."""
+
+    if hasattr(error, "model_dump"):
+        return error.model_dump()
+    if is_dataclass(error):
+        return asdict(error)
+    return error.__dict__
 
 
 def plan_workflow_with_two_pass(
@@ -105,7 +116,10 @@ def plan_workflow_with_two_pass(
         if validation_errors:
             log_warn(
                 "[plan_workflow_with_two_pass] Validation produced errors; returning workflow with warnings.",
-                json.dumps([err.model_dump() for err in validation_errors], ensure_ascii=False),
+                json.dumps(
+                    [_serialize_validation_error(err) for err in validation_errors],
+                    ensure_ascii=False,
+                ),
             )
 
         return guarded
@@ -174,7 +188,10 @@ def update_workflow_with_two_pass(
         if validation_errors:
             log_warn(
                 "[update_workflow_with_two_pass] Validation produced errors; returning workflow with warnings.",
-                json.dumps([err.model_dump() for err in validation_errors], ensure_ascii=False),
+                json.dumps(
+                    [_serialize_validation_error(err) for err in validation_errors],
+                    ensure_ascii=False,
+                ),
             )
 
         return updated_workflow
