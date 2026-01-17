@@ -2038,7 +2038,6 @@ def plan_workflow_structure_with_llm(
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_payload},
                 ],
-                temperature=0,
                 response_format={"type": "json_object"},
             )
         except Exception as exc:
