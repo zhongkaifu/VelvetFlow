@@ -23,6 +23,19 @@ def _index_actions_by_id(action_registry: List[Dict[str, Any]]) -> Dict[str, Dic
     return {a["action_id"]: a for a in action_registry}
 
 
+def _coerce_out_param_schema(value: Any) -> Mapping[str, Any]:
+    if isinstance(value, Mapping):
+        if any(key in value for key in ("type", "properties", "$schema")):
+            return value
+        properties = {key: _coerce_out_param_schema(item) for key, item in value.items()}
+        return {"type": "object", "properties": properties}
+
+    if isinstance(value, str):
+        return {"type": value}
+
+    return {}
+
+
 def _schema_from_out_params_schema(
     out_params_schema: Mapping[str, Any] | None,
 ) -> Optional[Mapping[str, Any]]:
@@ -35,13 +48,9 @@ def _schema_from_out_params_schema(
     if any(key in out_params_schema for key in ("type", "properties", "$schema")):
         return out_params_schema
 
-    properties: Dict[str, Any] = {}
-    for key, value in out_params_schema.items():
-        if isinstance(value, Mapping):
-            properties[key] = value
-        else:
-            # Best-effort wrapper when only scalar types are provided.
-            properties[key] = {"type": value} if isinstance(value, str) else {}
+    properties: Dict[str, Any] = {
+        key: _coerce_out_param_schema(value) for key, value in out_params_schema.items()
+    }
 
     return {"type": "object", "properties": properties}
 

@@ -1426,6 +1426,26 @@ def plan_workflow_structure_with_llm(
         if false_to_node is not None and not isinstance(false_to_node, str):
             result = _build_validation_error("false_to_node 只能是节点 id 或 null。", invalid_fields=["false_to_node"])
             return _return_tool_result("add_condition_node", result)
+        workflow_nodes = builder.to_workflow().get("nodes", [])
+        known_node_ids = {
+            node.get("id")
+            for node in workflow_nodes
+            if isinstance(node, Mapping) and isinstance(node.get("id"), str)
+        }
+        missing_branches = [
+            node_id
+            for node_id in (true_to_node, false_to_node)
+            if isinstance(node_id, str) and node_id not in known_node_ids
+        ]
+        if missing_branches:
+            result = _build_validation_error(
+                "condition 节点的分支目标必须先存在。"
+                "请先创建分支节点后再创建或更新 condition 节点；"
+                "如果分支不需要，请将 true_to_node/false_to_node 设为 null。",
+                invalid_fields=["true_to_node", "false_to_node"],
+                missing_nodes=missing_branches,
+            )
+            return _return_tool_result("add_condition_node", result)
         normalized_params: Dict[str, Any] = dict(params or {})
         expr_val = normalized_params.get("expression")
         if isinstance(expr_val, str):
@@ -1727,6 +1747,27 @@ def plan_workflow_structure_with_llm(
         if false_to_node is not None and not isinstance(false_to_node, str):
             result = _build_validation_error("false_to_node 只能是节点 id 或 null。", invalid_fields=["false_to_node"])
             return _return_tool_result("update_condition_node", result)
+        if true_to_node is not None or false_to_node is not None:
+            workflow_nodes = builder.to_workflow().get("nodes", [])
+            known_node_ids = {
+                node.get("id")
+                for node in workflow_nodes
+                if isinstance(node, Mapping) and isinstance(node.get("id"), str)
+            }
+            missing_branches = [
+                node_id
+                for node_id in (true_to_node, false_to_node)
+                if isinstance(node_id, str) and node_id not in known_node_ids
+            ]
+            if missing_branches:
+                result = _build_validation_error(
+                    "condition 节点的分支目标必须先存在。"
+                    "请先创建分支节点后再更新 condition 节点；"
+                    "如果分支不需要，请将 true_to_node/false_to_node 设为 null。",
+                    invalid_fields=["true_to_node", "false_to_node"],
+                    missing_nodes=missing_branches,
+                )
+                return _return_tool_result("update_condition_node", result)
         if params is not None and not isinstance(params, Mapping):
             result = _build_validation_error("condition 节点的 params 需要是对象。")
             return _return_tool_result("update_condition_node", result)
@@ -2038,7 +2079,6 @@ def plan_workflow_structure_with_llm(
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_payload},
                 ],
-                temperature=0,
                 response_format={"type": "json_object"},
             )
         except Exception as exc:
@@ -2115,7 +2155,23 @@ def plan_workflow_structure_with_llm(
             if not has_incoming and not has_param_refs:
                 nodes_without_refs.append(node_id)
 
-        has_issues = bool(nodes_without_refs) or not llm_satisfies
+        loop_nodes_missing_actions: List[str] = []
+        for node in nodes:
+            if not isinstance(node, Mapping):
+                continue
+            if node.get("type") != "loop":
+                continue
+            node_id = node.get("id")
+            params = node.get("params") if isinstance(node.get("params"), Mapping) else {}
+            body_nodes = (params.get("body_subgraph") or {}).get("nodes", [])
+            has_action = any(
+                isinstance(body_node, Mapping) and body_node.get("type") == "action"
+                for body_node in body_nodes
+            )
+            if not has_action and isinstance(node_id, str):
+                loop_nodes_missing_actions.append(node_id)
+
+        has_issues = bool(nodes_without_refs) or bool(loop_nodes_missing_actions) or not llm_satisfies
         status = "needs_more_work" if has_issues else "ok"
         feedback_parts = []
         if nodes_without_refs:
@@ -2123,6 +2179,12 @@ def plan_workflow_structure_with_llm(
                 "Some action nodes have no upstream references. "
                 "Update params to reference upstream outputs for nodes: "
                 f"{', '.join(nodes_without_refs)}."
+            )
+        if loop_nodes_missing_actions:
+            feedback_parts.append(
+                "Loop nodes must include at least one action node in body_subgraph. "
+                "Add an action node to the subgraph or remove the loop if it is unnecessary: "
+                f"{', '.join(loop_nodes_missing_actions)}."
             )
         if not llm_satisfies:
             missing_text = "; ".join(llm_missing) if llm_missing else "未满足的需求未明确。"
@@ -2145,6 +2207,7 @@ def plan_workflow_structure_with_llm(
             "status": status,
             "type": "check_workflow",
             "nodes_without_references": nodes_without_refs,
+            "loop_nodes_missing_actions": loop_nodes_missing_actions,
             "requirements_missing": llm_missing,
             "requirements_suggestions": llm_suggestions,
             "llm_requirement_check": llm_eval,
