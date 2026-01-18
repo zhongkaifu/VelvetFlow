@@ -196,23 +196,6 @@ def _attach_inferred_edges(workflow: Dict[str, Any]) -> Dict[str, Any]:
     return attach_condition_branches(copied)
 
 
-def _ensure_start_node(builder: WorkflowBuilder) -> str:
-    for node in builder.nodes.values():
-        if isinstance(node, Mapping) and node.get("type") == "start":
-            node_id = node.get("id")
-            return node_id if isinstance(node_id, str) else "start"
-
-    base_id = "start"
-    node_id = base_id
-    counter = 1
-    while node_id in builder.nodes:
-        node_id = f"{base_id}_{counter}"
-        counter += 1
-
-    builder.add_node(node_id=node_id, node_type="start", display_name="Start", params={})
-    return node_id
-
-
 def _hydrate_builder_from_workflow(
     *, builder: WorkflowBuilder, workflow: Mapping[str, Any]
 ) -> None:
@@ -620,7 +603,7 @@ def _build_combined_prompt() -> str:
         "[Workflow DSL syntax and semantics (must follow)]\n"
         "- workflow = {workflow_name, description, nodes: []}; only return valid JSON (edges will be automatically inferred by the system based on node bindings, no need to generate them).\n"
         "- Node basic structure: {id, type, display_name, params, depends_on, action_id?, out_params_schema?, loop/subgraph/branches?}.\n"
-        "  type allows start/action/condition/loop/parallel; include a start node to mark the workflow entry.\n"
+        "  type allows action/condition/switch/loop/parallel/end.\n"
         "  Action nodes must specify action_id (from the action library) and params; only action nodes allow out_params_schema.\n"
         "  Condition node params can only include expression (a single Jinja expression returning a boolean); true_to_node/false_to_node must be top-level fields (string or null), not inside params.\n"
         "  Loop nodes contain loop_kind/iter/source/body_subgraph/exports. Values in exports must reference fields of nodes inside body_subgraph (e.g., {{ result_of.node.field }}); outside the loop you may only reference exports.<key>. body_subgraph only needs the nodes array—no entry/exit/edges.\n"
@@ -673,11 +656,7 @@ def _build_combined_prompt() -> str:
     return f"{structure_prompt}\n\n{param_prompt}"
 
 
-def _find_start_nodes_for_params(workflow: Workflow) -> List[str]:
-    starts = [n.id for n in workflow.nodes if n.type == "start"]
-    if starts:
-        return starts
-
+def _find_entry_nodes_for_params(workflow: Workflow) -> List[str]:
     to_ids = {e.to_node for e in workflow.edges}
     candidates = [n.id for n in workflow.nodes if n.id not in to_ids]
     if candidates:
@@ -687,7 +666,7 @@ def _find_start_nodes_for_params(workflow: Workflow) -> List[str]:
 
 
 def _traverse_order(workflow: Workflow) -> List[str]:
-    """按 start -> downstream 的顺序遍历，保证上游节点先被处理。"""
+    """按 entry -> downstream 的顺序遍历，保证上游节点先被处理。"""
 
     adj: Dict[str, List[str]] = {}
     for e in workflow.edges:
@@ -695,7 +674,7 @@ def _traverse_order(workflow: Workflow) -> List[str]:
 
     visited: set[str] = set()
     order: List[str] = []
-    dq: deque[str] = deque(_find_start_nodes_for_params(workflow))
+    dq: deque[str] = deque(_find_entry_nodes_for_params(workflow))
 
     while dq:
         nid = dq.popleft()
@@ -996,7 +975,6 @@ def plan_workflow_structure_with_llm(
     builder = WorkflowBuilder()
     if existing_workflow:
         _hydrate_builder_from_workflow(builder=builder, workflow=existing_workflow)
-    _ensure_start_node(builder)
     action_schemas = _build_action_schema_map(action_registry)
     last_action_candidates: List[str] = []
     all_action_candidates: List[str] = []
@@ -2103,53 +2081,49 @@ def plan_workflow_structure_with_llm(
         llm_missing = llm_eval.get("missing_requirements", [])
         llm_suggestions = llm_eval.get("update_suggestions", [])
         nodes = list(iter_workflow_and_loop_body_nodes(snapshot))
-        edges = infer_edges_from_bindings(nodes)
         node_ids = {
             node.get("id")
             for node in nodes
             if isinstance(node, Mapping) and isinstance(node.get("id"), str)
         }
-        incoming_counts: Dict[str, int] = {nid: 0 for nid in node_ids if isinstance(nid, str)}
-        for edge in edges:
-            if not isinstance(edge, Mapping):
-                continue
-            to_node = edge.get("to") if "to" in edge else edge.get("to_node")
-            if isinstance(to_node, str) and to_node in incoming_counts:
-                incoming_counts[to_node] += 1
 
         nodes_without_refs: List[str] = []
         condition_missing_targets: List[Dict[str, str]] = []
         for node in nodes:
             if not isinstance(node, Mapping):
                 continue
-            if node.get("type") != "action":
-                if node.get("type") == "condition":
-                    condition_id = node.get("id")
-                    if isinstance(condition_id, str):
-                        for branch_key in ("true_to_node", "false_to_node"):
-                            target = node.get(branch_key)
-                            if isinstance(target, str) and target not in node_ids:
-                                condition_missing_targets.append(
-                                    {"condition_id": condition_id, "branch": branch_key, "target": target}
-                                )
-                continue
+            if node.get("type") == "condition":
+                condition_id = node.get("id")
+                if isinstance(condition_id, str):
+                    for branch_key in ("true_to_node", "false_to_node"):
+                        target = node.get(branch_key)
+                        if isinstance(target, str) and target not in node_ids:
+                            condition_missing_targets.append(
+                                {"condition_id": condition_id, "branch": branch_key, "target": target}
+                            )
             node_id = node.get("id")
             if not isinstance(node_id, str):
                 continue
-            has_incoming = incoming_counts.get(node_id, 0) > 0
+            depends_on = node.get("depends_on") if isinstance(node.get("depends_on"), list) else []
             param_refs = _collect_template_node_refs(node.get("params", {}))
             has_param_refs = any(
                 ref in node_ids and ref != node_id for ref in param_refs if isinstance(ref, str)
             )
-            if not has_incoming and not has_param_refs:
+            if depends_on and not has_param_refs:
                 nodes_without_refs.append(node_id)
 
         has_issues = bool(nodes_without_refs) or bool(condition_missing_targets) or not llm_satisfies
         status = "needs_more_work" if has_issues else "ok"
         feedback_parts = []
         if nodes_without_refs:
+            llm_suggestions.append(
+                "The following nodes declare depends_on but do not reference any upstream outputs in params. "
+                "Please connect them by adding Jinja references to upstream node outputs: "
+                + ", ".join(nodes_without_refs)
+                + "."
+            )
             feedback_parts.append(
-                "Some action nodes have no upstream references. "
+                "Some nodes declare depends_on but have no upstream references in params. "
                 "Update params to reference upstream outputs for nodes: "
                 f"{', '.join(nodes_without_refs)}."
             )

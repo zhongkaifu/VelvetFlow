@@ -18,7 +18,6 @@
   "workflow_name": "send_newsletter",
   "description": "向 CRM 客户发送新品资讯并记录审批",
   "nodes": [
-    {"id": "start", "type": "start"},
     {
       "id": "search_users",
       "type": "action",
@@ -45,11 +44,11 @@
   ]
 }
 ```
-上述 workflow 的 edges 会自动推导为 `start → search_users → approve → send_email/end`，无需显式维护。
+上述 workflow 的 edges 会自动推导为 `search_users → approve → send_email/end`，无需显式维护。
 
 ## 通用节点字段
 - `id`：必填字符串且在同一 graph 内唯一。
-- `type`：必填枚举，支持 `start`、`end`、`action`、`condition`、`switch`、`loop`、`parallel`。
+- `type`：必填枚举，支持 `end`、`action`、`condition`、`switch`、`loop`、`parallel`。
 - `display_name`：可选友好名称，便于可视化。
 - `depends_on`：可选显式依赖数组，用于覆盖自动推导或串联未被绑定引用捕获的顺序约束。
 - `params`：节点专属参数，结构取决于节点类型。
@@ -60,10 +59,9 @@
 - **模板语法校验**：params 字符串支持 Jinja 表达式，校验/执行时会折叠常量并报出语法错误。
 
 ## 节点类型与示例
-### 1. `start` / `end`
-结构化入口或终点，通常只需 `id` 与 `type`：
+### 1. `end`
+结构化终点，通常只需 `id` 与 `type`：
 ```json
-{"id": "start", "type": "start"}
 {"id": "end", "type": "end"}
 ```
 
@@ -185,7 +183,6 @@
 {
   "workflow_name": "async_order_pipeline",
   "nodes": [
-    {"id": "start", "type": "start"},
     {"id": "search_orders", "type": "action", "action_id": "crm.list_orders", "params": {"days": 7}},
     {
       "id": "if_has_orders",

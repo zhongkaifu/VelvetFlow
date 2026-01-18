@@ -18,7 +18,6 @@ from velvetflow.action_registry import get_action_by_id
 RGB = Tuple[int, int, int]
 
 NODE_COLORS: Dict[str, RGB] = {
-    "start": (76, 175, 80),
     "end": (156, 39, 176),
     "action": (33, 150, 243),
     "condition": (255, 152, 0),

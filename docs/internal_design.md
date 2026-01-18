@@ -15,7 +15,7 @@ flowchart TD
         V1[Workflow.model_validate] --> V2[infer_depends_on_from_edges]
     end
     subgraph runtime[动态执行]
-        start[选择 start 节点] --> topo[拓扑排序 + depends map]
+        entry[选择入口节点] --> topo[拓扑排序 + depends map]
         topo --> loop[循环 body 执行]
         topo --> cond[条件/开关分支]
         topo --> act[业务动作调用]

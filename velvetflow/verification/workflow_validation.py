@@ -328,7 +328,6 @@ def validate_completed_workflow(
         errors.set_context(None)
 
     # ---------- Graph connectivity validation ----------
-    start_nodes = [n["id"] for n in nodes if n.get("type") == "start"]
     reachable: set = set()
     if nodes:
         adj: Dict[str, List[str]] = {}
@@ -357,14 +356,14 @@ def validate_completed_workflow(
                     code="DISCONNECTED_GRAPH",
                     node_id=None,
                     field=None,
-                    message="No node with indegree 0 found; unable to determine topological start.",
+                    message="No node with indegree 0 found; unable to determine entry point.",
                 )
             )
 
         # Treat nodes without inbound references as additional roots so workflows
         # that rely solely on parameter bindings remain connected.
         inbound_free = zero_indegree
-        candidate_roots = list(dict.fromkeys((start_nodes or []) + inbound_free))
+        candidate_roots = list(dict.fromkeys(inbound_free))
 
         dq = deque(candidate_roots)
         while dq:
@@ -403,7 +402,7 @@ def validate_completed_workflow(
                     code="DISCONNECTED_GRAPH",
                     node_id=nid,
                     field=None,
-                    message=f"Node '{nid}' is unreachable from start nodes.",
+                    message=f"Node '{nid}' is unreachable from entry nodes.",
                 )
             )
             errors.set_context(None)

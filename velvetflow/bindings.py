@@ -697,7 +697,7 @@ class BindingContext:
             )
             return
 
-        # 控制节点（condition/start/end 等）也允许被引用，缺少 action_id 时跳过 schema 校验
+        # 控制节点（condition/end 等）也允许被引用，缺少 action_id 时跳过 schema 校验
         if node.type != "action" or not node.action_id:
             return
 

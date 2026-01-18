@@ -49,7 +49,7 @@ flowchart LR
 ```mermaid
 stateDiagram-v2
     [*] --> Ready
-    Ready --> Running: 选择 start 节点
+    Ready --> Running: 选择入口节点
     Running --> Suspended: 节点返回 async_pending
     Suspended --> Running: resume_from_suspension()
     Running --> Completed: pending 为空
@@ -278,14 +278,14 @@ LLM / Agent SDK 相关节点说明：
 ```jsonc
 {
   "id": "唯一字符串",
-  "type": "start|end|action|condition|switch|loop|parallel",
+  "type": "end|action|condition|switch|loop|parallel",
   "action_id": "仅 action 节点需要，对应 tools/business_actions/ 中的 id",
   "display_name": "可选: 用于可视化/日志的友好名称",
   "params": { /* 取决于节点类型的参数，下文详述 */ }
 }
 ```
 
-- **start/end**：只需 `id` 与 `type`，`params` 可为空。常作为入口/出口。
+- **end**：只需 `id` 与 `type`，`params` 可为空。常作为出口。
 - **action**：`action_id` 必填；`params` 按动作的 `arg_schema` 填写，支持绑定 DSL（见下文）。
 - **condition**：`params.expression` 为布尔 Jinja 表达式，并需要通过 `true_to_node`/`false_to_node` 显式指向下游节点（或设置为 `null` 表示分支终止）。
 - **switch**：支持多分支匹配，`params` 中可携带 `source/field` 并在 `cases` 指定 `value` 与 `to_node` 的映射，未命中时走 `default_to_node`。

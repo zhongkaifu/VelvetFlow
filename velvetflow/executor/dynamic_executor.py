@@ -162,7 +162,7 @@ class DynamicActionExecutor(
             if not start_nodes:
                 start_nodes = zero_indegree
             if not start_nodes and sorted_nodes:
-                log_warn("未找到 start 节点，将从任意一个节点开始（仅 demo）。")
+                log_warn("未找到入口节点，将从任意一个节点开始（仅 demo）。")
                 start_nodes = [sorted_nodes[0].id]
 
             visited = set()
