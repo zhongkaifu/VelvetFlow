@@ -369,7 +369,7 @@ class Node:
         if not isinstance(node_type, str):
             errors.append({"loc": ("type",), "msg": "节点类型必须是字符串"})
         else:
-            allowed = {"end", "action", "condition", "switch", "loop", "parallel"}
+            allowed = {"action", "condition", "switch", "loop", "parallel"}
             if node_type not in allowed:
                 errors.append({
                     "loc": ("type",),

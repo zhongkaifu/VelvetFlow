@@ -603,7 +603,7 @@ def _build_combined_prompt() -> str:
         "[Workflow DSL syntax and semantics (must follow)]\n"
         "- workflow = {workflow_name, description, nodes: []}; only return valid JSON (edges will be automatically inferred by the system based on node bindings, no need to generate them).\n"
         "- Node basic structure: {id, type, display_name, params, depends_on, action_id?, out_params_schema?, loop/subgraph/branches?}.\n"
-        "  type allows action/condition/switch/loop/parallel/end.\n"
+        "  type allows action/condition/switch/loop/parallel.\n"
         "  Action nodes must specify action_id (from the action library) and params; only action nodes allow out_params_schema.\n"
         "  Condition node params can only include expression (a single Jinja expression returning a boolean); true_to_node/false_to_node must be top-level fields (string or null), not inside params.\n"
         "  Loop nodes contain loop_kind/iter/source/body_subgraph/exports. Values in exports must reference fields of nodes inside body_subgraph (e.g., {{ result_of.node.field }}); outside the loop you may only reference exports.<key>. body_subgraph only needs the nodes array—no entry/exit/edges.\n"
