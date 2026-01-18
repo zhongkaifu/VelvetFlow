@@ -88,7 +88,6 @@ def test_update_workflow_uses_existing_graph(monkeypatch):
         search_service=_DummySearch(),
         action_registry=[{"action_id": "demo.start", "params_schema": {}}, {"action_id": "demo.summary", "params_schema": {}}],
         max_rounds=1,
-        max_repair_rounds=0,
     )
 
     assert captured_existing["value"]["workflow_name"] == "demo"
@@ -99,4 +98,3 @@ def test_update_workflow_uses_existing_graph(monkeypatch):
     summarize = next(node for node in result_nodes if node.get("id") == "summarize")
     assert summarize.get("depends_on") == ["start"]
     assert summarize.get("params", {}).get("source") == "{{ result_of.start.message }}"
-
