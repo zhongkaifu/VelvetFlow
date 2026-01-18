@@ -1069,6 +1069,14 @@ def plan_workflow_structure_with_llm(
         payload.update(extra)
         return payload
 
+    def _reject_duplicate_node_id(node_id: str) -> Dict[str, Any] | None:
+        if node_id in builder.nodes:
+            return _build_validation_error(
+                f"节点 id 已存在: {node_id}。请为新节点重命名并使用新的 id 后重试。",
+                duplicate_node_id=node_id,
+            )
+        return None
+
     def _build_workflow_snapshot() -> Workflow:
         workflow_dict = _attach_inferred_edges(builder.to_workflow())
         return Workflow.model_validate(workflow_dict)
@@ -1228,6 +1236,9 @@ def plan_workflow_structure_with_llm(
                 "parent_node_id": parent_node_id,
             },
         )
+        duplicate_error = _reject_duplicate_node_id(id)
+        if duplicate_error:
+            return _return_tool_result("add_action_node", duplicate_error)
         if not all_action_candidates:
             result = _build_validation_error("action 节点必须在调用 search_business_actions 之后创建。")
             return _return_tool_result("add_action_node", result)
@@ -1328,6 +1339,9 @@ def plan_workflow_structure_with_llm(
                 "parent_node_id": parent_node_id,
             },
         )
+        duplicate_error = _reject_duplicate_node_id(id)
+        if duplicate_error:
+            return _return_tool_result("add_loop_node", duplicate_error)
         if parent_node_id is not None and not isinstance(parent_node_id, str):
             result = _build_validation_error("parent_node_id 需要是字符串或 null。")
             return _return_tool_result("add_loop_node", result)
@@ -1417,6 +1431,9 @@ def plan_workflow_structure_with_llm(
                 "parent_node_id": parent_node_id,
             },
         )
+        duplicate_error = _reject_duplicate_node_id(id)
+        if duplicate_error:
+            return _return_tool_result("add_condition_node", duplicate_error)
         if parent_node_id is not None and not isinstance(parent_node_id, str):
             result = _build_validation_error("parent_node_id 需要是字符串或 null。")
             return _return_tool_result("add_condition_node", result)
@@ -1501,6 +1518,9 @@ def plan_workflow_structure_with_llm(
                 "parent_node_id": parent_node_id,
             },
         )
+        duplicate_error = _reject_duplicate_node_id(id)
+        if duplicate_error:
+            return _return_tool_result("add_switch_node", duplicate_error)
         if parent_node_id is not None and not isinstance(parent_node_id, str):
             result = _build_validation_error("parent_node_id 需要是字符串或 null。")
             return _return_tool_result("add_switch_node", result)
