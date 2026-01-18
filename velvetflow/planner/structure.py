@@ -1047,6 +1047,26 @@ def plan_workflow_structure_with_llm(
         payload.update(extra)
         return payload
 
+    def _validate_existing_references(
+        *, node_id: str, params: Mapping[str, Any] | None = None, depends_on: List[str] | None = None
+    ) -> Dict[str, Any] | None:
+        missing_nodes: set[str] = set()
+        if depends_on:
+            for dep in depends_on:
+                if isinstance(dep, str) and dep not in builder.nodes:
+                    missing_nodes.add(dep)
+        if params:
+            for ref in _collect_template_node_refs(params):
+                if ref not in builder.nodes:
+                    missing_nodes.add(ref)
+        if missing_nodes:
+            return _build_validation_error(
+                "params 或 depends_on 引用了不存在的节点。请先创建这些节点再继续当前节点的创建/更新。",
+                node_id=node_id,
+                missing_nodes=sorted(missing_nodes),
+            )
+        return None
+
     def _reject_duplicate_node_id(node_id: str) -> Dict[str, Any] | None:
         if node_id in builder.nodes:
             return _build_validation_error(
@@ -1244,6 +1264,11 @@ def plan_workflow_structure_with_llm(
             action_schemas=action_schemas,
             action_id=action_id,
         )
+        ref_error = _validate_existing_references(
+            node_id=id, params=cleaned_params, depends_on=depends_on or []
+        )
+        if ref_error:
+            return _return_tool_result("add_action_node", ref_error)
         reference_issues, available_nodes = _collect_param_reference_issues(cleaned_params)
         if reference_issues:
             result = _build_validation_error(
@@ -1347,6 +1372,11 @@ def plan_workflow_structure_with_llm(
         cleaned_params, removed_fields = _filter_supported_params(
             node_type="loop", params=merged_params, action_schemas=action_schemas
         )
+        ref_error = _validate_existing_references(
+            node_id=id, params=cleaned_params, depends_on=depends_on or []
+        )
+        if ref_error:
+            return _return_tool_result("add_loop_node", ref_error)
         builder.add_node(
             node_id=id,
             node_type="loop",
@@ -1436,6 +1466,11 @@ def plan_workflow_structure_with_llm(
         cleaned_params, removed_fields = _filter_supported_params(
             node_type="condition", params=normalized_params, action_schemas=action_schemas
         )
+        ref_error = _validate_existing_references(
+            node_id=id, params=cleaned_params, depends_on=depends_on or []
+        )
+        if ref_error:
+            return _return_tool_result("add_condition_node", ref_error)
         builder.add_node(
             node_id=id,
             node_type="condition",
@@ -1535,6 +1570,11 @@ def plan_workflow_structure_with_llm(
         cleaned_params, removed_fields = _filter_supported_params(
             node_type="switch", params=params or {}, action_schemas=action_schemas
         )
+        ref_error = _validate_existing_references(
+            node_id=id, params=cleaned_params, depends_on=depends_on or []
+        )
+        if ref_error:
+            return _return_tool_result("add_switch_node", ref_error)
         builder.add_node(
             node_id=id,
             node_type="switch",
@@ -1661,6 +1701,13 @@ def plan_workflow_structure_with_llm(
         if depends_on is not None:
             updates["depends_on"] = depends_on
 
+        ref_error = _validate_existing_references(
+            node_id=id,
+            params=cleaned_params if params is not None else None,
+            depends_on=depends_on or [],
+        )
+        if ref_error:
+            return _return_tool_result("update_action_node", ref_error)
         builder.update_node(id, **updates)
         _reset_workflow_check_state()
         removed_param_fields.extend(_sanitize_builder_node_params(builder, id, action_schemas))
@@ -1756,6 +1803,13 @@ def plan_workflow_structure_with_llm(
         if depends_on is not None:
             updates["depends_on"] = depends_on
 
+        ref_error = _validate_existing_references(
+            node_id=id,
+            params=cleaned_params if params is not None else None,
+            depends_on=depends_on or [],
+        )
+        if ref_error:
+            return _return_tool_result("update_condition_node", ref_error)
         builder.update_node(id, **updates)
         _reset_workflow_check_state()
         removed_param_fields.extend(_sanitize_builder_node_params(builder, id, action_schemas))
@@ -1865,6 +1919,13 @@ def plan_workflow_structure_with_llm(
         if depends_on is not None:
             updates["depends_on"] = depends_on
 
+        ref_error = _validate_existing_references(
+            node_id=id,
+            params=cleaned_params if params is not None else None,
+            depends_on=depends_on or [],
+        )
+        if ref_error:
+            return _return_tool_result("update_switch_node", ref_error)
         builder.update_node(id, **updates)
         _reset_workflow_check_state()
         removed_param_fields.extend(_sanitize_builder_node_params(builder, id, action_schemas))
@@ -1940,6 +2001,13 @@ def plan_workflow_structure_with_llm(
         if depends_on is not None:
             updates["depends_on"] = depends_on
 
+        ref_error = _validate_existing_references(
+            node_id=id,
+            params=cleaned_params if params is not None else None,
+            depends_on=depends_on or [],
+        )
+        if ref_error:
+            return _return_tool_result("update_loop_node", ref_error)
         builder.update_node(id, **updates)
         _reset_workflow_check_state()
         _attach_sub_graph_nodes(builder, id, normalized_nodes)
@@ -2228,6 +2296,9 @@ def plan_workflow_structure_with_llm(
             return _return_tool_result("update_node_params", result)
 
         normalized_params, _ = _normalize_params_templates(dict(params))
+        ref_error = _validate_existing_references(node_id=id, params=normalized_params)
+        if ref_error:
+            return _return_tool_result("update_node_params", ref_error)
 
         workflow = _build_workflow_for_params()
         nodes_by_id = {n.id: n for n in workflow.nodes}
