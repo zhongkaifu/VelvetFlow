@@ -57,7 +57,6 @@ def plan_workflow(user_nl: str, search_service: Optional[HybridActionSearchServi
         search_service=hybrid_searcher,
         action_registry=BUSINESS_ACTIONS,
         max_rounds=50,
-        max_repair_rounds=3,
     )
 
 
