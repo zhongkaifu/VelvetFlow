@@ -2099,10 +2099,20 @@ def plan_workflow_structure_with_llm(
                 incoming_counts[to_node] += 1
 
         nodes_without_refs: List[str] = []
+        condition_missing_targets: List[Dict[str, str]] = []
         for node in nodes:
             if not isinstance(node, Mapping):
                 continue
             if node.get("type") != "action":
+                if node.get("type") == "condition":
+                    condition_id = node.get("id")
+                    if isinstance(condition_id, str):
+                        for branch_key in ("true_to_node", "false_to_node"):
+                            target = node.get(branch_key)
+                            if isinstance(target, str) and target not in node_ids:
+                                condition_missing_targets.append(
+                                    {"condition_id": condition_id, "branch": branch_key, "target": target}
+                                )
                 continue
             node_id = node.get("id")
             if not isinstance(node_id, str):
@@ -2115,7 +2125,7 @@ def plan_workflow_structure_with_llm(
             if not has_incoming and not has_param_refs:
                 nodes_without_refs.append(node_id)
 
-        has_issues = bool(nodes_without_refs) or not llm_satisfies
+        has_issues = bool(nodes_without_refs) or bool(condition_missing_targets) or not llm_satisfies
         status = "needs_more_work" if has_issues else "ok"
         feedback_parts = []
         if nodes_without_refs:
@@ -2124,6 +2134,19 @@ def plan_workflow_structure_with_llm(
                 "Update params to reference upstream outputs for nodes: "
                 f"{', '.join(nodes_without_refs)}."
             )
+        if condition_missing_targets:
+            missing_descriptions = [
+                f"{item['condition_id']} ({item['branch']} -> {item['target']})"
+                for item in condition_missing_targets
+                if item.get("condition_id") and item.get("branch") and item.get("target")
+            ]
+            llm_suggestions.append(
+                "Condition node branches reference missing nodes. "
+                "Please create the referenced nodes or update true_to_node/false_to_node to valid node ids: "
+                + "; ".join(missing_descriptions)
+                + "."
+            )
+            feedback_parts.append(llm_suggestions[-1])
         if not llm_satisfies:
             missing_text = "; ".join(llm_missing) if llm_missing else "未满足的需求未明确。"
             suggestion_text = (
@@ -2145,6 +2168,7 @@ def plan_workflow_structure_with_llm(
             "status": status,
             "type": "check_workflow",
             "nodes_without_references": nodes_without_refs,
+            "condition_nodes_missing_targets": condition_missing_targets,
             "requirements_missing": llm_missing,
             "requirements_suggestions": llm_suggestions,
             "llm_requirement_check": llm_eval,
