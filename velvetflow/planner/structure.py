@@ -22,7 +22,7 @@ from velvetflow.planner.workflow_builder import (
 )
 from velvetflow.loop_dsl import iter_workflow_and_loop_body_nodes
 from velvetflow.planner.requirement_analysis import _normalize_requirements_payload
-from velvetflow.search import HybridActionSearchService, get_openai_client
+from velvetflow.search import HybridActionSearchService
 from velvetflow.models import (
     ALLOWED_PARAM_AGGREGATORS,
     Node,
@@ -1997,74 +1997,6 @@ def plan_workflow_structure_with_llm(
         _walk(obj)
         return refs
 
-    def _parse_llm_json_payload(payload: str) -> Dict[str, Any]:
-        try:
-            return json.loads(payload)
-        except json.JSONDecodeError:
-            match = re.search(r"\{.*\}", payload, flags=re.DOTALL)
-            if match:
-                try:
-                    return json.loads(match.group(0))
-                except json.JSONDecodeError:
-                    pass
-            log_warn("[StructurePlanner] check_workflow LLM 返回非 JSON 内容。")
-            return {}
-
-    def _evaluate_workflow_requirements(
-        *,
-        workflow_snapshot: Mapping[str, Any],
-        user_requirements: Mapping[str, Any],
-    ) -> Dict[str, Any]:
-        client = get_openai_client()
-        system_prompt = (
-            "你是工作流质量审查助手。请判断给定 workflow 是否能够完全满足用户需求。"
-            "必须输出 JSON 对象，字段："
-            "satisfies (布尔值), missing_requirements (字符串数组), "
-            "update_suggestions (字符串数组)。"
-            "若 workflow 已满足需求，missing_requirements 和 update_suggestions 为空数组。"
-            "若不满足，missing_requirements 描述缺失的需求点，"
-            "update_suggestions 需要说明应如何新增或更新节点来满足需求。"
-        )
-        user_payload = json.dumps(
-            {"user_requirements": user_requirements, "workflow": workflow_snapshot},
-            ensure_ascii=False,
-        )
-        try:
-            response = client.chat.completions.create(
-                model=OPENAI_MODEL,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_payload},
-                ],
-                response_format={"type": "json_object"},
-            )
-        except Exception as exc:
-            log_warn(f"[StructurePlanner] check_workflow LLM 调用失败: {exc}")
-            return {
-                "satisfies": False,
-                "missing_requirements": ["LLM 校验失败，无法确认工作流满足所有需求。"],
-                "update_suggestions": ["请检查 OpenAI 调用并重试 check_workflow。"],
-                "error": str(exc),
-            }
-
-        content = ""
-        if response.choices and response.choices[0].message:
-            content = response.choices[0].message.content or ""
-        parsed = _parse_llm_json_payload(content)
-        satisfies = bool(parsed.get("satisfies"))
-        missing = parsed.get("missing_requirements")
-        suggestions = parsed.get("update_suggestions")
-        if not isinstance(missing, list):
-            missing = []
-        if not isinstance(suggestions, list):
-            suggestions = []
-        return {
-            "satisfies": satisfies,
-            "missing_requirements": [item for item in missing if isinstance(item, str)],
-            "update_suggestions": [item for item in suggestions if isinstance(item, str)],
-            "raw_response": content,
-        }
-
     @function_tool(strict_mode=False)
     def check_workflow() -> Mapping[str, Any]:
         """Check whether action nodes reference upstream nodes via Jinja templates.
@@ -2073,13 +2005,7 @@ def plan_workflow_structure_with_llm(
         """
         _log_tool_call("check_workflow")
         snapshot = _attach_inferred_edges(builder.to_workflow())
-        llm_eval = _evaluate_workflow_requirements(
-            workflow_snapshot=snapshot,
-            user_requirements=parsed_requirement,
-        )
-        llm_satisfies = bool(llm_eval.get("satisfies"))
-        llm_missing = llm_eval.get("missing_requirements", [])
-        llm_suggestions = llm_eval.get("update_suggestions", [])
+        llm_suggestions: List[str] = []
         nodes = list(iter_workflow_and_loop_body_nodes(snapshot))
         node_ids = {
             node.get("id")
@@ -2112,7 +2038,7 @@ def plan_workflow_structure_with_llm(
             if depends_on and not has_param_refs:
                 nodes_without_refs.append(node_id)
 
-        has_issues = bool(nodes_without_refs) or bool(condition_missing_targets) or not llm_satisfies
+        has_issues = bool(nodes_without_refs) or bool(condition_missing_targets)
         status = "needs_more_work" if has_issues else "ok"
         feedback_parts = []
         if nodes_without_refs:
@@ -2140,19 +2066,8 @@ def plan_workflow_structure_with_llm(
                 + "."
             )
             feedback_parts.append(llm_suggestions[-1])
-        if not llm_satisfies:
-            missing_text = "; ".join(llm_missing) if llm_missing else "未满足的需求未明确。"
-            suggestion_text = (
-                "; ".join(llm_suggestions)
-                if llm_suggestions
-                else "请新增或更新节点以覆盖缺失需求。"
-            )
-            feedback_parts.append(
-                "Workflow does not fully satisfy user requirements. "
-                f"Missing: {missing_text}. Suggestions: {suggestion_text}."
-            )
         feedback = (
-            "All action nodes reference upstream outputs and the workflow matches user requirements."
+            "All nodes with depends_on reference upstream outputs and condition branches are valid."
             if not feedback_parts
             else " ".join(feedback_parts)
         )
@@ -2162,9 +2077,7 @@ def plan_workflow_structure_with_llm(
             "type": "check_workflow",
             "nodes_without_references": nodes_without_refs,
             "condition_nodes_missing_targets": condition_missing_targets,
-            "requirements_missing": llm_missing,
             "requirements_suggestions": llm_suggestions,
-            "llm_requirement_check": llm_eval,
             "has_issues": has_issues,
             "feedback": feedback,
             "workflow": snapshot,
