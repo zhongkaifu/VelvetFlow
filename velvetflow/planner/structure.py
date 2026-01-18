@@ -1047,6 +1047,26 @@ def plan_workflow_structure_with_llm(
         payload.update(extra)
         return payload
 
+    def _collect_result_of_node_ids(params: Mapping[str, Any]) -> set[str]:
+        node_ids: set[str] = set()
+
+        def _walk(val: Any) -> None:
+            if isinstance(val, Mapping):
+                for item in val.values():
+                    _walk(item)
+            elif isinstance(val, list):
+                for item in val:
+                    _walk(item)
+            elif isinstance(val, str):
+                for expr in _iter_template_references(val):
+                    for path in _extract_result_of_paths(expr):
+                        node_ids.add(path.split(".", 2)[1])
+                for path in _extract_result_of_paths(val):
+                    node_ids.add(path.split(".", 2)[1])
+
+        _walk(params)
+        return node_ids
+
     def _validate_existing_references(
         *, node_id: str, params: Mapping[str, Any] | None = None, depends_on: List[str] | None = None
     ) -> Dict[str, Any] | None:
@@ -1056,7 +1076,7 @@ def plan_workflow_structure_with_llm(
                 if isinstance(dep, str) and dep not in builder.nodes:
                     missing_nodes.add(dep)
         if params:
-            for ref in _collect_template_node_refs(params):
+            for ref in _collect_result_of_node_ids(params):
                 if ref not in builder.nodes:
                     missing_nodes.add(ref)
         if missing_nodes:
