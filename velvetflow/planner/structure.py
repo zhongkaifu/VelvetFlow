@@ -2015,6 +2015,7 @@ def plan_workflow_structure_with_llm(
 
         nodes_without_refs: List[str] = []
         condition_missing_targets: List[Dict[str, str]] = []
+        loop_missing_actions: List[Dict[str, Any]] = []
         for node in nodes:
             if not isinstance(node, Mapping):
                 continue
@@ -2030,6 +2031,25 @@ def plan_workflow_structure_with_llm(
             node_id = node.get("id")
             if not isinstance(node_id, str):
                 continue
+            if node.get("type") == "loop":
+                params = node.get("params") if isinstance(node.get("params"), Mapping) else {}
+                body = params.get("body_subgraph") if isinstance(params, Mapping) else None
+                body_nodes = []
+                if isinstance(body, Mapping):
+                    body_nodes = body.get("nodes") if isinstance(body.get("nodes"), list) else []
+                elif isinstance(body, list):
+                    body_nodes = body
+                has_action = any(
+                    isinstance(sub_node, Mapping) and sub_node.get("type") == "action"
+                    for sub_node in body_nodes
+                )
+                if not has_action:
+                    loop_missing_actions.append(
+                        {
+                            "loop_id": node_id,
+                            "body_subgraph": body if body is not None else {"nodes": body_nodes},
+                        }
+                    )
             depends_on = node.get("depends_on") if isinstance(node.get("depends_on"), list) else []
             param_refs = _collect_template_node_refs(node.get("params", {}))
             has_param_refs = any(
@@ -2038,7 +2058,7 @@ def plan_workflow_structure_with_llm(
             if depends_on and not has_param_refs:
                 nodes_without_refs.append(node_id)
 
-        has_issues = bool(nodes_without_refs) or bool(condition_missing_targets)
+        has_issues = bool(nodes_without_refs) or bool(condition_missing_targets) or bool(loop_missing_actions)
         status = "needs_more_work" if has_issues else "ok"
         feedback_parts = []
         if nodes_without_refs:
@@ -2053,6 +2073,19 @@ def plan_workflow_structure_with_llm(
                 "Update params to reference upstream outputs for nodes: "
                 f"{', '.join(nodes_without_refs)}."
             )
+        if loop_missing_actions:
+            loop_summaries = [
+                f"{item['loop_id']}: {item.get('body_subgraph')}"
+                for item in loop_missing_actions
+                if item.get("loop_id")
+            ]
+            llm_suggestions.append(
+                "Loop sub-graphs must include at least one action node. "
+                "Please add an action node to the loop body or remove the loop if unnecessary: "
+                + "; ".join(loop_summaries)
+                + "."
+            )
+            feedback_parts.append(llm_suggestions[-1])
         if condition_missing_targets:
             missing_descriptions = [
                 f"{item['condition_id']} ({item['branch']} -> {item['target']})"
@@ -2077,6 +2110,7 @@ def plan_workflow_structure_with_llm(
             "type": "check_workflow",
             "nodes_without_references": nodes_without_refs,
             "condition_nodes_missing_targets": condition_missing_targets,
+            "loop_nodes_missing_actions": loop_missing_actions,
             "requirements_suggestions": llm_suggestions,
             "has_issues": has_issues,
             "feedback": feedback,
