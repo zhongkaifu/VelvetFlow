@@ -24,7 +24,7 @@ class GraphTraversalMixin:
     def _find_start_nodes(
         self, nodes: Mapping[str, Dict[str, Any]], edges: List[Dict[str, Any]]
     ) -> List[str]:
-        """Locate start nodes by combining explicit标记与“无入度”节点。"""
+        """Locate start nodes, preferring explicit start markers."""
 
         all_ids = set(nodes.keys())
         to_ids = set()
@@ -50,7 +50,7 @@ class GraphTraversalMixin:
         outbound_roots = [nid for nid in inbound_free if nid in from_ids]
 
         if starts:
-            return list(dict.fromkeys(starts + condition_starts + outbound_roots))
+            return list(dict.fromkeys(starts))
 
         # 若没有显式 start 节点，则退化为无入度节点集合以保证流程仍可执行。
         merged = list(dict.fromkeys(condition_starts + outbound_roots + inbound_free))
