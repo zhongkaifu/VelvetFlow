@@ -2047,6 +2047,73 @@ def plan_workflow_structure_with_llm(
         return _return_tool_result("update_loop_node", result)
 
     @function_tool(strict_mode=False)
+    def remove_node(id: str) -> Mapping[str, Any]:
+        """Remove a node and report any remaining references to it."""
+        _log_tool_call("remove_node", {"id": id})
+        if not isinstance(id, str):
+            result = {"status": "error", "message": "remove_node 需要提供字符串类型的 id。"}
+            return _return_tool_result("remove_node", result)
+        if id not in builder.nodes:
+            result = {"status": "error", "message": "节点不存在，无法删除。"}
+            return _return_tool_result("remove_node", result)
+
+        builder.nodes.pop(id, None)
+        filled_params.pop(id, None)
+        if id in validated_node_ids:
+            validated_node_ids.remove(id)
+
+        referencing_nodes: List[str] = []
+        for node_id, node in builder.nodes.items():
+            if not isinstance(node, Mapping):
+                continue
+            params = node.get("params") if isinstance(node.get("params"), Mapping) else {}
+            if id in _collect_result_of_node_ids(params):
+                referencing_nodes.append(node_id)
+                continue
+            depends_on = node.get("depends_on") if isinstance(node.get("depends_on"), list) else []
+            if id in depends_on:
+                referencing_nodes.append(node_id)
+                continue
+            if node.get("true_to_node") == id or node.get("false_to_node") == id:
+                referencing_nodes.append(node_id)
+                continue
+            if node.get("default_to_node") == id:
+                referencing_nodes.append(node_id)
+                continue
+            cases = node.get("cases") if isinstance(node.get("cases"), list) else []
+            if any(isinstance(case, Mapping) and case.get("to_node") == id for case in cases):
+                referencing_nodes.append(node_id)
+                continue
+
+        _reset_workflow_check_state()
+        snapshot = _snapshot(f"remove_node_{id}")
+        referencing_nodes = sorted(set(referencing_nodes))
+        if referencing_nodes:
+            result = {
+                "status": "needs_more_work",
+                "type": "node_removed",
+                "node_id": id,
+                "referencing_nodes": referencing_nodes,
+                "message": (
+                    "Removed node still referenced by other nodes. "
+                    "Please update references in these nodes: "
+                    + ", ".join(referencing_nodes)
+                    + "."
+                ),
+                "workflow": snapshot,
+            }
+            return _return_tool_result("remove_node", result)
+
+        result = {
+            "status": "ok",
+            "type": "node_removed",
+            "node_id": id,
+            "referencing_nodes": [],
+            "workflow": snapshot,
+        }
+        return _return_tool_result("remove_node", result)
+
+    @function_tool(strict_mode=False)
     def dump_model() -> Mapping[str, Any]:
         """Export the current workflow snapshot for debugging or display.
 
@@ -2370,6 +2437,7 @@ def plan_workflow_structure_with_llm(
             update_condition_node,
             update_switch_node,
             update_loop_node,
+            remove_node,
             get_param_context,
             update_node_params,
             check_workflow,
