@@ -9,13 +9,19 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from typing import Any
 
+from velvetflow.action_registry import load_actions_from_path, validate_actions
 from velvetflow.config import OPENAI_MODEL
 from velvetflow.models import Workflow
 from velvetflow.planner import update_workflow_with_two_pass
 from velvetflow.search import build_search_service_from_actions
 
-from validate_workflow import _load_action_registry
+
+
+def _load_action_registry(path: Path) -> list[dict[str, Any]]:
+    actions = load_actions_from_path(path)
+    return validate_actions(actions)
 
 
 def _resolve_requirement(args: argparse.Namespace) -> str:

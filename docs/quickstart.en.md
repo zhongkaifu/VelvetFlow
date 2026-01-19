@@ -49,11 +49,7 @@ python build_action_index.py --output tools/action_index.json --model text-embed
   python render_workflow_image.py --workflow-json workflow_output.json --output workflow_dag.jpg
   ```
 
-### Validate or Incrementally Update
-- Validate and print normalized DSL:
-  ```bash
-  python validate_workflow.py path/to/workflow.json --print-normalized
-  ```
+### Incrementally Update
 - Append new requirements to an existing workflow:
   ```bash
   python update_workflow.py path/to/workflow.json --requirement "add an approval step" --output workflow_updated.json

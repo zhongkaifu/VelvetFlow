@@ -103,8 +103,7 @@ Key highlights:
    python execute_workflow.py --workflow-json workflow_output.json
    python render_workflow_image.py --workflow-json workflow_output.json --output workflow_dag.jpg
    ```
-6. **Validate or incrementally update**:
+6. **Incrementally update an existing workflow**:
    ```bash
-   python validate_workflow.py path/to/workflow.json --print-normalized
    python update_workflow.py path/to/workflow.json --requirement "add an approval step" --output workflow_updated.json
    ```
