@@ -2237,7 +2237,8 @@ def plan_workflow_structure_with_llm(
             ]
             llm_suggestions.append(
                 "Loop sub-graphs must include at least one action node. "
-                "Please add an action node to the loop body or remove the loop if unnecessary: "
+                "Please add a user-requirement-related action node to the loop body, "
+                "or remove the loop if it's unnecessary or can be replaced by other nodes: "
                 + "; ".join(loop_summaries)
                 + "."
             )
