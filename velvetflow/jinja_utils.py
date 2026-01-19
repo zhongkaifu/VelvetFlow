@@ -72,7 +72,29 @@ def get_jinja_env() -> Environment:
         )
         return dt.strftime(format_str)
 
+    def _strftime(value: Any = None, fmt: str = "%Y-%m-%d") -> str:
+        if value in {None, ""}:
+            dt = datetime.now()
+        elif isinstance(value, datetime):
+            dt = value
+        elif isinstance(value, date_cls):
+            dt = datetime.combine(value, datetime.min.time())
+        elif isinstance(value, str) and value.strip().lower() in {"now", "today"}:
+            dt = datetime.now()
+        elif isinstance(value, str):
+            try:
+                dt = datetime.fromisoformat(value)
+            except Exception:
+                try:
+                    dt = datetime.combine(date_cls.fromisoformat(value), datetime.min.time())
+                except Exception:
+                    dt = datetime.now()
+        else:
+            dt = datetime.now()
+        return dt.strftime(fmt)
+
     env.filters.setdefault("date", _format_date)
+    env.globals.setdefault("strftime", _strftime)
     env.tests.setdefault("truthy", lambda value: bool(value))
     return env
 
@@ -158,6 +180,8 @@ def render_jinja_template(template: str, context: Mapping[str, Any]) -> str:
 
     env = get_jinja_env()
     return env.from_string(template).render(_prepare_context(context))
+
+
 class _AttrDict(dict):
     def __getattribute__(self, item: str) -> Any:  # pragma: no cover - small wrapper
         if item in ("__class__", "__iter__", "__len__", "__getitem__", "__setitem__"):
