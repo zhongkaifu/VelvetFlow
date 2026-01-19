@@ -99,6 +99,39 @@ def _loop_params_schema() -> Dict[str, Any]:
     }
 
 
+def _reasoning_params_schema() -> Dict[str, Any]:
+    return {
+        "type": "object",
+        "properties": {
+            "system_prompt": {
+                "type": "string",
+                "description": "用于设置 LLM 行为与语气的系统提示词。",
+            },
+            "task_prompt": {
+                "type": "string",
+                "description": "需要 LLM 完成的具体任务描述。",
+            },
+            "context": {
+                "description": "可选上下文信息，建议使用对象结构或 Jinja 模板引用。",
+                "type": ["object", "string", "array"],
+                "additionalProperties": True,
+            },
+            "expected_output_format": {
+                "description": "期望输出格式说明，可为 JSON Schema 或文本说明。",
+                "type": ["object", "string"],
+                "additionalProperties": True,
+            },
+            "toolset": {
+                "type": "array",
+                "description": "允许 LLM 调用的工具列表（action_id 或 tool_name）。",
+                "items": {"type": "string"},
+            },
+        },
+        "required": ["task_prompt"],
+        "additionalProperties": True,
+    }
+
+
 def _params_schema_for_node(
     node: Node, action_schemas: Dict[str, Mapping[str, Any]]
 ) -> Dict[str, Any]:
@@ -111,6 +144,9 @@ def _params_schema_for_node(
 
     if node.type == "loop":
         return _loop_params_schema()
+
+    if node.type == "reasoning":
+        return _reasoning_params_schema()
 
     return {"type": "object", "additionalProperties": True}
 

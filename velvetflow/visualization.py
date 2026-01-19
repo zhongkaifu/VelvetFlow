@@ -23,6 +23,7 @@ NODE_COLORS: Dict[str, RGB] = {
     "switch": (121, 85, 72),
     "loop": (96, 125, 139),
     "parallel": (0, 150, 136),
+    "reasoning": (156, 39, 176),
 }
 
 BACKGROUND: RGB = (245, 247, 250)

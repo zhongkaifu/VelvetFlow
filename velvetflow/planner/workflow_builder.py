@@ -159,6 +159,16 @@ class WorkflowBuilder:
                     "depends_on": depends_on or [],
                 }
             )
+        elif node_type == "reasoning":
+            node.update(
+                {
+                    "display_name": display_name,
+                    "params": params or {},
+                    "out_params_schema": out_params_schema,
+                    "parent_node_id": parent_node_id,
+                    "depends_on": depends_on or [],
+                }
+            )
         else:
             node.update(
                 {
