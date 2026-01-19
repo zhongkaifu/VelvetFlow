@@ -94,6 +94,7 @@ def get_jinja_env() -> Environment:
         return dt.strftime(fmt)
 
     env.filters.setdefault("date", _format_date)
+    env.filters.setdefault("strftime", _strftime)
     env.globals.setdefault("strftime", _strftime)
     env.tests.setdefault("truthy", lambda value: bool(value))
     return env
