@@ -160,12 +160,7 @@ VelvetFlow (repo root)
    python render_workflow_image.py --workflow-json workflow_output.json --output workflow_dag.jpg
    ```
    - 读取已有的 workflow JSON，将 DAG 渲染成 JPEG。对于 action 节点，会额外显示调用的工具名称和输入参数。
-7. **校验任意 workflow JSON（可选）**
-   ```bash
-   python validate_workflow.py path/to/workflow.json --action-registry tools/business_actions --print-normalized
-   ```
-   - 复用语法/语义解析、`Workflow.model_validate` 与静态规则输出详细错误；`--print-normalized` 可打印归一化后的 DSL。
-8. **在现有 workflow 上迭代需求（可选）**
+7. **在现有 workflow 上迭代需求（可选）**
    ```bash
    python update_workflow.py path/to/workflow.json --requirement "新增审批环节" --output workflow_updated.json
    ```
@@ -305,14 +300,13 @@ LLM / Agent SDK 相关节点说明：
   - 执行器解析 condition 或绑定聚合时，会在运行时填充上下文后求值，并复用相同的语法校验逻辑，异常会带上参数路径便于追踪。【F:velvetflow/executor/conditions.py†L14-L208】【F:velvetflow/bindings.py†L334-L532】
 
 ### 手动调试与排错建议
-1. **先跑校验**：使用 `python validate_workflow.py your_workflow.json --print-normalized`，可以立刻发现重复节点、边引用不存在、loop 子图 schema 不合法等问题。【F:validate_workflow.py†L1-L58】
-2. **检查绑定路径**：如果 Jinja 引用报错，确认 `result_of.<node>.<field>` 中的节点是否存在且有对应字段；loop 节点需检查 `exports` 中是否声明了该字段。
+1. **检查绑定路径**：如果 Jinja 引用报错，确认 `result_of.<node>.<field>` 中的节点是否存在且有对应字段；loop 节点需检查 `exports` 中是否声明了该字段。
 
 ### 常见绑定警告示例
 - **引用了 loop 未导出的字段**：loop 节点的输出仅包含 `params.exports` 声明的字段，不会直接暴露子图节点的字段。引用 loop 内部节点字段会触发校验错误，应改为引用 loop 导出的数组（如 `result_of.loop_each_news.exports.summary`）。
-3. **最小化修改面**：调试时优先修改 `params` 中的绑定表达式或 condition 节点的跳转（`true_to_node`/`false_to_node`），避免破坏整体拓扑。
-4. **模拟执行观察输出**：用 `python execute_workflow.py --workflow-json your_workflow.json`，日志会标明每个节点解析后的参数值，便于确认聚合逻辑是否符合预期。
-5. **可视化辅助**：通过 `python render_workflow_image.py --workflow-json your_workflow.json --output tmp.jpg` 生成 DAG，快速核对节点/边连通性与显示名称。
+2. **最小化修改面**：调试时优先修改 `params` 中的绑定表达式或 condition 节点的跳转（`true_to_node`/`false_to_node`），避免破坏整体拓扑。
+3. **模拟执行观察输出**：用 `python execute_workflow.py --workflow-json your_workflow.json`，日志会标明每个节点解析后的参数值，便于确认聚合逻辑是否符合预期。
+4. **可视化辅助**：通过 `python render_workflow_image.py --workflow-json your_workflow.json --output tmp.jpg` 生成 DAG，快速核对节点/边连通性与显示名称。
 
 ## 示例与 Demo
 下面的资源可以帮助快速理解 VelvetFlow 的输入、输出与运行效果：

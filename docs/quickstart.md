@@ -50,11 +50,7 @@ python build_action_index.py --output tools/action_index.json --model text-embed
   python render_workflow_image.py --workflow-json workflow_output.json --output workflow_dag.jpg
   ```
 
-## 校验或增量更新
-- 校验并打印归一化 DSL：
-  ```bash
-  python validate_workflow.py path/to/workflow.json --print-normalized
-  ```
+## 增量更新
 - 在已有 workflow 上追加需求：
   ```bash
   python update_workflow.py path/to/workflow.json --requirement "新增审批环节" --output workflow_updated.json

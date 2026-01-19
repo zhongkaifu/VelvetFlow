@@ -15,10 +15,6 @@
 - **parallel 分支未执行**：`parallel` 节点当前仅用于前端分组与可视化，执行器不会调度 `branches` 内的节点；请将实际节点放在顶层 `nodes` 并使用 `depends_on`/绑定推导控制顺序。
 
 ## 定位手段
-- **打印归一化 DSL**：
-  ```bash
-  python validate_workflow.py path/to/workflow.json --print-normalized
-  ```
 - **查看规划日志**：`build_workflow.py` 会输出需求拆解、Agent 工具调用与返回结果，便于定位 LLM 生成阶段的问题。
 - **执行期事件**：`execute_workflow.py` 默认打印节点起止、条件结果、loop 聚合等日志，异步挂起时会输出 `WorkflowSuspension` 细节。
 
