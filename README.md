@@ -49,7 +49,7 @@ flowchart LR
 ```mermaid
 stateDiagram-v2
     [*] --> Ready
-    Ready --> Running: 选择 start 节点
+    Ready --> Running: 选择入口节点
     Running --> Suspended: 节点返回 async_pending
     Suspended --> Running: resume_from_suspension()
     Running --> Completed: pending 为空
@@ -213,8 +213,8 @@ VelvetFlow (repo root)
    - **条件/引用类型矫正**：根据 condition kind 需求与输出 Schema 自动转换数值/正则类型，并为绑定引用与目标 Schema 之间的类型不匹配提供自动包装或错误提示。【F:velvetflow/planner/orchestrator.py†L444-L580】
    - **loop.exports 补全**：自动填充缺失的 `params.exports` 映射并规范化导出字段，避免循环节点留空导致 LLM 返工。【F:velvetflow/planner/orchestrator.py†L589-L662】
    - **Schema 感知修复**：移除动作 Schema 未定义的字段、为空字段写入默认值或尝试按类型转换，再进入正式校验；无法修复的错误会打包为 `ValidationError` 供后续 LLM 使用。【F:velvetflow/planner/repair_tools.py†L63-L215】【F:velvetflow/planner/orchestrator.py†L664-L817】
-5. **静态校验 + LLM 自修复循环**：`validate_completed_workflow` 会在每轮本地修复后运行，若仍有错误则将错误分布与上下文交给 `_repair_with_llm_and_fallback`，在限定轮次内迭代直至通过或返回最后一个合法版本。【F:velvetflow/planner/orchestrator.py†L664-L940】
-6. **持久化与可视化**：通过校验后写出 `workflow_output.json`，并可用 `render_workflow_image.py` 生成 `workflow_dag.jpg`，同时日志保留所有 LLM 对话与自动修复记录便于审计。
+5. **LLM 自修复循环**：若本地修复仍未通过，将错误分布与上下文交给 `_repair_with_llm_and_fallback`，在限定轮次内迭代直至通过或返回最后一个合法版本。【F:velvetflow/planner/orchestrator.py†L664-L940】
+6. **持久化与可视化**：写出 `workflow_output.json`，并可用 `render_workflow_image.py` 生成 `workflow_dag.jpg`，同时日志保留所有 LLM 对话与自动修复记录便于审计。
 
 下方流程图将关键输入/输出、自动修复节点与 LLM 交互标出：
 
@@ -228,7 +228,7 @@ flowchart TD
     F["Jinja 规范化 + 本地修复\n类型对齐、exports/alias 修复、路径归一化"] --> G
     G{{"LLM: 自修复 (_repair_with_llm_and_fallback)\n按需多轮"}} --> H
     F -->|仍有错误| G
-    H["静态校验 (validate_completed_workflow)\n输出: 完整 Workflow 模型"] --> J["持久化与可视化\nworkflow_output.json + workflow_dag.jpg"]
+    H["LLM 自修复\n输出: 完整 Workflow 模型"] --> J["持久化与可视化\nworkflow_output.json + workflow_dag.jpg"]
 
     classDef llm fill:#fff6e6,stroke:#e67e22,stroke-width:2px;
     class C,G llm;
@@ -238,7 +238,7 @@ LLM / Agent SDK 相关节点说明：
 - **结构规划 Agent**：需求拆解在前置阶段完成，规划时直接复用结构化任务清单，再通过节点增删改与 `update_node_params` 工具补全 params（Jinja 表达式为主）。`WorkflowBuilder` 会把推导出的 edges、condition 分支与 `depends_on` 写回骨架，方便下游校验共享上下文；节点字段也会按节点类型或 action schema 过滤无关字段，避免 Agent 生成不可识别的参数。【F:velvetflow/planner/structure.py†L373-L1168】【F:velvetflow/planner/workflow_builder.py†L20-L222】
 - **动作合法性守卫**：若发现 `action_id` 缺失或未注册，会先尝试基于 display_name/原 action_id 检索替换，再将剩余问题交给 LLM 修复，避免幻觉动作进入最终 Workflow。【F:velvetflow/planner/orchestrator.py†L104-L343】
 - **Jinja 规范化与参数一致性**：规划/校验阶段会将简单路径转换为 Jinja 字符串，并对非模板参数给出修复建议；参数补全阶段的 schema 约束来自 `params_tools.py`，确保节点 params 与动作 arg_schema 对齐。【F:velvetflow/planner/params_tools.py†L1-L193】【F:velvetflow/verification/jinja_validation.py†L10-L189】
-- **自修复 Agent**：当静态校验或本地修复仍未通过时，使用当前 workflow 字典与 `ValidationError` 列表提示模型修复。Agent 可以调用命名修复工具（如替换引用、补必填参数、规范化绑定路径）或提交补丁文本，直至通过或达到 `max_repair_rounds`，并在过程中保留最近一次合法版本以确保可回退。【F:velvetflow/planner/repair.py†L616-L756】【F:velvetflow/planner/orchestrator.py†L664-L940】
+- **自修复 Agent**：当静态校验或本地修复仍未通过时，使用当前 workflow 字典与 `ValidationError` 列表提示模型修复。Agent 可以调用命名修复工具（如替换引用、补必填参数、规范化绑定路径）或提交补丁文本，直至通过或达到预设轮次，并在过程中保留最近一次合法版本以确保可回退。【F:velvetflow/planner/repair.py†L616-L756】【F:velvetflow/planner/orchestrator.py†L664-L940】
 
 ### Agent 工具的设计与运行方式
 - **会话级工具与闭包状态**：结构规划的工具集（需求拆解、检索、设置 meta、节点增删改、参数补全）在 `plan_workflow_structure_with_llm` 内使用 `@function_tool(strict_mode=False)` 声明，并依托闭包保存 `WorkflowBuilder`、动作候选与检索结果等上下文，`planner/agent_runtime.py` 统一导出 `Agent`/`Runner`/`function_tool` 便于切换 Agent SDK 版本。【F:velvetflow/planner/structure.py†L373-L1836】【F:velvetflow/planner/agent_runtime.py†L4-L26】
@@ -278,14 +278,13 @@ LLM / Agent SDK 相关节点说明：
 ```jsonc
 {
   "id": "唯一字符串",
-  "type": "start|end|action|condition|switch|loop|parallel",
+  "type": "action|condition|switch|loop|parallel",
   "action_id": "仅 action 节点需要，对应 tools/business_actions/ 中的 id",
   "display_name": "可选: 用于可视化/日志的友好名称",
   "params": { /* 取决于节点类型的参数，下文详述 */ }
 }
 ```
 
-- **start/end**：只需 `id` 与 `type`，`params` 可为空。常作为入口/出口。
 - **action**：`action_id` 必填；`params` 按动作的 `arg_schema` 填写，支持绑定 DSL（见下文）。
 - **condition**：`params.expression` 为布尔 Jinja 表达式，并需要通过 `true_to_node`/`false_to_node` 显式指向下游节点（或设置为 `null` 表示分支终止）。
 - **switch**：支持多分支匹配，`params` 中可携带 `source/field` 并在 `cases` 指定 `value` 与 `to_node` 的映射，未命中时走 `default_to_node`。

@@ -18,7 +18,6 @@
   "workflow_name": "send_newsletter",
   "description": "向 CRM 客户发送新品资讯并记录审批",
   "nodes": [
-    {"id": "start", "type": "start"},
     {
       "id": "search_users",
       "type": "action",
@@ -30,7 +29,7 @@
       "type": "condition",
       "params": {"expression": "{{ result_of.search_users.count >= 10 }}"},
       "true_to_node": "send_email",
-      "false_to_node": "end"
+      "false_to_node": null
     },
     {
       "id": "send_email",
@@ -41,15 +40,15 @@
         "template_id": "spring_launch"
       }
     },
-    {"id": "end", "type": "end"}
+    {"id": "send_email_audit", "type": "action", "action_id": "crm.log_email", "params": {"campaign_id": "spring_launch"}}
   ]
 }
 ```
-上述 workflow 的 edges 会自动推导为 `start → search_users → approve → send_email/end`，无需显式维护。
+上述 workflow 的 edges 会自动推导为 `search_users → approve → send_email` 等有向连线，无需显式维护。
 
 ## 通用节点字段
 - `id`：必填字符串且在同一 graph 内唯一。
-- `type`：必填枚举，支持 `start`、`end`、`action`、`condition`、`switch`、`loop`、`parallel`。
+- `type`：必填枚举，支持 `action`、`condition`、`switch`、`loop`、`parallel`。
 - `display_name`：可选友好名称，便于可视化。
 - `depends_on`：可选显式依赖数组，用于覆盖自动推导或串联未被绑定引用捕获的顺序约束。
 - `params`：节点专属参数，结构取决于节点类型。
@@ -60,14 +59,7 @@
 - **模板语法校验**：params 字符串支持 Jinja 表达式，校验/执行时会折叠常量并报出语法错误。
 
 ## 节点类型与示例
-### 1. `start` / `end`
-结构化入口或终点，通常只需 `id` 与 `type`：
-```json
-{"id": "start", "type": "start"}
-{"id": "end", "type": "end"}
-```
-
-### 2. `action`
+### 1. `action`
 - **字段**：`action_id` 指向注册表中的工具，`params` 对应工具的 `arg_schema`，`out_params_schema` 可选（覆盖/补充动作的输出 Schema）。
 - **示例**：
 ```json
@@ -83,7 +75,7 @@
 }
 ```
 
-### 3. `condition`
+### 2. `condition`
 - **字段**：`params.expression` 为布尔 Jinja 表达式；`true_to_node`、`false_to_node` 指定分支去向，未命中分支自动阻断。
 - **示例**：
 ```json
@@ -96,7 +88,7 @@
 }
 ```
 
-### 4. `switch`
+### 3. `switch`
 - **字段**：`params.source` 定位被匹配的对象（可用绑定或 `result_of.*` 路径）；`params.field` 可选，用于从对象中取子字段；`cases` 为数组，支持 `match`/`value`、`field`（进一步取子字段）、`to_node`；`default_to_node` 为兜底分支。
 - **示例**：
 ```json
@@ -112,7 +104,7 @@
 }
 ```
 
-### 5. `loop`
+### 4. `loop`
 - **字段**：
   - `loop_kind`：必填，支持 `for_each`/`foreach`/`while`。
   - `source`：数组/序列的引用路径（如 `{{ result_of.search.items }}`），仅支持字符串/Jinja 模板。
@@ -185,14 +177,13 @@
 {
   "workflow_name": "async_order_pipeline",
   "nodes": [
-    {"id": "start", "type": "start"},
     {"id": "search_orders", "type": "action", "action_id": "crm.list_orders", "params": {"days": 7}},
     {
       "id": "if_has_orders",
       "type": "condition",
       "params": {"expression": "{{ result_of.search_orders.count > 0 }}"},
       "true_to_node": "for_each_order",
-      "false_to_node": "end"
+      "false_to_node": null
     },
     {
       "id": "for_each_order",
@@ -228,7 +219,7 @@
       "action_id": "finance.sync_erp",
       "params": {"orders": "{{ result_of.for_each_order.exports.orders }}"}
     },
-    {"id": "end", "type": "end"}
+    {"id": "notify_summary", "type": "action", "action_id": "crm.send_summary", "params": {"summary": "{{ result_of.for_each_order.exports.summary }}"}}
   ]
 }
 ```

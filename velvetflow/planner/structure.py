@@ -22,7 +22,7 @@ from velvetflow.planner.workflow_builder import (
 )
 from velvetflow.loop_dsl import iter_workflow_and_loop_body_nodes
 from velvetflow.planner.requirement_analysis import _normalize_requirements_payload
-from velvetflow.search import HybridActionSearchService, get_openai_client
+from velvetflow.search import HybridActionSearchService
 from velvetflow.models import (
     ALLOWED_PARAM_AGGREGATORS,
     Node,
@@ -194,23 +194,6 @@ def _attach_inferred_edges(workflow: Dict[str, Any]) -> Dict[str, Any]:
     nodes = list(iter_workflow_and_loop_body_nodes(copied))
     copied["edges"] = infer_edges_from_bindings(nodes)
     return attach_condition_branches(copied)
-
-
-def _ensure_start_node(builder: WorkflowBuilder) -> str:
-    for node in builder.nodes.values():
-        if isinstance(node, Mapping) and node.get("type") == "start":
-            node_id = node.get("id")
-            return node_id if isinstance(node_id, str) else "start"
-
-    base_id = "start"
-    node_id = base_id
-    counter = 1
-    while node_id in builder.nodes:
-        node_id = f"{base_id}_{counter}"
-        counter += 1
-
-    builder.add_node(node_id=node_id, node_type="start", display_name="Start", params={})
-    return node_id
 
 
 def _hydrate_builder_from_workflow(
@@ -620,7 +603,7 @@ def _build_combined_prompt() -> str:
         "[Workflow DSL syntax and semantics (must follow)]\n"
         "- workflow = {workflow_name, description, nodes: []}; only return valid JSON (edges will be automatically inferred by the system based on node bindings, no need to generate them).\n"
         "- Node basic structure: {id, type, display_name, params, depends_on, action_id?, out_params_schema?, loop/subgraph/branches?}.\n"
-        "  type allows start/action/condition/loop/parallel; include a start node to mark the workflow entry.\n"
+        "  type allows action/condition/switch/loop/parallel.\n"
         "  Action nodes must specify action_id (from the action library) and params; only action nodes allow out_params_schema.\n"
         "  Condition node params can only include expression (a single Jinja expression returning a boolean); true_to_node/false_to_node must be top-level fields (string or null), not inside params.\n"
         "  Loop nodes contain loop_kind/iter/source/body_subgraph/exports. Values in exports must reference fields of nodes inside body_subgraph (e.g., {{ result_of.node.field }}); outside the loop you may only reference exports.<key>. body_subgraph only needs the nodes array—no entry/exit/edges.\n"
@@ -632,8 +615,9 @@ def _build_combined_prompt() -> str:
         "Construction steps:\n"
         "1) Use set_workflow_meta to set the workflow name and description.\n"
         "2) When business actions are needed, you must first call search_business_actions to query candidates; add_action_node.action_id must come from the most recent candidates.id.\n"
-        "3) When condition/switch/loop nodes are needed, you must first create them with add_condition_node/add_switch_node/add_loop_node; expressions and references in params must strictly follow Jinja template syntax.\n"
-        "4) Call update_node_params to complete and validate params for created nodes.\n"
+        "3) Before adding a new node, check whether a similar node already exists; if so, do not add a duplicate node.\n"
+        "4) When condition/switch/loop nodes are needed, you must first create them with add_condition_node/add_switch_node/add_loop_node; expressions and references in params must strictly follow Jinja template syntax.\n"
+        "5) Call update_node_params to complete and validate params for created nodes.\n"
         "6) If an existing node needs to be modified (adding display_name/params/branch targets/parent nodes, etc.), call update_action_node or update_condition_node with the fields to overwrite; after calling, be sure to check whether related upstream/downstream nodes also need updates to stay consistent.\n"
         "7) Condition nodes must explicitly provide true_to_node and false_to_node. Values can be a node id (continue execution) or null (indicating that branch ends); express dependencies through input/output references in node params—no need to draw edges explicitly.\n"
         "8) Maintain depends_on (array of strings) for each node, listing its direct upstream dependencies; when a node is targeted by condition.true_to_node/false_to_node, you must add that condition node to the target node's depends_on.\n"
@@ -673,11 +657,7 @@ def _build_combined_prompt() -> str:
     return f"{structure_prompt}\n\n{param_prompt}"
 
 
-def _find_start_nodes_for_params(workflow: Workflow) -> List[str]:
-    starts = [n.id for n in workflow.nodes if n.type == "start"]
-    if starts:
-        return starts
-
+def _find_entry_nodes_for_params(workflow: Workflow) -> List[str]:
     to_ids = {e.to_node for e in workflow.edges}
     candidates = [n.id for n in workflow.nodes if n.id not in to_ids]
     if candidates:
@@ -687,7 +667,7 @@ def _find_start_nodes_for_params(workflow: Workflow) -> List[str]:
 
 
 def _traverse_order(workflow: Workflow) -> List[str]:
-    """按 start -> downstream 的顺序遍历，保证上游节点先被处理。"""
+    """按 entry -> downstream 的顺序遍历，保证上游节点先被处理。"""
 
     adj: Dict[str, List[str]] = {}
     for e in workflow.edges:
@@ -695,7 +675,7 @@ def _traverse_order(workflow: Workflow) -> List[str]:
 
     visited: set[str] = set()
     order: List[str] = []
-    dq: deque[str] = deque(_find_start_nodes_for_params(workflow))
+    dq: deque[str] = deque(_find_entry_nodes_for_params(workflow))
 
     while dq:
         nid = dq.popleft()
@@ -996,7 +976,6 @@ def plan_workflow_structure_with_llm(
     builder = WorkflowBuilder()
     if existing_workflow:
         _hydrate_builder_from_workflow(builder=builder, workflow=existing_workflow)
-    _ensure_start_node(builder)
     action_schemas = _build_action_schema_map(action_registry)
     last_action_candidates: List[str] = []
     all_action_candidates: List[str] = []
@@ -1068,6 +1047,54 @@ def plan_workflow_structure_with_llm(
         payload = {"status": "error", "message": message}
         payload.update(extra)
         return payload
+
+    def _collect_result_of_node_ids(params: Mapping[str, Any]) -> set[str]:
+        node_ids: set[str] = set()
+
+        def _walk(val: Any) -> None:
+            if isinstance(val, Mapping):
+                for item in val.values():
+                    _walk(item)
+            elif isinstance(val, list):
+                for item in val:
+                    _walk(item)
+            elif isinstance(val, str):
+                for expr in _iter_template_references(val):
+                    for path in _extract_result_of_paths(expr):
+                        node_ids.add(path.split(".", 2)[1])
+                for path in _extract_result_of_paths(val):
+                    node_ids.add(path.split(".", 2)[1])
+
+        _walk(params)
+        return node_ids
+
+    def _validate_existing_references(
+        *, node_id: str, params: Mapping[str, Any] | None = None, depends_on: List[str] | None = None
+    ) -> Dict[str, Any] | None:
+        missing_nodes: set[str] = set()
+        if depends_on:
+            for dep in depends_on:
+                if isinstance(dep, str) and dep not in builder.nodes:
+                    missing_nodes.add(dep)
+        if params:
+            for ref in _collect_result_of_node_ids(params):
+                if ref not in builder.nodes:
+                    missing_nodes.add(ref)
+        if missing_nodes:
+            return _build_validation_error(
+                "params 或 depends_on 引用了不存在的节点。请先创建这些节点再继续当前节点的创建/更新。",
+                node_id=node_id,
+                missing_nodes=sorted(missing_nodes),
+            )
+        return None
+
+    def _reject_duplicate_node_id(node_id: str) -> Dict[str, Any] | None:
+        if node_id in builder.nodes:
+            return _build_validation_error(
+                f"节点 id 已存在: {node_id}。请为新节点重命名并使用新的 id 后重试。",
+                duplicate_node_id=node_id,
+            )
+        return None
 
     def _build_workflow_snapshot() -> Workflow:
         workflow_dict = _attach_inferred_edges(builder.to_workflow())
@@ -1228,6 +1255,9 @@ def plan_workflow_structure_with_llm(
                 "parent_node_id": parent_node_id,
             },
         )
+        duplicate_error = _reject_duplicate_node_id(id)
+        if duplicate_error:
+            return _return_tool_result("add_action_node", duplicate_error)
         if not all_action_candidates:
             result = _build_validation_error("action 节点必须在调用 search_business_actions 之后创建。")
             return _return_tool_result("add_action_node", result)
@@ -1255,6 +1285,11 @@ def plan_workflow_structure_with_llm(
             action_schemas=action_schemas,
             action_id=action_id,
         )
+        ref_error = _validate_existing_references(
+            node_id=id, params=cleaned_params, depends_on=depends_on or []
+        )
+        if ref_error:
+            return _return_tool_result("add_action_node", ref_error)
         reference_issues, available_nodes = _collect_param_reference_issues(cleaned_params)
         if reference_issues:
             result = _build_validation_error(
@@ -1328,6 +1363,9 @@ def plan_workflow_structure_with_llm(
                 "parent_node_id": parent_node_id,
             },
         )
+        duplicate_error = _reject_duplicate_node_id(id)
+        if duplicate_error:
+            return _return_tool_result("add_loop_node", duplicate_error)
         if parent_node_id is not None and not isinstance(parent_node_id, str):
             result = _build_validation_error("parent_node_id 需要是字符串或 null。")
             return _return_tool_result("add_loop_node", result)
@@ -1355,6 +1393,11 @@ def plan_workflow_structure_with_llm(
         cleaned_params, removed_fields = _filter_supported_params(
             node_type="loop", params=merged_params, action_schemas=action_schemas
         )
+        ref_error = _validate_existing_references(
+            node_id=id, params=cleaned_params, depends_on=depends_on or []
+        )
+        if ref_error:
+            return _return_tool_result("add_loop_node", ref_error)
         builder.add_node(
             node_id=id,
             node_type="loop",
@@ -1417,6 +1460,9 @@ def plan_workflow_structure_with_llm(
                 "parent_node_id": parent_node_id,
             },
         )
+        duplicate_error = _reject_duplicate_node_id(id)
+        if duplicate_error:
+            return _return_tool_result("add_condition_node", duplicate_error)
         if parent_node_id is not None and not isinstance(parent_node_id, str):
             result = _build_validation_error("parent_node_id 需要是字符串或 null。")
             return _return_tool_result("add_condition_node", result)
@@ -1441,6 +1487,11 @@ def plan_workflow_structure_with_llm(
         cleaned_params, removed_fields = _filter_supported_params(
             node_type="condition", params=normalized_params, action_schemas=action_schemas
         )
+        ref_error = _validate_existing_references(
+            node_id=id, params=cleaned_params, depends_on=depends_on or []
+        )
+        if ref_error:
+            return _return_tool_result("add_condition_node", ref_error)
         builder.add_node(
             node_id=id,
             node_type="condition",
@@ -1501,6 +1552,9 @@ def plan_workflow_structure_with_llm(
                 "parent_node_id": parent_node_id,
             },
         )
+        duplicate_error = _reject_duplicate_node_id(id)
+        if duplicate_error:
+            return _return_tool_result("add_switch_node", duplicate_error)
         if parent_node_id is not None and not isinstance(parent_node_id, str):
             result = _build_validation_error("parent_node_id 需要是字符串或 null。")
             return _return_tool_result("add_switch_node", result)
@@ -1537,6 +1591,11 @@ def plan_workflow_structure_with_llm(
         cleaned_params, removed_fields = _filter_supported_params(
             node_type="switch", params=params or {}, action_schemas=action_schemas
         )
+        ref_error = _validate_existing_references(
+            node_id=id, params=cleaned_params, depends_on=depends_on or []
+        )
+        if ref_error:
+            return _return_tool_result("add_switch_node", ref_error)
         builder.add_node(
             node_id=id,
             node_type="switch",
@@ -1663,6 +1722,13 @@ def plan_workflow_structure_with_llm(
         if depends_on is not None:
             updates["depends_on"] = depends_on
 
+        ref_error = _validate_existing_references(
+            node_id=id,
+            params=cleaned_params if params is not None else None,
+            depends_on=depends_on or [],
+        )
+        if ref_error:
+            return _return_tool_result("update_action_node", ref_error)
         builder.update_node(id, **updates)
         _reset_workflow_check_state()
         removed_param_fields.extend(_sanitize_builder_node_params(builder, id, action_schemas))
@@ -1758,6 +1824,13 @@ def plan_workflow_structure_with_llm(
         if depends_on is not None:
             updates["depends_on"] = depends_on
 
+        ref_error = _validate_existing_references(
+            node_id=id,
+            params=cleaned_params if params is not None else None,
+            depends_on=depends_on or [],
+        )
+        if ref_error:
+            return _return_tool_result("update_condition_node", ref_error)
         builder.update_node(id, **updates)
         _reset_workflow_check_state()
         removed_param_fields.extend(_sanitize_builder_node_params(builder, id, action_schemas))
@@ -1867,6 +1940,13 @@ def plan_workflow_structure_with_llm(
         if depends_on is not None:
             updates["depends_on"] = depends_on
 
+        ref_error = _validate_existing_references(
+            node_id=id,
+            params=cleaned_params if params is not None else None,
+            depends_on=depends_on or [],
+        )
+        if ref_error:
+            return _return_tool_result("update_switch_node", ref_error)
         builder.update_node(id, **updates)
         _reset_workflow_check_state()
         removed_param_fields.extend(_sanitize_builder_node_params(builder, id, action_schemas))
@@ -1942,6 +2022,13 @@ def plan_workflow_structure_with_llm(
         if depends_on is not None:
             updates["depends_on"] = depends_on
 
+        ref_error = _validate_existing_references(
+            node_id=id,
+            params=cleaned_params if params is not None else None,
+            depends_on=depends_on or [],
+        )
+        if ref_error:
+            return _return_tool_result("update_loop_node", ref_error)
         builder.update_node(id, **updates)
         _reset_workflow_check_state()
         _attach_sub_graph_nodes(builder, id, normalized_nodes)
@@ -1958,6 +2045,73 @@ def plan_workflow_structure_with_llm(
             return _return_tool_result("update_loop_node", result)
         result = {"status": "ok", "type": "node_updated", "node_id": id}
         return _return_tool_result("update_loop_node", result)
+
+    @function_tool(strict_mode=False)
+    def remove_node(id: str) -> Mapping[str, Any]:
+        """Remove a node and report any remaining references to it."""
+        _log_tool_call("remove_node", {"id": id})
+        if not isinstance(id, str):
+            result = {"status": "error", "message": "remove_node 需要提供字符串类型的 id。"}
+            return _return_tool_result("remove_node", result)
+        if id not in builder.nodes:
+            result = {"status": "error", "message": "节点不存在，无法删除。"}
+            return _return_tool_result("remove_node", result)
+
+        builder.nodes.pop(id, None)
+        filled_params.pop(id, None)
+        if id in validated_node_ids:
+            validated_node_ids.remove(id)
+
+        referencing_nodes: List[str] = []
+        for node_id, node in builder.nodes.items():
+            if not isinstance(node, Mapping):
+                continue
+            params = node.get("params") if isinstance(node.get("params"), Mapping) else {}
+            if id in _collect_result_of_node_ids(params):
+                referencing_nodes.append(node_id)
+                continue
+            depends_on = node.get("depends_on") if isinstance(node.get("depends_on"), list) else []
+            if id in depends_on:
+                referencing_nodes.append(node_id)
+                continue
+            if node.get("true_to_node") == id or node.get("false_to_node") == id:
+                referencing_nodes.append(node_id)
+                continue
+            if node.get("default_to_node") == id:
+                referencing_nodes.append(node_id)
+                continue
+            cases = node.get("cases") if isinstance(node.get("cases"), list) else []
+            if any(isinstance(case, Mapping) and case.get("to_node") == id for case in cases):
+                referencing_nodes.append(node_id)
+                continue
+
+        _reset_workflow_check_state()
+        snapshot = _snapshot(f"remove_node_{id}")
+        referencing_nodes = sorted(set(referencing_nodes))
+        if referencing_nodes:
+            result = {
+                "status": "needs_more_work",
+                "type": "node_removed",
+                "node_id": id,
+                "referencing_nodes": referencing_nodes,
+                "message": (
+                    "Removed node still referenced by other nodes. "
+                    "Please update references in these nodes: "
+                    + ", ".join(referencing_nodes)
+                    + "."
+                ),
+                "workflow": snapshot,
+            }
+            return _return_tool_result("remove_node", result)
+
+        result = {
+            "status": "ok",
+            "type": "node_removed",
+            "node_id": id,
+            "referencing_nodes": [],
+            "workflow": snapshot,
+        }
+        return _return_tool_result("remove_node", result)
 
     @function_tool(strict_mode=False)
     def dump_model() -> Mapping[str, Any]:
@@ -1999,75 +2153,6 @@ def plan_workflow_structure_with_llm(
         _walk(obj)
         return refs
 
-    def _parse_llm_json_payload(payload: str) -> Dict[str, Any]:
-        try:
-            return json.loads(payload)
-        except json.JSONDecodeError:
-            match = re.search(r"\{.*\}", payload, flags=re.DOTALL)
-            if match:
-                try:
-                    return json.loads(match.group(0))
-                except json.JSONDecodeError:
-                    pass
-            log_warn("[StructurePlanner] check_workflow LLM 返回非 JSON 内容。")
-            return {}
-
-    def _evaluate_workflow_requirements(
-        *,
-        workflow_snapshot: Mapping[str, Any],
-        user_requirements: Mapping[str, Any],
-    ) -> Dict[str, Any]:
-        client = get_openai_client()
-        system_prompt = (
-            "你是工作流质量审查助手。请判断给定 workflow 是否能够完全满足用户需求。"
-            "必须输出 JSON 对象，字段："
-            "satisfies (布尔值), missing_requirements (字符串数组), "
-            "update_suggestions (字符串数组)。"
-            "若 workflow 已满足需求，missing_requirements 和 update_suggestions 为空数组。"
-            "若不满足，missing_requirements 描述缺失的需求点，"
-            "update_suggestions 需要说明应如何新增或更新节点来满足需求。"
-        )
-        user_payload = json.dumps(
-            {"user_requirements": user_requirements, "workflow": workflow_snapshot},
-            ensure_ascii=False,
-        )
-        try:
-            response = client.chat.completions.create(
-                model=OPENAI_MODEL,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_payload},
-                ],
-                temperature=0,
-                response_format={"type": "json_object"},
-            )
-        except Exception as exc:
-            log_warn(f"[StructurePlanner] check_workflow LLM 调用失败: {exc}")
-            return {
-                "satisfies": False,
-                "missing_requirements": ["LLM 校验失败，无法确认工作流满足所有需求。"],
-                "update_suggestions": ["请检查 OpenAI 调用并重试 check_workflow。"],
-                "error": str(exc),
-            }
-
-        content = ""
-        if response.choices and response.choices[0].message:
-            content = response.choices[0].message.content or ""
-        parsed = _parse_llm_json_payload(content)
-        satisfies = bool(parsed.get("satisfies"))
-        missing = parsed.get("missing_requirements")
-        suggestions = parsed.get("update_suggestions")
-        if not isinstance(missing, list):
-            missing = []
-        if not isinstance(suggestions, list):
-            suggestions = []
-        return {
-            "satisfies": satisfies,
-            "missing_requirements": [item for item in missing if isinstance(item, str)],
-            "update_suggestions": [item for item in suggestions if isinstance(item, str)],
-            "raw_response": content,
-        }
-
     @function_tool(strict_mode=False)
     def check_workflow() -> Mapping[str, Any]:
         """Check whether action nodes reference upstream nodes via Jinja templates.
@@ -2076,67 +2161,103 @@ def plan_workflow_structure_with_llm(
         """
         _log_tool_call("check_workflow")
         snapshot = _attach_inferred_edges(builder.to_workflow())
-        llm_eval = _evaluate_workflow_requirements(
-            workflow_snapshot=snapshot,
-            user_requirements=parsed_requirement,
-        )
-        llm_satisfies = bool(llm_eval.get("satisfies"))
-        llm_missing = llm_eval.get("missing_requirements", [])
-        llm_suggestions = llm_eval.get("update_suggestions", [])
+        llm_suggestions: List[str] = []
         nodes = list(iter_workflow_and_loop_body_nodes(snapshot))
-        edges = infer_edges_from_bindings(nodes)
         node_ids = {
             node.get("id")
             for node in nodes
             if isinstance(node, Mapping) and isinstance(node.get("id"), str)
         }
-        incoming_counts: Dict[str, int] = {nid: 0 for nid in node_ids if isinstance(nid, str)}
-        for edge in edges:
-            if not isinstance(edge, Mapping):
-                continue
-            to_node = edge.get("to") if "to" in edge else edge.get("to_node")
-            if isinstance(to_node, str) and to_node in incoming_counts:
-                incoming_counts[to_node] += 1
 
         nodes_without_refs: List[str] = []
+        condition_missing_targets: List[Dict[str, str]] = []
+        loop_missing_actions: List[Dict[str, Any]] = []
         for node in nodes:
             if not isinstance(node, Mapping):
                 continue
-            if node.get("type") != "action":
-                continue
+            if node.get("type") == "condition":
+                condition_id = node.get("id")
+                if isinstance(condition_id, str):
+                    for branch_key in ("true_to_node", "false_to_node"):
+                        target = node.get(branch_key)
+                        if isinstance(target, str) and target not in node_ids:
+                            condition_missing_targets.append(
+                                {"condition_id": condition_id, "branch": branch_key, "target": target}
+                            )
             node_id = node.get("id")
             if not isinstance(node_id, str):
                 continue
-            has_incoming = incoming_counts.get(node_id, 0) > 0
+            if node.get("type") == "loop":
+                params = node.get("params") if isinstance(node.get("params"), Mapping) else {}
+                body = params.get("body_subgraph") if isinstance(params, Mapping) else None
+                body_nodes = []
+                if isinstance(body, Mapping):
+                    body_nodes = body.get("nodes") if isinstance(body.get("nodes"), list) else []
+                elif isinstance(body, list):
+                    body_nodes = body
+                has_action = any(
+                    isinstance(sub_node, Mapping) and sub_node.get("type") == "action"
+                    for sub_node in body_nodes
+                )
+                if not has_action:
+                    loop_missing_actions.append(
+                        {
+                            "loop_id": node_id,
+                            "body_subgraph": body if body is not None else {"nodes": body_nodes},
+                        }
+                    )
+            depends_on = node.get("depends_on") if isinstance(node.get("depends_on"), list) else []
             param_refs = _collect_template_node_refs(node.get("params", {}))
             has_param_refs = any(
                 ref in node_ids and ref != node_id for ref in param_refs if isinstance(ref, str)
             )
-            if not has_incoming and not has_param_refs:
+            if depends_on and not has_param_refs:
                 nodes_without_refs.append(node_id)
 
-        has_issues = bool(nodes_without_refs) or not llm_satisfies
+        has_issues = bool(nodes_without_refs) or bool(condition_missing_targets) or bool(loop_missing_actions)
         status = "needs_more_work" if has_issues else "ok"
         feedback_parts = []
         if nodes_without_refs:
+            llm_suggestions.append(
+                "The following nodes declare depends_on but do not reference any upstream outputs in params. "
+                "Please connect them by adding Jinja references to upstream node outputs: "
+                + ", ".join(nodes_without_refs)
+                + "."
+            )
             feedback_parts.append(
-                "Some action nodes have no upstream references. "
+                "Some nodes declare depends_on but have no upstream references in params. "
                 "Update params to reference upstream outputs for nodes: "
                 f"{', '.join(nodes_without_refs)}."
             )
-        if not llm_satisfies:
-            missing_text = "; ".join(llm_missing) if llm_missing else "未满足的需求未明确。"
-            suggestion_text = (
-                "; ".join(llm_suggestions)
-                if llm_suggestions
-                else "请新增或更新节点以覆盖缺失需求。"
+        if loop_missing_actions:
+            loop_summaries = [
+                f"{item['loop_id']}: {item.get('body_subgraph')}"
+                for item in loop_missing_actions
+                if item.get("loop_id")
+            ]
+            llm_suggestions.append(
+                "Loop sub-graphs must include at least one action node. "
+                "Please add a user-requirement-related action node to the loop body, "
+                "or remove the loop if it's unnecessary or can be replaced by other nodes: "
+                + "; ".join(loop_summaries)
+                + "."
             )
-            feedback_parts.append(
-                "Workflow does not fully satisfy user requirements. "
-                f"Missing: {missing_text}. Suggestions: {suggestion_text}."
+            feedback_parts.append(llm_suggestions[-1])
+        if condition_missing_targets:
+            missing_descriptions = [
+                f"{item['condition_id']} ({item['branch']} -> {item['target']})"
+                for item in condition_missing_targets
+                if item.get("condition_id") and item.get("branch") and item.get("target")
+            ]
+            llm_suggestions.append(
+                "Condition node branches reference missing nodes. "
+                "Please create the referenced nodes or update true_to_node/false_to_node to valid node ids: "
+                + "; ".join(missing_descriptions)
+                + "."
             )
+            feedback_parts.append(llm_suggestions[-1])
         feedback = (
-            "All action nodes reference upstream outputs and the workflow matches user requirements."
+            "All nodes with depends_on reference upstream outputs and condition branches are valid."
             if not feedback_parts
             else " ".join(feedback_parts)
         )
@@ -2145,9 +2266,9 @@ def plan_workflow_structure_with_llm(
             "status": status,
             "type": "check_workflow",
             "nodes_without_references": nodes_without_refs,
-            "requirements_missing": llm_missing,
+            "condition_nodes_missing_targets": condition_missing_targets,
+            "loop_nodes_missing_actions": loop_missing_actions,
             "requirements_suggestions": llm_suggestions,
-            "llm_requirement_check": llm_eval,
             "has_issues": has_issues,
             "feedback": feedback,
             "workflow": snapshot,
@@ -2264,6 +2385,9 @@ def plan_workflow_structure_with_llm(
             return _return_tool_result("update_node_params", result)
 
         normalized_params, _ = _normalize_params_templates(dict(params))
+        ref_error = _validate_existing_references(node_id=id, params=normalized_params)
+        if ref_error:
+            return _return_tool_result("update_node_params", ref_error)
 
         workflow = _build_workflow_for_params()
         nodes_by_id = {n.id: n for n in workflow.nodes}
@@ -2314,6 +2438,7 @@ def plan_workflow_structure_with_llm(
             update_condition_node,
             update_switch_node,
             update_loop_node,
+            remove_node,
             get_param_context,
             update_node_params,
             check_workflow,
