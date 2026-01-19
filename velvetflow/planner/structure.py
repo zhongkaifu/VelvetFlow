@@ -1073,6 +1073,27 @@ def plan_workflow_structure_with_llm(
             "requirements_suggestions": [suggestion],
         }
 
+    def _build_loop_source_required(
+        *, loop_id: str, source: Any, params: Mapping[str, Any] | None = None
+    ) -> Dict[str, Any] | None:
+        is_empty_string = isinstance(source, str) and not source.strip()
+        is_empty_mapping = isinstance(source, Mapping) and not source
+        if source is None or is_empty_string or is_empty_mapping:
+            suggestion = (
+                "Loop node requires a non-empty source value. "
+                f"loop_id={loop_id}, current_source={source}, params={params or {}}. "
+                "Please re-call add_loop_node/update_loop_node with a valid source."
+            )
+            return {
+                "status": "needs_more_work",
+                "message": "loop 节点的 source 字段不能为空，请补充后重试。",
+                "node_id": loop_id,
+                "source": source,
+                "params": params or {},
+                "requirements_suggestions": [suggestion],
+            }
+        return None
+
     def _collect_result_of_node_ids(params: Mapping[str, Any]) -> set[str]:
         node_ids: set[str] = set()
 
@@ -1407,6 +1428,9 @@ def plan_workflow_structure_with_llm(
                 invalid_fields=invalid_fields,
             )
             return _return_tool_result("add_loop_node", result)
+        source_error = _build_loop_source_required(loop_id=id, source=source, params=params or {})
+        if source_error:
+            return _return_tool_result("add_loop_node", source_error)
 
         normalized_nodes, sub_graph_error = _normalize_sub_graph_nodes(sub_graph_nodes, builder=builder)
         if sub_graph_error:
@@ -2033,6 +2057,19 @@ def plan_workflow_structure_with_llm(
         if params is not None and not isinstance(params, Mapping):
             result = _build_validation_error("loop 节点的 params 需要是对象。")
             return _return_tool_result("update_loop_node", result)
+
+        existing_params = builder.nodes.get(id, {}).get("params") if isinstance(builder.nodes.get(id), dict) else {}
+        if not isinstance(existing_params, Mapping):
+            existing_params = {}
+        effective_params = params if params is not None else dict(existing_params)
+        effective_source = (
+            effective_params.get("source") if isinstance(effective_params, Mapping) else None
+        )
+        source_error = _build_loop_source_required(
+            loop_id=id, source=effective_source, params=effective_params
+        )
+        if source_error:
+            return _return_tool_result("update_loop_node", source_error)
 
         normalized_nodes, sub_graph_error = _normalize_sub_graph_nodes(sub_graph_nodes, builder=builder)
         if sub_graph_error:
