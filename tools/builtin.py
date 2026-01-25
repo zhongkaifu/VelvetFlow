@@ -312,25 +312,28 @@ def ask_ai(
             tools_spec.append(schema)
             tool_lookup[tool_name] = item
 
+    forced_tool_choice: str | None = None
     for round_idx in range(1, max_rounds + 1):
         response = client.chat.completions.create(
             model=chat_model,
             messages=messages,
             tools=tools_spec or None,
-            tool_choice="auto" if tools_spec else None,
-            max_completion_tokens=max_tokens,
+            tool_choice=forced_tool_choice if tools_spec and forced_tool_choice else ("auto" if tools_spec else None),
+            max_tokens=max_tokens,
         )
         if not response.choices:
             raise RuntimeError("ask_ai did not return any choices")
 
         message = response.choices[0].message
-        assistant_msg = {
-            "role": "assistant",
-            "content": message.content or "",
-            "tool_calls": message.tool_calls,
-        }
+        assistant_msg = {"role": "assistant", "content": message.content or ""}
+        if message.tool_calls:
+            assistant_msg["tool_calls"] = message.tool_calls
         messages.append(assistant_msg)
-        log_info(f"[ask_ai] round={round_idx} assistant response received")
+        log_info(
+            "[ask_ai] round=%s assistant response received (finish_reason=%s)",
+            round_idx,
+            response.choices[0].finish_reason,
+        )
         if assistant_msg.get("content"):
             log_json("[ask_ai] assistant content", assistant_msg.get("content"))
         else:
@@ -340,9 +343,13 @@ def ask_ai(
             )
             messages.append({"role": "user", "content": reminder})
             log_info("[ask_ai] assistant content empty; prompting for a complete response")
+            if tools_spec:
+                forced_tool_choice = "none"
+            continue
 
         tool_calls = getattr(message, "tool_calls", None) or []
         if tool_calls:
+            forced_tool_choice = None
             for tc in tool_calls:
                 func_name = tc.function.name
                 raw_args = tc.function.arguments
