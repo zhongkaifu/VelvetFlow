@@ -205,7 +205,7 @@ class DynamicActionExecutor(
         system_prompt: str | None,
         prompt_text: str,
         tools: List[Dict[str, Any]],
-        max_tokens: int = 512,
+        max_tokens: int = 102400,
         max_rounds: int = 3,
     ) -> Dict[str, Any]:
         client = OpenAI()
