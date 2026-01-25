@@ -17,7 +17,7 @@ from html.parser import HTMLParser
 from pathlib import Path
 import uuid
 from typing import Any, Dict, List, Mapping, Optional, Tuple
-from openai import OpenAI
+from openai import BadRequestError, OpenAI
 
 from velvetflow.config import OPENAI_MODEL
 from velvetflow.logging_utils import log_info, log_json
@@ -314,13 +314,23 @@ def ask_ai(
 
     forced_tool_choice: str | None = None
     for round_idx in range(1, max_rounds + 1):
-        response = client.chat.completions.create(
-            model=chat_model,
-            messages=messages,
-            tools=tools_spec or None,
-            tool_choice=forced_tool_choice if tools_spec and forced_tool_choice else ("auto" if tools_spec else None),
-            max_tokens=max_tokens,
-        )
+        request_kwargs = {
+            "model": chat_model,
+            "messages": messages,
+            "tools": tools_spec or None,
+            "tool_choice": forced_tool_choice if tools_spec and forced_tool_choice else ("auto" if tools_spec else None),
+            "max_completion_tokens": max_tokens,
+        }
+        try:
+            response = client.chat.completions.create(**request_kwargs)
+        except BadRequestError as exc:
+            message = str(exc)
+            if "max_completion_tokens" in message:
+                request_kwargs.pop("max_completion_tokens", None)
+                request_kwargs["max_tokens"] = max_tokens
+                response = client.chat.completions.create(**request_kwargs)
+            else:
+                raise
         if not response.choices:
             raise RuntimeError("ask_ai did not return any choices")
 
