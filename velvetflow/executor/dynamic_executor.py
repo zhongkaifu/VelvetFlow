@@ -232,6 +232,7 @@ class DynamicActionExecutor(
                 "tool_choice": forced_tool_choice if tools_spec and forced_tool_choice else ("auto" if tools_spec else None),
                 "max_completion_tokens": max_tokens,
             }
+            log_json("[reasoning] request_kwargs", request_kwargs)
             try:
                 response = client.chat.completions.create(**request_kwargs)
             except BadRequestError as exc:
@@ -239,6 +240,7 @@ class DynamicActionExecutor(
                 if "max_completion_tokens" in message:
                     request_kwargs.pop("max_completion_tokens", None)
                     request_kwargs["max_tokens"] = max_tokens
+                    log_json("[reasoning] request_kwargs_retry", request_kwargs)
                     response = client.chat.completions.create(**request_kwargs)
                 else:
                     raise
@@ -313,12 +315,18 @@ class DynamicActionExecutor(
                 results = parsed_content if isinstance(parsed_content, dict) else {"answer": parsed_content}
             except json.JSONDecodeError:
                 results = {"answer": final_content}
-            return {"status": "ok", "results": results, "messages": messages}
+            return {
+                "status": "ok",
+                "results": results,
+                "messages": messages,
+                "request_kwargs": request_kwargs,
+            }
 
         return {
             "status": "error",
             "results": {"message": "reasoning LLM could not produce an answer within the allowed rounds"},
             "messages": messages,
+            "request_kwargs": request_kwargs,
         }
 
     def _build_checkpoint(
