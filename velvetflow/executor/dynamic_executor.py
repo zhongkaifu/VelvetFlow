@@ -1,9 +1,10 @@
 """Dynamic workflow executor implementation."""
 from __future__ import annotations
 
+import json
 from typing import Any, Dict, List, Mapping, Optional, Set, Union
 
-from velvetflow.action_registry import get_action_by_id
+from velvetflow.action_registry import BUSINESS_ACTIONS, get_action_by_id
 from velvetflow.bindings import BindingContext, eval_node_params
 from velvetflow.logging_utils import (
     TraceContext,
@@ -18,6 +19,8 @@ from velvetflow.logging_utils import (
     use_trace_context,
 )
 from velvetflow.models import Node, Workflow, infer_depends_on_from_edges
+
+from tools import ask_ai
 
 from .async_runtime import (
     ExecutionCheckpoint,
@@ -97,6 +100,59 @@ class DynamicActionExecutor(
             raise ValueError(
                 "workflow 中存在未注册或缺失的 action_id，请在构建阶段修复: " + details
             )
+
+    def _build_reasoning_prompt(
+        self,
+        *,
+        task_prompt: str | None,
+        context: Any,
+        expected_output_format: Any,
+    ) -> str:
+        prompt_parts: List[str] = []
+        if task_prompt:
+            prompt_parts.append(f"Task:\n{task_prompt}")
+        if context is not None:
+            if isinstance(context, Mapping) or isinstance(context, list):
+                context_text = json.dumps(context, ensure_ascii=False, indent=2)
+            else:
+                context_text = str(context)
+            prompt_parts.append(f"Context:\n{context_text}")
+        if expected_output_format is not None:
+            if isinstance(expected_output_format, Mapping) or isinstance(expected_output_format, list):
+                expected_text = json.dumps(expected_output_format, ensure_ascii=False, indent=2)
+            else:
+                expected_text = str(expected_output_format)
+            prompt_parts.append(f"Expected Output Format:\n{expected_text}")
+        return "\n\n".join(prompt_parts).strip()
+
+    def _resolve_reasoning_toolset(self, toolset: Any) -> List[Dict[str, Any]]:
+        if not isinstance(toolset, list):
+            return []
+
+        actions: List[Dict[str, Any]] = []
+        for item in toolset:
+            if isinstance(item, Mapping):
+                actions.append(dict(item))
+                continue
+            if not isinstance(item, str):
+                continue
+            action_def = get_action_by_id(item)
+            if action_def:
+                actions.append(action_def)
+                continue
+            matched = next(
+                (
+                    action
+                    for action in BUSINESS_ACTIONS
+                    if action.get("tool_name") == item
+                ),
+                None,
+            )
+            if matched:
+                actions.append(matched)
+            else:
+                log_warn(f"[reasoning] toolset item '{item}' not found in action registry")
+        return actions
 
     def _build_checkpoint(
         self,
@@ -291,6 +347,66 @@ class DynamicActionExecutor(
                             "node_id": nid,
                             "type": ntype,
                             "action_id": action_id,
+                            "resolved_params": resolved_params,
+                            "result": result,
+                            "next_nodes": next_ids,
+                        },
+                        node_id=nid,
+                        action_id=action_id,
+                    )
+                    continue
+
+                if ntype == "reasoning":
+                    resolved_params = eval_node_params(node_model, binding_ctx)
+                    log_json("resolved params", resolved_params)
+
+                    system_prompt = (
+                        resolved_params.get("system_prompt")
+                        if isinstance(resolved_params.get("system_prompt"), str)
+                        else None
+                    )
+                    task_prompt = (
+                        resolved_params.get("task_prompt")
+                        if isinstance(resolved_params.get("task_prompt"), str)
+                        else None
+                    )
+                    context = resolved_params.get("context")
+                    expected_output_format = resolved_params.get("expected_output_format")
+                    toolset = resolved_params.get("toolset")
+
+                    prompt_text = self._build_reasoning_prompt(
+                        task_prompt=task_prompt,
+                        context=context,
+                        expected_output_format=expected_output_format,
+                    )
+                    if not prompt_text and task_prompt:
+                        prompt_text = task_prompt
+                    if not prompt_text:
+                        prompt_text = "Follow the expected output format and return the result."
+
+                    tools_for_reasoning = self._resolve_reasoning_toolset(toolset)
+                    result = ask_ai(
+                        system_prompt=system_prompt,
+                        prompt=prompt_text,
+                        tool=tools_for_reasoning,
+                    )
+
+                    result_payload = result.get("results") if isinstance(result, Mapping) else None
+                    if isinstance(result_payload, Mapping):
+                        results[nid] = dict(result_payload)
+                    else:
+                        results[nid] = {"output": result_payload}
+
+                    self._record_node_metrics(result)
+                    next_ids = self._next_nodes(edges, nid, nodes_data=nodes_data)
+                    for nxt in next_ids:
+                        if nxt not in visited:
+                            reachable.add(nxt)
+                    log_event(
+                        "node_end",
+                        {
+                            "node_id": nid,
+                            "type": ntype,
                             "resolved_params": resolved_params,
                             "result": result,
                             "next_nodes": next_ids,

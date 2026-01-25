@@ -369,7 +369,7 @@ class Node:
         if not isinstance(node_type, str):
             errors.append({"loc": ("type",), "msg": "节点类型必须是字符串"})
         else:
-            allowed = {"action", "condition", "switch", "loop", "parallel"}
+            allowed = {"action", "condition", "switch", "loop", "parallel", "reasoning"}
             if node_type not in allowed:
                 errors.append({
                     "loc": ("type",),
@@ -419,6 +419,26 @@ class Node:
                 display_name=data.get("display_name"),
                 out_params_schema=out_params_schema if isinstance(out_params_schema, Mapping) else None,
                 params=dict(params),
+                depends_on=depends_on,
+            )
+
+        if node_type == "reasoning":
+            out_params_schema = data.get("out_params_schema")
+            if out_params_schema is not None and not isinstance(out_params_schema, (Mapping, str)):
+                errors.append(
+                    {
+                        "loc": ("out_params_schema",),
+                        "msg": "out_params_schema 必须是对象或字符串",
+                    }
+                )
+            if errors:
+                raise PydanticValidationError(errors)
+
+            return ReasoningNode(
+                id=node_id,
+                display_name=data.get("display_name"),
+                params=dict(params),
+                out_params_schema=out_params_schema,
                 depends_on=depends_on,
             )
 
@@ -536,6 +556,19 @@ class SwitchNode(Node):
     def model_dump(self, *, by_alias: bool = False) -> Dict[str, Any]:
         data = super().model_dump(by_alias=by_alias)
         data.update({"cases": self.cases, "default_to_node": self.default_to_node})
+        return data
+
+
+@dataclass
+class ReasoningNode(Node):
+    """LLM reasoning node."""
+
+    type: Literal["reasoning"] = "reasoning"
+    out_params_schema: Optional[Any] = None
+
+    def model_dump(self, *, by_alias: bool = False) -> Dict[str, Any]:
+        data = super().model_dump(by_alias=by_alias)
+        data["out_params_schema"] = self.out_params_schema
         return data
 
 

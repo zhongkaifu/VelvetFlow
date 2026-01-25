@@ -201,20 +201,6 @@ def validate_completed_workflow(
 
             schema_to_set = schema
 
-            if (
-                node.get("action_id") == "common.ask_ai.v1"
-                and isinstance(schema, Mapping)
-                and isinstance(params, Mapping)
-            ):
-                expected_schema = _parse_expected_format_schema(params.get("expected_format"))
-                if expected_schema:
-                    schema_to_set = copy.deepcopy(schema)
-                    properties = schema_to_set.setdefault("properties", {})
-                    properties["results"] = expected_schema
-                    required = schema_to_set.setdefault("required", [])
-                    if "results" not in required:
-                        required.append("results")
-
             if isinstance(schema_to_set, Mapping) and node.get("out_params_schema") != schema_to_set:
                 node["out_params_schema"] = schema_to_set
 

@@ -20,6 +20,7 @@ from typing import Any, Dict, List, Mapping, Optional, Tuple
 from openai import OpenAI
 
 from velvetflow.config import OPENAI_MODEL
+from velvetflow.logging_utils import log_info, log_json
 
 from tools.base import Tool
 from tools.business import (
@@ -311,7 +312,7 @@ def ask_ai(
             tools_spec.append(schema)
             tool_lookup[tool_name] = item
 
-    for _ in range(max_rounds):
+    for round_idx in range(1, max_rounds + 1):
         response = client.chat.completions.create(
             model=chat_model,
             messages=messages,
@@ -329,6 +330,16 @@ def ask_ai(
             "tool_calls": message.tool_calls,
         }
         messages.append(assistant_msg)
+        log_info(f"[ask_ai] round={round_idx} assistant response received")
+        if assistant_msg.get("content"):
+            log_json("[ask_ai] assistant content", assistant_msg.get("content"))
+        else:
+            reminder = (
+                "Your previous response had no content. "
+                "Please provide a concise response that satisfies the user's requirements."
+            )
+            messages.append({"role": "user", "content": reminder})
+            log_info("[ask_ai] assistant content empty; prompting for a complete response")
 
         tool_calls = getattr(message, "tool_calls", None) or []
         if tool_calls:
@@ -359,6 +370,9 @@ def ask_ai(
                         "content": json.dumps(tool_result, ensure_ascii=False),
                     }
                 )
+                log_info(f"[ask_ai] round={round_idx} tool_call={func_name}")
+                log_json("[ask_ai] tool_args", parsed_args)
+                log_json("[ask_ai] tool_result", tool_result)
             continue
 
         final_content = (message.content or "").strip()
@@ -371,11 +385,12 @@ def ask_ai(
         except json.JSONDecodeError:
             results = {"answer": final_content}
 
-        return {"status": "ok", "results": results}
+        return {"status": "ok", "results": results, "messages": messages}
 
     return {
         "status": "error",
         "results": {"message": "ask_ai could not produce an answer within the allowed rounds"},
+        "messages": messages,
     }
 
 

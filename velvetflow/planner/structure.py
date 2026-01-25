@@ -41,6 +41,14 @@ from velvetflow.verification.binding_checks import _iter_template_references
 
 CONDITION_PARAM_FIELDS = {"expression"}
 
+REASONING_PARAM_FIELDS = {
+    "system_prompt",
+    "task_prompt",
+    "context",
+    "expected_output_format",
+    "toolset",
+}
+
 SWITCH_PARAM_FIELDS = {
     "source",
     "field",
@@ -59,6 +67,16 @@ ACTION_NODE_FIELDS = {
     "id",
     "type",
     "action_id",
+    "display_name",
+    "params",
+    "out_params_schema",
+    "parent_node_id",
+    "depends_on",
+}
+
+REASONING_NODE_FIELDS = {
+    "id",
+    "type",
     "display_name",
     "params",
     "out_params_schema",
@@ -377,6 +395,8 @@ def _filter_supported_params(
     allowed_fields: Optional[set[str]] = None
     if node_type == "condition":
         allowed_fields = set(CONDITION_PARAM_FIELDS)
+    elif node_type == "reasoning":
+        allowed_fields = set(REASONING_PARAM_FIELDS)
     elif node_type == "switch":
         allowed_fields = set(SWITCH_PARAM_FIELDS)
     elif node_type == "loop":
@@ -426,6 +446,8 @@ def _sanitize_builder_node_fields(builder: WorkflowBuilder, node_id: str) -> Lis
     allowed_fields: Optional[set[str]] = None
     if node_type == "action":
         allowed_fields = set(ACTION_NODE_FIELDS)
+    elif node_type == "reasoning":
+        allowed_fields = set(REASONING_NODE_FIELDS)
     elif node_type == "condition":
         allowed_fields = set(CONDITION_NODE_FIELDS)
     elif node_type == "switch":
@@ -603,8 +625,9 @@ def _build_combined_prompt() -> str:
         "[Workflow DSL syntax and semantics (must follow)]\n"
         "- workflow = {workflow_name, description, nodes: []}; only return valid JSON (edges will be automatically inferred by the system based on node bindings, no need to generate them).\n"
         "- Node basic structure: {id, type, display_name, params, depends_on, action_id?, out_params_schema?, loop/subgraph/branches?}.\n"
-        "  type allows action/condition/switch/loop/parallel.\n"
+        "  type allows action/condition/switch/loop/parallel/reasoning.\n"
         "  Action nodes must specify action_id (from the action library) and params; only action nodes allow out_params_schema.\n"
+        "  Reasoning nodes accept params including system_prompt/task_prompt/context/expected_output_format/toolset to drive LLM reasoning, and mirror expected_output_format into out_params_schema.\n"
         "  Condition node params can only include expression (a single Jinja expression returning a boolean); true_to_node/false_to_node must be top-level fields (string or null), not inside params.\n"
         "  Loop nodes contain loop_kind/iter/source/body_subgraph/exports. Values in exports must reference fields of nodes inside body_subgraph (e.g., {{ result_of.node.field }}); outside the loop you may only reference exports.<key>. body_subgraph only needs the nodes array—no entry/exit/edges.\n"
         "  Branches of a parallel node are a non-empty array, each element containing id/entry_node/sub_graph_nodes.\n"
@@ -617,12 +640,13 @@ def _build_combined_prompt() -> str:
         "2) When business actions are needed, you must first call search_business_actions to query candidates; add_action_node.action_id must come from the most recent candidates.id.\n"
         "3) Before adding a new node, check whether a similar node already exists; if so, do not add a duplicate node.\n"
         "4) When condition/switch/loop nodes are needed, you must first create them with add_condition_node/add_switch_node/add_loop_node; expressions and references in params must strictly follow Jinja template syntax.\n"
-        "5) Call update_node_params to complete and validate params for created nodes.\n"
-        "6) If an existing node needs to be modified (adding display_name/params/branch targets/parent nodes, etc.), call update_action_node or update_condition_node with the fields to overwrite; after calling, be sure to check whether related upstream/downstream nodes also need updates to stay consistent.\n"
-        "7) Condition nodes must explicitly provide true_to_node and false_to_node. Values can be a node id (continue execution) or null (indicating that branch ends); express dependencies through input/output references in node params—no need to draw edges explicitly.\n"
-        "8) Maintain depends_on (array of strings) for each node, listing its direct upstream dependencies; when a node is targeted by condition.true_to_node/false_to_node, you must add that condition node to the target node's depends_on.\n"
-        "9) After the structure is complete, continue to fill params for all nodes and ensure update_node_params validation passes.\n\n"
-        "10) When you believe the workflow is complete, call check_workflow to validate upstream references; only after check_workflow succeeds should you call finalize_workflow to finish.\n\n"
+        "5) When LLM reasoning tasks are needed, create them with add_reasoning_node and fill system_prompt/task_prompt/context/expected_output_format/toolset in params.\n"
+        "6) Call update_node_params to complete and validate params for created nodes.\n"
+        "7) If an existing node needs to be modified (adding display_name/params/branch targets/parent nodes, etc.), call update_action_node/update_reasoning_node or update_condition_node with the fields to overwrite; after calling, be sure to check whether related upstream/downstream nodes also need updates to stay consistent.\n"
+        "8) Condition nodes must explicitly provide true_to_node and false_to_node. Values can be a node id (continue execution) or null (indicating that branch ends); express dependencies through input/output references in node params—no need to draw edges explicitly.\n"
+        "9) Maintain depends_on (array of strings) for each node, listing its direct upstream dependencies; when a node is targeted by condition.true_to_node/false_to_node, you must add that condition node to the target node's depends_on.\n"
+        "10) After the structure is complete, continue to fill params for all nodes and ensure update_node_params validation passes.\n\n"
+        "11) When you believe the workflow is complete, call check_workflow to validate upstream references; only after check_workflow succeeds should you call finalize_workflow to finish.\n\n"
         "Important note: Only action nodes need out_params_schema; condition nodes do not have this property. The format of out_params_schema should be {\"param_name\": \"type\"}; list only the names and types of output parameters of the business action, without extra descriptions or examples.\n\n"
         "[Very important principles]\n"
         "1. You must design the workflow strictly around the natural language requirement in the current conversation:\n"
@@ -1369,6 +1393,86 @@ def plan_workflow_structure_with_llm(
         return _return_tool_result("add_action_node", result)
 
     @function_tool(strict_mode=False)
+    def add_reasoning_node(
+        id: str,
+        display_name: Optional[str] = None,
+        params: Optional[Dict[str, Any]] = None,
+        depends_on: Optional[List[str]] = None,
+        parent_node_id: Optional[str] = None,
+    ) -> Mapping[str, Any]:
+        """Add a reasoning node for LLM-driven tasks.
+
+        Use case: Create a node that calls an LLM to perform reasoning tasks such as
+        summarization, translation, drafting, or analysis.
+
+        Args:
+            id: Unique node identifier.
+            display_name: Optional node display name.
+            params: Optional reasoning parameter dictionary.
+            depends_on: Optional list of upstream node IDs.
+            parent_node_id: Optional parent node ID for subgraphs or loop scenarios.
+
+        Returns:
+            A result dictionary containing the status, type, and node ID; returns an error
+            message on failure.
+        """
+        _log_tool_call(
+            "add_reasoning_node",
+            {"id": id, "parent_node_id": parent_node_id},
+        )
+        duplicate_error = _reject_duplicate_node_id(id)
+        if duplicate_error:
+            return _return_tool_result("add_reasoning_node", duplicate_error)
+        if parent_node_id is not None and not isinstance(parent_node_id, str):
+            result = _build_validation_error("parent_node_id 需要是字符串或 null。")
+            return _return_tool_result("add_reasoning_node", result)
+        if params is not None and not isinstance(params, Mapping):
+            result = _build_validation_error("reasoning 节点的 params 需要是对象。")
+            return _return_tool_result("add_reasoning_node", result)
+
+        cleaned_params, removed_fields = _filter_supported_params(
+            node_type="reasoning",
+            params=params or {},
+            action_schemas=action_schemas,
+        )
+        out_params_schema = cleaned_params.get("expected_output_format")
+        ref_error = _validate_existing_references(
+            node_id=id, params=cleaned_params, depends_on=depends_on or []
+        )
+        if ref_error:
+            return _return_tool_result("add_reasoning_node", ref_error)
+        reference_issues, available_nodes = _collect_param_reference_issues(cleaned_params)
+        if reference_issues:
+            result = _build_validation_error(
+                "reasoning params 引用了不存在的节点字段，请修正后重新调用 add_reasoning_node。",
+                invalid_references=reference_issues,
+                available_nodes=available_nodes,
+            )
+            return _return_tool_result("add_reasoning_node", result)
+        builder.add_node(
+            node_id=id,
+            node_type="reasoning",
+            display_name=display_name,
+            params=cleaned_params,
+            out_params_schema=out_params_schema,
+            parent_node_id=parent_node_id if isinstance(parent_node_id, str) else None,
+            depends_on=depends_on or [],
+        )
+        _reset_workflow_check_state()
+        removed_node_fields = _sanitize_builder_node_fields(builder, id)
+        _snapshot(f"add_reasoning_{id}")
+        if removed_fields or removed_node_fields:
+            result = _build_validation_error(
+                "reasoning 节点仅支持 id/type/display_name/params/out_params_schema 字段，params 仅支持 system_prompt/task_prompt/context/expected_output_format/toolset。",
+                removed_param_fields=removed_fields,
+                removed_node_fields=removed_node_fields,
+                node_id=id,
+            )
+            return _return_tool_result("add_reasoning_node", result)
+        result = {"status": "ok", "type": "node_added", "node_id": id}
+        return _return_tool_result("add_reasoning_node", result)
+
+    @function_tool(strict_mode=False)
     def add_loop_node(
         id: str,
         loop_kind: str,
@@ -1800,6 +1904,92 @@ def plan_workflow_structure_with_llm(
             return _return_tool_result("update_action_node", result)
         result = {"status": "ok", "type": "node_updated", "node_id": id}
         return _return_tool_result("update_action_node", result)
+
+    @function_tool(strict_mode=False)
+    def update_reasoning_node(
+        id: str,
+        display_name: Optional[str] = None,
+        params: Optional[Dict[str, Any]] = None,
+        depends_on: Optional[List[str]] = None,
+        parent_node_id: Optional[str] = None,
+    ) -> Mapping[str, Any]:
+        """Update an existing reasoning node.
+
+        Use case: Adjust prompts, expected outputs, or toolset for LLM reasoning tasks.
+
+        Args:
+            id: Unique node identifier.
+            display_name: Optional node display name.
+            params: Optional reasoning parameter dictionary.
+            depends_on: Optional list of upstream node IDs.
+            parent_node_id: Optional parent node ID.
+
+        Returns:
+            A result dictionary containing the status, type, and node ID; returns an error
+            message on failure.
+        """
+        _log_tool_call(
+            "update_reasoning_node",
+            {"id": id, "parent_node_id": parent_node_id},
+        )
+        precheck = _update_node_common(id, "reasoning")
+        if precheck:
+            return _return_tool_result("update_reasoning_node", precheck)
+        if parent_node_id is not None and not isinstance(parent_node_id, str):
+            result = _build_validation_error("parent_node_id 需要是字符串或 null。")
+            return _return_tool_result("update_reasoning_node", result)
+        if params is not None and not isinstance(params, Mapping):
+            result = _build_validation_error("reasoning 节点的 params 需要是对象。")
+            return _return_tool_result("update_reasoning_node", result)
+
+        updates: Dict[str, Any] = {}
+        if display_name is not None:
+            updates["display_name"] = display_name
+        if parent_node_id is not None:
+            updates["parent_node_id"] = parent_node_id
+        if params is not None:
+            cleaned_params, removed_param_fields = _filter_supported_params(
+                node_type="reasoning",
+                params=params or {},
+                action_schemas=action_schemas,
+            )
+            updates["params"] = cleaned_params
+            updates["out_params_schema"] = cleaned_params.get("expected_output_format")
+            reference_issues, available_nodes = _collect_param_reference_issues(cleaned_params)
+            if reference_issues:
+                result = _build_validation_error(
+                    "reasoning params 引用了不存在的节点字段，请修正后重新调用 update_reasoning_node。",
+                    invalid_references=reference_issues,
+                    available_nodes=available_nodes,
+                )
+                return _return_tool_result("update_reasoning_node", result)
+        else:
+            removed_param_fields = []
+        if depends_on is not None:
+            updates["depends_on"] = depends_on
+
+        ref_error = _validate_existing_references(
+            node_id=id,
+            params=cleaned_params if params is not None else None,
+            depends_on=depends_on or [],
+        )
+        if ref_error:
+            return _return_tool_result("update_reasoning_node", ref_error)
+        builder.update_node(id, **updates)
+        _reset_workflow_check_state()
+        removed_param_fields.extend(_sanitize_builder_node_params(builder, id, action_schemas))
+        removed_node_fields = _sanitize_builder_node_fields(builder, id)
+        _snapshot(f"update_reasoning_{id}")
+        if removed_param_fields or removed_node_fields:
+            result = _build_validation_error(
+                "reasoning 节点仅支持 id/type/display_name/params/out_params_schema 字段，params 仅支持 system_prompt/task_prompt/context/expected_output_format/toolset。",
+                removed_fields=removed_param_fields,
+                removed_node_fields=removed_node_fields,
+                node_id=id,
+            )
+            return _return_tool_result("update_reasoning_node", result)
+        result = {"status": "ok", "type": "node_updated", "node_id": id}
+        return _return_tool_result("update_reasoning_node", result)
 
     @function_tool(strict_mode=False)
     def update_condition_node(
@@ -2504,7 +2694,10 @@ def plan_workflow_structure_with_llm(
         filled_params[id] = dict(normalized_params)
         if id not in validated_node_ids:
             validated_node_ids.append(id)
-        builder.update_node(id, params=dict(normalized_params))
+        updates: Dict[str, Any] = {"params": dict(normalized_params)}
+        if node.type == "reasoning":
+            updates["out_params_schema"] = normalized_params.get("expected_output_format")
+        builder.update_node(id, **updates)
         _reset_workflow_check_state()
         _snapshot(f"validate_params_{id}")
         result = {"status": "ok", "params": normalized_params}
@@ -2518,10 +2711,12 @@ def plan_workflow_structure_with_llm(
             list_retrieved_business_action,
             set_workflow_meta,
             add_action_node,
+            add_reasoning_node,
             add_loop_node,
             add_condition_node,
             add_switch_node,
             update_action_node,
+            update_reasoning_node,
             update_condition_node,
             update_switch_node,
             update_loop_node,

@@ -54,6 +54,17 @@ def _get_node_output_schema(
         if isinstance(node_schema, Mapping):
             return node_schema
 
+        if node.get("type") == "reasoning":
+            params = node.get("params") if isinstance(node.get("params"), Mapping) else {}
+            expected_format = params.get("expected_output_format") if isinstance(params, Mapping) else None
+            schema = (
+                _schema_from_out_params_schema(expected_format)
+                if isinstance(expected_format, Mapping)
+                else None
+            )
+            if isinstance(schema, Mapping):
+                return schema
+
         action_id = node.get("action_id")
         if isinstance(action_id, str):
             action_def = actions_by_id.get(action_id)
@@ -192,6 +203,12 @@ def _check_output_path_against_schema(
         )
 
     if target_type == "action":
+        schema = _get_node_output_schema(target, actions_by_id) or {}
+        if not rest_path:
+            return None
+        return _schema_path_error(schema, list(rest_path))
+
+    if target_type == "reasoning":
         schema = _get_node_output_schema(target, actions_by_id) or {}
         if not rest_path:
             return None

@@ -852,6 +852,10 @@ class BindingContext:
                     continue
 
                 if p == "count":
+                    if isinstance(cur, Mapping) and "count" in cur:
+                        cur = cur["count"]
+                        _append_token(p)
+                        continue
                     try:
                         cur = len(cur)
                     except Exception:
