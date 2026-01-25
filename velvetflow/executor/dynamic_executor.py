@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Dict, List, Mapping, Optional, Set, Union
 
 from velvetflow.action_registry import BUSINESS_ACTIONS, get_action_by_id
 from velvetflow.bindings import BindingContext, eval_node_params
+from velvetflow.config import OPENAI_MODEL
 from velvetflow.logging_utils import (
     TraceContext,
     child_span,
@@ -20,7 +22,8 @@ from velvetflow.logging_utils import (
 )
 from velvetflow.models import Node, Workflow, infer_depends_on_from_edges
 
-from tools import ask_ai
+from openai import BadRequestError, OpenAI
+from tools.registry import get_registered_tool
 
 from .async_runtime import (
     ExecutionCheckpoint,
@@ -153,6 +156,170 @@ class DynamicActionExecutor(
             else:
                 log_warn(f"[reasoning] toolset item '{item}' not found in action registry")
         return actions
+
+    def _build_reasoning_tool_schema(self, action: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
+        parameters = action.get("arg_schema") or action.get("params_schema")
+        if not isinstance(parameters, Mapping):
+            return None
+        action_id = action.get("action_id") or action.get("tool_name") or "tool"
+        safe_name = re.sub(r"[^a-zA-Z0-9_-]", "_", action.get("tool_name") or action_id)
+        description = action.get("description") or action.get("name") or action_id
+        return {
+            "type": "function",
+            "function": {
+                "name": safe_name,
+                "description": description,
+                "parameters": parameters,
+            },
+        }
+
+    def _execute_reasoning_tool(
+        self, *, action: Mapping[str, Any], args: Mapping[str, Any], call_name: str
+    ) -> Dict[str, Any]:
+        tool_fn_name = action.get("tool_name") or action.get("action_id") or call_name
+        registered_tool = get_registered_tool(tool_fn_name)
+        if not registered_tool:
+            return {
+                "status": "unavailable",
+                "action_id": action.get("action_id"),
+                "message": f"Business tool '{tool_fn_name}' is not registered; returning arguments.",
+                "echo": args,
+            }
+        try:
+            output = registered_tool(**args)
+            return {
+                "status": "ok",
+                "action_id": action.get("action_id"),
+                "output": output,
+            }
+        except Exception as exc:  # pragma: no cover - runtime errors are surfaced to LLM
+            return {
+                "status": "error",
+                "action_id": action.get("action_id"),
+                "message": str(exc),
+            }
+
+    def _run_reasoning_llm(
+        self,
+        *,
+        system_prompt: str | None,
+        prompt_text: str,
+        tools: List[Dict[str, Any]],
+        max_tokens: int = 512,
+        max_rounds: int = 3,
+    ) -> Dict[str, Any]:
+        client = OpenAI()
+        messages: List[Dict[str, Any]] = [
+            {"role": "system", "content": system_prompt or "You are a helpful assistant."},
+            {"role": "user", "content": prompt_text},
+        ]
+        tools_spec: List[Dict[str, Any]] = []
+        tool_lookup: Dict[str, Mapping[str, Any]] = {}
+        for action in tools:
+            schema = self._build_reasoning_tool_schema(action)
+            if not schema:
+                continue
+            tool_name = schema["function"]["name"]
+            tools_spec.append(schema)
+            tool_lookup[tool_name] = action
+
+        forced_tool_choice: str | None = None
+        for round_idx in range(1, max_rounds + 1):
+            request_kwargs = {
+                "model": OPENAI_MODEL,
+                "messages": messages,
+                "tools": tools_spec or None,
+                "tool_choice": forced_tool_choice if tools_spec and forced_tool_choice else ("auto" if tools_spec else None),
+                "max_completion_tokens": max_tokens,
+            }
+            try:
+                response = client.chat.completions.create(**request_kwargs)
+            except BadRequestError as exc:
+                message = str(exc)
+                if "max_completion_tokens" in message:
+                    request_kwargs.pop("max_completion_tokens", None)
+                    request_kwargs["max_tokens"] = max_tokens
+                    response = client.chat.completions.create(**request_kwargs)
+                else:
+                    raise
+
+            if not response.choices:
+                raise RuntimeError("reasoning LLM returned no choices")
+
+            choice = response.choices[0]
+            message = choice.message
+            assistant_msg = {"role": "assistant", "content": message.content or ""}
+            if message.tool_calls:
+                assistant_msg["tool_calls"] = message.tool_calls
+            messages.append(assistant_msg)
+            log_info(
+                "[reasoning] round=%s assistant response received (finish_reason=%s)",
+                round_idx,
+                choice.finish_reason,
+            )
+
+            if not assistant_msg.get("content") and not message.tool_calls:
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": "Your previous response had no content. Please provide a concise response.",
+                    }
+                )
+                if tools_spec:
+                    forced_tool_choice = "none"
+                continue
+
+            tool_calls = getattr(message, "tool_calls", None) or []
+            if tool_calls:
+                forced_tool_choice = None
+                for tc in tool_calls:
+                    func_name = tc.function.name
+                    raw_args = tc.function.arguments
+                    try:
+                        parsed_args = json.loads(raw_args) if raw_args else {}
+                    except json.JSONDecodeError:
+                        parsed_args = {"__raw__": raw_args or ""}
+
+                    action_def = tool_lookup.get(func_name)
+                    if not action_def:
+                        tool_result = {
+                            "status": "error",
+                            "message": f"Unknown business tool invocation: {func_name}",
+                            "echo": parsed_args,
+                        }
+                    else:
+                        tool_result = self._execute_reasoning_tool(
+                            action=action_def, args=parsed_args, call_name=func_name
+                        )
+
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tc.id,
+                            "content": json.dumps(tool_result, ensure_ascii=False),
+                        }
+                    )
+                    log_info("[reasoning] round=%s tool_call=%s", round_idx, func_name)
+                    log_json("[reasoning] tool_args", parsed_args)
+                    log_json("[reasoning] tool_result", tool_result)
+                continue
+
+            final_content = (message.content or "").strip()
+            if not final_content:
+                continue
+
+            try:
+                parsed_content = json.loads(final_content)
+                results = parsed_content if isinstance(parsed_content, dict) else {"answer": parsed_content}
+            except json.JSONDecodeError:
+                results = {"answer": final_content}
+            return {"status": "ok", "results": results, "messages": messages}
+
+        return {
+            "status": "error",
+            "results": {"message": "reasoning LLM could not produce an answer within the allowed rounds"},
+            "messages": messages,
+        }
 
     def _build_checkpoint(
         self,
@@ -385,10 +552,10 @@ class DynamicActionExecutor(
                         prompt_text = "Follow the expected output format and return the result."
 
                     tools_for_reasoning = self._resolve_reasoning_toolset(toolset)
-                    result = ask_ai(
+                    result = self._run_reasoning_llm(
                         system_prompt=system_prompt,
-                        prompt=prompt_text,
-                        tool=tools_for_reasoning,
+                        prompt_text=prompt_text,
+                        tools=tools_for_reasoning,
                     )
 
                     result_payload = result.get("results") if isinstance(result, Mapping) else None
