@@ -4,8 +4,12 @@ function openNodeDialog(node, context = getTabContext()) {
     openConditionDialog(node, context);
     return;
   }
+  if (node.type === "data") {
+    openDataNodeDialog(node, context);
+    return;
+  }
   if (node.type !== "action") {
-    addChatMessage("当前仅支持编辑 action 或 condition 节点的参数。", "agent");
+    addChatMessage("当前仅支持编辑 action、data 或 condition 节点的参数。", "agent");
     return;
   }
 
@@ -185,6 +189,198 @@ function openNodeDialog(node, context = getTabContext()) {
   });
 
   refreshIO(actionSelect.value);
+}
+
+function openDataNodeDialog(node, context = getTabContext()) {
+  const overlay = document.createElement("div");
+  overlay.className = "modal-overlay";
+
+  const dialog = document.createElement("div");
+  dialog.className = "modal";
+
+  const title = document.createElement("div");
+  title.className = "modal__title";
+  title.textContent = `编辑数据节点：${node.display_name || node.id}`;
+  dialog.appendChild(title);
+
+  const idRow = document.createElement("div");
+  idRow.className = "modal__row";
+  const idLabel = document.createElement("label");
+  idLabel.textContent = "节点 ID";
+  const idInput = document.createElement("input");
+  idInput.className = "modal__input";
+  idInput.value = node.id || "";
+  idInput.readOnly = true;
+  idInput.setAttribute("aria-readonly", "true");
+  idRow.appendChild(idLabel);
+  idRow.appendChild(idInput);
+  dialog.appendChild(idRow);
+
+  const nameRow = document.createElement("div");
+  nameRow.className = "modal__row";
+  const nameLabel = document.createElement("label");
+  nameLabel.textContent = "显示名称";
+  const nameInput = document.createElement("input");
+  nameInput.className = "modal__input";
+  nameInput.value = node.display_name || "";
+  nameRow.appendChild(nameLabel);
+  nameRow.appendChild(nameInput);
+  dialog.appendChild(nameRow);
+
+  const schemaHeader = document.createElement("div");
+  schemaHeader.className = "modal__subtitle";
+  schemaHeader.textContent = "数据字段 schema（字段名、类型、描述）";
+  dialog.appendChild(schemaHeader);
+
+  const schemaContainer = document.createElement("div");
+  schemaContainer.className = "modal__grid";
+  dialog.appendChild(schemaContainer);
+
+  const addSchemaBtn = document.createElement("button");
+  addSchemaBtn.type = "button";
+  addSchemaBtn.className = "button button--ghost";
+  addSchemaBtn.textContent = "新增字段";
+  dialog.appendChild(addSchemaBtn);
+
+  const schemaRows = [];
+
+  const createTypeSelect = (value = "string") => {
+    const select = document.createElement("select");
+    select.className = "modal__select";
+    ["string", "number", "integer", "boolean", "object", "array"].forEach((type) => {
+      const option = document.createElement("option");
+      option.value = type;
+      option.textContent = type;
+      select.appendChild(option);
+    });
+    select.value = value;
+    return select;
+  };
+
+  function addSchemaRow(field = {}) {
+    const row = document.createElement("div");
+    row.className = "modal__field";
+
+    const nameInput = document.createElement("input");
+    nameInput.className = "modal__input";
+    nameInput.placeholder = "字段名";
+    nameInput.value = field.name || "";
+
+    const typeSelect = createTypeSelect(field.type || "string");
+
+    const descInput = document.createElement("input");
+    descInput.className = "modal__input";
+    descInput.placeholder = "描述（可选）";
+    descInput.value = field.description || "";
+
+    row.appendChild(nameInput);
+    row.appendChild(typeSelect);
+    row.appendChild(descInput);
+    schemaContainer.appendChild(row);
+    schemaRows.push({ nameInput, typeSelect, descInput });
+  }
+
+  const existingSchema = Array.isArray(node.params && node.params.schema)
+    ? node.params.schema
+    : Array.isArray(node.schema)
+      ? node.schema
+      : [];
+  if (existingSchema.length) {
+    existingSchema.forEach((field) => addSchemaRow(field));
+  } else {
+    addSchemaRow();
+  }
+
+  addSchemaBtn.addEventListener("click", () => addSchemaRow());
+
+  const datasetHeader = document.createElement("div");
+  datasetHeader.className = "modal__subtitle";
+  datasetHeader.textContent = "数据集（JSON 数组）";
+  dialog.appendChild(datasetHeader);
+
+  const datasetInput = document.createElement("textarea");
+  datasetInput.className = "modal__input modal__textarea";
+  datasetInput.placeholder = '例如：[{\"name\": \"Alice\", \"age\": 30}]';
+  const existingDataset = node.params && node.params.dataset !== undefined ? node.params.dataset : node.dataset;
+  datasetInput.value = existingDataset !== undefined ? stringifyBinding(existingDataset) : "[]";
+  dialog.appendChild(datasetInput);
+
+  const actionsRow = document.createElement("div");
+  actionsRow.className = "modal__actions";
+  const deleteBtn = document.createElement("button");
+  deleteBtn.type = "button";
+  deleteBtn.className = "button button--danger";
+  deleteBtn.textContent = "删除节点";
+  const cancelBtn = document.createElement("button");
+  cancelBtn.type = "button";
+  cancelBtn.className = "button button--ghost";
+  cancelBtn.textContent = "取消";
+  const saveBtn = document.createElement("button");
+  saveBtn.type = "button";
+  saveBtn.className = "button button--primary";
+  saveBtn.textContent = "保存数据";
+  actionsRow.appendChild(deleteBtn);
+  actionsRow.appendChild(cancelBtn);
+  actionsRow.appendChild(saveBtn);
+  dialog.appendChild(actionsRow);
+
+  overlay.appendChild(dialog);
+  document.body.appendChild(overlay);
+
+  const close = () => overlay.remove();
+  cancelBtn.addEventListener("click", close);
+  overlay.addEventListener("click", (evt) => {
+    if (evt.target === overlay) close();
+  });
+
+  saveBtn.addEventListener("click", () => {
+    const schemaFields = schemaRows
+      .map(({ nameInput, typeSelect, descInput }) => ({
+        name: nameInput.value.trim(),
+        type: typeSelect.value,
+        description: descInput.value.trim(),
+      }))
+      .filter((field) => field.name);
+
+    let datasetValue = undefined;
+    const datasetText = datasetInput.value.trim();
+    if (datasetText) {
+      try {
+        datasetValue = JSON.parse(datasetText);
+      } catch (error) {
+        window.alert("数据集 JSON 解析失败，请检查格式。");
+        return;
+      }
+    }
+
+    const updatedNode = {
+      ...node,
+      display_name: nameInput.value.trim() || node.display_name,
+      params: {
+        schema: schemaFields,
+        dataset: datasetValue ?? [],
+      },
+      out_params_schema: buildDataNodeOutputSchema(schemaFields),
+    };
+
+    const updatedGraph = {
+      ...(context.graph || currentWorkflow),
+      nodes: (context.graph.nodes || []).map((n) => (n.id === node.id ? updatedNode : n)),
+    };
+    rebuildEdgesFromBindings(updatedGraph);
+    context.saveGraph(updatedGraph);
+    render(currentTab);
+    appendLog(`数据节点 ${node.id} 已更新`);
+    logWorkflowSnapshot(currentWorkflow, "数据节点更新后的 DAG");
+    close();
+  });
+
+  deleteBtn.addEventListener("click", () => {
+    const confirmed = window.confirm(`确认删除数据节点 ${node.display_name || node.id} 吗？`);
+    if (!confirmed) return;
+    removeNodeFromGraph(node.id, context);
+    close();
+  });
 }
 
 function openConditionDialog(node, context = getTabContext()) {

@@ -699,6 +699,12 @@ class BindingContext:
 
         # 控制节点（condition 等）也允许被引用，缺少 action_id 时跳过 schema 校验
         if node.type != "action" or not node.action_id:
+            output_schema = node.out_params_schema
+            field_path = parts[2:]
+            if output_schema and field_path and self._schema_has_path(output_schema, field_path):
+                return
+            if output_schema and not field_path:
+                return
             return
 
         action_id = node.action_id

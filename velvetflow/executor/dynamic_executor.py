@@ -416,6 +416,34 @@ class DynamicActionExecutor(
                     )
                     continue
 
+                if ntype == "data":
+                    resolved_params = eval_node_params(node_model, binding_ctx)
+                    log_json("resolved params", resolved_params)
+
+                    payload = {
+                        "schema": resolved_params.get("schema"),
+                        "dataset": resolved_params.get("dataset"),
+                    }
+                    results[nid] = payload
+                    self._record_node_metrics(payload)
+                    next_ids = self._next_nodes(edges, nid, nodes_data=nodes_data)
+                    for nxt in next_ids:
+                        if nxt not in visited:
+                            reachable.add(nxt)
+                    log_event(
+                        "node_end",
+                        {
+                            "node_id": nid,
+                            "type": ntype,
+                            "resolved_params": resolved_params,
+                            "result": payload,
+                            "next_nodes": next_ids,
+                        },
+                        node_id=nid,
+                        action_id=action_id,
+                    )
+                    continue
+
                 if ntype == "condition":
                     cond_eval = self._eval_condition(node, binding_ctx, include_debug=True)
                     if isinstance(cond_eval, tuple) and len(cond_eval) == 2:

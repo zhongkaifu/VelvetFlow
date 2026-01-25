@@ -129,6 +129,11 @@ REASONING_PARAM_FIELDS = {
     "toolset",
 }
 
+DATA_PARAM_FIELDS = {
+    "schema",
+    "dataset",
+}
+
 LOOP_PARAM_FIELDS = {
     "loop_kind",
     "source",
@@ -155,6 +160,8 @@ def _filter_params_by_supported_fields(
         allowed_fields = set(CONDITION_PARAM_FIELDS)
     elif node_type == "reasoning":
         allowed_fields = set(REASONING_PARAM_FIELDS)
+    elif node_type == "data":
+        allowed_fields = set(DATA_PARAM_FIELDS)
     elif node_type == "loop":
         allowed_fields = set(LOOP_PARAM_FIELDS)
     elif node_type == "action":

@@ -19,6 +19,7 @@ RGB = Tuple[int, int, int]
 
 NODE_COLORS: Dict[str, RGB] = {
     "action": (33, 150, 243),
+    "data": (56, 189, 248),
     "condition": (255, 152, 0),
     "switch": (121, 85, 72),
     "loop": (96, 125, 139),
