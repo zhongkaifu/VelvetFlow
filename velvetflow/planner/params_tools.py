@@ -127,7 +127,13 @@ def _reasoning_params_schema() -> Dict[str, Any]:
                 "items": {"type": "string"},
             },
         },
-        "required": ["task_prompt"],
+        "required": [
+            "system_prompt",
+            "task_prompt",
+            "context",
+            "expected_output_format",
+            "toolset",
+        ],
         "additionalProperties": True,
     }
 

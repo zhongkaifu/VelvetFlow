@@ -1435,6 +1435,34 @@ def plan_workflow_structure_with_llm(
             params=params or {},
             action_schemas=action_schemas,
         )
+        required_reasoning_fields = (
+            "system_prompt",
+            "task_prompt",
+            "context",
+            "expected_output_format",
+            "toolset",
+        )
+        missing_reasoning_fields = []
+        for field in required_reasoning_fields:
+            value = cleaned_params.get(field)
+            if value is None:
+                missing_reasoning_fields.append(field)
+            elif isinstance(value, str) and not value.strip():
+                missing_reasoning_fields.append(field)
+            elif isinstance(value, (list, dict)) and not value:
+                missing_reasoning_fields.append(field)
+        if missing_reasoning_fields:
+            result = _build_validation_error(
+                (
+                    "reasoning 节点 params 缺少必填字段，"
+                    "且 out_params_schema 必须与 expected_output_format 一致。"
+                    "请补全后重新调用 add_reasoning_node。"
+                ),
+                missing_fields=missing_reasoning_fields,
+                required_fields=list(required_reasoning_fields),
+                required_out_params_schema="expected_output_format",
+            )
+            return _return_tool_result("add_reasoning_node", result)
         out_params_schema = cleaned_params.get("expected_output_format")
         ref_error = _validate_existing_references(
             node_id=id, params=cleaned_params, depends_on=depends_on or []
@@ -1953,6 +1981,34 @@ def plan_workflow_structure_with_llm(
                 params=params or {},
                 action_schemas=action_schemas,
             )
+            required_reasoning_fields = (
+                "system_prompt",
+                "task_prompt",
+                "context",
+                "expected_output_format",
+                "toolset",
+            )
+            missing_reasoning_fields = []
+            for field in required_reasoning_fields:
+                value = cleaned_params.get(field)
+                if value is None:
+                    missing_reasoning_fields.append(field)
+                elif isinstance(value, str) and not value.strip():
+                    missing_reasoning_fields.append(field)
+                elif isinstance(value, (list, dict)) and not value:
+                    missing_reasoning_fields.append(field)
+            if missing_reasoning_fields:
+                result = _build_validation_error(
+                    (
+                        "reasoning 节点 params 缺少必填字段，"
+                        "且 out_params_schema 必须与 expected_output_format 一致。"
+                        "请补全后重新调用 update_reasoning_node。"
+                    ),
+                    missing_fields=missing_reasoning_fields,
+                    required_fields=list(required_reasoning_fields),
+                    required_out_params_schema="expected_output_format",
+                )
+                return _return_tool_result("update_reasoning_node", result)
             updates["params"] = cleaned_params
             updates["out_params_schema"] = cleaned_params.get("expected_output_format")
             reference_issues, available_nodes = _collect_param_reference_issues(cleaned_params)
