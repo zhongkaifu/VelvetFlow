@@ -333,6 +333,13 @@ def ask_ai(
         log_info(f"[ask_ai] round={round_idx} assistant response received")
         if assistant_msg.get("content"):
             log_json("[ask_ai] assistant content", assistant_msg.get("content"))
+        else:
+            reminder = (
+                "Your previous response had no content. "
+                "Please provide a concise response that satisfies the user's requirements."
+            )
+            messages.append({"role": "user", "content": reminder})
+            log_info("[ask_ai] assistant content empty; prompting for a complete response")
 
         tool_calls = getattr(message, "tool_calls", None) or []
         if tool_calls:
