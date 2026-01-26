@@ -56,10 +56,12 @@ def _get_node_output_schema(
 
         if node.get("type") == "reasoning":
             params = node.get("params") if isinstance(node.get("params"), Mapping) else {}
-            expected_format = params.get("expected_output_format") if isinstance(params, Mapping) else None
+            expected_output_format = (
+                params.get("expected_output_format") if isinstance(params, Mapping) else None
+            )
             schema = (
-                _schema_from_out_params_schema(expected_format)
-                if isinstance(expected_format, Mapping)
+                _schema_from_out_params_schema(expected_output_format)
+                if isinstance(expected_output_format, Mapping)
                 else None
             )
             if isinstance(schema, Mapping):
