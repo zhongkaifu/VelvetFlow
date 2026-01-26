@@ -12,7 +12,6 @@ def test_minimal_workflow_from_docs_infers_edges():
         "workflow_name": "send_newsletter",
         "description": "向 CRM 客户发送新品资讯并记录审批",
         "nodes": [
-            {"id": "start", "type": "start"},
             {
                 "id": "search_users",
                 "type": "action",
@@ -41,7 +40,7 @@ def test_minimal_workflow_from_docs_infers_edges():
 
     parsed = Workflow.model_validate(workflow)
     assert parsed.workflow_name == "send_newsletter"
-    assert len(parsed.nodes) == 5
+    assert len(parsed.nodes) == 4
 
     edges = _edge_tuples(parsed.edges)
     expected = {
@@ -150,7 +149,6 @@ def test_complex_dag_from_docs_infers_edges():
     workflow = {
         "workflow_name": "async_order_pipeline",
         "nodes": [
-            {"id": "start", "type": "start"},
             {
                 "id": "search_orders",
                 "type": "action",

@@ -19,7 +19,6 @@ def test_switch_executes_matching_case():
         "workflow_name": "switch_demo",
         "description": "",
         "nodes": [
-            {"id": "start", "type": "start"},
             {
                 "id": "route",
                 "type": "switch",
