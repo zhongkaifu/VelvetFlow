@@ -49,6 +49,11 @@ REASONING_PARAM_FIELDS = {
     "toolset",
 }
 
+DATA_PARAM_FIELDS = {
+    "schema",
+    "dataset",
+}
+
 SWITCH_PARAM_FIELDS = {
     "source",
     "field",
@@ -75,6 +80,16 @@ ACTION_NODE_FIELDS = {
 }
 
 REASONING_NODE_FIELDS = {
+    "id",
+    "type",
+    "display_name",
+    "params",
+    "out_params_schema",
+    "parent_node_id",
+    "depends_on",
+}
+
+DATA_NODE_FIELDS = {
     "id",
     "type",
     "display_name",
@@ -377,6 +392,37 @@ def _attach_sub_graph_nodes(builder: WorkflowBuilder, loop_id: str, node_ids: Li
             node["parent_node_id"] = loop_id
 
 
+def _build_data_node_output_schema(schema: Any) -> Dict[str, Any]:
+    properties: Dict[str, Any] = {}
+    if isinstance(schema, list):
+        for field in schema:
+            if not isinstance(field, Mapping):
+                continue
+            name = field.get("name")
+            if not isinstance(name, str) or not name:
+                continue
+            field_type = field.get("type") if isinstance(field.get("type"), str) else "string"
+            description = field.get("description") if isinstance(field.get("description"), str) else ""
+            properties[name] = {"type": field_type, "description": description}
+
+    return {
+        "type": "object",
+        "properties": {
+            "dataset": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": properties,
+                },
+            },
+            "schema": {
+                "type": "array",
+                "items": {"type": "object"},
+            },
+        },
+    }
+
+
 def _filter_supported_params(
     *,
     node_type: str,
@@ -397,6 +443,8 @@ def _filter_supported_params(
         allowed_fields = set(CONDITION_PARAM_FIELDS)
     elif node_type == "reasoning":
         allowed_fields = set(REASONING_PARAM_FIELDS)
+    elif node_type == "data":
+        allowed_fields = set(DATA_PARAM_FIELDS)
     elif node_type == "switch":
         allowed_fields = set(SWITCH_PARAM_FIELDS)
     elif node_type == "loop":
@@ -454,6 +502,8 @@ def _sanitize_builder_node_fields(builder: WorkflowBuilder, node_id: str) -> Lis
         allowed_fields = set(SWITCH_NODE_FIELDS)
     elif node_type == "loop":
         allowed_fields = set(LOOP_NODE_FIELDS)
+    elif node_type == "data":
+        allowed_fields = set(DATA_NODE_FIELDS)
 
     if not allowed_fields:
         return []
@@ -625,7 +675,7 @@ def _build_combined_prompt() -> str:
         "[Workflow DSL syntax and semantics (must follow)]\n"
         "- workflow = {workflow_name, description, nodes: []}; only return valid JSON (edges will be automatically inferred by the system based on node bindings, no need to generate them).\n"
         "- Node basic structure: {id, type, display_name, params, depends_on, action_id?, out_params_schema?, loop/subgraph/branches?}.\n"
-        "  type allows action/condition/switch/loop/parallel/reasoning.\n"
+        "  type allows action/condition/switch/loop/parallel/reasoning/data.\n"
         "  Action nodes must specify action_id (from the action library) and params; only action nodes allow out_params_schema.\n"
         "  Reasoning nodes accept params including system_prompt/task_prompt/context/expected_output_format/toolset to drive LLM reasoning, and mirror expected_output_format into out_params_schema.\n"
         "  Condition node params can only include expression (a single Jinja expression returning a boolean); true_to_node/false_to_node must be top-level fields (string or null), not inside params.\n"
@@ -640,13 +690,15 @@ def _build_combined_prompt() -> str:
         "2) When business actions are needed, you must first call search_business_actions to query candidates; add_action_node.action_id must come from the most recent candidates.id.\n"
         "3) Before adding a new node, check whether a similar node already exists; if so, do not add a duplicate node.\n"
         "4) When condition/switch/loop nodes are needed, you must first create them with add_condition_node/add_switch_node/add_loop_node; expressions and references in params must strictly follow Jinja template syntax.\n"
-        "5) When LLM reasoning tasks are needed, create them with add_reasoning_node and fill system_prompt/task_prompt/context/expected_output_format/toolset in params.\n"
-        "6) Call update_node_params to complete and validate params for created nodes.\n"
-        "7) If an existing node needs to be modified (adding display_name/params/branch targets/parent nodes, etc.), call update_action_node/update_reasoning_node or update_condition_node with the fields to overwrite; after calling, be sure to check whether related upstream/downstream nodes also need updates to stay consistent.\n"
-        "8) Condition nodes must explicitly provide true_to_node and false_to_node. Values can be a node id (continue execution) or null (indicating that branch ends); express dependencies through input/output references in node params—no need to draw edges explicitly.\n"
-        "9) Maintain depends_on (array of strings) for each node, listing its direct upstream dependencies; when a node is targeted by condition.true_to_node/false_to_node, you must add that condition node to the target node's depends_on.\n"
-        "10) After the structure is complete, continue to fill params for all nodes and ensure update_node_params validation passes.\n\n"
-        "11) When you believe the workflow is complete, call check_workflow to validate upstream references; only after check_workflow succeeds should you call finalize_workflow to finish.\n\n"
+        "5) When data payloads are needed, create them with add_data_node and provide schema/dataset.\n"
+        "6) When LLM reasoning tasks are needed, create them with add_reasoning_node and fill system_prompt/task_prompt/context/expected_output_format/toolset in params.\n"
+        "   toolset entries must come from search_business_actions results; use [] if no tool is required.\n"
+        "7) Call update_node_params to complete and validate params for created nodes.\n"
+        "8) If an existing node needs to be modified (adding display_name/params/branch targets/parent nodes, etc.), call update_action_node/update_reasoning_node or update_condition_node with the fields to overwrite; after calling, be sure to check whether related upstream/downstream nodes also need updates to stay consistent.\n"
+        "9) Condition nodes must explicitly provide true_to_node and false_to_node. Values can be a node id (continue execution) or null (indicating that branch ends); express dependencies through input/output references in node params—no need to draw edges explicitly.\n"
+        "10) Maintain depends_on (array of strings) for each node, listing its direct upstream dependencies; when a node is targeted by condition.true_to_node/false_to_node, you must add that condition node to the target node's depends_on.\n"
+        "11) After the structure is complete, continue to fill params for all nodes and ensure update_node_params validation passes.\n\n"
+        "12) When you believe the workflow is complete, call check_workflow to validate upstream references; only after check_workflow succeeds should you call finalize_workflow to finish.\n\n"
         "Important note: Only action nodes need out_params_schema; condition nodes do not have this property. The format of out_params_schema should be {\"param_name\": \"type\"}; list only the names and types of output parameters of the business action, without extra descriptions or examples.\n\n"
         "[Very important principles]\n"
         "1. You must design the workflow strictly around the natural language requirement in the current conversation:\n"
@@ -1211,6 +1263,45 @@ def plan_workflow_structure_with_llm(
         ]
         return issues, available_nodes
 
+    def _validate_toolset(
+        toolset: Any,
+        *,
+        hint: str,
+    ) -> Optional[Dict[str, Any]]:
+        if toolset is None:
+            return None
+        if not isinstance(toolset, list):
+            return _build_validation_error(
+                "reasoning 节点的 toolset 需要是数组。",
+                invalid_fields=["toolset"],
+            )
+
+        invalid_items: List[Any] = []
+        for item in toolset:
+            if isinstance(item, Mapping):
+                candidate = item.get("action_id") or item.get("tool_name") or item.get("name")
+            else:
+                candidate = item
+            if not isinstance(candidate, str) or not candidate.strip():
+                invalid_items.append(item)
+                continue
+            results = search_service.search(query=candidate, top_k=5) or []
+            if not any(
+                action.get("action_id") == candidate or action.get("tool_name") == candidate
+                for action in results
+                if isinstance(action, Mapping)
+            ):
+                invalid_items.append(candidate)
+
+        if invalid_items:
+            message = f"{hint} 错误工具: {invalid_items}"
+            return _build_validation_error(
+                message,
+                invalid_toolset=invalid_items,
+            )
+
+        return None
+
     @function_tool(strict_mode=False)
     def search_business_actions(query: str, top_k: int = 5) -> Mapping[str, Any]:
         """Search business action candidates to choose a valid ``action_id`` during planning.
@@ -1403,12 +1494,13 @@ def plan_workflow_structure_with_llm(
         """Add a reasoning node for LLM-driven tasks.
 
         Use case: Create a node that calls an LLM to perform reasoning tasks such as
-        summarization, translation, drafting, or analysis.
+        summarization, translation, drafting, or analysis. Toolset items must be discoverable
+        via ``search_business_actions`` or left empty when no tool is needed.
 
         Args:
             id: Unique node identifier.
             display_name: Optional node display name.
-            params: Optional reasoning parameter dictionary.
+            params: Optional reasoning parameter dictionary (toolset entries must be valid).
             depends_on: Optional list of upstream node IDs.
             parent_node_id: Optional parent node ID for subgraphs or loop scenarios.
 
@@ -1449,20 +1541,30 @@ def plan_workflow_structure_with_llm(
                 missing_reasoning_fields.append(field)
             elif isinstance(value, str) and not value.strip():
                 missing_reasoning_fields.append(field)
-            elif isinstance(value, (list, dict)) and not value:
+            elif field != "toolset" and isinstance(value, (list, dict)) and not value:
                 missing_reasoning_fields.append(field)
         if missing_reasoning_fields:
             result = _build_validation_error(
                 (
                     "reasoning 节点 params 缺少必填字段，"
                     "且 out_params_schema 必须与 expected_output_format 一致。"
-                    "请补全后重新调用 add_reasoning_node。"
+                    "toolset 可为空列表表示不使用工具。请补全后重新调用 add_reasoning_node。"
                 ),
                 missing_fields=missing_reasoning_fields,
                 required_fields=list(required_reasoning_fields),
                 required_out_params_schema="expected_output_format",
             )
             return _return_tool_result("add_reasoning_node", result)
+        toolset_error = _validate_toolset(
+            cleaned_params.get("toolset"),
+            hint=(
+                "reasoning 节点的 toolset 必须来自 search_business_actions 的结果。"
+                "请调用 search_business_actions 查询工具并重新调用 add_reasoning_node，"
+                "或将 toolset 设为空列表以表示不使用工具。"
+            ),
+        )
+        if toolset_error:
+            return _return_tool_result("add_reasoning_node", toolset_error)
         out_params_schema = cleaned_params.get("expected_output_format")
         ref_error = _validate_existing_references(
             node_id=id, params=cleaned_params, depends_on=depends_on or []
@@ -1499,6 +1601,82 @@ def plan_workflow_structure_with_llm(
             return _return_tool_result("add_reasoning_node", result)
         result = {"status": "ok", "type": "node_added", "node_id": id}
         return _return_tool_result("add_reasoning_node", result)
+
+    @function_tool(strict_mode=False)
+    def add_data_node(
+        id: str,
+        display_name: Optional[str] = None,
+        schema: Optional[List[Dict[str, Any]]] = None,
+        dataset: Optional[Any] = None,
+        depends_on: Optional[List[str]] = None,
+        parent_node_id: Optional[str] = None,
+    ) -> Mapping[str, Any]:
+        """Add a data node that defines schema and dataset payloads.
+
+        Use case: Provide dataset payloads that downstream nodes can consume.
+
+        Args:
+            id: Unique node identifier.
+            display_name: Optional node display name.
+            schema: Optional list of schema field definitions.
+            dataset: Optional dataset payload (typically an array of objects).
+            depends_on: Optional list of upstream node IDs.
+            parent_node_id: Optional parent node ID for subgraphs.
+
+        Returns:
+            A result dictionary containing the status, type, and node ID; returns an error
+            message on failure.
+        """
+        _log_tool_call(
+            "add_data_node",
+            {"id": id, "parent_node_id": parent_node_id},
+        )
+        duplicate_error = _reject_duplicate_node_id(id)
+        if duplicate_error:
+            return _return_tool_result("add_data_node", duplicate_error)
+        if parent_node_id is not None and not isinstance(parent_node_id, str):
+            result = _build_validation_error("parent_node_id 需要是字符串或 null。")
+            return _return_tool_result("add_data_node", result)
+
+        params: Dict[str, Any] = {}
+        if schema is not None:
+            params["schema"] = schema
+        if dataset is not None:
+            params["dataset"] = dataset
+
+        cleaned_params, removed_fields = _filter_supported_params(
+            node_type="data",
+            params=params or {},
+            action_schemas=action_schemas,
+        )
+        out_params_schema = _build_data_node_output_schema(cleaned_params.get("schema"))
+        ref_error = _validate_existing_references(
+            node_id=id, params=cleaned_params, depends_on=depends_on or []
+        )
+        if ref_error:
+            return _return_tool_result("add_data_node", ref_error)
+        builder.add_node(
+            node_id=id,
+            node_type="data",
+            display_name=display_name,
+            params=cleaned_params,
+            out_params_schema=out_params_schema,
+            parent_node_id=parent_node_id if isinstance(parent_node_id, str) else None,
+            depends_on=depends_on or [],
+        )
+        _reset_workflow_check_state()
+        removed_node_fields = _sanitize_builder_node_fields(builder, id)
+        _snapshot(f"add_data_{id}")
+        if removed_fields or removed_node_fields:
+            result = _build_validation_error(
+                "data 节点仅支持 id/type/display_name/params/out_params_schema 字段，params 仅支持 schema/dataset。",
+                removed_param_fields=removed_fields,
+                removed_node_fields=removed_node_fields,
+                node_id=id,
+            )
+            return _return_tool_result("add_data_node", result)
+        result = {"status": "ok", "type": "node_added", "node_id": id}
+        return _return_tool_result("add_data_node", result)
 
     @function_tool(strict_mode=False)
     def add_loop_node(
@@ -1944,11 +2122,12 @@ def plan_workflow_structure_with_llm(
         """Update an existing reasoning node.
 
         Use case: Adjust prompts, expected outputs, or toolset for LLM reasoning tasks.
+        Toolset items must be discoverable via ``search_business_actions`` or left empty.
 
         Args:
             id: Unique node identifier.
             display_name: Optional node display name.
-            params: Optional reasoning parameter dictionary.
+            params: Optional reasoning parameter dictionary (toolset entries must be valid).
             depends_on: Optional list of upstream node IDs.
             parent_node_id: Optional parent node ID.
 
@@ -1995,20 +2174,30 @@ def plan_workflow_structure_with_llm(
                     missing_reasoning_fields.append(field)
                 elif isinstance(value, str) and not value.strip():
                     missing_reasoning_fields.append(field)
-                elif isinstance(value, (list, dict)) and not value:
+                elif field != "toolset" and isinstance(value, (list, dict)) and not value:
                     missing_reasoning_fields.append(field)
             if missing_reasoning_fields:
                 result = _build_validation_error(
                     (
                         "reasoning 节点 params 缺少必填字段，"
                         "且 out_params_schema 必须与 expected_output_format 一致。"
-                        "请补全后重新调用 update_reasoning_node。"
+                        "toolset 可为空列表表示不使用工具。请补全后重新调用 update_reasoning_node。"
                     ),
                     missing_fields=missing_reasoning_fields,
                     required_fields=list(required_reasoning_fields),
                     required_out_params_schema="expected_output_format",
                 )
                 return _return_tool_result("update_reasoning_node", result)
+            toolset_error = _validate_toolset(
+                cleaned_params.get("toolset"),
+                hint=(
+                    "reasoning 节点的 toolset 必须来自 search_business_actions 的结果。"
+                    "请调用 search_business_actions 查询工具并重新调用 update_reasoning_node，"
+                    "或将 toolset 设为空列表以表示不使用工具。"
+                ),
+            )
+            if toolset_error:
+                return _return_tool_result("update_reasoning_node", toolset_error)
             updates["params"] = cleaned_params
             updates["out_params_schema"] = cleaned_params.get("expected_output_format")
             reference_issues, available_nodes = _collect_param_reference_issues(cleaned_params)
@@ -2046,6 +2235,90 @@ def plan_workflow_structure_with_llm(
             return _return_tool_result("update_reasoning_node", result)
         result = {"status": "ok", "type": "node_updated", "node_id": id}
         return _return_tool_result("update_reasoning_node", result)
+
+    @function_tool(strict_mode=False)
+    def update_data_node(
+        id: str,
+        display_name: Optional[str] = None,
+        schema: Optional[List[Dict[str, Any]]] = None,
+        dataset: Optional[Any] = None,
+        depends_on: Optional[List[str]] = None,
+        parent_node_id: Optional[str] = None,
+    ) -> Mapping[str, Any]:
+        """Update an existing data node.
+
+        Use case: Modify the data schema or dataset for downstream consumption.
+
+        Args:
+            id: Unique node identifier.
+            display_name: Optional node display name.
+            schema: Optional list of schema field definitions.
+            dataset: Optional dataset payload (typically an array of objects).
+            depends_on: Optional list of upstream node IDs.
+            parent_node_id: Optional parent node ID.
+
+        Returns:
+            A result dictionary containing the status, type, and node ID; returns an error
+            message on failure.
+        """
+        _log_tool_call(
+            "update_data_node",
+            {"id": id, "parent_node_id": parent_node_id},
+        )
+        precheck = _update_node_common(id, "data")
+        if precheck:
+            return _return_tool_result("update_data_node", precheck)
+        if parent_node_id is not None and not isinstance(parent_node_id, str):
+            result = _build_validation_error("parent_node_id 需要是字符串或 null。")
+            return _return_tool_result("update_data_node", result)
+
+        updates: Dict[str, Any] = {}
+        if display_name is not None:
+            updates["display_name"] = display_name
+        if parent_node_id is not None:
+            updates["parent_node_id"] = parent_node_id
+
+        params: Dict[str, Any] = {}
+        if schema is not None:
+            params["schema"] = schema
+        if dataset is not None:
+            params["dataset"] = dataset
+        if params:
+            cleaned_params, removed_param_fields = _filter_supported_params(
+                node_type="data",
+                params=params,
+                action_schemas=action_schemas,
+            )
+            updates["params"] = cleaned_params
+            updates["out_params_schema"] = _build_data_node_output_schema(cleaned_params.get("schema"))
+        else:
+            removed_param_fields = []
+
+        if depends_on is not None:
+            updates["depends_on"] = depends_on
+
+        ref_error = _validate_existing_references(
+            node_id=id,
+            params=cleaned_params if params else None,
+            depends_on=depends_on or [],
+        )
+        if ref_error:
+            return _return_tool_result("update_data_node", ref_error)
+        builder.update_node(id, **updates)
+        _reset_workflow_check_state()
+        removed_param_fields.extend(_sanitize_builder_node_params(builder, id, action_schemas))
+        removed_node_fields = _sanitize_builder_node_fields(builder, id)
+        _snapshot(f"update_data_{id}")
+        if removed_param_fields or removed_node_fields:
+            result = _build_validation_error(
+                "data 节点仅支持 id/type/display_name/params/out_params_schema 字段，params 仅支持 schema/dataset。",
+                removed_fields=removed_param_fields,
+                removed_node_fields=removed_node_fields,
+                node_id=id,
+            )
+            return _return_tool_result("update_data_node", result)
+        result = {"status": "ok", "type": "node_updated", "node_id": id}
+        return _return_tool_result("update_data_node", result)
 
     @function_tool(strict_mode=False)
     def update_condition_node(
@@ -2753,6 +3026,10 @@ def plan_workflow_structure_with_llm(
         updates: Dict[str, Any] = {"params": dict(normalized_params)}
         if node.type == "reasoning":
             updates["out_params_schema"] = normalized_params.get("expected_output_format")
+        if node.type == "data":
+            updates["out_params_schema"] = _build_data_node_output_schema(
+                normalized_params.get("schema")
+            )
         builder.update_node(id, **updates)
         _reset_workflow_check_state()
         _snapshot(f"validate_params_{id}")
@@ -2768,11 +3045,13 @@ def plan_workflow_structure_with_llm(
             set_workflow_meta,
             add_action_node,
             add_reasoning_node,
+            add_data_node,
             add_loop_node,
             add_condition_node,
             add_switch_node,
             update_action_node,
             update_reasoning_node,
+            update_data_node,
             update_condition_node,
             update_switch_node,
             update_loop_node,

@@ -4,7 +4,6 @@
 """Business-ready tools and registry exports."""
 from tools.base import Tool
 from tools.builtin import (
-    ask_ai,
     compose_outlook_email,
     list_files,
     read_file,
@@ -32,7 +31,6 @@ __all__ = [
     "call_registered_tool",
     "register_builtin_tools",
     "search_web",
-    "ask_ai",
     "list_files",
     "read_file",
     "summarize",

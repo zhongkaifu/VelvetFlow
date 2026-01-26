@@ -31,7 +31,7 @@ from tools.business import (
     register_sales_tools,
     register_web_scraper_tools,
 )
-from tools.registry import get_registered_tool, register_tool
+from tools.registry import register_tool
 
 
 def _normalize_web_url(raw_url: str) -> str:
@@ -199,199 +199,6 @@ def search_news(query: str, limit: int = 5, timeout: int = 8) -> Dict[str, List[
     return {"results": results}
 
 
-def _prepare_ask_ai_prompt(
-    *,
-    prompt: str | None,
-    question: str | None,
-    context: Dict[str, Any] | None,
-    expected_format: str | Mapping[str, Any] | None,
-) -> str:
-    if prompt:
-        return prompt
-
-    parts = ["You are a helpful assistant that produces concise JSON answers."]
-    parts.append(f"Question: {question}")
-    if context:
-        context_json = json.dumps(context, ensure_ascii=False, indent=2)
-        parts.append("Context (for reference):")
-        parts.append(context_json)
-    if expected_format:
-        expected_format_text = (
-            expected_format
-            if isinstance(expected_format, str)
-            else json.dumps(expected_format, ensure_ascii=False, indent=2)
-        )
-        parts.append("Return JSON following this guidance:")
-        parts.append(expected_format_text)
-    parts.append("Respond with valid JSON only.")
-    return "\n\n".join(parts)
-
-
-def _build_call_tool_schema(action: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
-    action_id = action.get("action_id") or action.get("tool_name") or "tool"
-    safe_name = re.sub(r"[^a-zA-Z0-9_-]", "_", action.get("tool_name") or action_id)
-    description = action.get("description") or action.get("name") or action_id
-    parameters = action.get("arg_schema") or action.get("params_schema")
-    if not isinstance(parameters, Mapping):
-        return None
-
-    return {
-        "type": "function",
-        "function": {
-            "name": safe_name,
-            "description": description,
-            "parameters": parameters,
-        },
-    }
-
-
-def _execute_business_tool(
-    *, action: Mapping[str, Any], args: Mapping[str, Any], call_name: str
-) -> Dict[str, Any]:
-    tool_fn_name = action.get("tool_name") or action.get("action_id") or call_name
-    registered_tool = get_registered_tool(tool_fn_name)
-
-    if not registered_tool:
-        return {
-            "status": "unavailable",
-            "action_id": action.get("action_id"),
-            "message": f"Business tool '{tool_fn_name}' is not registered; returning the original arguments for reference.",
-            "echo": args,
-        }
-
-    try:
-        output = registered_tool(**args)
-        return {
-            "status": "ok",
-            "action_id": action.get("action_id"),
-            "output": output,
-        }
-    except Exception as exc:  # pragma: no cover - runtime errors are surfaced to LLM
-        return {
-            "status": "error",
-            "action_id": action.get("action_id"),
-            "message": str(exc),
-        }
-
-
-def ask_ai(
-    *,
-    system_prompt: str | None = None,
-    prompt: str | None = None,
-    question: str | None = None,
-    context: Dict[str, Any] | None = None,
-    expected_format: str | Mapping[str, Any] | None = None,
-    tool: List[Mapping[str, Any]] | None = None,
-    model: str | None = None,
-    max_tokens: int = 256,
-    max_rounds: int = 3,
-) -> Dict[str, Any]:
-    """LLM helper that can optionally call business tools and analyze results."""
-
-    if not (prompt or question):
-        raise ValueError("either prompt or question must be provided for ask_ai")
-
-    user_prompt = _prepare_ask_ai_prompt(
-        prompt=prompt, question=question, context=context, expected_format=expected_format
-    )
-    system_text = system_prompt or "You are an intelligent assistant skilled at invoking business tools to solve problems."
-
-    client = OpenAI()
-    chat_model = model or OPENAI_MODEL
-    messages: List[Dict[str, Any]] = [
-        {"role": "system", "content": system_text},
-        {"role": "user", "content": user_prompt},
-    ]
-
-    tools_spec: List[Dict[str, Any]] = []
-    tool_lookup: Dict[str, Mapping[str, Any]] = {}
-    for item in tool or []:
-        schema = _build_call_tool_schema(item)
-        if schema:
-            tool_name = schema["function"]["name"]
-            tools_spec.append(schema)
-            tool_lookup[tool_name] = item
-
-    for round_idx in range(1, max_rounds + 1):
-        response = client.chat.completions.create(
-            model=chat_model,
-            messages=messages,
-            tools=tools_spec or None,
-            tool_choice="auto" if tools_spec else None,
-            max_completion_tokens=max_tokens,
-        )
-        if not response.choices:
-            raise RuntimeError("ask_ai did not return any choices")
-
-        message = response.choices[0].message
-        assistant_msg = {
-            "role": "assistant",
-            "content": message.content or "",
-            "tool_calls": message.tool_calls,
-        }
-        messages.append(assistant_msg)
-        log_info(f"[ask_ai] round={round_idx} assistant response received")
-        if assistant_msg.get("content"):
-            log_json("[ask_ai] assistant content", assistant_msg.get("content"))
-        else:
-            reminder = (
-                "Your previous response had no content. "
-                "Please provide a concise response that satisfies the user's requirements."
-            )
-            messages.append({"role": "user", "content": reminder})
-            log_info("[ask_ai] assistant content empty; prompting for a complete response")
-
-        tool_calls = getattr(message, "tool_calls", None) or []
-        if tool_calls:
-            for tc in tool_calls:
-                func_name = tc.function.name
-                raw_args = tc.function.arguments
-                try:
-                    parsed_args = json.loads(raw_args) if raw_args else {}
-                except json.JSONDecodeError:
-                    parsed_args = {"__raw__": raw_args or ""}
-
-                action_def = tool_lookup.get(func_name)
-                if not action_def:
-                    tool_result = {
-                        "status": "error",
-                        "message": f"Unknown business tool invocation: {func_name}",
-                        "echo": parsed_args,
-                    }
-                else:
-                    tool_result = _execute_business_tool(
-                        action=action_def, args=parsed_args, call_name=func_name
-                    )
-
-                messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": tc.id,
-                        "content": json.dumps(tool_result, ensure_ascii=False),
-                    }
-                )
-                log_info(f"[ask_ai] round={round_idx} tool_call={func_name}")
-                log_json("[ask_ai] tool_args", parsed_args)
-                log_json("[ask_ai] tool_result", tool_result)
-            continue
-
-        final_content = (message.content or "").strip()
-        if not final_content:
-            continue
-
-        try:
-            parsed_content = json.loads(final_content)
-            results = parsed_content if isinstance(parsed_content, dict) else {"answer": parsed_content}
-        except json.JSONDecodeError:
-            results = {"answer": final_content}
-
-        return {"status": "ok", "results": results, "messages": messages}
-
-    return {
-        "status": "error",
-        "results": {"message": "ask_ai could not produce an answer within the allowed rounds"},
-        "messages": messages,
-    }
 
 
 def classify_text(
@@ -769,31 +576,6 @@ def register_builtin_tools() -> None:
 
     register_tool(
         Tool(
-            name="ask_ai",
-            description=(
-                "LLM helper that can run multi-round chat with optional business tool calls "
-                "and return normalized status/results output."
-            ),
-            function=ask_ai,
-            args_schema={
-                "type": "object",
-                "properties": {
-                    "system_prompt": {"type": "string", "nullable": True},
-                    "prompt": {"type": "string", "nullable": True},
-                    "question": {"type": "string", "nullable": True},
-                    "context": {"type": "object", "nullable": True},
-                    "expected_format": {"type": "string", "nullable": True},
-                    "tool": {"type": "array", "items": {"type": "object"}, "nullable": True},
-                    "model": {"type": "string", "nullable": True},
-                    "max_tokens": {"type": "integer", "default": 256},
-                    "max_rounds": {"type": "integer", "default": 3},
-                },
-            },
-        )
-    )
-
-    register_tool(
-        Tool(
             name="classify_text",
             description="Classify text into one or more labels via OpenAI chat completion.",
             function=classify_text,
@@ -1050,7 +832,6 @@ __all__ = [
     "register_builtin_tools",
     "search_web",
     "search_news",
-    "ask_ai",
     "classify_text",
     "list_files",
     "read_file",

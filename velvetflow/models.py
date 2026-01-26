@@ -369,7 +369,7 @@ class Node:
         if not isinstance(node_type, str):
             errors.append({"loc": ("type",), "msg": "节点类型必须是字符串"})
         else:
-            allowed = {"action", "condition", "switch", "loop", "parallel", "reasoning"}
+            allowed = {"action", "condition", "switch", "loop", "parallel", "reasoning", "data"}
             if node_type not in allowed:
                 errors.append({
                     "loc": ("type",),
@@ -439,6 +439,26 @@ class Node:
                 display_name=data.get("display_name"),
                 params=dict(params),
                 out_params_schema=out_params_schema,
+                depends_on=depends_on,
+            )
+
+        if node_type == "data":
+            out_params_schema = data.get("out_params_schema")
+            if out_params_schema is not None and not isinstance(out_params_schema, Mapping):
+                errors.append(
+                    {
+                        "loc": ("out_params_schema",),
+                        "msg": "out_params_schema 必须是对象",
+                    }
+                )
+            if errors:
+                raise PydanticValidationError(errors)
+
+            return DataNode(
+                id=node_id,
+                display_name=data.get("display_name"),
+                params=dict(params),
+                out_params_schema=out_params_schema if isinstance(out_params_schema, Mapping) else None,
                 depends_on=depends_on,
             )
 
@@ -565,6 +585,19 @@ class ReasoningNode(Node):
 
     type: Literal["reasoning"] = "reasoning"
     out_params_schema: Optional[Any] = None
+
+    def model_dump(self, *, by_alias: bool = False) -> Dict[str, Any]:
+        data = super().model_dump(by_alias=by_alias)
+        data["out_params_schema"] = self.out_params_schema
+        return data
+
+
+@dataclass
+class DataNode(Node):
+    """Data node holding schema and dataset."""
+
+    type: Literal["data"] = "data"
+    out_params_schema: Optional[Dict[str, Any]] = None
 
     def model_dump(self, *, by_alias: bool = False) -> Dict[str, Any]:
         data = super().model_dump(by_alias=by_alias)

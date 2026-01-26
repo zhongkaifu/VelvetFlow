@@ -153,6 +153,20 @@ function createDefaultNode(type, graph = currentWorkflow, options = {}) {
     };
   }
 
+  if (type === "data") {
+    const schema = [];
+    return {
+      id,
+      type: "data",
+      display_name: display,
+      params: {
+        schema,
+        dataset: [],
+      },
+      out_params_schema: buildDataNodeOutputSchema(schema),
+    };
+  }
+
   return { id, type, display_name: display };
 }
 
@@ -763,7 +777,13 @@ function collectParamKeys(value) {
 
 function describeNode(node) {
   const inputs = collectParamKeys(node.inputs || node.input_params || node.params || node.args);
-  const outputs = collectParamKeys(node.outputs || node.output_params || node.output);
+  let outputs = collectParamKeys(node.outputs || node.output_params || node.output);
+  if (!outputs.length) {
+    const schema = outputSchemaFor(node.action_id, node);
+    if (schema) {
+      outputs = extractOutputDefs(schema).map((def) => def.name);
+    }
+  }
   const toolLabel = node.type === "action" ? node.action_id || node.display_name || node.id : null;
   const runInfo = lastRunResults[node.id];
   const runtimeInputs = runInfo && runInfo.params ? runInfo.params : undefined;
@@ -800,6 +820,36 @@ function outputSchemaFor(actionId, node) {
   if (node && node.out_params_schema) return node.out_params_schema;
   const action = actionCatalog[actionId];
   return (action && (action.output_schema || action.out_params_schema)) || {};
+}
+
+function buildDataNodeOutputSchema(schemaFields) {
+  const properties = {};
+  (Array.isArray(schemaFields) ? schemaFields : []).forEach((field) => {
+    if (!field || !field.name) return;
+    properties[field.name] = {
+      type: field.type || "string",
+      description: field.description || "",
+    };
+  });
+
+  return {
+    type: "object",
+    properties: {
+      dataset: {
+        type: "array",
+        items: {
+          type: "object",
+          properties,
+        },
+      },
+      schema: {
+        type: "array",
+        items: {
+          type: "object",
+        },
+      },
+    },
+  };
 }
 
 function extractParamDefs(schema) {

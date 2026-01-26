@@ -322,6 +322,7 @@ function drawNode(node, pos, mode) {
   const typeColors = {
     start: "#22d3ee",
     end: "#34d399",
+    data: "#38bdf8",
     condition: "#fbbf24",
     loop: "#a5b4fc",
     switch: "#7dd3fc",
