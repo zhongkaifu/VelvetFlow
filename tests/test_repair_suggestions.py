@@ -7,7 +7,6 @@ from velvetflow.verification.repair_suggestions import generate_repair_suggestio
 def test_disconnected_nodes_receive_edge_suggestion():
     workflow = {
         "nodes": [
-            {"id": "start", "type": "start"},
             {"id": "lonely", "type": "action", "action_id": "emit", "params": {}},
         ],
         "edges": [],

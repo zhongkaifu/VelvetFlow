@@ -16,7 +16,6 @@ def test_condition_branches_are_rendered_without_explicit_edges(tmp_path: Path):
         {
             "workflow_name": "demo",
             "nodes": [
-                {"id": "start", "type": "start"},
                 {
                     "id": "check", "type": "condition", "true_to_node": "next", "false_to_node": None
                 },
@@ -35,4 +34,3 @@ def test_condition_branches_are_rendered_without_explicit_edges(tmp_path: Path):
     saved = visualization.render_workflow_dag(workflow, output_path=str(output_path))
 
     assert Path(saved).exists()
-

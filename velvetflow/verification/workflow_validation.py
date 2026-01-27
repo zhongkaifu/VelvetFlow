@@ -109,14 +109,14 @@ def precheck_loop_body_graphs(workflow_raw: Mapping[str, Any] | Any) -> List[Val
     return errors
 
 
-def _parse_expected_format_schema(expected_format: Any) -> Optional[Dict[str, Any]]:
-    """Parse expected_format into a JSON schema mapping if possible."""
+def _parse_expected_output_format_schema(expected_output_format: Any) -> Optional[Dict[str, Any]]:
+    """Parse expected_output_format into a JSON schema mapping if possible."""
 
-    if isinstance(expected_format, Mapping):
-        return dict(expected_format)
+    if isinstance(expected_output_format, Mapping):
+        return dict(expected_output_format)
 
-    if isinstance(expected_format, str):
-        stripped = expected_format.strip()
+    if isinstance(expected_output_format, str):
+        stripped = expected_output_format.strip()
 
         if stripped.startswith("```") and stripped.endswith("```"):
             stripped = stripped.strip("`")

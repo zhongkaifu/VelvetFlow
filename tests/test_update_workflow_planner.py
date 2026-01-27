@@ -16,10 +16,10 @@ def test_update_workflow_uses_existing_graph(monkeypatch):
         "description": "existing dag",
         "nodes": [
             {
-                "id": "start",
+                "id": "seed",
                 "type": "action",
-                "action_id": "demo.start",
-                "display_name": "Start",
+                "action_id": "demo.seed",
+                "display_name": "Seed",
                 "params": {"message": "hello"},
             }
         ],
@@ -42,8 +42,8 @@ def test_update_workflow_uses_existing_graph(monkeypatch):
                 "id": "summarize",
                 "type": "action",
                 "action_id": "demo.summary",
-                "params": {"source": "{{ result_of.start.message }}"},
-                "depends_on": ["start"],
+                "params": {"source": "{{ result_of.seed.message }}"},
+                "depends_on": ["seed"],
             }
         ]
         return {
@@ -86,15 +86,15 @@ def test_update_workflow_uses_existing_graph(monkeypatch):
         existing_workflow=base_workflow,
         requirement="添加总结步骤",
         search_service=_DummySearch(),
-        action_registry=[{"action_id": "demo.start", "params_schema": {}}, {"action_id": "demo.summary", "params_schema": {}}],
+        action_registry=[{"action_id": "demo.seed", "params_schema": {}}, {"action_id": "demo.summary", "params_schema": {}}],
         max_rounds=1,
     )
 
     assert captured_existing["value"]["workflow_name"] == "demo"
-    assert captured_existing["value"]["nodes"][0]["id"] == "start"
+    assert captured_existing["value"]["nodes"][0]["id"] == "seed"
 
     result_nodes = updated.model_dump(by_alias=True)["nodes"]
-    assert any(node.get("id") == "start" for node in result_nodes)
+    assert any(node.get("id") == "seed" for node in result_nodes)
     summarize = next(node for node in result_nodes if node.get("id") == "summarize")
-    assert summarize.get("depends_on") == ["start"]
-    assert summarize.get("params", {}).get("source") == "{{ result_of.start.message }}"
+    assert summarize.get("depends_on") == ["seed"]
+    assert summarize.get("params", {}).get("source") == "{{ result_of.seed.message }}"
