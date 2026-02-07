@@ -32,6 +32,7 @@ from velvetflow.models import (
 )
 from velvetflow.planner.relations import get_referenced_nodes
 from velvetflow.planner.node_types import (
+    build_action_schema_map,
     build_data_node_output_schema,
     filter_supported_params,
     sanitize_builder_node_fields,
@@ -707,7 +708,7 @@ def plan_workflow_structure_with_llm(
     builder = WorkflowBuilder()
     if existing_workflow:
         _hydrate_builder_from_workflow(builder=builder, workflow=existing_workflow)
-    action_schemas = _build_action_schema_map(action_registry)
+    action_schemas = build_action_schema_map(action_registry)
     last_action_candidates: List[str] = []
     all_action_candidates: List[str] = []
     all_action_candidates_info: List[Dict[str, Any]] = []

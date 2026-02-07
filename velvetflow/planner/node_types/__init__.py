@@ -3,7 +3,7 @@
 
 """Node-type specific definitions and helper utilities."""
 
-from velvetflow.planner.node_types.action import ACTION_NODE_FIELDS
+from velvetflow.planner.node_types.action import ACTION_NODE_FIELDS, build_action_schema_map
 from velvetflow.planner.node_types.condition import CONDITION_NODE_FIELDS, CONDITION_PARAM_FIELDS
 from velvetflow.planner.node_types.data import DATA_NODE_FIELDS, DATA_PARAM_FIELDS, build_data_node_output_schema
 from velvetflow.planner.node_types.loop import (
@@ -24,6 +24,7 @@ from velvetflow.planner.node_types.switch import SWITCH_NODE_FIELDS, SWITCH_PARA
 
 __all__ = [
     "ACTION_NODE_FIELDS",
+    "build_action_schema_map",
     "CONDITION_NODE_FIELDS",
     "CONDITION_PARAM_FIELDS",
     "DATA_NODE_FIELDS",
