@@ -1651,6 +1651,26 @@ def plan_workflow_structure_with_llm(
             return _build_validation_error(f"节点 {node_id} 类型不是 {expected_type}。")
         return None
 
+    def _deep_merge_mapping(base: Mapping[str, Any], incoming: Mapping[str, Any]) -> Dict[str, Any]:
+        """Merge mapping recursively while keeping unspecified fields unchanged."""
+        merged: Dict[str, Any] = dict(base)
+        for key, value in incoming.items():
+            existing = merged.get(key)
+            if isinstance(existing, Mapping) and isinstance(value, Mapping):
+                merged[key] = _deep_merge_mapping(existing, value)
+            else:
+                merged[key] = value
+        return merged
+
+    def _merge_node_params(node_id: str, params: Mapping[str, Any]) -> Dict[str, Any]:
+        existing_node = builder.nodes.get(node_id)
+        existing_params = (
+            existing_node.get("params")
+            if isinstance(existing_node, Mapping) and isinstance(existing_node.get("params"), Mapping)
+            else {}
+        )
+        return _deep_merge_mapping(existing_params, params)
+
     @function_tool(strict_mode=False)
     def update_action_node(
         id: str,
@@ -1723,9 +1743,10 @@ def plan_workflow_structure_with_llm(
         if parent_node_id is not None:
             updates["parent_node_id"] = parent_node_id
         if params is not None:
+            merged_params = _merge_node_params(id, params)
             cleaned_params, removed_param_fields = filter_supported_params(
                 node_type="action",
-                params=params or {},
+                params=merged_params,
                 action_schemas=action_schemas,
                 action_id=action_id if isinstance(action_id, str) else builder.nodes.get(id, {}).get("action_id"),
             )
@@ -1811,9 +1832,10 @@ def plan_workflow_structure_with_llm(
         if parent_node_id is not None:
             updates["parent_node_id"] = parent_node_id
         if params is not None:
+            merged_params = _merge_node_params(id, params)
             cleaned_params, removed_param_fields = filter_supported_params(
                 node_type="reasoning",
-                params=params or {},
+                params=merged_params,
                 action_schemas=action_schemas,
             )
             required_reasoning_fields = (
@@ -1940,9 +1962,10 @@ def plan_workflow_structure_with_llm(
         if dataset is not None:
             params["dataset"] = dataset
         if params:
+            merged_params = _merge_node_params(id, params)
             cleaned_params, removed_param_fields = filter_supported_params(
                 node_type="data",
-                params=params,
+                params=merged_params,
                 action_schemas=action_schemas,
             )
             updates["params"] = cleaned_params
@@ -2038,7 +2061,7 @@ def plan_workflow_structure_with_llm(
         if parent_node_id is not None:
             updates["parent_node_id"] = parent_node_id
         if params is not None:
-            normalized_params = dict(params or {})
+            normalized_params = _merge_node_params(id, dict(params or {}))
             expr_val = normalized_params.get("expression")
             if not isinstance(expr_val, str) or not expr_val.strip():
                 result = _build_validation_error(
@@ -2162,8 +2185,9 @@ def plan_workflow_structure_with_llm(
         if cases is not None:
             updates["cases"] = normalized_cases
         if params is not None:
+            merged_params = _merge_node_params(id, params)
             cleaned_params, removed_param_fields = filter_supported_params(
-                node_type="switch", params=params or {}, action_schemas=action_schemas
+                node_type="switch", params=merged_params, action_schemas=action_schemas
             )
             updates["params"] = cleaned_params
         else:
@@ -2275,8 +2299,9 @@ def plan_workflow_structure_with_llm(
         if parent_node_id is not None:
             updates["parent_node_id"] = parent_node_id
         if params is not None:
+            merged_params = _merge_node_params(id, params)
             cleaned_params, removed_param_fields = filter_supported_params(
-                node_type="loop", params=params or {}, action_schemas=action_schemas
+                node_type="loop", params=merged_params, action_schemas=action_schemas
             )
             updates["params"] = cleaned_params
         else:
