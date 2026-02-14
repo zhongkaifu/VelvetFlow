@@ -4,6 +4,7 @@
 """Search and embedding utilities for VelvetFlow."""
 from __future__ import annotations
 import time
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -475,7 +476,19 @@ def build_search_service_from_actions(
     *,
     alpha: float = 0.6,
     embedding_model: str = DEFAULT_EMBEDDING_MODEL,
+    index_path: str | Path | None = DEFAULT_INDEX_PATH,
 ) -> HybridActionSearchService:
+    # 优先复用已有离线索引，避免重复构建
+    if index_path:
+        idx_path = Path(index_path)
+        if idx_path.exists():
+            try:
+                index = ActionIndex.load(idx_path)
+                query_embed_fn = _select_query_embed_fn(index)
+                return build_search_service_from_index(index, embed_fn=query_embed_fn, alpha=alpha)
+            except Exception:  # noqa: BLE001 - 容忍损坏索引，继续构建
+                pass
+
     vocab = build_vocab_from_actions(actions)
     embed_fn = lambda text: embed_text_openai(text, model=embedding_model)
     index = build_action_index(
