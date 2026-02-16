@@ -11,6 +11,7 @@ from tools.builtin import (
     search_web,
     summarize,
 )
+from tools.composio import register_composio_tools
 from tools.registry import (
     GLOBAL_TOOL_REGISTRY,
     call_registered_tool,
@@ -35,4 +36,5 @@ __all__ = [
     "read_file",
     "summarize",
     "compose_outlook_email",
+    "register_composio_tools",
 ]
